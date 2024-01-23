@@ -26,11 +26,12 @@ def get_membership_value(o, reference_domain, core_volume, voronoi_volume, suppo
             return 1
         else:
             dist_cube = float('inf')
-            p_cube = GeometryTools.intersection_with_volume(reference_domain.get_volume(), core_volume.get_representative(), xyz)
-            if p_cube is not None:
-                dist_cube = GeometryTools.euclidean_distance(core_volume.get_representative(), p_cube)
-            else:
-                print("No intersection with cube")
+            # !!!!!!!!!!!!!!!!!!!!!!!!!!!! REVISAR DESPUES, CHEKEA EL CUBO
+            # p_cube = GeometryTools.intersection_with_volume(reference_domain.get_volume(), core_volume.get_representative(), xyz)
+            # if p_cube is not None:
+            #     dist_cube = GeometryTools.euclidean_distance(core_volume.get_representative(), p_cube)
+            # else:
+            #     print("No intersection with cube")
 
             # param 'a' -> intersection with kernel volume
             dist_face = float('inf')

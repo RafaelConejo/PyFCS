@@ -106,7 +106,7 @@ class GeometryTools:
         dir_vector = Vector.from_points(p1, p2)
 
         for j in range(len(v.faces)):
-            plane = v.faces[j].plane
+            plane = v.faces[j].p
             pk = GeometryTools.intersection_plane_rect(plane, p1, p2)
             if pk:
                 dist_pk = GeometryTools.euclidean_distance(p1, pk)
