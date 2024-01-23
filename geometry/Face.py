@@ -5,7 +5,7 @@ from geometry.Plane import Plane
 class Face:
     def __init__(self, p: Plane, vertex: List[Point] = None, infinity: bool = False):
         self.p = p
-        self.vertex = vertex if vertex is not None else []
+        self.vertex = vertex 
         self.infinity = infinity
 
     def add_vertex(self, v: Point):
@@ -14,7 +14,10 @@ class Face:
         self.vertex.append(v)
 
     def evaluate_point(self, xyz: Point):
-        return self.p.get_A() * xyz.get_x() + self.p.get_B() * xyz.get_y() + self.p.get_C() * xyz.get_z() + self.p.get_D()
+        if not isinstance(self.p, Plane):
+            raise ValueError("El plano 'p' no está definido para esta cara.")
+        else:
+            return self.p.evaluate_point(xyz)
 
     def get_plane(self):
         return self.p

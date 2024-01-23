@@ -26,7 +26,7 @@ def get_membership_value(o, reference_domain, core_volume, voronoi_volume, suppo
             return 1
         else:
             dist_cube = float('inf')
-            p_cube = GeometryTools.intersection_with_volume(core_volume.get_representative(), core_volume.get_representative(), xyz)
+            p_cube = GeometryTools.intersection_with_volume(reference_domain.get_volume(), core_volume.get_representative(), xyz)
             if p_cube is not None:
                 dist_cube = GeometryTools.euclidean_distance(core_volume.get_representative(), p_cube)
             else:
@@ -79,7 +79,6 @@ def get_membership_value(o, reference_domain, core_volume, voronoi_volume, suppo
 
 
 
-
 def create_core_support_faces(voronoi, scaling_factor_core=0.5, scaling_factor_support=1.5):
     core_faces = []
     voronoi_faces = []
@@ -87,13 +86,13 @@ def create_core_support_faces(voronoi, scaling_factor_core=0.5, scaling_factor_s
 
     for region in voronoi.regions:
         if -1 not in region and len(region) > 0:
-            core_face = Face()  # Sin un objeto Plane, se actualizará más adelante
-            voronoi_face = Face()
-            support_face = Face()
+            core_face = Face(p=None)  # No Plane object, will be updated later
+            voronoi_face = Face(p=None)
+            support_face = Face(p=None)
 
             vertices = voronoi.vertices[region]
 
-            # Escalar los vértices para definir el core, voronoi y support
+            # Scale vertices to define core, voronoi, and support
             core_vertices = vertices * scaling_factor_core
             voronoi_vertices = vertices
             support_vertices = vertices * scaling_factor_support
@@ -107,36 +106,34 @@ def create_core_support_faces(voronoi, scaling_factor_core=0.5, scaling_factor_s
             support_face.vertex = support_vertices.tolist()
             support_faces.append(support_face)
 
-    # Ahora actualizamos las caras con el plano de la cara real
+    # Now update faces with the actual plane of the face
     for core_face, voronoi_face, support_face in zip(core_faces, voronoi_faces, support_faces):
-        # Obtener vértices de la cara
+        # Get face vertices
         core_vertices = np.array(core_face.vertex)
         voronoi_vertices = np.array(voronoi_face.vertex)
         support_vertices = np.array(support_face.vertex)
 
-        # Calcular normales a los planos
+        # Calculate normals to planes
         core_normal = np.cross(core_vertices[1] - core_vertices[0], core_vertices[2] - core_vertices[0])
         voronoi_normal = np.cross(voronoi_vertices[1] - voronoi_vertices[0], voronoi_vertices[2] - voronoi_vertices[0])
         support_normal = np.cross(support_vertices[1] - support_vertices[0], support_vertices[2] - support_vertices[0])
 
-        # Normalizar las normales
+        # Normalize normals
         core_normal /= np.linalg.norm(core_normal)
         voronoi_normal /= np.linalg.norm(voronoi_normal)
         support_normal /= np.linalg.norm(support_normal)
 
-        # Calcular el término D de la ecuación del plano
+        # Calculate D term of the plane equation
         core_D_term = -np.dot(core_normal, core_vertices[0])
         voronoi_D_term = -np.dot(voronoi_normal, voronoi_vertices[0])
         support_D_term = -np.dot(support_normal, support_vertices[0])
 
-        # Asignar instancias de Plane a las caras
+        # Assign instances of Plane to faces
         core_face.p = Plane(core_normal[0], core_normal[1], core_normal[2], core_D_term)
         voronoi_face.p = Plane(voronoi_normal[0], voronoi_normal[1], voronoi_normal[2], voronoi_D_term)
         support_face.p = Plane(support_normal[0], support_normal[1], support_normal[2], support_D_term)
 
-
     return core_faces, voronoi_faces, support_faces
-
 
 
 def create_core_support_for_voronoi(centroids, center_index, scaling_factor_core=0.5, scaling_factor_support=1.5):
@@ -147,16 +144,17 @@ def create_core_support_for_voronoi(centroids, center_index, scaling_factor_core
 
     core_faces, voronoi_faces, support_faces = create_core_support_faces(voronoi, scaling_factor_core, scaling_factor_support)
 
-    # Ahora actualizamos las caras con el plano de la cara real
+    # Now update faces with the actual plane of the face
     for i, (core_face, voronoi_face, support_face) in enumerate(zip(core_faces, voronoi_faces, support_faces)):
-        core_face.p = Face(core_face)
-        voronoi_face.p = Face(voronoi_face)
-        support_face.p = Face(support_face)
+        core_face.p = Plane(core_face.p.A, core_face.p.B, core_face.p.C, core_face.p.D)
+        voronoi_face.p = Plane(voronoi_face.p.A, voronoi_face.p.B, voronoi_face.p.C, voronoi_face.p.D)
+        support_face.p = Plane(support_face.p.A, support_face.p.B, support_face.p.C, support_face.p.D)
 
-    # Crear instancias de la clase Volume para representar los volúmenes
-    core_volume = Volume(representative=positive_centroid, faces=core_faces)
-    voronoi_volume = Volume(representative=positive_centroid, faces=voronoi_faces)
-    support_volume = Volume(representative=positive_centroid, faces=support_faces)
+    # Create instances of the Volume class to represent volumes
+    positive_centroid_point = Point(*positive_centroid)
+    core_volume = Volume(representative=positive_centroid_point, faces=core_faces)
+    voronoi_volume = Volume(representative=positive_centroid_point, faces=voronoi_faces)
+    support_volume = Volume(representative=positive_centroid_point, faces=support_faces)
 
     return core_volume, voronoi_volume, support_volume
 
@@ -202,19 +200,17 @@ centroids = np.array([
 
 
 
-SMALL_NUM = 1e-10
-
 # Suponiendo que tienes una instancia de ReferenceDomain llamada "lab_reference_domain"
 lab_reference_domain = ReferenceDomain.default_voronoi_reference_domain()
 
 # Suponiendo que tienes un punto de prueba en LAB, debes reemplazarlo con el punto real que deseas probar
-lab_point = Point(50.0, 0.0, 0.0)  # Ejemplo: L=50, A=0, B=0
+lab_point = Point(7.4, -0.7, 15.2)  # Ejemplo: L=50, A=0, B=0
 
 # Imprimir el punto LAB original
 print("Punto LAB original:", lab_point)
 
 # Suponiendo que tienes una instancia de Volume llamada "volumeFC"
-center_index = 0  # Índice del centro positivo
+center_index = 1 # Índice del centro positivo
 core_volume, voronoi_volume, support_volume = create_core_support_for_voronoi(centroids, center_index)
 
 # Suponiendo que tienes una instancia de la clase Spline05Function1D llamada "some_function"

@@ -103,7 +103,7 @@ class GeometryTools:
     def intersection_with_volume(v, p1, p2):
         min_dist = float('inf')
         p_plane_k = None
-        dir_vector = Vector(p1, p2)
+        dir_vector = Vector.from_points(p1, p2)
 
         for j in range(len(v.faces)):
             plane = v.faces[j].plane

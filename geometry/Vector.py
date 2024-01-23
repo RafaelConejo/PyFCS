@@ -2,25 +2,18 @@ from geometry.Point import Point
 from typing import List
 
 class Vector:
-    def __init__(self, a: float = 0, b: float = 0, c: float = 0):
+    def __init__(self, a=0, b=0, c=0):
         self.a = a
         self.b = b
         self.c = c
 
-    def __init__(self, p1: Point, p2: Point):
-        self.a = p2.get_x() - p1.get_x()
-        self.b = p2.get_y() - p1.get_y()
-        self.c = p2.get_z() - p1.get_z()
+    @classmethod
+    def from_points(cls, p1:Point, p2:Point):
+        return cls(p2.get_x() - p1.get_x(), p2.get_y() - p1.get_y(), p2.get_z() - p1.get_z())
 
-    def __init__(self, p: List[float]):
-        self.a = p[0]
-        self.b = p[1]
-        self.c = p[2]
-
-    def __init__(self, a: float, b: float, c: float):
-        self.a = a
-        self.b = b
-        self.c = c
+    @classmethod
+    def from_array(cls, p):
+        return cls(p[0], p[1], p[2])
 
     def get_a(self):
         return self.a
@@ -34,5 +27,5 @@ class Vector:
     def get_point(self):
         return [self.a, self.b, self.c]
 
-    def is_equal(self, p):
-        return p.get_a() == self.a and p.get_b() == self.b and p.get_c() == self.c
+    def is_equal(self, other_vector):
+        return self.a == other_vector.get_a() and self.b == other_vector.get_b() and self.c == other_vector.get_c()
