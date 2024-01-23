@@ -29,6 +29,7 @@ class Volume:
         in_volume = True
 
         for i in range(len(self.get_faces())):
+            #p = self.get_faces()[i].get_plane()
             p = self.get_faces()[i]
             eval_result = p.evaluate_point(self.get_representative()) * p.evaluate_point(xyz)
 

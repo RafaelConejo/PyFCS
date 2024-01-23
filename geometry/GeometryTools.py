@@ -1,64 +1,10 @@
 import math
 from typing import List
 
-from colorspace.ColorSpaceJMR import ColorSpaceJMR
+from geometry.Point import Point
+from geometry.Vector import Vector
+from geometry.Plane import Plane
 
-class Point:
-    def __init__(self, x, y, z):
-        self.x = x
-        self.y = y
-        self.z = z
-
-    def get_double_point(self):
-        return [self.x, self.y, self.z]
-
-class Vector:
-    def __init__(self, a, b, c):
-        self.a = a
-        self.b = b
-        self.c = c
-
-class Plane:
-    def __init__(self, a, b, c, d):
-        self.A = a
-        self.B = b
-        self.C = c
-        self.D = d
-
-    def get_plane(self):
-        return [self.A, self.B, self.C, self.D]
-
-    def get_normal(self):
-        return Vector(self.A, self.B, self.C)
-
-class Face:
-    def __init__(self, plane, boolean_value):
-        self.plane = plane
-        self.boolean_value = boolean_value
-
-class Volume:
-    def __init__(self, representative):
-        self.faces = []
-
-    def add_face(self, face):
-        self.faces.append(face)
-
-    def get_faces(self):
-        return self.faces
-
-    def get_face(self, index):
-        return self.faces[index]
-
-    def is_inside(self, point):
-        # Implement your logic for checking if a point is inside the volume
-        pass
-
-class ReferenceDomain:
-    def __init__(self, x_min, x_max, y_min, y_max, z_min, z_max):
-        self.domain = [[x_min, x_max], [y_min, y_max], [z_min, z_max]]
-
-    def get_domain(self, index):
-        return self.domain[index]
 
 class GeometryTools:
     SMALL_NUM = 0.000000001  # anything that avoids division overflow
@@ -245,52 +191,24 @@ class GeometryTools:
 
         return Plane(A, B, C, D)
 
-    @staticmethod
-    def faces_for_color_space(cs):
-        comp = 0
-        num_planes = cs.getNumComponents() * 2
-        num_variables = cs.getNumComponents() + 1
-        rgb = -255.0 if cs.getType() == ColorSpaceJMR.CS_sRGB else -1.0
-        cube = Volume(Point(rgb * -1.0 * ((cs.getMinValue(0) + cs.getMaxValue(0)) / 2.0)))
+    # @staticmethod
+    # def faces_for_color_space(cs):
+    #     comp = 0
+    #     num_planes = cs.getNumComponents() * 2
+    #     num_variables = cs.getNumComponents() + 1
+    #     rgb = -255.0 if cs.getType() == ColorSpaceJMR.CS_sRGB else -1.0
+    #     cube = Volume(Point(rgb * -1.0 * ((cs.getMinValue(0) + cs.getMaxValue(0)) / 2.0)))
 
-        for i in range(num_planes):
-            plane = [1 if j != comp else 0 for j in range(num_variables - 1)]
+    #     for i in range(num_planes):
+    #         plane = [1 if j != comp else 0 for j in range(num_variables - 1)]
 
-            if i % 2 == 0:
-                plane.append(cs.getMinValue(comp))
-            else:
-                plane.append(cs.getMaxValue(comp) * rgb)
-                comp += 1
+    #         if i % 2 == 0:
+    #             plane.append(cs.getMinValue(comp))
+    #         else:
+    #             plane.append(cs.getMaxValue(comp) * rgb)
+    #             comp += 1
 
-            cube.add_face(Face(Plane(plane, False), False))
+    #         cube.add_face(Face(Plane(plane, False), False))
 
-        return cube
+    #     return cube
 
-    @staticmethod
-    def default_voronoi_reference_domain():
-        return ReferenceDomain(0.0, 255.0, 0.0, 255.0, 0.0, 255.0)
-
-    @staticmethod
-    def little_change(p1, d, exp):
-        x = p1.x + round((math.random() % exp))
-        x_min, x_max = d.get_domain(0)
-        if x > x_max:
-            x -= round(exp * (math.random() % exp))
-        if x < x_min:
-            x = x_min
-
-        y = p1.y + round((math.random() % exp))
-        y_min, y_max = d.get_domain(1)
-        if y > y_max:
-            y -= round(exp * (math.random() % exp))
-        if y < y_min:
-            y = y_min
-
-        z = p1.z + round((math.random() % exp))
-        z_min, z_max = d.get_domain(2)
-        if z > z_max:
-            z -= round(exp * (math.random() % exp))
-        if z < z_min:
-            z = z_min
-
-        return Point(x, y, z)

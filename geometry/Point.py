@@ -1,4 +1,3 @@
-from geometry.GeometryTools import GeometryTools
 
 class Point:
     def __init__(self, x: float = 0, y: float = 0, z: float = 0):
@@ -53,8 +52,8 @@ class Point:
             and abs(p.get_z() - self.z) / ref.get_max(2) < epsilon
         )
 
-    def is_equal_with_epsilon(self, p, epsilon):
-        return GeometryTools.euclidean_distance(self, p) < epsilon
+    # def is_equal_with_epsilon(self, p, epsilon):
+    #     return GeometryTools.euclidean_distance(self, p) < epsilon
 
     def __str__(self):
         return "[" + str(self.x) + ", " + str(self.y) + ", " + str(self.z) + "]"

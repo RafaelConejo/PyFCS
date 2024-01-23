@@ -1,8 +1,6 @@
 from typing import Optional
 
-from fuzzy.membershipfunction.MembershipFunction import MembershipFunction
-
-class Spline05Function1D(MembershipFunction):
+class Spline05Function1D():
     def __init__(self, a: float = 0, b: float = 0, c: float = 0, name: Optional[str] = None):
         self.a = a
         self.b = b
