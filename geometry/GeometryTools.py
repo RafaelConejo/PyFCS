@@ -110,7 +110,7 @@ class GeometryTools:
             pk = GeometryTools.intersection_plane_rect(plane, p1, p2)
             if pk:
                 dist_pk = GeometryTools.euclidean_distance(p1, pk)
-                if GeometryTools.is_same_direction(dir_vector, Vector(p1, pk)) and dist_pk < min_dist:
+                if GeometryTools.is_same_direction(dir_vector, Vector.from_points(p1, pk)) and dist_pk < min_dist:
                     min_dist = dist_pk
                     p_plane_k = pk
 
@@ -133,7 +133,8 @@ class GeometryTools:
             num = hyperplane.D * -1
             for i in range(len(p1)):
                 num -= plane[i] * p0[i]
-            return Point(GeometryTools.point_at_rect(num / denom, p0, p1))
+            result = GeometryTools.point_at_rect(num / denom, p0, p1)
+            return Point(result[0], result[1], result[2])
 
     @staticmethod
     def point_at_rect(t, p0, p1):
