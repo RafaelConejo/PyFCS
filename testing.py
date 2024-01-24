@@ -293,38 +293,39 @@ prototypes_neg = divide_lab_space(num_parts)
 lab_reference_domain = ReferenceDomain.default_voronoi_reference_domain()
 
 # Suponiendo que tienes un punto de prueba en LAB, debes reemplazarlo con el punto real que deseas probar
-lab_point = Point(80.78950801,  3.18038656, 52.19191259)  
+lab_point = Point(80.55352847, 27.16606465,  8.08171757)  
 
 # Imprimir el punto LAB original
 print("Punto LAB original:", lab_point)
 
-# Suponiendo que tienes una instancia de Volume llamada "volumeFC"
-center_index = 4 # Índice del centro positivo
-voronoi_volume = create_voronoi_volumen(colors_lab, center_index, prototypes_neg)
 
-scaling_factor = 0.5
-core_volume, support_volume = create_kernel_support(colors_lab, center_index, voronoi_volume, scaling_factor)
+for i in range(len(colors_rgb)):
+    center_index = i # Índice del centro positivo
+    voronoi_volume = create_voronoi_volumen(colors_lab, center_index, prototypes_neg)
 
-
-
-# Crear el diagrama de Voronoi 2D utilizando voronoi_plot_2d
-vor = Voronoi(colors_lab[:, :2])
-voronoi_plot_2d(vor)
-plt.plot(colors_lab[center_index, 0], colors_lab[center_index, 1], 'ro')  # Marcar el centro positivo en rojo
-plt.plot(lab_point.get_x(), lab_point.get_y(), 'bx', markersize=10)  # Marcar lab_point con una X en azul
-plt.title('Diagrama de Voronoi 2D')
-plt.xlabel('Coordenada X')
-plt.ylabel('Coordenada Y')
-plt.show()
+    scaling_factor = 0.5
+    core_volume, support_volume = create_kernel_support(colors_lab, center_index, voronoi_volume, scaling_factor)
 
 
+    if i == 0:
+        # Crear el diagrama de Voronoi 2D utilizando voronoi_plot_2d
+        vor = Voronoi(colors_lab[:, :2])
+        voronoi_plot_2d(vor)
+        plt.plot(colors_lab[center_index, 0], colors_lab[center_index, 1], 'ro')  # Marcar el centro positivo en rojo
+        plt.plot(lab_point.get_x(), lab_point.get_y(), 'bx', markersize=10)  # Marcar lab_point con una X en azul
+        plt.title('Diagrama de Voronoi 2D')
+        plt.xlabel('Coordenada X')
+        plt.ylabel('Coordenada Y')
+        plt.show()
 
-# Suponiendo que tienes una instancia de la clase Spline05Function1D llamada "some_function"
-some_function = Spline05Function1D()
 
-# Calcular el valor de pertenencia con el punto original
-membership_value = get_membership_value(lab_point, lab_reference_domain, core_volume, voronoi_volume, support_volume, some_function)
-print("Membership Value con el punto original:", membership_value)
+
+    # Suponiendo que tienes una instancia de la clase Spline05Function1D llamada "some_function"
+    some_function = Spline05Function1D()
+
+    # Calcular el valor de pertenencia con el punto original
+    membership_value = get_membership_value(lab_point, lab_reference_domain, core_volume, voronoi_volume, support_volume, some_function)
+    print("Membership Value con centro " + str(i) + ":", membership_value)
 
 
 
