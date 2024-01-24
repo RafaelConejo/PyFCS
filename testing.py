@@ -35,7 +35,7 @@ def get_membership_value(o, reference_domain, core_volume, voronoi_volume, suppo
 
             # param 'a' -> intersection with kernel volume
             dist_face = float('inf')
-            p_face = GeometryTools.intersection_with_volume(voronoi_volume.get_representative(), voronoi_volume.get_representative(), xyz)
+            p_face = GeometryTools.intersection_with_volume(voronoi_volume, voronoi_volume.get_representative(), xyz)
             if p_face is not None:
                 dist_face = GeometryTools.euclidean_distance(voronoi_volume.get_representative(), p_face)
             else:
