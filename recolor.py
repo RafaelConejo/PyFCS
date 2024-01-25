@@ -4,17 +4,19 @@ from skimage import color
 import matplotlib.pyplot as plt
 
 ### my libraries ###
-from utils import read_color_space
+from input_output import read_color_space
 from geometry.Point import Point
 from geometry.ReferenceDomain import ReferenceDomain
 from fuzzy.VoronoiFuzzyColor import VoronoiFuzzyColor
+from fuzzy.membershipfunction.Spline05Function1D import Spline05Function1D
 
 
 def main():
-    IMG_WIDTH = 8
-    IMG_HEIGHT = 8
+    # Aca estoy usando el 70 por ciento del tamaño original de la imagen, lo mejor para reducir 
+    IMG_WIDTH = 479
+    IMG_HEIGHT = 571
     img_path = ".\\imagen_test\\cuadro.png"
-    color_space_path = '.\\fuzzy_color_spaces\\BRUGUER-VIBRATIONS.cns'
+    color_space_path = '.\\fuzzy_color_spaces\\BRUGUER-ACRYLIC.cns'
 
 
 ######################################################################## Read Image ########################################################################
@@ -74,6 +76,25 @@ def main():
     # Suponiendo que tienes una instancia de ReferenceDomain llamada "lab_reference_domain"
     lab_reference_domain = ReferenceDomain.default_voronoi_reference_domain()
 
+
+    # Pre-cálculo de Voronoi, core y soporte para cada color
+    voronoi_values = []
+    core_values = []
+    support_values = []
+
+    for center_index in range(len(colors_lab)):
+        voronoi_volume = VoronoiFuzzyColor.create_voronoi_volumen(colors_lab, center_index, prototypes_neg)
+        scaling_factor = 0.5
+        core_volume, support_volume = VoronoiFuzzyColor.create_kernel_support(colors_lab, center_index, voronoi_volume, scaling_factor)
+
+        voronoi_values.append(voronoi_volume)
+        core_values.append(core_volume)
+        support_values.append(support_volume)
+
+    function = Spline05Function1D()
+
+
+######################################################################## Membership Value ########################################################################
     # Recorrer grupos de píxeles con el mismo color en LAB
     new_image = np.zeros_like(imagen)
     for color_group in color_groups_list:
@@ -82,7 +103,23 @@ def main():
         lab_pixel = Point(lab_pixel[0], lab_pixel[1], lab_pixel[2])
 
         # Encontrar el color con el mayor porcentaje de membresía en el grupo
-        color_max_membresia = read_color_space.find_color_max_membership(lab_pixel, colors_rgb, colors_lab, prototypes_neg, lab_reference_domain)
+        porcentaje_max_membresia = 0.0
+        color_max_membresia = None
+
+        for i, center_index in enumerate(range(len(colors_lab))):
+            voronoi_volume = voronoi_values[i]
+            core_volume = core_values[i]
+            support_volume = support_values[i]
+
+            membership_value = VoronoiFuzzyColor.get_membership_value(lab_pixel, lab_reference_domain, core_volume, voronoi_volume, support_volume, function)
+
+            if membership_value >= 0.98:
+                color_max_membresia = colors_rgb[i]
+                break
+
+            if membership_value > porcentaje_max_membresia:
+                color_max_membresia = colors_rgb[i]
+                porcentaje_max_membresia = membership_value
 
         # Asignar el color con el mayor porcentaje de membresía a todos los píxeles en el grupo
         for y, x in color_group:

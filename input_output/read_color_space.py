@@ -1,8 +1,6 @@
 import cv2
 import numpy as np
 
-from fuzzy.VoronoiFuzzyColor import VoronoiFuzzyColor
-from fuzzy.membershipfunction.Spline05Function1D import Spline05Function1D
 
 
 def read_cns_file(file_path):
@@ -71,33 +69,3 @@ def image_processing(img_path, IMG_WIDTH, IMG_HEIGHT):
     return imagen
 
 
-
-
-def calculate_membership_value(lab_pixel, colors_lab, center_index, prototypes_neg, lab_reference_domain):
-    voronoi_volume = VoronoiFuzzyColor.create_voronoi_volumen(colors_lab, center_index, prototypes_neg)
-    scaling_factor = 0.5
-    core_volume, support_volume = VoronoiFuzzyColor.create_kernel_support(colors_lab, center_index, voronoi_volume, scaling_factor)
-    
-    some_function = Spline05Function1D()
-    
-    return VoronoiFuzzyColor.get_membership_value(lab_pixel, lab_reference_domain, core_volume, voronoi_volume, support_volume, some_function)
-
-
-
-
-def find_color_max_membership(lab_pixel, colors_rgb, colors_lab, prototypes_neg, lab_reference_domain):
-    porcentaje_max_membresia = 0.0
-    color_max_membresia = None
-
-    for i, center_index in enumerate(range(len(colors_lab))):
-        membership_value = calculate_membership_value(lab_pixel, colors_lab, center_index, prototypes_neg, lab_reference_domain)
-
-        if membership_value > 0.9:
-            color_max_membresia = colors_rgb[i]
-            break
-
-        if membership_value > porcentaje_max_membresia:
-            color_max_membresia = colors_rgb[i]
-            porcentaje_max_membresia = membership_value
-
-    return color_max_membresia
