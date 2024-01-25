@@ -1,7 +1,8 @@
 import cv2
 import numpy as np
 
-import testing
+from fuzzy.VoronoiFuzzyColor import VoronoiFuzzyColor
+from fuzzy.membershipfunction.Spline05Function1D import Spline05Function1D
 
 
 def read_cns_file(file_path):
@@ -73,13 +74,13 @@ def image_processing(img_path, IMG_WIDTH, IMG_HEIGHT):
 
 
 def calculate_membership_value(lab_pixel, colors_lab, center_index, prototypes_neg, lab_reference_domain):
-    voronoi_volume = testing.create_voronoi_volumen(colors_lab, center_index, prototypes_neg)
+    voronoi_volume = VoronoiFuzzyColor.create_voronoi_volumen(colors_lab, center_index, prototypes_neg)
     scaling_factor = 0.5
-    core_volume, support_volume = testing.create_kernel_support(colors_lab, center_index, voronoi_volume, scaling_factor)
+    core_volume, support_volume = VoronoiFuzzyColor.create_kernel_support(colors_lab, center_index, voronoi_volume, scaling_factor)
     
-    some_function = testing.Spline05Function1D()
+    some_function = Spline05Function1D()
     
-    return testing.get_membership_value(lab_pixel, lab_reference_domain, core_volume, voronoi_volume, support_volume, some_function)
+    return VoronoiFuzzyColor.get_membership_value(lab_pixel, lab_reference_domain, core_volume, voronoi_volume, support_volume, some_function)
 
 
 
