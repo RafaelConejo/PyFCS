@@ -13,8 +13,8 @@ from fuzzy.membershipfunction.Spline05Function1D import Spline05Function1D
 
 def main():
     # Aca estoy usando el 70 por ciento del tamaño original de la imagen, lo mejor para reducir 
-    IMG_WIDTH = 479
-    IMG_HEIGHT = 571
+    IMG_WIDTH = 335
+    IMG_HEIGHT = 400
     img_path = ".\\imagen_test\\cuadro.png"
     color_space_path = '.\\fuzzy_color_spaces\\BRUGUER-ACRYLIC.cns'
 
@@ -127,6 +127,7 @@ def main():
 
     new_image = new_image / 255.0
 
+    new_image = np.nan_to_num(new_image)
 
 ######################################################################## Results ########################################################################
     # Mostrar la imagen original
