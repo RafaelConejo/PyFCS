@@ -1,5 +1,5 @@
 from geometry.Point import Point
-from typing import List
+import numpy as np
 
 class Vector:
     def __init__(self, a=0, b=0, c=0):
@@ -29,3 +29,6 @@ class Vector:
 
     def is_equal(self, other_vector):
         return self.a == other_vector.get_a() and self.b == other_vector.get_b() and self.c == other_vector.get_c()
+
+    def to_array(self):
+            return np.array([self.a, self.b, self.c])

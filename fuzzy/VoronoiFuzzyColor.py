@@ -7,6 +7,7 @@ from geometry.Point import Point
 from geometry.GeometryTools import GeometryTools
 from geometry.Face import Face
 from geometry.Volume import Volume
+from geometry.Vector import Vector
 
 
 class VoronoiFuzzyColor:
@@ -32,7 +33,7 @@ class VoronoiFuzzyColor:
                 else:
                     print("No intersection with cube")
 
-                # param 'a' -> intersection with kernel volume
+                # param 'a' -> intersection with core volume
                 dist_face = float('inf')
                 p_face = GeometryTools.intersection_with_volume(core_volume, core_volume.get_representative(), xyz)
                 if p_face is not None:
@@ -79,105 +80,102 @@ class VoronoiFuzzyColor:
 
 
     # Función para convertir un VoronoiFace en un Volume
-    @staticmethod
-    def face_to_volume(voronoi_faces, representative):
-        converted_faces = []
 
-        for voronoi_face in voronoi_faces:
-            # Convierte la representación de la cara a la clase Plane
-            plane = Plane(voronoi_face.p.A, voronoi_face.p.B, voronoi_face.p.C, voronoi_face.p.D)
-            
-            # Crea una nueva instancia de Face con la información de la cara del Voronoi
-            converted_face = Face(p=plane, infinity=voronoi_face.is_infinity)
-            
-            # Añade los vértices convertidos a la nueva instancia de Face
-            converted_face.vertex = [Point(v[0], v[1], v[2]) for v in voronoi_face.get_array_vertex()]
+    def face_to_volume(faces, representative):
+        volume = Volume(representative)
 
-            # Añade la nueva instancia de Face a la lista
-            converted_faces.append(converted_face)
+        for face in faces:
+            volume.add_face(face)
 
-        # Crea el volumen con el representante y las caras convertidas del Voronoi
-        voronoi_volume = Volume(representative=representative, faces=converted_faces)
-
-        return voronoi_volume
+        return volume
 
 
     @staticmethod
-    def create_voronoi_volumen(centroids, center_index, prototypes_neg):
-        positive_centroid = centroids[center_index]
-        negative_centroids = np.delete(centroids, center_index, axis=0)
-        negative = np.vstack((negative_centroids, prototypes_neg))
-        points = np.vstack((positive_centroid, negative))
-        voronoi = Voronoi(points)
+    def create_voronoi_volumen(centroids, center_index, prototypes_neg, test):
+        if test == 'si':
+            positive_centroid = centroids[center_index]
+            negative = np.delete(centroids, center_index, axis=0)
+            negative_centroids = np.vstack((negative, prototypes_neg))
+        elif test == 'no':
+            positive_centroid = centroids[center_index]
+            negative_centroids = np.delete(centroids, center_index, axis=0)
 
-        voronoi_faces = []
-        for region in voronoi.regions:
-            if -1 not in region and len(region) > 0:
-                voronoi_face = Face(p=None)
-                vertices = voronoi.vertices[region]
+        points = np.vstack((positive_centroid, negative_centroids))
+        voronoi = Voronoi(points, qhull_options='Fi Fo p Fv')
 
-                voronoi_face.vertex = vertices.tolist()
-                voronoi_faces.append(voronoi_face)
+        regions, vertices = voronoi.regions, voronoi.vertices
+        valid_regions = [region for region in regions if -1 not in region]
 
-        for voronoi_face in voronoi_faces:
-            # Get face vertices
-            voronoi_vertices = np.array(voronoi_face.vertex)
+        voronoi_normal = np.cross(vertices[1] - vertices[0], vertices[2] - vertices[0])
+        voronoi_normal /= np.linalg.norm(voronoi_normal)
+        voronoi_D_term = -np.dot(voronoi_normal, vertices[0])
+        plane = Plane(voronoi_normal[0], voronoi_normal[1], voronoi_normal[2], voronoi_D_term)
 
-            # Calculate normals to planes
-            voronoi_normal = np.cross(voronoi_vertices[1] - voronoi_vertices[0], voronoi_vertices[2] - voronoi_vertices[0])
+        if valid_regions:
+            # Create an empty list to store Face instances
+            faces = []
 
-            # Normalize normals
-            voronoi_normal /= np.linalg.norm(voronoi_normal)
+            # Iterate through the valid_regions and create Face instances
+            for region_index in range(len(valid_regions)):
+                # Use the vertices array to get the region vertices
+                region_vertices = [vertices[i] for i in valid_regions[region_index]]
 
-            # Calculate D term of the plane equation
-            voronoi_D_term = -np.dot(voronoi_normal, voronoi_vertices[0])
+                # Create a new Face instance for each region
+                face = Face(p=plane)
+                face.set_array_vertex(region_vertices)
 
-            # Assign instances of Plane to faces
-            voronoi_face.p = Plane(voronoi_normal[0], voronoi_normal[1], voronoi_normal[2], voronoi_D_term)
+                faces.append(face)
 
-        representative = Point(*positive_centroid)
-        voronoi_volume = VoronoiFuzzyColor.face_to_volume(voronoi_faces, representative)
+            representative = Point(*positive_centroid)
+            voronoi_volume = VoronoiFuzzyColor.face_to_volume(faces, representative)
 
-        return voronoi_volume
+            return voronoi_volume
+        else:
+            # Handle the case where there are no valid Voronoi regions
+            print("No valid Voronoi regions found.")
+            return None  # Or you can return an empty volume or handl
+
+
 
 
     @staticmethod
-    def add_face_to_kernel_support(face, representative, lambda_value, kernel, support):
+    def add_face_to_core_support(face, representative, lambda_value, core, support):
+        # Calculate the distance between the face and the representative point
         dist = GeometryTools.distance_point_plane(face.p, representative) * (1 - lambda_value)
         
-        # Creamos planos paralelos para kernel y soporte
+        # Create parallel planes for core and support
         parallel_planes = GeometryTools.parallel_planes(face.p, dist)
-        face_kernel = Face(p=parallel_planes[0], infinity=face.infinity)
+        face_core = Face(p=parallel_planes[0], infinity=face.infinity)
         face_support = Face(p=parallel_planes[1], infinity=face.infinity)
 
         if face.get_array_vertex() is not None:
-            # Creamos nuevos vértices para cada cara del kernel y soporte
+            # Create new vertices for each face of the core and support
             for v in face.get_array_vertex():
-                vertex_kernel = GeometryTools.intersection_plane_rect(face_kernel.p, representative, v)
-                vertex_soporte = GeometryTools.intersection_plane_rect(face_support.p, representative, v)
-                face_kernel.add_vertex(vertex_kernel)
-                face_support.add_vertex(vertex_soporte)
+                vertex_core = GeometryTools.intersection_plane_rect(face_core.p, representative, Point(v[0], v[1], v[2]))
+                vertex_support = GeometryTools.intersection_plane_rect(face_support.p, representative, Point(v[0], v[1], v[2]))
+                face_core.add_vertex(vertex_core)
+                face_support.add_vertex(vertex_support)
 
-        # Añadimos la cara correspondiente a kernel y soporte
-        if GeometryTools.distance_point_plane(face_kernel.p, representative) < GeometryTools.distance_point_plane(face_support.p, representative):
-            kernel.add_face(face_kernel)
+        # Add the corresponding face to core and support
+        if GeometryTools.distance_point_plane(face_core.p, representative) < GeometryTools.distance_point_plane(face_support.p, representative):
+            core.add_face(face_core)
             support.add_face(face_support)
         else:
-            kernel.add_face(face_support)
-            support.add_face(face_kernel)
+            core.add_face(face_support)
+            support.add_face(face_core)
 
 
     @staticmethod
-    def create_kernel_support(centroids, center_index, volume_fc, lambda_value):
+    def create_core_support(centroids, center_index, volume_fc, lambda_value):
         positive_centroid = centroids[center_index]
-        kernel_volume = Volume(Point(*positive_centroid))
+        core_volume = Volume(Point(*positive_centroid))
         soporte_volume = Volume(Point(*positive_centroid))
 
         for face in volume_fc.get_faces():
 
-                VoronoiFuzzyColor.add_face_to_kernel_support(face, Point(*positive_centroid), lambda_value, kernel_volume, soporte_volume)
+                VoronoiFuzzyColor.add_face_to_core_support(face, Point(*positive_centroid), lambda_value, core_volume, soporte_volume)
 
-        return kernel_volume, soporte_volume
+        return core_volume, soporte_volume
 
 
     @staticmethod
@@ -215,3 +213,70 @@ class VoronoiFuzzyColor:
 
 
 
+
+    # @staticmethod
+    # def face_to_volume(voronoi_faces, representative):
+    #     converted_faces = []
+
+    #     for voronoi_face in voronoi_faces:
+    #         # Convierte la representación de la cara a la clase Plane
+    #         plane = Plane(voronoi_face.p.A, voronoi_face.p.B, voronoi_face.p.C, voronoi_face.p.D)
+            
+    #         # Crea una nueva instancia de Face con la información de la cara del Voronoi
+    #         converted_face = Face(p=plane, infinity=voronoi_face.is_infinity)
+            
+    #         # Añade los vértices convertidos a la nueva instancia de Face
+    #         converted_face.vertex = [Point(v[0], v[1], v[2]) for v in voronoi_face.get_array_vertex()]
+
+    #         # Añade la nueva instancia de Face a la lista
+    #         converted_faces.append(converted_face)
+
+    #     # Crea el volumen con el representante y las caras convertidas del Voronoi
+    #     voronoi_volume = Volume(representative=representative, faces=converted_faces)
+
+    #     return voronoi_volume
+
+
+    # @staticmethod
+    # def create_voronoi_volumen(centroids, center_index, prototypes_neg, test):
+    #     if test == 'si':
+    #         positive_centroid = centroids[center_index]
+    #         negative = np.delete(centroids, center_index, axis=0)
+    #         negative_centroids = np.vstack((negative, prototypes_neg))
+    #     elif test == 'no':
+    #         positive_centroid = centroids[center_index]
+    #         negative_centroids = np.delete(centroids, center_index, axis=0)
+
+    #     points = np.vstack((positive_centroid, negative_centroids))
+    #     voronoi = Voronoi(points, qhull_options='Fi Fo p Fv')
+
+    #     voronoi_faces = []
+    #     for region in voronoi.regions:
+    #         # if -1 not in region and len(region) > 0:
+    #         if len(region) > 0:
+    #             voronoi_face = Face(p=None)
+    #             vertices = voronoi.vertices[region]
+
+    #             voronoi_face.vertex = vertices.tolist()
+    #             voronoi_faces.append(voronoi_face)
+
+    #     for voronoi_face in voronoi_faces:
+    #         # Get face vertices
+    #         voronoi_vertices = np.array(voronoi_face.vertex)
+
+    #         # Calculate normals to planes
+    #         voronoi_normal = np.cross(voronoi_vertices[1] - voronoi_vertices[0], voronoi_vertices[2] - voronoi_vertices[0])
+
+    #         # Normalize normals
+    #         voronoi_normal /= np.linalg.norm(voronoi_normal)
+
+    #         # Calculate D term of the plane equation
+    #         voronoi_D_term = -np.dot(voronoi_normal, voronoi_vertices[0])
+
+    #         # Assign instances of Plane to faces
+    #         voronoi_face.p = Plane(voronoi_normal[0], voronoi_normal[1], voronoi_normal[2], voronoi_D_term)
+
+    #     representative = Point(*positive_centroid)
+    #     voronoi_volume = VoronoiFuzzyColor.face_to_volume(voronoi_faces, representative)
+
+    #     return voronoi_volume

@@ -50,3 +50,16 @@ class Volume:
 
     def clear(self):
         self.faces.clear()
+
+    def compute_volume(self):
+        # Implementa el cálculo del volumen utilizando las caras y el representante
+        # Aquí puedes usar algún método de integración o aproximación para calcular el volumen
+
+        # Ejemplo básico: calcula el volumen como el producto del área de cada cara por la distancia al representante
+        total_volume = 0
+        for face in self.faces:
+            area = face.compute_area()  # Necesitarás implementar este método en la clase Face
+            distance_to_representative = face.p.distance_to_point(self.representative)  # Necesitarás implementar esto en la clase Plane
+            total_volume += area * distance_to_representative
+
+        return total_volume

@@ -24,6 +24,8 @@ def read_cns_file(file_path):
             color_data['crisp_color_space_type'] = int(lines[start_index][22:])
 
             # Extraer las líneas siguientes (RGB y etiquetas de color)
+            unique_lines = set()  # Conjunto para rastrear líneas únicas
+
             color_data['representative_values'] = []
             color_data['color_name_labels'] = []
 
@@ -33,17 +35,20 @@ def read_cns_file(file_path):
                     if not line_content:
                         continue  # Ignorar líneas vacías
 
-                    if '\t' in line_content:
-                        # Si contiene una tabulación, asumimos que es una línea RGB
-                        rgb_values = list(map(float, line_content.split()))
-                        color_data['representative_values'].append({
-                            'R': rgb_values[0],
-                            'G': rgb_values[1],
-                            'B': rgb_values[2]
-                        })
-                    else:
-                        # Si no contiene una tabulación, asumimos que es una etiqueta de color
-                        color_data['color_name_labels'].append(line_content)
+                    if line_content not in unique_lines:
+                        unique_lines.add(line_content)  # Agregar la línea al conjunto de líneas únicas
+
+                        if '\t' in line_content:
+                            # Si contiene una tabulación, asumimos que es una línea RGB
+                            rgb_values = list(map(float, line_content.split()))
+                            color_data['representative_values'].append({
+                                'R': rgb_values[0],
+                                'G': rgb_values[1],
+                                'B': rgb_values[2]
+                            })
+                        else:
+                            # Si no contiene una tabulación, asumimos que es una etiqueta de color
+                            color_data['color_name_labels'].append(line_content)
 
                 except (ValueError, IndexError):
                     raise ValueError(f"Error al procesar la línea {i + 1} en el archivo .cns.")
@@ -52,6 +57,7 @@ def read_cns_file(file_path):
         raise ValueError(f"Error al leer el archivo .cns: {str(e)}")
 
     return color_data
+
 
 
 
