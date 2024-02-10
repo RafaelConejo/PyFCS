@@ -10,23 +10,6 @@ class Face:
         self.vertex = vertex 
         self.infinity = infinity
 
-    @classmethod
-    def from_voronoi_region(cls, voronoi, region_index):
-        # Get the vertices of the Voronoi region
-        region_vertices = [voronoi.vertices[i] for i in voronoi.regions[region_index]]
-
-        # Assume the normal vector of the plane points outward
-        normal_vector = Vector.from_array(np.cross(region_vertices[1] - region_vertices[0], region_vertices[2] - region_vertices[0]))
-
-        # Create a Plane instance using the first three vertices of the region
-        plane = Plane.from_point_and_normal(Point(region_vertices[0][0], region_vertices[0][1], region_vertices[0][2]), normal_vector)
-
-        # Create a Face instance using the vertices and the created plane
-        face = cls(p=plane)
-        face.set_array_vertex(region_vertices)
-
-        return face
-
     def add_vertex(self, v: Point):
         if self.vertex is None:
             self.vertex = []
