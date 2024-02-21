@@ -54,7 +54,7 @@ def main():
     fuzzy_color_space = FuzzyColorSpace(space_name='VIBRATIONS', prototypes=prototypes)
 
     # Step 4: Calculating the membership degree of a Lab color to the fuzzy color space
-    lab_color = [21, 4, 21]  # Example Lab color
+    lab_color = [60, 27, 8]  # Example Lab color
     membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
 
     # Displaying the induced possibility distribution by the fuzzy color space

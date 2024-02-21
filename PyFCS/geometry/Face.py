@@ -5,10 +5,11 @@ from PyFCS.geometry.Plane import Plane
 from PyFCS.geometry.Vector import Vector
 
 class Face:
-    def __init__(self, p: Plane, vertex: List[Point] = None, infinity: bool = False):
+    def __init__(self, p: Plane, vertex: List[Point] = None, infinity: bool = False, bounded: bool = False):
         self.p = p
         self.vertex = vertex 
         self.infinity = infinity
+        self.bounded = bounded
 
     def add_vertex(self, v: Point):
         if self.vertex is None:
@@ -45,22 +46,7 @@ class Face:
     def set_infinity(self):
         self.infinity = True
 
-    def compute_area(self):
-        if self.vertex is None or len(self.vertex) < 3:
-            raise ValueError("La cara no tiene suficientes vértices para calcular el área.")
 
-        total_area = 0
-
-        # Subdividir el polígono en triángulos y sumar las áreas de cada triángulo
-        for i in range(1, len(self.vertex) - 1):
-            A, B, C = self.vertex[0], self.vertex[i], self.vertex[i + 1]
-
-            # Calcular el área del triángulo ABC
-            area_triangle = self.calculate_triangle_area(A, B, C)
-
-            total_area += area_triangle
-
-        return total_area
     
 
     @staticmethod
