@@ -38,6 +38,11 @@ def main():
 
 
 
+    # color_prueba = np.array([[1, 2], [5, 2]])
+    # prototype = Prototype(label='prueba', positive=color_prueba[0], negatives=color_prueba[1])
+
+
+
     # Step 2: Creating Prototype objects for each color
     prototypes = []
     for color_name, color_value in color_data.items():
@@ -48,6 +53,7 @@ def main():
         # Create a Prototype object for each color
         prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes)
         prototypes.append(prototype)
+
 
 
     # Step 3: Creating the fuzzy color space using the Prototype objects

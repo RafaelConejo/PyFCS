@@ -1,4 +1,5 @@
 from scipy.spatial import Voronoi, voronoi_plot_2d
+from scipy.spatial import ConvexHull
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -11,6 +12,11 @@ from PyFCS.geometry.GeometryTools import GeometryTools
 from PyFCS.geometry.Face import Face
 from PyFCS.geometry.Volume import Volume
 from PyFCS.geometry.Vector import Vector
+
+from matplotlib.collections import LineCollection
+from matplotlib.collections import PolyCollection
+
+
 
 class Prototype:
     def __init__(self, label, positive, negatives):
@@ -40,47 +46,72 @@ class Prototype:
 
 
 
-    def is_clockwise(self,vertices):
-        """Verifica si los vértices están en orden de las agujas del reloj."""
-        area = 0
-        for i in range(len(vertices)):
-            x1, y1 = vertices[i][0], vertices[i][1]
-            x2, y2 = vertices[(i + 1) % len(vertices)][0], vertices[(i + 1) % len(vertices)][1]
-            area += (x2 - x1) * (y2 + y1)
-        return area >= 0
-
-
-
+    # Calcula el plano para un segmento infinito
     def create_voronoi_volume(self):
-        points = np.vstack((self.positive, self.negatives))
+        points = np.array([[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]])
         voronoi = Voronoi(points, qhull_options='Fi Fo p Fv')
 
-        # Convertir los vértices de Voronoi a instancias de Face
-        faces = []
-        # Dentro del bucle para crear caras
-        for indices in voronoi.regions:
-            if not indices or -1 in indices:  # Ignorar regiones vacías o regiones externas
-                continue
-            vertices = [voronoi.vertices[i] for i in indices]
-            
-            # Verificar si los vértices están en orden de las agujas del reloj
-            if not self.is_clockwise(vertices):
-                # Si los vértices no están en orden de las agujas del reloj, invertir el orden
-                vertices.reverse()
-            
-            # Calcular el plano que contiene la cara
-            plane = self.calculate_plane(vertices)
-            
-            # Crear una instancia de Face con el plano y los vértices
-            face = Face(plane, vertices, bounded=True)
-            faces.append(face)
+        volumes = []
+
+        # Calcular el centro y la distancia máxima de los puntos
+        center = voronoi.points.mean(axis=0)
+        ptp_bound = np.ptp(voronoi.points, axis=0)
+
+        finite_segments = []
+        infinite_planes = []
+
+        for pointidx, simplex in zip(voronoi.ridge_points, voronoi.ridge_vertices):
+            simplex = np.asarray(simplex)
+            if np.any(simplex < 0):
+                i = simplex[simplex >= 0][0]  # finite end Voronoi vertex
+
+                t = voronoi.points[pointidx[1]] - voronoi.points[pointidx[0]]  # tangent
+                t /= np.linalg.norm(t)
+                n = np.array([-t[1], t[0]])  # normal
+
+                midpoint = voronoi.points[pointidx].mean(axis=0)
+                direction = np.sign(np.dot(midpoint - center, n)) * n
+                if (voronoi.furthest_site):
+                    direction = -direction
+                aspect_factor = abs(ptp_bound.max() / ptp_bound.min())
+                far_point = voronoi.vertices[i] + direction * ptp_bound.max() * aspect_factor
+
+                # Crear el plano que representa el segmento infinito y añadirlo a la lista de planos
+                infinite_planes.append([voronoi.vertices[i], far_point])
+
+        # Almacenar información de las celdas Voronoi en volumes
+        for i, region_indices in enumerate(voronoi.regions):
+            if -1 not in region_indices and len(region_indices) > 0:
+                vertices = [voronoi.vertices[idx] for idx in region_indices]
+                volume_obj = Volume(representative=Point(*voronoi.points[i]))
+
+                # Agregar la cara finita
+                volume_obj.addFace(Face(Plane(A=0, B=0, C=0, D=0), vertex=vertices, bounded=True))
+
+                # Agregar las caras infinitas (si las hay)
+                for plane in infinite_planes:
+                    volume_obj.addFace(Face(Plane(A=plane[0][0], B=plane[0][1], C=plane[1][0], D=plane[1][1]), vertex=vertices, bounded=False))
+
+                volumes.append(volume_obj)
+
+        # Plotear las celdas finitas usando PolyCollection
+        polys = [volume.getFace(0).getArrayVertex() for volume in volumes]
+        poly_collection = PolyCollection(polys, edgecolors='black', facecolors='none')
+        plt.gca().add_collection(poly_collection)
+
+        # Plotear los puntos
+        plt.plot(points[:, 0], points[:, 1], 'ro')  # Puntos negros
+
+        plt.xlim(points[:, 0].min() - 1, points[:, 0].max() + 1)
+        plt.ylim(points[:, 1].min() - 1, points[:, 1].max() + 1)
+        plt.gca().set_aspect('equal', adjustable='box')
+        plt.show()
 
 
-        # Inicializar tu objeto Volume con las instancias de Face
-        representative = Point(*self.positive)
-        voronoi_volume = Volume(representative)
-        for face in faces:
-            voronoi_volume.addFace(face)
+
+
+
+
 
 
         
@@ -101,7 +132,7 @@ class Prototype:
         # plt.scatter(points[:, 0], points[:, 1], c='red', marker='o', label='Centroids')
 
         # # Highlight positive centroid
-        # plt.scatter(positive_centroid[0], positive_centroid[1], c='blue', marker='*', s=200, label='Positive Centroid')
+        # plt.scatter(self.positive[0], self.positive[1], c='blue', marker='*', s=200, label='Positive Centroid')
 
         # plt.title('Voronoi Diagram')
         # plt.xlabel('X-axis')
@@ -113,77 +144,102 @@ class Prototype:
 
 
 
-        self.visualize_voronoi_2d(voronoi_volume)
-        plt.close('all')
+        # self.plot_voronoi_volume_2d(voronoi_volume)
+        # plt.close('all')
 
 
-        return voronoi_volume
+        # return voronoi_volume
 
         
 
 
 
+    # def plot_voronoi_volume_2d(self, voronoi_volume):
+    #     fig, ax = plt.subplots()
 
-    def visualize_volume(self, volume):
-        fig = plt.figure(figsize=(10, 8))
-        ax = fig.add_subplot(111, projection='3d')
+    #     # Dibujar las regiones Voronoi
+    #     for face in voronoi_volume.faces:
+    #         vertices = np.array(face.vertex)
+    #         ax.fill(vertices[:, 0], vertices[:, 1], edgecolor='b', alpha=0.5)
 
-        # Plot each face
-        for face in volume.faces:
-            vertices = face.vertex
-            # Desempaqueta las coordenadas x, y, z de cada vértice
-            x, y, z = zip(*vertices)
-            # Completa el polígono cerrando la cara
-            x = list(x) + [x[0]]
-            y = list(y) + [y[0]]
-            z = list(z) + [z[0]]
-            ax.plot(x, y, z, 'gray')
+    #     # Dibujar el punto representativo
+    #     representative = voronoi_volume.representative
+    #     ax.plot(representative.x, representative.y, 'ro')
 
-        # Plot representative point
-        representative = volume.representative
-        ax.scatter(representative.x, representative.y, representative.z, c='blue', marker='*', s=200, label='Positive Centroid')
-
-        ax.set_xlabel('X-axis')
-        ax.set_ylabel('Y-axis')
-        ax.set_zlabel('Z-axis')
-        ax.set_title('3D Volume Visualization')
-        ax.legend()
-        
-        plt.show()
+    #     ax.set_aspect('equal', 'box')
+    #     plt.show()
 
 
 
 
-    def visualize_voronoi_2d(self, volume):
-        if volume is not None:
-            # Extract information from the Volume object
-            faces = volume.faces
-            representative = volume.representative
 
-            # Visualization code
-            fig, ax = plt.subplots(figsize=(8, 8))
 
-            # Plot Voronoi diagram
-            for face in faces:
-                vertices = face.vertex
-                if vertices is not None and len(vertices) >= 3:
-                    polygon = vertices
-                    ax.plot([point[0] for point in polygon], [point[1] for point in polygon], 'gray', linewidth=2, alpha=0.6)
 
-            # Plot positive centroid
-            ax.scatter(representative.x, representative.y, c='blue', marker='*', s=200, label='Positive Centroid')
 
-            # Plot vertices used to generate the Voronoi diagram
-            points = [(point[0], point[1]) for face in faces for point in face.vertex if point is not None]
-            if points:
-                points = np.array(points)
-                ax.scatter(points[:, 0], points[:, 1], c='red', marker='o', label='Centroids')
 
-            ax.set_title('Voronoi Diagram')
-            ax.set_xlabel('X-axis')
-            ax.set_ylabel('Y-axis')
-            ax.legend()
-            plt.show()
-        else:
-            print("No valid Voronoi regions found.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+        # center = voronoi.points.mean(axis=0)
+        # ptp_bound = np.ptp(voronoi.points, axis=0)
+
+        # finite_segments = []
+        # infinite_segments = []
+        # for pointidx, simplex in zip(voronoi.ridge_points, voronoi.ridge_vertices):
+        #     simplex = np.asarray(simplex)
+        #     if np.all(simplex >= 0):
+        #         finite_segments.append(voronoi.vertices[simplex])
+        #     else:
+        #         i = simplex[simplex >= 0][0]  # finite end Voronoi vertex
+
+        #         t = voronoi.points[pointidx[1]] - voronoi.points[pointidx[0]]  # tangent
+        #         t /= np.linalg.norm(t)
+        #         n = np.array([-t[1], t[0]])  # normal
+
+        #         midpoint = voronoi.points[pointidx].mean(axis=0)
+        #         direction = np.sign(np.dot(midpoint - center, n)) * n
+        #         if (voronoi.furthest_site):
+        #             direction = -direction
+        #         aspect_factor = abs(ptp_bound.max() / ptp_bound.min())
+        #         far_point = voronoi.vertices[i] + direction * ptp_bound.max() * aspect_factor
+
+        #         infinite_segments.append([voronoi.vertices[i], far_point])
+
+        # # Almacenar información de las celdas Voronoi en volumes
+        # for i, region_indices in enumerate(voronoi.regions):
+        #     if -1 not in region_indices and len(region_indices) > 0:
+        #         vertices = [voronoi.vertices[idx] for idx in region_indices]
+        #         volume_obj = Volume(representative=Point(*voronoi.points[i]))
+        #         volume_obj.addFace(Face(Plane(A=0, B=0, C=0, D=0), vertex=vertices, bounded=True))
+        #         volumes.append(volume_obj)
+
+        # # Plotear las celdas finitas usando PolyCollection
+        # polys = [volume.getFace(0).getArrayVertex() for volume in volumes]
+        # poly_collection = PolyCollection(polys, edgecolors='black', facecolors='none')
+        # plt.gca().add_collection(poly_collection)
+
+        # # Plotear los segmentos infinitos
+        # for segment in infinite_segments:
+        #     plt.plot([segment[0][0], segment[1][0]], [segment[0][1], segment[1][1]], 'k--')
+
+        # # Plotear los puntos
+        # plt.plot(points[:, 0], points[:, 1], 'ko')  # Puntos negros
+
+        # plt.xlim(points[:, 0].min() - 1, points[:, 0].max() + 1)
+        # plt.ylim(points[:, 1].min() - 1, points[:, 1].max() + 1)
+        # plt.gca().set_aspect('equal', adjustable='box')
+        # plt.show()
+
+
+
 

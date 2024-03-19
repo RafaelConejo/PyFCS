@@ -8,11 +8,11 @@ class Plane:
         self.B = B
         self.C = C
         self.D = D
-        self.n = Vector(A, B, C)
+        self.n = [A,B,C]#Vector(A, B, C)
         self.p = None
     
     def evaluatePoint(self, xyz: Point) -> float:
-        return xyz.getX() * self.A + xyz.getY() * self.B + xyz.getZ() * self.C + self.D
+        return xyz.get_x() * self.A + xyz.get_y() * self.B + xyz.get_z() * self.C + self.D
     
     def getPlane(self) -> List[float]:
         return [self.A, self.B, self.C, self.D]
@@ -22,7 +22,7 @@ class Plane:
     
     def getNormal(self) -> Vector:
         if self.n is None:
-            return Vector(self.A, self.B, self.C)
+            return [self.A, self.B, self.C]
         else:
             return self.n
     

@@ -122,7 +122,7 @@ class GeometryTools:
         num = 0
         p0 = point0.get_double_point()
         p1 = point1.get_double_point()
-        plane = hyperplane.get_plane()
+        plane = hyperplane.getPlane()
 
         for i in range(len(p1)):
             denom += plane[i] * (p1[i] - p0[i])
@@ -158,7 +158,7 @@ class GeometryTools:
 
     @staticmethod
     def parallel_planes(p, dist):
-        n = p.get_normal()
+        n = p.getNormal()
         mod = GeometryTools.module(n)
         mu = [Plane(n.a, n.b, n.c, p.D + dist * mod), Plane(n.a, n.b, n.c, p.D - dist * mod)]
         return mu
@@ -191,25 +191,7 @@ class GeometryTools:
         D = ((p2.x**2 - p1.x**2) + (p2.y**2 - p1.y**2) + (p2.z**2 - p1.z**2)) / 2.0
 
         return Plane(A, B, C, D)
+    
 
-    # @staticmethod
-    # def faces_for_color_space(cs):
-    #     comp = 0
-    #     num_planes = cs.getNumComponents() * 2
-    #     num_variables = cs.getNumComponents() + 1
-    #     rgb = -255.0 if cs.getType() == ColorSpaceJMR.CS_sRGB else -1.0
-    #     cube = Volume(Point(rgb * -1.0 * ((cs.getMinValue(0) + cs.getMaxValue(0)) / 2.0)))
 
-    #     for i in range(num_planes):
-    #         plane = [1 if j != comp else 0 for j in range(num_variables - 1)]
-
-    #         if i % 2 == 0:
-    #             plane.append(cs.getMinValue(comp))
-    #         else:
-    #             plane.append(cs.getMaxValue(comp) * rgb)
-    #             comp += 1
-
-    #         cube.add_face(Face(Plane(plane, False), False))
-
-    #     return cube
 

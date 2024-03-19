@@ -54,7 +54,7 @@ class ReferenceDomain:
                 plane[j] = self.reference[comp][1] * -1
                 comp += 1
 
-            cube.add_face(Face(Hyperplane.from_list(plane, in_value=False), False))
+            cube.addFace(Face(Hyperplane.from_list(plane, in_value=False), False))
 
         return cube
 

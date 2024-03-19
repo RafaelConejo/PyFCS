@@ -26,24 +26,24 @@ class FuzzyColorSpace:
         
         # Create parallel planes for core and support
         parallel_planes = GeometryTools.parallel_planes(face.p, dist)
-        face_core = Face(p=parallel_planes[0], infinity=face.infinity)
-        face_support = Face(p=parallel_planes[1], infinity=face.infinity)
+        face_core = Face(p=parallel_planes[0], bounded=face.bounded)
+        face_support = Face(p=parallel_planes[1], bounded=face.bounded)
 
-        if face.get_array_vertex() is not None:
+        if face.getArrayVertex() is not None:
             # Create new vertices for each face of the core and support
-            for v in face.get_array_vertex():
+            for v in face.getArrayVertex():
                 vertex_core = GeometryTools.intersection_plane_rect(face_core.p, representative, Point(v[0], v[1], v[2]))
                 vertex_support = GeometryTools.intersection_plane_rect(face_support.p, representative, Point(v[0], v[1], v[2]))
-                face_core.add_vertex(vertex_core)
-                face_support.add_vertex(vertex_support)
+                face_core.addVertex(vertex_core)
+                face_support.addVertex(vertex_support)
 
         # Add the corresponding face to core and support
         if GeometryTools.distance_point_plane(face_core.p, representative) < GeometryTools.distance_point_plane(face_support.p, representative):
-            core.add_face(face_core)
-            support.add_face(face_support)
+            core.addFace(face_core)
+            support.addFace(face_support)
         else:
-            core.add_face(face_support)
-            support.add_face(face_core)
+            core.addFace(face_support)
+            support.addFace(face_core)
 
 
     def create_core_support(self, prototypes):
@@ -53,7 +53,7 @@ class FuzzyColorSpace:
             core_volume = Volume(Point(*proto.positive))
             support_volume = Volume(Point(*proto.positive))
 
-            for face in proto.voronoi_volume.get_faces():
+            for face in proto.voronoi_volume.getFaces():
                     self.add_face_to_core_support(face, Point(*proto.positive), core_volume, support_volume)
             
             core_volumes.append(core_volume)
@@ -78,43 +78,43 @@ class FuzzyColorSpace:
 
             xyz = new_point
 
-            if self.supports[proto].is_inside(xyz) and not self.supports[proto].is_in_face(xyz):
-                if self.cores[proto].is_inside(xyz):
+            if self.supports[proto].isInside(xyz) and not self.supports[proto].isInFace(xyz):
+                if self.cores[proto].isInside(xyz):
                     result[label] = 1
                 else:
                     dist_cube = float('inf')
-                    p_cube = GeometryTools.intersection_with_volume(self.lab_reference_domain.get_volume(), prototype.voronoi_volume.get_representative(), xyz)
+                    p_cube = GeometryTools.intersection_with_volume(self.lab_reference_domain.get_volume(), prototype.voronoi_volume.getRepresentative(), xyz)
                     if p_cube is not None:
-                        dist_cube = GeometryTools.euclidean_distance(prototype.voronoi_volume.get_representative(), p_cube)
+                        dist_cube = GeometryTools.euclidean_distance(prototype.voronoi_volume.getRepresentative(), p_cube)
                     else:
                         print("No intersection with cube")
 
                     dist_face = float('inf')
-                    p_face = GeometryTools.intersection_with_volume(self.cores[proto], self.cores[proto].get_representative(), xyz)
+                    p_face = GeometryTools.intersection_with_volume(self.cores[proto], self.cores[proto].getRepresentative(), xyz)
                     if p_face is not None:
-                        dist_face = GeometryTools.euclidean_distance(self.cores[proto].get_representative(), p_face)
+                        dist_face = GeometryTools.euclidean_distance(self.cores[proto].getRepresentative(), p_face)
                     else:
                         dist_face = dist_cube
                     param_a = dist_face
 
                     dist_face = float('inf')
-                    p_face = GeometryTools.intersection_with_volume(prototype.voronoi_volume, prototype.voronoi_volume.get_representative(), xyz)
+                    p_face = GeometryTools.intersection_with_volume(prototype.voronoi_volume, prototype.voronoi_volume.getRepresentative(), xyz)
                     if p_face is not None:
-                        dist_face = GeometryTools.euclidean_distance(prototype.voronoi_volume.get_representative(), p_face)
+                        dist_face = GeometryTools.euclidean_distance(prototype.voronoi_volume.getRepresentative(), p_face)
                     else:
                         dist_face = dist_cube
                     param_b = dist_face
 
                     dist_face = float('inf')
-                    p_face = GeometryTools.intersection_with_volume(self.supports[proto], self.supports[proto].get_representative(), xyz)
+                    p_face = GeometryTools.intersection_with_volume(self.supports[proto], self.supports[proto].getRepresentative(), xyz)
                     if p_face is not None:
-                        dist_face = GeometryTools.euclidean_distance(self.supports[proto].get_representative(), p_face)
+                        dist_face = GeometryTools.euclidean_distance(self.supports[proto].getRepresentative(), p_face)
                     else:
                         dist_face = dist_cube
                     param_c = dist_face
 
                     self.function.setParam([param_a, param_b, param_c])
-                    value = self.function.getValue(GeometryTools.euclidean_distance(prototype.voronoi_volume.get_representative(), xyz))
+                    value = self.function.getValue(GeometryTools.euclidean_distance(prototype.voronoi_volume.getRepresentative(), xyz))
 
                     if value == 0 or value == 1:
                         print("Error membership value with point [{},{},{}] in support. Value must be (0,1)".format(xyz.x, xyz.y, xyz.z))
