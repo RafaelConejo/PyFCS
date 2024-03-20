@@ -31,7 +31,7 @@ def main():
 
     # Step 1: Reading the .cns file using the Input class
     actual_dir = os.getcwd()
-    color_space_path = os.path.join(actual_dir, 'PyFCS\\fuzzy_color_spaces\\ISCC_NBS_BASIC.cns')
+    color_space_path = os.path.join(actual_dir, 'fuzzy_color_spaces\\ISCC_NBS_BASIC.cns')
     input_class = Input()
     color_data = input_class.read_cns_file(color_space_path)
 
