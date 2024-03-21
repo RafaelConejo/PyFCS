@@ -13,10 +13,10 @@ from fuzzy.membershipfunction.Spline05Function1D import Spline05Function1D
 
 def main():
     # Aca estoy usando el 70 por ciento del tamaño original de la imagen, lo mejor para reducir 
-    IMG_WIDTH = 335
-    IMG_HEIGHT = 400
-    img_path = ".\\imagen_test\\cuadro.png"
-    color_space_path = '.\\fuzzy_color_spaces\\BRUGUER-ACRYLIC.cns'
+    IMG_WIDTH = 20
+    IMG_HEIGHT = 20
+    img_path = ".\\imagen_test\\banana.png"
+    color_space_path = '.\\fuzzy_color_spaces\\ISCC_NBS_BASIC.cns'
 
 
 ######################################################################## Read Image ########################################################################
@@ -27,25 +27,12 @@ def main():
 
     # Crear una matriz para almacenar los valores LAB
     matriz_lab = []
-
-    # Crear un diccionario para agrupar píxeles con el mismo color en LAB
-    color_groups = {}
-
-    # Obtener los valores de L*, a*, y b* de cada píxel en la zona dental
     for y in range(lab_image.shape[0]):
         for x in range(lab_image.shape[1]):
             if lab_image[y, x, 0] > 0:  # Verificar si el píxel está en la zona dental
                 lab_values = (lab_image[y, x, 0], lab_image[y, x, 1], lab_image[y, x, 2])
                 matriz_lab.append(lab_values)
 
-                # Agrupar píxeles con el mismo color en un diccionario
-                color_key = tuple(np.round(lab_values, 2))
-                if color_key not in color_groups:
-                    color_groups[color_key] = []
-                color_groups[color_key].append((y, x))
-
-    # Convertir el diccionario de grupos a una lista
-    color_groups_list = list(color_groups.values())
 
 
 
@@ -71,6 +58,7 @@ def main():
 ######################################################################## Voronoi ########################################################################
     # Negativos adicionales para evitar unbounded
     num_parts = 3
+    test = 'no'
     prototypes_neg = VoronoiFuzzyColor.divide_lab_space(num_parts)
 
     # Suponiendo que tienes una instancia de ReferenceDomain llamada "lab_reference_domain"
@@ -83,9 +71,9 @@ def main():
     support_values = []
 
     for center_index in range(len(colors_lab)):
-        voronoi_volume = VoronoiFuzzyColor.create_voronoi_volumen(colors_lab, center_index, prototypes_neg)
+        voronoi_volume = VoronoiFuzzyColor.create_voronoi_volumen(colors_lab, center_index, prototypes_neg, test)
         scaling_factor = 0.5
-        core_volume, support_volume = VoronoiFuzzyColor.create_kernel_support(colors_lab, center_index, voronoi_volume, scaling_factor)
+        core_volume, support_volume = VoronoiFuzzyColor.create_core_support(colors_lab, center_index, voronoi_volume, scaling_factor)
 
         voronoi_values.append(voronoi_volume)
         core_values.append(core_volume)
@@ -96,34 +84,43 @@ def main():
 
 ######################################################################## Membership Value ########################################################################
     # Recorrer grupos de píxeles con el mismo color en LAB
+    matriz_pertenencia = np.zeros((imagen.shape[0], imagen.shape[1], len(colors_lab)))
+
+
     new_image = np.zeros_like(imagen)
-    for color_group in color_groups_list:
-        # Obtener el valor LAB del primer píxel en el grupo
-        lab_pixel = matriz_lab[color_group[0][0] * lab_image.shape[1] + color_group[0][1]]
-        lab_pixel = Point(lab_pixel[0], lab_pixel[1], lab_pixel[2])
+    matriz_lab = np.array(matriz_lab)
+    matriz_lab = matriz_lab.reshape(imagen.shape[0], imagen.shape[1], -1)
+    for y in range(imagen.shape[0]):
+        for x in range(imagen.shape[1]):
+            # Obtener el valor LAB del primer píxel en el grupo
+            lab_pixel = matriz_lab[y, x]
+            lab_pixel = Point(lab_pixel[0], lab_pixel[1], lab_pixel[2])
 
-        # Encontrar el color con el mayor porcentaje de membresía en el grupo
-        porcentaje_max_membresia = 0.0
-        color_max_membresia = None
+            valores_pertenencia = []
 
-        for i, center_index in enumerate(range(len(colors_lab))):
-            voronoi_volume = voronoi_values[i]
-            core_volume = core_values[i]
-            support_volume = support_values[i]
+            # Encontrar el color con el mayor porcentaje de membresía en el grupo
+            porcentaje_max_membresia = 0.0
+            color_max_membresia = None
 
-            membership_value = VoronoiFuzzyColor.get_membership_value(lab_pixel, lab_reference_domain, core_volume, voronoi_volume, support_volume, function)
+            for i, center_index in enumerate(range(len(colors_lab))):
+                voronoi_volume = voronoi_values[i]
+                core_volume = core_values[i]
+                support_volume = support_values[i]
 
-            if membership_value >= 0.98:
-                color_max_membresia = colors_rgb[i]
-                break
+                membership_value = VoronoiFuzzyColor.get_membership_value(lab_pixel, lab_reference_domain, core_volume, voronoi_volume, support_volume, function)
 
-            if membership_value > porcentaje_max_membresia:
-                color_max_membresia = colors_rgb[i]
-                porcentaje_max_membresia = membership_value
+                valores_pertenencia.append(membership_value)
+                # if membership_value >= 0.98:
+                #     color_max_membresia = colors_rgb[i]
+                #     break
 
-        # Asignar el color con el mayor porcentaje de membresía a todos los píxeles en el grupo
-        for y, x in color_group:
+                if membership_value > porcentaje_max_membresia:
+                    color_max_membresia = colors_rgb[i]
+                    porcentaje_max_membresia = membership_value
+
+            # Asignar el color con el mayor porcentaje de membresía a todos los píxeles en el grupo
             new_image[y, x] = color_max_membresia
+            matriz_pertenencia[y, x, :] = valores_pertenencia
 
     new_image = new_image / 255.0
 
