@@ -49,18 +49,17 @@ def main():
         # Assume that 'color_value' contains the positive prototype and set of negatives
         positive_prototype = color_value['positive_prototype']
         negative_prototypes = color_value['negative_prototypes']
-        
+
         # Create a Prototype object for each color
         prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes)
         prototypes.append(prototype)
-
 
 
     # Step 3: Creating the fuzzy color space using the Prototype objects
     fuzzy_color_space = FuzzyColorSpace(space_name='VIBRATIONS', prototypes=prototypes)
 
     # Step 4: Calculating the membership degree of a Lab color to the fuzzy color space
-    lab_color = [60, 27, 8]  # Example Lab color
+    lab_color = [52, -36, 55]  # Example Lab color
     membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
 
     # Displaying the induced possibility distribution by the fuzzy color space

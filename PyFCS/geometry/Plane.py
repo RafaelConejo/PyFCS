@@ -8,7 +8,7 @@ class Plane:
         self.B = B
         self.C = C
         self.D = D
-        self.n = [A,B,C]#Vector(A, B, C)
+        self.n = Vector(A, B, C)
         self.p = None
     
     def evaluatePoint(self, xyz: Point) -> float:

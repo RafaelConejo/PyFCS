@@ -4,10 +4,10 @@ from PyFCS.geometry.Plane import Plane
 from PyFCS.geometry.Vector import Vector
 
 class Face:
-    def __init__(self, p: Plane, vertex: List[Point] = None, bounded: bool = False):
+    def __init__(self, p: Plane, vertex: List[Point] = None, infinity: bool = False):
         self.p = p
         self.vertex = vertex 
-        self.bounded = bounded
+        self.infinity = infinity
     
     def addVertex(self, v: Point):
         if self.vertex is None:
@@ -35,8 +35,8 @@ class Face:
     def getLastVertex(self) -> Point:
         return self.vertex[-1]
     
-    def isBounded(self) -> bool:
-        return self.bounded
+    def isInfinity(self) -> bool:
+        return self.infinity
     
-    def setBounded(self):
-        self.bounded = True
+    def setInfinity(self):
+        self.infinity = True

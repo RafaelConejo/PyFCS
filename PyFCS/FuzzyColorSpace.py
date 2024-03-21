@@ -26,24 +26,24 @@ class FuzzyColorSpace:
         
         # Create parallel planes for core and support
         parallel_planes = GeometryTools.parallel_planes(face.p, dist)
-        face_core = Face(p=parallel_planes[0], bounded=face.bounded)
-        face_support = Face(p=parallel_planes[1], bounded=face.bounded)
+        f1 = Face(p=parallel_planes[0], infinity=face.infinity)
+        f2 = Face(p=parallel_planes[1], infinity=face.infinity)
 
         if face.getArrayVertex() is not None:
             # Create new vertices for each face of the core and support
             for v in face.getArrayVertex():
-                vertex_core = GeometryTools.intersection_plane_rect(face_core.p, representative, Point(v[0], v[1], v[2]))
-                vertex_support = GeometryTools.intersection_plane_rect(face_support.p, representative, Point(v[0], v[1], v[2]))
-                face_core.addVertex(vertex_core)
-                face_support.addVertex(vertex_support)
+                vertex_f1 = GeometryTools.intersection_plane_rect(f1.p, representative, Point(v[0], v[1], v[2]))
+                vertex_f2 = GeometryTools.intersection_plane_rect(f2.p, representative, Point(v[0], v[1], v[2]))
+                f1.addVertex(vertex_f1)
+                f2.addVertex(vertex_f2)
 
         # Add the corresponding face to core and support
-        if GeometryTools.distance_point_plane(face_core.p, representative) < GeometryTools.distance_point_plane(face_support.p, representative):
-            core.addFace(face_core)
-            support.addFace(face_support)
+        if GeometryTools.distance_point_plane(f1.p, representative) < GeometryTools.distance_point_plane(f2.p, representative):
+            core.addFace(f1)
+            support.addFace(f2)
         else:
-            core.addFace(face_support)
-            support.addFace(face_core)
+            core.addFace(f2)
+            support.addFace(f1)
 
 
     def create_core_support(self, prototypes):
@@ -70,6 +70,7 @@ class FuzzyColorSpace:
 
     def calculate_membership(self, new_point):
         result = {}
+        total_membership = 0
         new_point = Point(new_point[0], new_point[1], new_point[2])
         for proto, prototype in enumerate(self.prototypes):
             label = prototype.label
@@ -80,7 +81,8 @@ class FuzzyColorSpace:
 
             if self.supports[proto].isInside(xyz) and not self.supports[proto].isInFace(xyz):
                 if self.cores[proto].isInside(xyz):
-                    result[label] = 1
+                    value = 1
+                    result[label] = value
                 else:
                     dist_cube = float('inf')
                     p_cube = GeometryTools.intersection_with_volume(self.lab_reference_domain.get_volume(), prototype.voronoi_volume.getRepresentative(), xyz)
@@ -121,6 +123,11 @@ class FuzzyColorSpace:
 
                     result[label] = value
 
+                total_membership += value
+
             else:
                 result[label] = 0
+
+        for label, value in result.items():
+            result[label] /= total_membership
         return result

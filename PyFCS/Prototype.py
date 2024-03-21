@@ -1,12 +1,13 @@
 from scipy.spatial import Voronoi, voronoi_plot_2d
 from scipy.spatial import ConvexHull
 import numpy as np
+import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from typing import List
 
 ### my libraries ###
-# from PyFCS.geometry.Plane import Plane
+from PyFCS.geometry.Plane import Plane
 from PyFCS.geometry.Point import Point
 from PyFCS.geometry.GeometryTools import GeometryTools
 from PyFCS.geometry.Face import Face
@@ -17,15 +18,8 @@ from matplotlib.collections import LineCollection
 from matplotlib.collections import PolyCollection
 from matplotlib.patches import Polygon
 from scipy.interpolate import interp1d
+import subprocess
 
-class Plane:
-    def __init__(self, A, B, C):
-        self.A = A
-        self.B = B
-        self.C = C
-
-    def getPlane(self) -> List[float]:
-        return [self.A, self.B, self.C]
 
 class Prototype:
     def __init__(self, label, positive, negatives):
@@ -34,224 +28,242 @@ class Prototype:
         self.negatives = negatives
 
         # Create Voronoi volume
-        self.voronoi_volume = self.create_voronoi_volume()
+        vor = self.run_qvoronoi()
+        self.voronoi_volume = self.read_from_voronoi_file()
 
 
-    def calculate_plane(self, vertices):
-        # Calcular el vector normal al plano
-        v1 = vertices[1] - vertices[0]
-        v2 = vertices[2] - vertices[0]
-        normal = np.cross(v1, v2)
-        normal /= np.linalg.norm(normal)
-        
-        # Calcular la distancia desde el origen al plano
-        distance = -np.dot(normal, vertices[0])
-        
-        # Coeficientes del plano en la forma ax + by + cz + d = 0
-        A, B, C = normal
-        D = distance
-        
-        return Plane(A, B, C, D)
+    def run_qvoronoi(self):
+        try:
+            # Obtén los puntos concatenados
+            points = np.vstack((self.positive, self.negatives))
 
+            # Obtén la dimensión y el número de puntos
+            dimension = points.shape[1]  # Dimensiones de los puntos
+            num_points = points.shape[0]  # Número de puntos
 
+            # Formatea los datos de entrada
+            input_data = f"{dimension}\n{num_points}\n"  # Agrega dimensión y número de puntos
+            input_data += "\n".join(" ".join(map(str, point)) for point in points)  # Agrega las coordenadas de los puntos
 
-    # Calcula el plano para un segmento infinito
-    def create_voronoi_volume(self):
-        points = np.array([[0, 0], [0, 1.5], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]])
-        vor = Voronoi(points, qhull_options='Fi Fo p Fv')
+            # Ejecuta qvoronoi.exe con los datos de entrada formateados
+            command = f"qvoronoi.exe Fi Fo p Fv"
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            output, error = process.communicate(input=input_data)
 
-        first_point_volumes = []  # Lista para almacenar los volúmenes del primer punto
+            if process.returncode != 0:
+                print(f"Error al ejecutar qvoronoi.exe: {error}")
+                return None
 
-        for i, point in enumerate(vor.points):
-            if i == 0:  # Solo calcular los volúmenes del primer punto
-                center = vor.points.mean(axis=0)
-                ptp_bound = np.ptp(vor.points, axis=0)
+            # Guarda la salida en un archivo temporal
+            temp_output_file = "temp_voronoi_output.txt"
+            with open(temp_output_file, 'w') as f:
+                f.write(output)
 
-                finite_planes = []
-                infinite_planes = []
-                for pointidx, simplex in zip(vor.ridge_points, vor.ridge_vertices):
-                    simplex = np.asarray(simplex)
-                    if np.all(simplex >= 0):
-                        finite_planes.append(vor.vertices[simplex])
-                    else:
-                        i = simplex[simplex >= 0][0]  # finite end Voronoi vertex
+            # Lee el resultado desde el archivo temporal y lo devuelve como un array de numpy
+            with open(temp_output_file, 'r') as f:
+                voronoi_result = f.read()
 
-                        t = vor.points[pointidx[1]] - vor.points[pointidx[0]]  # tangent
-                        t /= np.linalg.norm(t)
-                        n = np.array([-t[1], t[0]])  # normal
+            return voronoi_result
 
-                        midpoint = vor.points[pointidx].mean(axis=0)
-                        direction = np.sign(np.dot(midpoint - center, n)) * n
-                        if (vor.furthest_site):
-                            direction = -direction
-                        aspect_factor = abs(ptp_bound.max() / ptp_bound.min())
-                        far_point = vor.vertices[i] + direction * ptp_bound.max() * aspect_factor
-
-                        # Crear el plano que representa el segmento infinito y añadirlo a la lista de planos
-                        infinite_planes.append([vor.vertices[i], far_point])
-
-                # Almacenar información de las celdas Voronoi en volumes
-                for region_indices in vor.regions:
-                    vertices = [vor.vertices[idx] for idx in region_indices]
-                    volume_obj = Volume(representative=Point(*vor.points[i]))
-
-                    # Agregar los planos finitos a las caras del volumen
-                    for plane_points in finite_planes:
-                        vertices = [point for point in plane_points]
-                        if len(plane_points) >= 2:  # Verifica que haya al menos dos puntos para definir un segmento de línea
-                            # Calcula los coeficientes de la ecuación del plano Ax + By + C = 0
-                            A = plane_points[1][1] - plane_points[0][1]
-                            B = plane_points[0][0] - plane_points[1][0]
-                            C = -(A * plane_points[0][0] + B * plane_points[0][1])
-                            plane = Plane(A, B, C)
-                            volume_obj.addFace(Face(p=plane, vertex=vertices, bounded=True))
-
-                    # Agregar los planos infinitos a las caras del volumen
-                    for line_points in infinite_planes:
-                        # Creamos un plano a partir de los dos puntos que definen la línea
-                        A = line_points[1][1] - line_points[0][1]
-                        B = line_points[0][0] - line_points[1][0]
-                        C = -(A * line_points[0][0] + B * line_points[0][1])
-                        plane = Plane(A, B, C)
-                        
-                        # Creamos la cara con el plano asociado y los vértices
-                        vertices = [point for point in line_points]
-                        volume_obj.addFace(Face(p=plane, vertex=vertices, bounded=False))
-
-                    first_point_volumes.append(volume_obj)
-
-
-
-
-
-                    self.plot_voronoi_planes(volume_obj, points)
-
-
-
-
-
-
-
-
-        
-
-
-
-
-
-        # voronoi_proj = Voronoi(points[:, :2], qhull_options='Fi Fo p Fv')
-
-        # # Visualization code
-        # plt.figure(figsize=(8, 8))
-
-        # # Plot Voronoi diagram
-        # voronoi_plot_2d(voronoi_proj, show_vertices=False, line_colors='gray', line_width=2, line_alpha=0.6, point_size=10)
-
-        # # Plot points used to generate Voronoi diagram
-        # plt.scatter(points[:, 0], points[:, 1], c='red', marker='o', label='Centroids')
-
-        # # Highlight positive centroid
-        # plt.scatter(self.positive[0], self.positive[1], c='blue', marker='*', s=200, label='Positive Centroid')
-
-        # plt.title('Voronoi Diagram')
-        # plt.xlabel('X-axis')
-        # plt.ylabel('Y-axis')
-        # plt.legend()
-        # plt.show()
-
-
-
-
-
-        # self.plot_voronoi_volume_2d(voronoi_volume)
-        # plt.close('all')
-
-
-        # return voronoi_volume
-
-        
-    @staticmethod
-    def intersection_plane_line(hyperplane, point0, point1):
-        # Convertir los puntos a coordenadas 2D
-        p0 = point0.get_double_point()[:2]
-        p1 = point1.get_double_point()[:2]
-        
-        # Obtener los coeficientes del plano
-        plane = hyperplane.getPlane()
-        
-        # Calcular el denominador
-        denom = sum(plane[i] * (p1[i] - p0[i]) for i in range(len(p1)))
-        
-        # Verificar si la línea es paralela al plano
-        if denom == 0:
+        except Exception as e:
+            print(f"Error en la ejecución: {e}")
             return None
-        else:
-            # Calcular el numerador
-            num = -hyperplane.C
-            for i in range(len(p1)):
-                num -= plane[i] * p0[i]
-            
-            # Calcular el punto de intersección
-            x = (num / denom) * (p1[0] - p0[0]) + p0[0]
-            y = (num / denom) * (p1[1] - p0[1]) + p0[1]
-            
-            return [x, y]
+        
 
-    def plot_voronoi_planes(self, volume, points):
+
+
+    def read_from_voronoi_file(self):
+        volumes = []
+        file_path = "temp_voronoi_output.txt"
+        points = np.vstack((self.positive, self.negatives))
+
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+
+            num_colors = len(points)
+            faces = [[None] * num_colors for _ in range(num_colors)]
+
+            # Lee las regiones de Voronoi acotadas
+            num_planes = int(lines[0])
+            for i in range(1, num_planes + 1):
+                line = lines[i]
+                parts = line.split()
+                index1 = int(parts[1])
+                index2 = int(parts[2])
+                plane_params = [float(part) for part in parts[3:]]
+                plane = Plane(*plane_params)
+                faces[index1][index2] = Face(plane)
+
+            # Lee las regiones de Voronoi no acotadas
+            num_unbounded_planes = int(lines[num_planes + 1])
+            for i in range(num_planes + 2, num_planes + num_unbounded_planes + 2):
+                line = lines[i]
+                parts = line.split()
+                index1 = int(parts[1])
+                index2 = int(parts[2])
+                plane_params = [float(part) for part in parts[3:]]
+                plane = Plane(*plane_params)
+                faces[index1][index2] = Face(plane, infinity=True)
+
+            # Lee las coordenadas de los vértices
+            num_dimensions = int(lines[num_planes + num_unbounded_planes + 2])
+            num_vertices = int(lines[num_planes + num_unbounded_planes + 3])
+            vertices = []
+            for i in range(num_planes + num_unbounded_planes + 4, num_planes + num_unbounded_planes + num_vertices + 4):
+                line = lines[i]
+                parts = line.split()
+                coords = [float(part) for part in parts]
+                vertex = coords
+                vertices.append(vertex)
+
+            # Lee los vértices para cada cara
+            num_faces = int(lines[num_planes + num_unbounded_planes + num_vertices + 4])
+            for i in range(num_planes + num_unbounded_planes + num_vertices + 5,
+                        num_planes + num_unbounded_planes + num_vertices + num_faces + 5):
+                line = lines[i]
+                parts = line.split()
+                index1 = int(parts[1])
+                index2 = int(parts[2])
+                face = faces[index1][index2]
+                for part in parts[3:]:
+                    vertex_index = int(part)
+                    if vertex_index == 0:
+                        face.setInfinity()
+                    else:
+                        face.addVertex(vertices[vertex_index - 1])
+
+
+            volumes = []
+            for point in points:
+                volume = Volume(Point(*point))
+                volumes.append(volume)
+            # Agregar caras a cada color difuso
+            for i in range(num_colors):
+                for j in range(num_colors):
+                    if faces[i][j] is not None:
+                        volumes[i].addFace(faces[i][j])
+                        volumes[j].addFace(faces[i][j])
+
+        # self.plot_3d(volumes[0])
+        return volumes[0]
+
+
+
+    def plot_2d(self, volume):
+        # Creamos una figura
         fig, ax = plt.subplots()
-        ax.set_xlim(-1, 3)
-        ax.set_ylim(-1, 3)
 
-        # Lista para almacenar los segmentos de los planos finitos
-        finite_segments = []
-
-        # Trazar los segmentos de los planos finitos
+        # Dibujamos solo los bordes de las caras del volumen
         for face in volume.getFaces():
-            if face.bounded:
-                x_values = [face.getVertex(0)[0], face.getVertex(1)[0]]
-                y_values = [face.getVertex(0)[1], face.getVertex(1)[1]]
-                finite_segments.append((x_values, y_values))
-                ax.plot(x_values, y_values, color='blue')
-
-        # Trazar los segmentos de los planos infinitos
-        for face in volume.getFaces():
-            if not face.bounded:
-                A, B, C = face.p.getPlane()
-                
-                # Manejar caso de pendiente infinita (plano vertical)
-                if B == 0:
-                    x_intersect = -C / A
-                    y_min, y_max = ax.get_ylim()
-                    ax.plot([x_intersect, x_intersect], [y_min, y_max], color='blue')
+            # Obtenemos el plano de separación de la cara
+            plane = face.getPlane()
+            # Obtenemos las coordenadas x, y de los puntos que forman el borde de la cara
+            x_values = []
+            y_values = []
+            for i in np.linspace(-10, 10, 100):  # Ajusta el rango según tus necesidades
+                if plane.getC() != 0:
+                    x = i
+                    y = (-plane.getA() * x - plane.getD()) / plane.getC()
                 else:
-                    x_values = [-1, 3]
-                    y_values = [(-C - A * x) / B for x in x_values]
+                    y = i
+                    x = (-plane.getC() * y - plane.getD()) / plane.getA()
+                x_values.append(x)
+                y_values.append(y)
+            # Dibujamos el borde de la cara
+            ax.plot(x_values, y_values, color='black', linewidth=1)
 
-                    # Verificar si el segmento del plano infinito se superpone con algún segmento finito
-                    intersect = False
-                    for seg_x, seg_y in finite_segments:
-                        for i in range(len(seg_x) - 1):
-                            if min(seg_x[i], seg_x[i + 1]) <= min(x_values) <= max(seg_x[i], seg_x[i + 1]) or \
-                            min(seg_x[i], seg_x[i + 1]) <= max(x_values) <= max(seg_x[i], seg_x[i + 1]):
-                                intersect = True
-                                break
-                        if intersect:
-                            break
+        # Obtenemos las coordenadas del representante del volumen y lo marcamos en el gráfico
+        representative = volume.getRepresentative()
+        rep_x, rep_y = representative.get_x(), representative.get_y()
+        ax.scatter(rep_x, rep_y, color='red', marker='o')
 
-                    # Si no se superpone, trazar el segmento del plano infinito
-                    if not intersect:
-                        ax.plot(x_values, y_values, color='blue')
+        # Configuramos etiquetas de ejes
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
 
-        plt.plot(points[:, 0], points[:, 1], 'ro')  # Puntos en rojo
-
-        # Configurar límites y relación de aspecto
-        ax.set_aspect('equal', adjustable='box')
-
+        # Mostramos el gráfico
         plt.show()
 
 
 
 
+    def plot_3d_all(self, volumes):
+        # Crear una figura 3D
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Definir una paleta de colores
+        colors = plt.cm.viridis(np.linspace(0, 1, len(volumes)))
+
+        # Iterar sobre cada volumen y dibujar sus caras con un color diferente
+        for volume, color in zip(volumes, colors):
+            for face in volume.getFaces():
+                # Obtener los vértices de la cara
+                vertices = [vertex for vertex in face.getArrayVertex()]
+                # Agregar el primer vértice al final para cerrar la cara
+                vertices.append(vertices[0])
+                # Convertir la lista de vértices en un array de NumPy para trazar
+                vertices = np.array(vertices)
+                # Extraer las coordenadas x, y, z de los vértices
+                x = vertices[:, 0]
+                y = vertices[:, 1]
+                z = vertices[:, 2]
+                # Tracer la cara con el color correspondiente
+                ax.plot(x, y, z, color=color)
+
+            # Obtener las coordenadas del representante del volumen
+            representative = volume.getRepresentative()
+            rep_x, rep_y, rep_z = representative.get_x(), representative.get_y(), representative.get_z()
+            # Tracer el representante como un marcador con el color correspondiente al volumen
+            ax.scatter(rep_x, rep_y, rep_z, color=color, marker='o')
+
+        # Configurar etiquetas de ejes
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+
+        # Mostrar el gráfico
+        plt.show()
+
+
+    def plot_3d(self, volume):
+        # Crear una figura 3D
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+
+        # Iterar sobre las caras del volumen y dibujarlas con un color específico
+        for face in volume.getFaces():
+            # Obtener los vértices de la cara
+            vertices = [vertex for vertex in face.getArrayVertex()]
+            # Agregar el primer vértice al final para cerrar la cara
+            vertices.append(vertices[0])
+            # Convertir la lista de vértices en un array de NumPy para trazar
+            vertices = np.array(vertices)
+            # Extraer las coordenadas x, y, z de los vértices
+            x = vertices[:, 0]
+            y = vertices[:, 1]
+            z = vertices[:, 2]
+            # Tracer la cara con el color correspondiente
+            ax.plot(x, y, z)
+
+        # Obtener las coordenadas del representante del volumen
+        representative = volume.getRepresentative()
+        rep_x, rep_y, rep_z = representative.get_x(), representative.get_y(), representative.get_z()
+        # Tracer el representante como un marcador con el mismo color del volumen
+        ax.scatter(rep_x, rep_y, rep_z, marker='o')
+
+        # Configurar etiquetas de ejes
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+
+        # Mostrar el gráfico
+        plt.show()
+
+
+
+        
 
 
 
@@ -266,59 +278,6 @@ class Prototype:
 
 
 
-
-
-
-
-        # center = voronoi.points.mean(axis=0)
-        # ptp_bound = np.ptp(voronoi.points, axis=0)
-
-        # finite_segments = []
-        # infinite_segments = []
-        # for pointidx, simplex in zip(voronoi.ridge_points, voronoi.ridge_vertices):
-        #     simplex = np.asarray(simplex)
-        #     if np.all(simplex >= 0):
-        #         finite_segments.append(voronoi.vertices[simplex])
-        #     else:
-        #         i = simplex[simplex >= 0][0]  # finite end Voronoi vertex
-
-        #         t = voronoi.points[pointidx[1]] - voronoi.points[pointidx[0]]  # tangent
-        #         t /= np.linalg.norm(t)
-        #         n = np.array([-t[1], t[0]])  # normal
-
-        #         midpoint = voronoi.points[pointidx].mean(axis=0)
-        #         direction = np.sign(np.dot(midpoint - center, n)) * n
-        #         if (voronoi.furthest_site):
-        #             direction = -direction
-        #         aspect_factor = abs(ptp_bound.max() / ptp_bound.min())
-        #         far_point = voronoi.vertices[i] + direction * ptp_bound.max() * aspect_factor
-
-        #         infinite_segments.append([voronoi.vertices[i], far_point])
-
-        # # Almacenar información de las celdas Voronoi en volumes
-        # for i, region_indices in enumerate(voronoi.regions):
-        #     if -1 not in region_indices and len(region_indices) > 0:
-        #         vertices = [voronoi.vertices[idx] for idx in region_indices]
-        #         volume_obj = Volume(representative=Point(*voronoi.points[i]))
-        #         volume_obj.addFace(Face(Plane(A=0, B=0, C=0, D=0), vertex=vertices, bounded=True))
-        #         volumes.append(volume_obj)
-
-        # # Plotear las celdas finitas usando PolyCollection
-        # polys = [volume.getFace(0).getArrayVertex() for volume in volumes]
-        # poly_collection = PolyCollection(polys, edgecolors='black', facecolors='none')
-        # plt.gca().add_collection(poly_collection)
-
-        # # Plotear los segmentos infinitos
-        # for segment in infinite_segments:
-        #     plt.plot([segment[0][0], segment[1][0]], [segment[0][1], segment[1][1]], 'k--')
-
-        # # Plotear los puntos
-        # plt.plot(points[:, 0], points[:, 1], 'ko')  # Puntos negros
-
-        # plt.xlim(points[:, 0].min() - 1, points[:, 0].max() + 1)
-        # plt.ylim(points[:, 1].min() - 1, points[:, 1].max() + 1)
-        # plt.gca().set_aspect('equal', adjustable='box')
-        # plt.show()
 
 
 
