@@ -1,6 +1,7 @@
 import os
 import cv2
 import numpy as np
+from PIL import Image
 from skimage import color
 import matplotlib.pyplot as plt
 
@@ -8,11 +9,50 @@ import matplotlib.pyplot as plt
 from PyFCS import Input, Prototype, FuzzyColorSpace
 
 
+def add_lab_value():
+    # Solicitar al usuario que ingrese los valores LAB
+    L = int(input("Ingrese el valor L (0-100): "))
+    a = int(input("Ingrese el valor a (-128-127): "))
+    b = int(input("Ingrese el valor b (-128-127): "))
+    return np.array([L, a, b])
+
+
+
+
+def pick_pixel(image):
+    mutable_object = {'click': None, 'lab_pixel': None}
+
+    def onclick(event):
+        # print('Coordenadas del píxel seleccionado:', event.xdata, event.ydata)
+        mutable_object['click'] = (event.xdata, event.ydata)
+
+        # Obtener el color del píxel en las coordenadas (y, x)
+        x, y = int(event.xdata), int(event.ydata)
+        rgb_pixel = image[y, x]
+        print('Color del píxel en RGB:', rgb_pixel)
+        
+        lab_pixel = color.rgb2lab(rgb_pixel)
+        mutable_object['lab_pixel'] = lab_pixel  
+
+        plt.close()
+
+    fig = plt.figure()
+    cid = fig.canvas.mpl_connect('button_press_event', onclick)
+    plt.imshow(image)
+    plt.show()
+
+    return mutable_object['lab_pixel']
+
+
+
+
+
+
 def main():
-    # IMG_WIDTH = 20
-    # IMG_HEIGHT = 20
-    # img_path = ".\\imagen_test\\banana.png"
-    # imagen = Input.image_processing(img_path, IMG_WIDTH, IMG_HEIGHT)
+    IMG_WIDTH = 128
+    IMG_HEIGHT = 128
+    img_path = ".\\imagen_test\\banana.png"
+    image = Input.image_processing(img_path, IMG_WIDTH, IMG_HEIGHT)
     # # Convertir la imagen RGB a CIELAB
     # lab_image = color.rgb2lab(imagen)
 
@@ -28,19 +68,31 @@ def main():
 
 
 
+    option = input("Seleccione una opción:\n 1. Ingresar valor LAB\n 2. Seleccionar un píxel en una imagen\n")
+
+    if option == "1":
+        lab_color = add_lab_value()
+        print("Valor LAB ingresado:", lab_color)
+
+    elif option == "2":
+        if image is None:
+            print("No se pudo cargar la imagen.")
+            return
+        lab_color = pick_pixel(image)
+        print("Valor LAB del píxel seleccionado:", lab_color)
+
+    else:
+        print("Opción no válida.")
+
+
+
+
 
     # Step 1: Reading the .cns file using the Input class
     actual_dir = os.getcwd()
-    color_space_path = os.path.join(actual_dir, 'PyFCS\\fuzzy_color_spaces\\ISCC_NBS_BASIC.cns')
+    color_space_path = os.path.join(actual_dir, 'fuzzy_color_spaces\\ISCC_NBS_BASIC.cns')
     input_class = Input()
     color_data = input_class.read_cns_file(color_space_path)
-
-
-
-
-    # color_prueba = np.array([[1, 2], [5, 2]])
-    # prototype = Prototype(label='prueba', positive=color_prueba[0], negatives=color_prueba[1])
-
 
 
     # Step 2: Creating Prototype objects for each color
@@ -59,7 +111,7 @@ def main():
     fuzzy_color_space = FuzzyColorSpace(space_name='VIBRATIONS', prototypes=prototypes)
 
     # Step 4: Calculating the membership degree of a Lab color to the fuzzy color space
-    lab_color = [52, -36, 55]  # Example Lab color
+    # lab_color = [52, -36, 55]  # Example Lab color
     membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
 
     # Displaying the induced possibility distribution by the fuzzy color space
