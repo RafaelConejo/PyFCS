@@ -3,7 +3,7 @@ from PyFCS.geometry.Point import Point
 from PyFCS.geometry.GeometryTools import GeometryTools
 from PyFCS.geometry.Face import Face
 from PyFCS.geometry.Volume import Volume
-from PyFCS.geometry.ReferenceDomain import ReferenceDomain
+from PyFCS.colorspace.ReferenceDomain import ReferenceDomain
 from PyFCS.membership.MembershipFunction import MembershipFunction
 
 class FuzzyColorSpace:

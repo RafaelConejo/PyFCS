@@ -1,8 +1,9 @@
-import cv2
-import numpy as np
-from skimage import color
+from PyFCS.input_output.Input import Input
 
-class Input:
+from skimage import color
+import numpy as np
+
+class InputCNS(Input):
     def extract_colors(self, color_value):
         # Extraer el prototipo positivo
         positive_prototype = np.array(color_value['positive_prototype'])
@@ -15,10 +16,8 @@ class Input:
         negative_lab = [color.rgb2lab(proto / 255.0) for proto in negative_prototypes]
         
         return positive_lab, negative_lab
-
-
-
-    def read_cns_file(self, file_path):
+    
+    def read_file(self, file_path):
         color_data = {
             'color_values': [],
             'color_names': []
@@ -93,88 +92,10 @@ class Input:
             }
 
         return color_data_restructured
-
     
 
 
+    def write_file(self, file_path):
+        pass
 
-    def image_processing(img_path, IMG_WIDTH, IMG_HEIGHT):
-        # Abre la imagen
-        imagen = cv2.imread(img_path)
-        imagen = cv2.resize(imagen, (IMG_WIDTH, IMG_HEIGHT))
-        
-        # Convierte la imagen a formato RGB
-        imagen = cv2.cvtColor(imagen, cv2.COLOR_BGR2RGB)
-        
-        # Normaliza la imagen
-        imagen = imagen.astype(np.float32) / 255.0
-        
-        return imagen
-
-
-
-
-
-# class Input:
-#     def read_cns_file(self, file_path):
-#         color_data = {}
-
-#         try:
-#             with open(file_path, 'r') as file:
-#                 lines = file.readlines()
-
-#                 # Buscar la línea que contiene '@crispColorSpaceType1000'
-#                 start_index = None
-#                 for i, line in enumerate(lines):
-#                     if '@crispColorSpaceType1000' in line:
-#                         start_index = i
-#                         break
-
-#                 if start_index is None:
-#                     raise ValueError("No se encontró la línea '@crispColorSpaceType1000' en el archivo.")
-
-#                 # Extraer crisp color space type
-#                 color_data['crisp_color_space_type'] = int(lines[start_index][22:])
-
-#                 # Extraer las líneas siguientes (RGB y etiquetas de color)
-#                 unique_lines = set()  # Conjunto para rastrear líneas únicas
-
-#                 color_data['representative_values'] = []
-#                 color_data['color_name_labels'] = []
-
-#                 for i in range(start_index + 1, len(lines)):
-#                     try:
-#                         line_content = lines[i].strip()
-#                         if not line_content:
-#                             continue  # Ignorar líneas vacías
-
-#                         if line_content not in unique_lines:
-#                             unique_lines.add(line_content)  # Agregar la línea al conjunto de líneas únicas
-
-#                             if '\t' in line_content:
-#                                 # Si contiene una tabulación, asumimos que es una línea RGB
-#                                 rgb_values = list(map(float, line_content.split()))
-#                                 color_data['representative_values'].append({
-#                                     'R': rgb_values[0],
-#                                     'G': rgb_values[1],
-#                                     'B': rgb_values[2]
-#                                 })
-#                             else:
-#                                 if not any(char.isdigit() for char in line_content):  # Verificar si la línea no contiene números
-#                                     color_data['color_name_labels'].append(line_content)
-
-#                     except (ValueError, IndexError):
-#                         raise ValueError(f"Error al procesar la línea {i + 1} en el archivo .cns.")
-
-#         except (ValueError, IndexError, KeyError) as e:
-#             raise ValueError(f"Error al leer el archivo .cns: {str(e)}")
-        
-        
-#         # Prepare data colors
-#         colors_rgb = np.array([list(entry.values()) for entry in color_data['representative_values']], dtype=np.uint8)
-#         # Normalizar los valores RGB al rango [0, 1]
-#         colors_rgb_normalized = colors_rgb / 255.0
-#         # Convertir de RGB a LAB
-#         colors_lab = color.rgb2lab(colors_rgb_normalized)
-
-#         return colors_lab
+    
