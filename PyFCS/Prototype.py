@@ -16,7 +16,7 @@ class Prototype:
         self.negatives = negatives
 
         # Create Voronoi volume
-        vor = self.run_qvoronoi()
+        self.run_qvoronoi()
         self.voronoi_volume = self.read_from_voronoi_file()
 
 
@@ -43,26 +43,20 @@ class Prototype:
                 return None
 
             # Guarda la salida en un archivo temporal
-            temp_output_file = "temp_voronoi_output.txt"
+            temp_output_file = "temp\\temp_voronoi_output.txt"
             with open(temp_output_file, 'w') as f:
                 f.write(output)
 
-            # Lee el resultado desde el archivo temporal y lo devuelve como un array de numpy
-            with open(temp_output_file, 'r') as f:
-                voronoi_result = f.read()
-
-            return voronoi_result
 
         except Exception as e:
             print(f"Error en la ejecución: {e}")
-            return None
         
 
 
 
     def read_from_voronoi_file(self):
         volumes = []
-        file_path = "temp_voronoi_output.txt"
+        file_path = "temp\\temp_voronoi_output.txt"
         points = np.vstack((self.positive, self.negatives))
 
         with open(file_path, 'r') as file:

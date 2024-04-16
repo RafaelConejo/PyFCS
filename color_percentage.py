@@ -35,11 +35,13 @@ def main():
 
 
 
-
+    colorspace_name = 'BRUGUER-WORLD COLORS.cns'
+    name_colorspace = os.path.splitext(colorspace_name)[0]
+    extension = os.path.splitext(colorspace_name)[1]
 
     # Step 1: Reading the .cns file using the Input class
     actual_dir = os.getcwd()
-    color_space_path = os.path.join(actual_dir, 'fuzzy_color_spaces\\BRUGUER-WORLD COLORS.cns')
+    color_space_path = os.path.join(actual_dir, 'fuzzy_color_spaces\\'+colorspace_name)
     input_class = InputCNS()
     color_data = input_class.read_file(color_space_path)
 
@@ -57,10 +59,10 @@ def main():
 
 
     # Step 3: Creating the fuzzy color space using the Prototype objects
-    fuzzy_color_space = FuzzyColorSpace(space_name='VIBRATIONS', prototypes=prototypes)
+    fuzzy_color_space = FuzzyColorSpace(space_name=name_colorspace , prototypes=prototypes)
 
     # Step 4: Calculating the membership degree of a Lab color to the fuzzy color space
-    membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
+    membership_degrees = fuzzy_color_space.get_membership_degree(lab_color)
 
     # Displaying the induced possibility distribution by the fuzzy color space
     print("Possibility distribution for the color:", lab_color)

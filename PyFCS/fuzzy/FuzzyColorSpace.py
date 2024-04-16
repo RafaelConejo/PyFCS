@@ -6,7 +6,9 @@ from PyFCS.geometry.Volume import Volume
 from PyFCS.colorspace.ReferenceDomain import ReferenceDomain
 from PyFCS.membership.MembershipFunction import MembershipFunction
 
-class FuzzyColorSpace:
+from PyFCS.fuzzy.FuzzyColor import FuzzyColor
+
+class FuzzyColorSpace(FuzzyColor):
     def __init__(self, space_name, prototypes):
         self.space_name = space_name
         self.prototypes = prototypes
@@ -68,7 +70,7 @@ class FuzzyColorSpace:
 
 
 
-    def calculate_membership(self, new_point):
+    def get_membership_degree(self, new_point):
         result = {}
         total_membership = 0
         new_point = Point(new_point[0], new_point[1], new_point[2])
