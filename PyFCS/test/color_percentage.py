@@ -1,5 +1,12 @@
 import os
+import sys
 
+# Get the path to the directory containing PyFCS
+current_dir = os.path.dirname(__file__)
+pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
+
+# Add the PyFCS path to sys.path
+sys.path.append(pyfcs_dir)
 
 ### my libraries ###
 from PyFCS import InputCNS, Prototype, FuzzyColorSpace
@@ -17,21 +24,20 @@ def main():
     
 
 
-    option = input("Seleccione una opción:\n 1. Ingresar valor LAB\n 2. Seleccionar un píxel en una imagen\n")
-
+    option = input("Select an option:\n 1. Enter LAB value\n 2. Select a pixel on an image\n")
     if option == "1":
         lab_color = Utils.add_lab_value()
-        print("Valor LAB ingresado:", lab_color)
+        print("Entered LAB value:", lab_color)
 
     elif option == "2":
         if image is None:
-            print("No se pudo cargar la imagen.")
+            print("Failed to load the image.")
             return
         lab_color = Utils.pick_pixel(image)
-        print("Valor LAB del píxel seleccionado:", lab_color)
+        print("LAB value of the selected pixel:", lab_color)
 
     else:
-        print("Opción no válida.")
+        print("Invalid option.")
 
 
 

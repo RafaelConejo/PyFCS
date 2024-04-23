@@ -131,5 +131,5 @@ class FuzzyColorSpace(FuzzyColor):
                 result[label] = 0
 
         for label, value in result.items():
-            result[label] /= total_membership
-        return result
+            result[label] /= total_membership if total_membership != 0 else 1
+        return {k: v for k, v in result.items() if v != 0}
