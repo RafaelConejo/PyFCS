@@ -11,7 +11,7 @@ If you don't need to make any modifications, we suggest following these steps:
 ```
 pip install -r PyFCS\external\requirements.txt
 ```
-4. Now you can use one of the various test programs located in the test directory. Here's an example of usage, _color_percentage_ is just an example of the test programs; it can be run with all the files present in that test directory:
+4. Now it's possible to use one of the different test programs located in the test directory. Here's an example of usage, _color_percentage_ is just an example of the test programs; it can be run with all the files present in that test directory:
 ```
 python PyFCS\test\color_percentage.py
 ```
