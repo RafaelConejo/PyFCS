@@ -1,7 +1,6 @@
 from typing import List
 from PyFCS.geometry.Point import Point
 from PyFCS.geometry.Plane import Plane
-from PyFCS.geometry.Vector import Vector
 
 class Face:
     def __init__(self, p: Plane, vertex: List[Point] = None, infinity: bool = False):

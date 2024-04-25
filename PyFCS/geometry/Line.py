@@ -10,7 +10,4 @@ class Line:
         self.p1 = p1
         self.p2 = p2
 
-# Ejemplo de uso
-# point1 = Point(1.0, 2.0, 3.0)
-# point2 = Point(4.0, 5.0, 6.0)
-# line = Line(point1, point2)
+

@@ -21,6 +21,12 @@ class Prototype:
 
 
     def run_qvoronoi(self):
+        """
+        Run qvoronoi.exe to calculate Voronoi volumes for positive and negative points.
+
+        Returns:
+            str: File path of the temporary Voronoi output file.
+        """
         try:
             # Get concatenated points
             points = np.vstack((self.positive, self.negatives))
@@ -55,6 +61,12 @@ class Prototype:
 
 
     def read_from_voronoi_file(self):
+        """
+        Read Voronoi volumes from a file.
+
+        Returns:
+            list: List of Voronoi volumes.
+        """
         volumes = []
         file_path = "PyFCS\\external\\temp\\temp_voronoi_output.txt"
         points = np.vstack((self.positive, self.negatives))
