@@ -16,20 +16,17 @@ from PyFCS.input_output.utils import Utils
 
 
 def main():
-    IMG_WIDTH = 128
-    IMG_HEIGHT = 128
-    img_path = ".\\imagen_test\\cuadro.png"
-    image = Utils.image_processing(img_path, IMG_WIDTH, IMG_HEIGHT)
-
-    
-
-
     option = input("Select an option:\n 1. Enter LAB value\n 2. Select a pixel on an image\n")
     if option == "1":
         lab_color = Utils.add_lab_value()
         print("Entered LAB value:", lab_color)
 
     elif option == "2":
+        IMG_WIDTH = 128
+        IMG_HEIGHT = 128
+        img_path = ".\\imagen_test\\cuadro.png"
+        image = Utils.image_processing(img_path, IMG_WIDTH, IMG_HEIGHT)
+
         if image is None:
             print("Failed to load the image.")
             return

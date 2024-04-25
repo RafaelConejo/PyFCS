@@ -7,14 +7,14 @@ To get started, you can clone the .git repository or download the library as a .
 If you don't need to make any modifications, we suggest following these steps:
 1. Download the library as a .zip file from the "Clone or Download" option or from the releases section.
 2. Unzip the file into a local folder.
-3. Navigate to the _PyFCS_ directory at the root of the project using the command line (`cd`).
-4. Run the following command:
+3. In the main directory, install the external libraries using the following command: 
 ```
-python test\color_percentage.py
+pip install -r PyFCS\external\requirements.txt
+```
+4. Now you can use one of the various test programs located in the test directory. Here's an example of usage, _color_percentage_ is just an example of the test programs; it can be run with all the files present in that test directory:
+```
+python PyFCS\test\color_percentage.py
 ```
 
-_color_percentage_ is just an example of the test programs; it can be run with all the files present in that test directory.
 
 
-
-pip install -r requirements.txt
