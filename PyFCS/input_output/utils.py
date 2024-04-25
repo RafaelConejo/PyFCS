@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-from skimage import color
 
 from PyFCS.colorspace.ColorSpaceRGB import ColorSpaceRGB
 from PyFCS.colorspace.ColorSpaceLAB import ColorSpaceLAB
@@ -57,7 +56,7 @@ class Utils:
             x, y = int(event.xdata), int(event.ydata)
             pixel = image[y, x]
             rgb_pixel = ColorSpaceRGB(pixel[0], pixel[1], pixel[2])
-            print('Color of the pixel in RGB:', rgb_pixel)
+            print('Color of the pixel in RGB:', rgb_pixel.r, rgb_pixel.g, rgb_pixel.b)
             
             lab_pixel = ColorSpaceLAB.convert_from(rgb_pixel.convert_to())
             mutable_object['lab_pixel'] = lab_pixel  

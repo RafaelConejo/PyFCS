@@ -34,7 +34,7 @@ class Prototype:
             input_data += "\n".join(" ".join(map(str, point)) for point in points)  # Add coordinates of points
 
             # Run qvoronoi.exe with formatted input data
-            command = f"qvoronoi.exe Fi Fo p Fv"
+            command = f"PyFCS\\external\\qvoronoi.exe Fi Fo p Fv"
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             output, error = process.communicate(input=input_data)
 
@@ -43,7 +43,7 @@ class Prototype:
                 return None
 
             # Save output to a temporary file
-            temp_output_file = "temp\\temp_voronoi_output.txt"
+            temp_output_file = "PyFCS\\external\\temp\\temp_voronoi_output.txt"
             with open(temp_output_file, 'w') as f:
                 f.write(output)
 
@@ -56,7 +56,7 @@ class Prototype:
 
     def read_from_voronoi_file(self):
         volumes = []
-        file_path = "temp\\temp_voronoi_output.txt"
+        file_path = "PyFCS\\external\\temp\\temp_voronoi_output.txt"
         points = np.vstack((self.positive, self.negatives))
 
         with open(file_path, 'r') as file:
