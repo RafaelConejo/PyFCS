@@ -2,115 +2,54 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class Visual_tools:
-    def plot_2d(self, volume):
-        # Creamos una figura
-        fig, ax = plt.subplots()
-
-        # Dibujamos solo los bordes de las caras del volumen
-        for face in volume.getFaces():
-            # Obtenemos el plano de separación de la cara
-            plane = face.getPlane()
-            # Obtenemos las coordenadas x, y de los puntos que forman el borde de la cara
-            x_values = []
-            y_values = []
-            for i in np.linspace(-10, 10, 100):  # Ajusta el rango según tus necesidades
-                if plane.getC() != 0:
-                    x = i
-                    y = (-plane.getA() * x - plane.getD()) / plane.getC()
-                else:
-                    y = i
-                    x = (-plane.getC() * y - plane.getD()) / plane.getA()
-                x_values.append(x)
-                y_values.append(y)
-            # Dibujamos el borde de la cara
-            ax.plot(x_values, y_values, color='black', linewidth=1)
-
-        # Obtenemos las coordenadas del representante del volumen y lo marcamos en el gráfico
-        representative = volume.getRepresentative()
-        rep_x, rep_y = representative.get_x(), representative.get_y()
-        ax.scatter(rep_x, rep_y, color='red', marker='o')
-
-        # Configuramos etiquetas de ejes
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-
-        # Mostramos el gráfico
-        plt.show()
 
 
 
-
-    def plot_3d_all(self, volumes):
-        # Crear una figura 3D
+    @staticmethod
+    def plot_3d_all(volumes):
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
 
-        # Definir una paleta de colores
-        colors = plt.cm.viridis(np.linspace(0, 1, len(volumes)))
+        cmap = plt.get_cmap('viridis')
+        colors = [cmap(i) for i in np.linspace(0, 1, len(volumes))]
 
-        # Iterar sobre cada volumen y dibujar sus caras con un color diferente
-        for volume, color in zip(volumes, colors):
-            for face in volume.getFaces():
-                # Obtener los vértices de la cara
-                vertices = [vertex for vertex in face.getArrayVertex()]
-                # Agregar el primer vértice al final para cerrar la cara
-                vertices.append(vertices[0])
-                # Convertir la lista de vértices en un array de NumPy para trazar
-                vertices = np.array(vertices)
-                # Extraer las coordenadas x, y, z de los vértices
-                x = vertices[:, 0]
-                y = vertices[:, 1]
-                z = vertices[:, 2]
-                # Tracer la cara con el color correspondiente
-                ax.plot(x, y, z, color=color)
+        # Ajusta los límites del gráfico
+        ax.set_xlim([0, 100])
+        ax.set_ylim([-180, 180])
+        ax.set_zlim([-180, 180])
 
-            # Obtener las coordenadas del representante del volumen
-            representative = volume.getRepresentative()
-            rep_x, rep_y, rep_z = representative.get_x(), representative.get_y(), representative.get_z()
-            # Tracer el representante como un marcador con el color correspondiente al volumen
-            ax.scatter(rep_x, rep_y, rep_z, color=color, marker='o')
+        for i, volume in enumerate(volumes):
+            # Iteramos sobre las caras del volumen actual
+            for face in volume.voronoi_volume.faces:
+                # Extraemos los puntos de la cara y los convertimos en un arreglo numpy
+                puntos = np.array([point for point in face.getArrayVertex()])
+                # Cerramos el ciclo de la cara
+                puntos = np.append(puntos, [puntos[0]], axis=0)
 
-        # Configurar etiquetas de ejes
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-
-        # Mostrar el gráfico
-        plt.show()
+                # Extraemos las coordenadas x, y, z de los puntos
+                x = puntos[:, 0]
+                y = puntos[:, 1]
+                z = puntos[:, 2]
 
 
-    def plot_3d(self, volume):
-        # Crear una figura 3D
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
+                # Filtra los puntos para que estén dentro de los límites del gráfico
+                mask = (x >= ax.get_xlim()[0]) & (x <= ax.get_xlim()[1]) & \
+                    (y >= ax.get_ylim()[0]) & (y <= ax.get_ylim()[1]) & \
+                    (z >= ax.get_zlim()[0]) & (z <= ax.get_zlim()[1])
+
+                x_filtered = x[mask]
+                y_filtered = y[mask]
+                z_filtered = z[mask]
+
+                # Verifica que haya al menos dos puntos después del filtrado
+                if len(x_filtered) > 1 and len(y_filtered) > 1 and len(z_filtered) > 1:
+                    ax.plot(x_filtered, y_filtered, z_filtered, color=colors[i])
 
 
-        # Iterar sobre las caras del volumen y dibujarlas con un color específico
-        for face in volume.getFaces():
-            # Obtener los vértices de la cara
-            vertices = [vertex for vertex in face.getArrayVertex()]
-            # Agregar el primer vértice al final para cerrar la cara
-            vertices.append(vertices[0])
-            # Convertir la lista de vértices en un array de NumPy para trazar
-            vertices = np.array(vertices)
-            # Extraer las coordenadas x, y, z de los vértices
-            x = vertices[:, 0]
-            y = vertices[:, 1]
-            z = vertices[:, 2]
-            # Tracer la cara con el color correspondiente
-            ax.plot(x, y, z)
+        # Etiqueta de los ejes
+        ax.set_xlabel('L*')
+        ax.set_ylabel('a*')
+        ax.set_zlabel('b*')
 
-        # Obtener las coordenadas del representante del volumen
-        representative = volume.getRepresentative()
-        rep_x, rep_y, rep_z = representative.get_x(), representative.get_y(), representative.get_z()
-        # Tracer el representante como un marcador con el mismo color del volumen
-        ax.scatter(rep_x, rep_y, rep_z, marker='o')
-
-        # Configurar etiquetas de ejes
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-
-        # Mostrar el gráfico
         plt.show()
 
