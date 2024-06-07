@@ -10,7 +10,7 @@ class Visual_tools:
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
 
-        cmap = plt.get_cmap('viridis')
+        cmap = plt.get_cmap('tab20')
         colors = [cmap(i) for i in np.linspace(0, 1, len(volumes))]
 
         # Ajusta los límites del gráfico
@@ -51,5 +51,6 @@ class Visual_tools:
         ax.set_ylabel('a*')
         ax.set_zlabel('b*')
 
-        plt.show()
+        # plt.show()
+        return fig
 
