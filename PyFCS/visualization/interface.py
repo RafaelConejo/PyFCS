@@ -89,7 +89,6 @@ top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 btn_cargar = tk.Button(top_frame, text="Cargar Archivo", command=cargar_archivo)
 btn_cargar.pack(side=tk.LEFT)
 
-# Crear un notebook (pestañas) para la gráfica y los datos
 notebook = ttk.Notebook(root)
 notebook.pack(expand=True, fill='both', padx=10, pady=10)
 
