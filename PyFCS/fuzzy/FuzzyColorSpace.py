@@ -17,4 +17,6 @@ class FuzzyColorSpace(FuzzyColor):
         member_degree = FuzzyColor.get_membership_degree(new_color, self.prototypes, self.cores, self.supports, self.function)
         return member_degree
 
-
+    def calculate_membership_for_prototype(self, new_color, idx_proto):
+        member_degree = FuzzyColor.get_membership_degree_for_prototype(new_color, self.prototypes[idx_proto], self.cores[idx_proto], self.supports[idx_proto], self.function)
+        return member_degree

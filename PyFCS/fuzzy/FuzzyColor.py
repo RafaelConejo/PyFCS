@@ -154,3 +154,76 @@ class FuzzyColor():
             result[label] /= total_membership if total_membership != 0 else 1
         return {k: v for k, v in result.items() if v != 0}
 
+
+
+    @staticmethod
+    def get_membership_degree_for_prototype(new_color, prototype, core, support, function):
+        """
+        Calculate the membership degree of a new color to a single prototype using a membership calculation function.
+
+        Parameters:
+            new_color (tuple): The new color as a tuple (R, G, B).
+            prototype (Prototype): The Prototype object.
+            core (Volume): The core volume of the prototype.
+            support (Volume): The support volume of the prototype.
+            function (MembershipFunction): The membership calculation function.
+
+        Returns:
+            float: The membership degree of the new color to the prototype.
+        """
+        result = 0
+        new_color = Point(new_color[0], new_color[1], new_color[2])
+        lab_reference_domain = ReferenceDomain.default_voronoi_reference_domain()
+
+        if not isinstance(new_color, Point):
+            new_color = lab_reference_domain.transform(Point(new_color.x, new_color.y, new_color.z))
+
+        xyz = new_color
+
+        if support.isInside(xyz) and not support.isInFace(xyz):
+            if core.isInside(xyz):
+                value = 1
+                result = value
+            else:
+                dist_cube = float('inf')
+                p_cube = GeometryTools.intersection_with_volume(lab_reference_domain.get_volume(), prototype.voronoi_volume.getRepresentative(), xyz)
+                if p_cube is not None:
+                    dist_cube = GeometryTools.euclidean_distance(prototype.voronoi_volume.getRepresentative(), p_cube)
+                else:
+                    print("No intersection with cube")
+
+                dist_face = float('inf')
+                p_face = GeometryTools.intersection_with_volume(core, core.getRepresentative(), xyz)
+                if p_face is not None:
+                    dist_face = GeometryTools.euclidean_distance(core.getRepresentative(), p_face)
+                else:
+                    dist_face = dist_cube
+                param_a = dist_face
+
+                dist_face = float('inf')
+                p_face = GeometryTools.intersection_with_volume(prototype.voronoi_volume, prototype.voronoi_volume.getRepresentative(), xyz)
+                if p_face is not None:
+                    dist_face = GeometryTools.euclidean_distance(prototype.voronoi_volume.getRepresentative(), p_face)
+                else:
+                    dist_face = dist_cube
+                param_b = dist_face
+
+                dist_face = float('inf')
+                p_face = GeometryTools.intersection_with_volume(support, support.getRepresentative(), xyz)
+                if p_face is not None:
+                    dist_face = GeometryTools.euclidean_distance(support.getRepresentative(), p_face)
+                else:
+                    dist_face = dist_cube
+                param_c = dist_face
+
+                function.setParam([param_a, param_b, param_c])
+                value = function.getValue(GeometryTools.euclidean_distance(prototype.voronoi_volume.getRepresentative(), xyz))
+
+                if value == 0 or value == 1:
+                    print("Error membership value with point [{},{},{}] in support. Value must be (0,1)".format(xyz.x, xyz.y, xyz.z))
+
+                result = value
+        else:
+            result = 0
+
+        return result
