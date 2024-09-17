@@ -55,11 +55,13 @@ def update(label):
 def main():
     global prototypes, lab_image, fuzzy_color_space, prototype_labels, ax, fig
 
-    colorspace_name = 'VITA-CLASSICAL.cns'
-    img_path = ".\\imagen_test\\B4.png"
+    var = "m_A1"
 
-    IMG_WIDTH = 128
-    IMG_HEIGHT = 128
+    colorspace_name = 'VITA-CLASSICAL-BLACK.cns'
+    img_path = os.path.join(".", "imagen_test", f"{var}.png")
+
+    IMG_WIDTH = 103
+    IMG_HEIGHT = 103
     image = Utils.image_processing(img_path, IMG_WIDTH, IMG_HEIGHT)
 
     if image is None:
