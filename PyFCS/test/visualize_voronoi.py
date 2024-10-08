@@ -15,7 +15,7 @@ from PyFCS import Input, Prototype, Visual_tools
 
 
 def main():
-    colorspace_name = 'BRUGUER-WORLD COLORS.cns'
+    colorspace_name = 'BASIC.cns'
 
 
     name_colorspace = os.path.splitext(colorspace_name)[0]

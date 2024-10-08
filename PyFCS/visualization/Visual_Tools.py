@@ -51,6 +51,6 @@ class Visual_tools:
         ax.set_ylabel('a*')
         ax.set_zlabel('b*')
 
-        # plt.show()
-        return fig
+        plt.show()
+        
 
