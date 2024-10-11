@@ -15,7 +15,7 @@ from PyFCS import Input, Prototype, Visual_tools
 
 
 def main():
-    colorspace_name = 'BASIC.cns'
+    colorspace_name = 'B.cns'
 
 
     name_colorspace = os.path.splitext(colorspace_name)[0]
@@ -41,7 +41,8 @@ def main():
 
 
     # Step 3: Visualization of the Voronoi Regions
-    Visual_tools.plot_3d_all(prototypes)
+    # Visual_tools.plot_3d_all(prototypes)
+    Visual_tools.plot_prototype(prototypes[2])
 
 
 if __name__ == "__main__":
