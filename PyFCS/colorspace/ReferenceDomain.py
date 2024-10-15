@@ -4,14 +4,27 @@ from PyFCS.geometry.Face import Face
 from PyFCS.geometry.Hyperplane import Hyperplane
 
 class ReferenceDomain:
-    def __init__(self, c1=None, c2=None, c3=None):
-        self.comp1 = c1 if c1 is not None else [0, 0]
-        self.comp2 = c2 if c2 is not None else [0, 0]
-        self.comp3 = c3 if c3 is not None else [0, 0]
+    # def __init__(self, c1=None, c2=None, c3=None):
+    #     self.comp1 = c1 if c1 is not None else [0, 0]
+    #     self.comp2 = c2 if c2 is not None else [0, 0]
+    #     self.comp3 = c3 if c3 is not None else [0, 0]
         
+    #     self.reference = [self.comp1, self.comp2, self.comp3]
+        
+    #     self.dimension = 3
+    #     self.volume = self.create_volume()
+
+    def __init__(self, c1min, c1max, c2min, c2max, c3min, c3max):
+        # Inicialización de los componentes con los límites dados
+        self.comp1 = [c1min, c1max]
+        self.comp2 = [c2min, c2max]
+        self.comp3 = [c3min, c3max]
+        
+        # Asignar los componentes a la referencia
+        self.dimension = 3
         self.reference = [self.comp1, self.comp2, self.comp3]
         
-        self.dimension = 3
+        # Crear el volumen
         self.volume = self.create_volume()
 
     @staticmethod
@@ -81,10 +94,4 @@ class ReferenceDomain:
                 self.get_min(2) <= p.get_z() <= self.get_max(2))
 
 
-# class ReferenceDomain:
-#     def __init__(self, min_l, max_l, min_a, max_a, min_b, max_b):
-#         self.domain = [[min_l, max_l], [min_a, max_a], [min_b, max_b]]
-
-#     def get_domain(self, dimension):
-#         return self.domain[dimension]
 

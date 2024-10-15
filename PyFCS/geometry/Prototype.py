@@ -7,6 +7,7 @@ from PyFCS.geometry.Plane import Plane
 from PyFCS.geometry.Point import Point
 from PyFCS.geometry.Face import Face
 from PyFCS.geometry.Volume import Volume
+from PyFCS.colorspace.ReferenceDomain import ReferenceDomain
 
 
 class Prototype:

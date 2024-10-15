@@ -9,13 +9,11 @@ pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
 sys.path.append(pyfcs_dir)
 
 ### my libraries ###
-from PyFCS import Input, Prototype, Visual_tools
-
-
+from PyFCS import Input, Prototype, Visual_tools, ReferenceDomain
 
 
 def main():
-    colorspace_name = 'B.cns'
+    colorspace_name = 'BASIC.cns'
 
 
     name_colorspace = os.path.splitext(colorspace_name)[0]
@@ -26,6 +24,10 @@ def main():
     color_space_path = os.path.join(actual_dir, 'fuzzy_color_spaces\\'+colorspace_name)
     input_class = Input.instance(extension)
     color_data = input_class.read_file(color_space_path)
+
+
+    # Create limits prototypes
+    volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
 
 
     # Step 2: Creating Prototype objects for each color
@@ -42,7 +44,7 @@ def main():
 
     # Step 3: Visualization of the Voronoi Regions
     # Visual_tools.plot_3d_all(prototypes)
-    Visual_tools.plot_prototype(prototypes[2])
+    Visual_tools.plot_prototype(prototypes[1], volume_limits)
 
 
 if __name__ == "__main__":

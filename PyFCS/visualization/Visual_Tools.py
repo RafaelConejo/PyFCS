@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+from scipy.spatial import ConvexHull
+
 class Visual_tools:
 
 
@@ -57,59 +59,129 @@ class Visual_tools:
 
 
 
+
+
     @staticmethod
-    def plot_prototype(prototype):
-            fig = plt.figure()
-            ax = fig.add_subplot(111, projection='3d')
+    def plot_prototype(prototype, volume_limits):
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
 
-            # 1. Puntos negativos
-            negatives = np.array(prototype.negatives)
-            ax.scatter(negatives[:, 0], negatives[:, 1], negatives[:, 2], color='red', marker='o', label='Negatives')
+        # 1. Puntos negativos
+        negatives = np.array(prototype.negatives)
+        positives = np.array(prototype.positive)
 
-            # 2. Punto positivo (representante)
-            positive = np.array(prototype.positive)
-            ax.scatter(positive[0], positive[1], positive[2], color='green', marker='^', s=100, label='Positive')
+        # Filtrar puntos negativos dentro de los límites
+        negatives_filtered = negatives[
+            (negatives[:, 0] >= volume_limits.comp1[0]) & (negatives[:, 0] <= volume_limits.comp1[1]) &
+            (negatives[:, 1] >= volume_limits.comp2[0]) & (negatives[:, 1] <= volume_limits.comp2[1]) &
+            (negatives[:, 2] >= volume_limits.comp3[0]) & (negatives[:, 2] <= volume_limits.comp3[1])
+        ]
+        
+        # Filtrar punto positivo dentro de los límites
+        if (positives[0] >= volume_limits.comp1[0] and positives[0] <= volume_limits.comp1[1] and
+            positives[1] >= volume_limits.comp2[0] and positives[1] <= volume_limits.comp2[1] and
+            positives[2] >= volume_limits.comp3[0] and positives[2] <= volume_limits.comp3[1]):
+            ax.scatter(positives[0], positives[1], positives[2], color='green', marker='^', s=100, label='Positive')
 
-            # 3. Volumen de Voronoi (Caras)
-            faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
-            for face in faces:
-                vertices = np.array(face.vertex)
+        # Graficar puntos negativos
+        ax.scatter(negatives_filtered[:, 0], negatives_filtered[:, 1], negatives_filtered[:, 2], color='red', marker='o', label='Negatives')
 
-                if face.infinity:  # Si la cara es infinita
-                    # Representación de caras infinitas (e.g., líneas discontinuas, semitransparentes)
-                    if len(vertices) >= 3:
-                        # Si hay al menos 3 vértices, trazamos la cara como superficie
-                        ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], color='orange', alpha=0.1, linewidth=0.5, edgecolor='r', linestyle='--', label="Infinite Face")
-                    elif len(vertices) == 2:
-                        # Si solo hay 2 vértices, trazamos una línea
-                        ax.plot([vertices[0, 0], vertices[1, 0]],
-                                [vertices[0, 1], vertices[1, 1]],
-                                [vertices[0, 2], vertices[1, 2]],
-                                color='orange', alpha=0.5, linestyle='--')
-                    else:
-                        print("Warning: Cara infinita sin vértices visibles.")
-                else:
-                    # Caras finitas normales
-                    poly3d = Poly3DCollection([vertices], facecolors='cyan', edgecolors='blue', linewidths=1, alpha=0.5)
+        # 3. Volumen de Voronoi (Caras)
+        faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
+
+        for face in faces:
+            vertices = np.array(face.vertex)
+
+            # Filtrar caras que están fuera del volumen
+            if face.infinity:  # Si la cara es infinita
+                # Coeficientes del plano (A, B, C, D)
+                A = face.p.getA()
+                B = face.p.getB()
+                C = face.p.getC()
+                D = face.p.getD()
+
+                # Calcular intersecciones de la cara infinita con el cubo
+                intersection_points = Visual_tools.get_intersection_with_cube(A, B, C, D, volume_limits)
+
+                all_vertices = np.vstack((vertices, intersection_points))
+                unique_intersections = np.unique(all_vertices, axis=0)
+
+                # Ordenar los puntos
+                ordered_intersections = Visual_tools.order_points_by_angle(unique_intersections)
+
+                if len(all_vertices) > 3:  # Asegurarse de que hay suficientes puntos
+                    poly3d = Poly3DCollection([ordered_intersections], facecolors='orange', edgecolors='red', linewidths=1, alpha=0.5)
                     ax.add_collection3d(poly3d)
 
-            # Etiquetas de los ejes
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-            ax.set_zlabel('Z')
+            else:
+                # Caras finitas normales
+                poly3d = Poly3DCollection([vertices], facecolors='cyan', edgecolors='blue', linewidths=1, alpha=0.5)
+                ax.add_collection3d(poly3d)
 
-            # Ajustar límites de los ejes para visualizar mejor la extensión de las caras infinitas
-            ax.set_xlim(min(positive[0], np.min(negatives[:, 0])),
-                        max(positive[0], np.max(negatives[:, 0])))
-            ax.set_ylim(min(positive[1], np.min(negatives[:, 1])),
-                        max(positive[1], np.max(negatives[:, 1])))
-            ax.set_zlim(min(positive[2], np.min(negatives[:, 2])),
-                        max(positive[2], np.max(negatives[:, 2])))
+        # Etiquetas de los ejes
+        ax.set_xlabel('L*')
+        ax.set_ylabel('a*')
+        ax.set_zlabel('b*')
+
+        # Ajustar límites de los ejes según el volumen
+        ax.set_xlim(volume_limits.comp1[0], volume_limits.comp1[1])
+        ax.set_ylim(volume_limits.comp2[0], volume_limits.comp2[1])
+        ax.set_zlim(volume_limits.comp3[0], volume_limits.comp3[1])
+
+        # Mostrar la leyenda
+        ax.legend()
+
+        # Mostrar el gráfico
+        plt.show()
 
 
-            # Mostrar la leyenda
-            ax.legend()
 
-            # Mostrar el gráfico
-            plt.show()
 
+    @staticmethod
+    def get_intersection_with_cube(A, B, C, D, volume_limits):
+        intersections = []
+
+        # Definir los límites del cubo
+        x_min, x_max = volume_limits.comp1
+        y_min, y_max = volume_limits.comp2
+        z_min, z_max = volume_limits.comp3
+
+        # Intersecciones con las caras XY (Z = z_min o z_max)
+        for z in [z_min, z_max]:
+            if C != 0:
+                for y in [y_min, y_max]:
+                    x = -(B * y + C * z + D) / A if A != 0 else None
+                    if x is not None and x_min <= x <= x_max:
+                        intersections.append((x, y, z))
+
+        # Intersecciones con las caras XZ (Y = y_min o y_max)
+        for y in [y_min, y_max]:
+            if B != 0:
+                for z in [z_min, z_max]:
+                    x = -(A * y + C * z + D) / B if B != 0 else None
+                    if x is not None and x_min <= x <= x_max:
+                        intersections.append((x, y, z))
+
+        # Intersecciones con las caras YZ (X = x_min o x_max)
+        for x in [x_min, x_max]:
+            if A != 0:
+                for z in [z_min, z_max]:
+                    y = -(A * x + C * z + D) / B if B != 0 else None
+                    if y is not None and y_min <= y <= y_max:
+                        intersections.append((x, y, z))
+
+        intersections = np.array(intersections)
+
+        return intersections
+
+    @staticmethod
+    def order_points_by_angle(points):
+        # Calcular el centroide
+        centroid = np.mean(points, axis=0)
+
+        # Calcular los ángulos
+        angles = np.arctan2(points[:, 1] - centroid[1], points[:, 0] - centroid[0])
+
+        # Ordenar los puntos por el ángulo
+        ordered_indices = np.argsort(angles)
+        return points[ordered_indices]
