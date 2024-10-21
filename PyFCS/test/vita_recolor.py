@@ -3,6 +3,7 @@ import sys
 from skimage import color
 import numpy as np
 import matplotlib.pyplot as plt
+import mplcursors 
 
 # Get the path to the directory containing PyFCS
 current_dir = os.path.dirname(__file__)
@@ -62,12 +63,17 @@ def main():
 
     # Step 5: Process each Pixel
     colorized_image = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
+    membership_values = np.zeros((image.shape[0], image.shape[1]), dtype=object) 
+
     for y in range(image.shape[0]):
         for x in range(image.shape[1]):
             lab_color = lab_image[y, x]
 
             # Get membership degrees for all prototypes in one call
             membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
+
+            # Save membership degrees for this pixel
+            membership_values[y, x] = membership_degrees
 
             # Find the prototype with the highest membership degree
             max_membership = -1
@@ -84,6 +90,8 @@ def main():
                 colorized_image[y, x] = rgb_color.astype(np.uint8)
 
 
+    # Display the image
+    fig, ax = plt.subplots()
     plt.imshow(colorized_image)
     plt.title('Processed Image (Colored by Closest Prototype)')
     plt.axis('off')  # Hide axis
@@ -92,6 +100,19 @@ def main():
     handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=prototype_colors[p.label], markersize=10) for p in prototypes]
     labels = [p.label for p in prototypes]
     plt.legend(handles, labels, loc='upper right', title='Prototypes')
+
+    # Interactive cursor to display membership degrees
+    cursor = mplcursors.cursor(ax, hover=True)
+
+    @cursor.connect("add")
+    def on_add(sel):
+        # Get x and y coordinates of the pixel under the cursor
+        x, y = int(sel.target[0]), int(sel.target[1])
+        memberships = membership_values[y, x]
+
+        # Create a string with the membership degrees for this pixel
+        info = "\n".join([f"{name}: {degree:.3f}" for name, degree in memberships.items()])
+        sel.annotation.set(text=f"Pixel ({x},{y})\n{info}")
 
     plt.show()
 
