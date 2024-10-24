@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from matplotlib.patches import Polygon
 
 from scipy.spatial import ConvexHull
 
@@ -9,51 +10,84 @@ class Visual_tools:
 
 
     @staticmethod
-    def plot_3d_all(volumes):
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
+    def plot_prototype_2d(prototype, volume_limits):
+        fig, ax = plt.subplots()
 
-        cmap = plt.get_cmap('tab20')
-        colors = [cmap(i) for i in np.linspace(0, 1, len(volumes))]
+        # 1. Puntos negativos y positivo en 3D (los proyectaremos a 2D)
+        negatives = np.array(prototype.negatives)
+        positives = np.array(prototype.positive)
 
-        # Ajusta los límites del gráfico
-        ax.set_xlim([0, 100])
-        ax.set_ylim([-180, 180])
-        ax.set_zlim([-180, 180])
+        # Filtrar puntos negativos dentro de los límites y proyectarlos a 2D
+        negatives_filtered = negatives[
+            (negatives[:, 0] >= volume_limits.comp1[0]) & (negatives[:, 0] <= volume_limits.comp1[1]) &
+            (negatives[:, 1] >= volume_limits.comp2[0]) & (negatives[:, 1] <= volume_limits.comp2[1])
+        ]
+        negatives_2d = negatives_filtered[:, :2]  # Proyectamos a 2D (solo comp1 y comp2)
 
-        for i, volume in enumerate(volumes):
-            # Iteramos sobre las caras del volumen actual
-            for face in volume.voronoi_volume.faces:
-                # Extraemos los puntos de la cara y los convertimos en un arreglo numpy
-                puntos = np.array([point for point in face.getArrayVertex()])
-                # Cerramos el ciclo de la cara
-                puntos = np.append(puntos, [puntos[0]], axis=0)
+        # Filtrar punto positivo dentro de los límites y proyectarlo a 2D
+        if (positives[0] >= volume_limits.comp1[0] and positives[0] <= volume_limits.comp1[1] and
+            positives[1] >= volume_limits.comp2[0] and positives[1] <= volume_limits.comp2[1]):
+            positive_2d = positives[:2]  # Proyectamos a 2D eliminando la coordenada z
+            ax.scatter(positive_2d[0], positive_2d[1], color='green', marker='^', s=100, label='Positive')
 
-                # Extraemos las coordenadas x, y, z de los puntos
-                x = puntos[:, 0]
-                y = puntos[:, 1]
-                z = puntos[:, 2]
+        # Graficar puntos negativos proyectados a 2D
+        ax.scatter(negatives_2d[:, 0], negatives_2d[:, 1], color='red', marker='o', label='Negatives')
 
+        # 2. Lista para almacenar las caras que forman el volumen de Voronoi
+        voronoi_faces = []
 
-                # Filtra los puntos para que estén dentro de los límites del gráfico
-                mask = (x >= ax.get_xlim()[0]) & (x <= ax.get_xlim()[1]) & \
-                    (y >= ax.get_ylim()[0]) & (y <= ax.get_ylim()[1]) & \
-                    (z >= ax.get_zlim()[0]) & (z <= ax.get_zlim()[1])
+        # 3. Volumen de Voronoi (Caras)
+        faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices en 3D
 
-                x_filtered = x[mask]
-                y_filtered = y[mask]
-                z_filtered = z[mask]
+        for face in faces:
+            vertices = np.array(face.vertex)  # Obtenemos los vértices en 3D
 
-                # Verifica que haya al menos dos puntos después del filtrado
-                if len(x_filtered) > 1 and len(y_filtered) > 1 and len(z_filtered) > 1:
-                    ax.plot(x_filtered, y_filtered, z_filtered, color=colors[i])
+            if face.infinity:  # Si es una cara infinita, proyectamos la intersección con el volumen
+                # Coeficientes del plano Ax + By + Cz + D = 0
+                A, B, C, D = face.p.getA(), face.p.getB(), face.p.getC(), face.p.getD()
 
+                # Calcular las intersecciones del plano infinito con los límites del volumen
+                intersection_points = Visual_tools.get_intersection_with_cube(A, B, C, D, volume_limits)
 
-        # Etiqueta de los ejes
+                if len(intersection_points) > 0:
+                    all_vertices = np.vstack((vertices, intersection_points))
+                    unique_intersections = np.unique(all_vertices, axis=0)
+
+                    # Ordenar los puntos y proyectar al plano 2D (eliminamos la coordenada z)
+                    ordered_intersections = Visual_tools.order_points_by_angle(unique_intersections[:, :2])
+
+                    if len(ordered_intersections) > 2:
+                        voronoi_faces.append(ordered_intersections)
+            else:
+                # Proyectar los vértices finitos a 2D (eliminar la coordenada z)
+                vertices_2d = vertices[:, :2]
+
+                # Filtrar los vértices dentro del área
+                vertices_filtered = vertices_2d[
+                    (vertices_2d[:, 0] >= volume_limits.comp1[0]) & (vertices_2d[:, 0] <= volume_limits.comp1[1]) &
+                    (vertices_2d[:, 1] >= volume_limits.comp2[0]) & (vertices_2d[:, 1] <= volume_limits.comp2[1])
+                ]
+
+                if len(vertices_filtered) > 2:
+                    voronoi_faces.append(vertices_filtered)
+
+        # 4. Graficar el volumen de Voronoi como polígonos en 2D
+        for face in voronoi_faces:
+            poly_patch = Polygon(face, edgecolor='blue', facecolor='cyan', alpha=0.5)
+            ax.add_patch(poly_patch)
+
+        # Etiquetas de los ejes
         ax.set_xlabel('L*')
         ax.set_ylabel('a*')
-        ax.set_zlabel('b*')
 
+        # Ajustar límites de los ejes según el volumen
+        ax.set_xlim(volume_limits.comp1[0], volume_limits.comp1[1])
+        ax.set_ylim(volume_limits.comp2[0], volume_limits.comp2[1])
+
+        # Mostrar la leyenda
+        ax.legend()
+
+        # Mostrar el gráfico
         plt.show()
 
 

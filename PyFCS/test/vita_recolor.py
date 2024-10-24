@@ -17,13 +17,14 @@ from PyFCS import Input, Prototype, FuzzyColorSpace
 from PyFCS.input_output.utils import Utils
 
 def main():
-    var = "m_A1"
-
+    var = "m_C4"
     colorspace_name = 'VITA-CLASSICAL-BLACK.cns'
+
+
     img_path = os.path.join(".", "imagen_test", f"{var}.png")
 
-    IMG_WIDTH = 103
-    IMG_HEIGHT = 103
+    IMG_WIDTH = 410
+    IMG_HEIGHT = 410
     image = Utils.image_processing(img_path, IMG_WIDTH, IMG_HEIGHT)
 
     if image is None:
@@ -65,12 +66,20 @@ def main():
     colorized_image = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
     membership_values = np.zeros((image.shape[0], image.shape[1]), dtype=object) 
 
+    # Create a cache dictionary to store membership degrees for each unique LAB color
+    membership_cache = {}
+
     for y in range(image.shape[0]):
         for x in range(image.shape[1]):
-            lab_color = lab_image[y, x]
+            lab_color = tuple(lab_image[y, x])
 
-            # Get membership degrees for all prototypes in one call
-            membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
+            # Verifica si el color LAB ya ha sido procesado
+            if lab_color in membership_cache:
+                membership_degrees = membership_cache[lab_color]
+            else:
+                # Calcula los grados de pertenencia si no están en el diccionario
+                membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
+                membership_cache[lab_color] = membership_degrees  # Guarda el resultado en el diccionario
 
             # Save membership degrees for this pixel
             membership_values[y, x] = membership_degrees
@@ -99,7 +108,10 @@ def main():
     # Create legend
     handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=prototype_colors[p.label], markersize=10) for p in prototypes]
     labels = [p.label for p in prototypes]
-    plt.legend(handles, labels, loc='upper right', title='Prototypes')
+
+    # Adjust layout and move the legend outside
+    plt.legend(handles, labels, loc='center left', bbox_to_anchor=(1, 0.5), title='Prototypes')
+    plt.tight_layout() 
 
     # Interactive cursor to display membership degrees
     cursor = mplcursors.cursor(ax, hover=True)
