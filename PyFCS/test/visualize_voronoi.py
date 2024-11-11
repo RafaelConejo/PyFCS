@@ -44,7 +44,7 @@ def main():
 
     # Step 3: Visualization of the Voronoi Regions
     # Visual_tools.plot_3d_all(prototypes)
-    Visual_tools.plot_prototype(prototypes[2], volume_limits)
+    Visual_tools.create_voronoi_volume_shape(prototypes[2], volume_limits)
 
 
 if __name__ == "__main__":

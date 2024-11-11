@@ -17,14 +17,14 @@ from PyFCS import Input, Prototype, FuzzyColorSpace
 from PyFCS.input_output.utils import Utils
 
 def main():
-    var = "m_C4"
-    colorspace_name = 'VITA-CLASSICAL-BLACK.cns'
+    var = "VITA_CLASSICAL\A2"
+    colorspace_name = 'VITA-CLASSICAL-BLACK-2.cns'
 
 
     img_path = os.path.join(".", "imagen_test", f"{var}.png")
 
-    IMG_WIDTH = 410
-    IMG_HEIGHT = 410
+    IMG_WIDTH = 308 
+    IMG_HEIGHT = 448 
     image = Utils.image_processing(img_path, IMG_WIDTH, IMG_HEIGHT)
 
     if image is None:
