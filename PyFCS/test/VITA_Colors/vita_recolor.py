@@ -7,7 +7,7 @@ import mplcursors
 
 # Get the path to the directory containing PyFCS
 current_dir = os.path.dirname(__file__)
-pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
+pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
 
 # Add the PyFCS path to sys.path
 sys.path.append(pyfcs_dir)

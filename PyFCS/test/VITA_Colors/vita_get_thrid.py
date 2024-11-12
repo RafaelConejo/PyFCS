@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 # Get the path to the directory containing PyFCS
 current_dir = os.path.dirname(__file__)
-pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
+pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
 
 # Add the PyFCS path to sys.path
 sys.path.append(pyfcs_dir)
@@ -29,7 +29,7 @@ def process_image(img_path, prototypes, fuzzy_color_space, prototype_colors):
     membership_values = np.zeros((image.shape[0], image.shape[1]), dtype=object)
 
     membership_cache = {}
-    region_counts = [{}, {}, {}]  # Tres regiones correspondientes a 1,2; 2,2; 3,2
+    region_counts = [{}, {}, {}]  
 
     # Definir los límites para las divisiones en 3x3
     height_third = image.shape[0] // 3
@@ -47,7 +47,7 @@ def process_image(img_path, prototypes, fuzzy_color_space, prototype_colors):
                 elif 2 * height_third <= y < image.shape[0]:
                     region_idx = 2  # Región 3,2
                 else:
-                    continue  # Saltar cualquier otro caso (aunque no debería haber)
+                    continue  
 
                 lab_color = tuple(lab_image[y, x])
 
