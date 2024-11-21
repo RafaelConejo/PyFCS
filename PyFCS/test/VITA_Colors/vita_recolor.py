@@ -1,3 +1,9 @@
+############################################################################################################################################################################################################
+# This code processes a dental image to reconstruct its color representation based on a fuzzy color space model. 
+# Each pixel in the image is assigned the color of the prototype with the highest membership degree, effectively mapping the image to a predefined set of colors. 
+# This approach is tailored for dental applications, helping analyze and visualize the distribution of color prototypes in tooth samples.
+############################################################################################################################################################################################################
+
 import os
 import sys
 from skimage import color

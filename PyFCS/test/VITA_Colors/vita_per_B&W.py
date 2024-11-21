@@ -1,3 +1,8 @@
+############################################################################################################################################################################################################
+# This code visualizes the regions in an image that exhibit the highest membership degree to specific fuzzy prototypes in white (intensified grayscale). 
+# It achieves this by processing a given image using a fuzzy color space derived from defined prototypes.
+############################################################################################################################################################################################################
+
 import os
 import sys
 from skimage import color
