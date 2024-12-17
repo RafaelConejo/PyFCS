@@ -290,12 +290,22 @@ def main():
 
     elif option == 2:
         all_results = {}  # Dictionary to store results
+        
         for filename in os.listdir(img_dir):  # Loop through the images in the directory
             if filename.endswith(".png"):  # Process only PNG files
                 img_path = os.path.join(img_dir, filename)  # Get the full path of the image
                 region_results = process_image_2(img_path, fuzzy_color_space)  # Process the image
+                
                 if region_results:
-                    all_results[filename] = region_results  # Add the results for this image
+                    # Convert the dictionary to a list of tuples, sorted by the membership values (descending order)
+                    formatted_results = {}
+                    
+                    for region, values in region_results.items():
+                        # Sort the dictionary by value in descending order and convert to list of tuples
+                        sorted_values = sorted(values.items(), key=lambda x: x[1], reverse=True)
+                        formatted_results[region] = sorted_values
+                    
+                    all_results[filename] = formatted_results  # Add the formatted results for this image
 
         # Save the results to an Excel file
         save_to_excel(all_results, filename="test_results\\results_opt_2.xlsx")
