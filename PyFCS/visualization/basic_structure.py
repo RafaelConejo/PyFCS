@@ -3,9 +3,8 @@ from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar
 import sys
 import os
 from skimage import color
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 current_dir = os.path.dirname(__file__)
 pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
@@ -14,11 +13,37 @@ pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
 sys.path.append(pyfcs_dir)
 
 ### my libraries ###
-from PyFCS import Input
+from PyFCS import Input, Visual_tools
 
 class PyFCSApp:
+    def on_option_select(self):
+            if self.COLOR_SPACE:
+                option = self.model_3d_option.get()  # Obtiene el valor seleccionado
+                if option == "Centroid":
+                    fig = Visual_tools.plot_all_centroids(self.file_base_name, self.hex_color) 
+                    self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
+
+    def draw_model_3D(self, fig):
+        """Dibuja la gráfica 3D en el canvas de Tkinter."""
+        if self.graph_widget:
+            self.graph_widget.get_tk_widget().destroy()
+
+        self.graph_widget = FigureCanvasTkAgg(fig, master=self.Canvas1)  # Crear el widget de matplotlib
+        self.graph_widget.draw()  # Dibujar la figura
+        self.graph_widget.get_tk_widget().pack(fill="both", expand=True)  # Empacar el widget en el canvas
+    
+    def select_color(self):
+        # Función que maneja los botones de opción
+        pass
+
+
+
+
+
     def __init__(self, root):
         self.root = root
+        self.COLOR_SPACE = False
+        self.hex_color = []         # Save points colors
 
         # Configuración general de la ventana
         root.title("PyFCS")
@@ -71,31 +96,73 @@ class PyFCSApp:
         tk.Button(fuzzy_manager_frame, text="Load Color Space", command=self.load_color_space).pack(side="left", padx=5)
         tk.Button(fuzzy_manager_frame, text="Save Color Space").pack(side="left", padx=5)
 
-        # Frame para la gráfica 3D y la tabla
-        main_canvas_frame = tk.Frame(root, bg="gray82")
-        main_canvas_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        # Frame principal para organizar pestañas y área derecha
+        main_content_frame = tk.Frame(root, bg="gray82")
+        main_content_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Pestaña izquierda: LabelFrame "Model 3D"
-        model_frame = tk.LabelFrame(main_canvas_frame, text="Model 3D", bg="gray95", padx=10, pady=10, font=("Arial", 12, "bold"))
-        model_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        # Área para imágenes
+        image_area_frame = tk.LabelFrame(main_content_frame, text="Image Display", bg="gray95", padx=10, pady=10)
+        image_area_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+
+        self.image_canvas = tk.Canvas(image_area_frame, bg="white", borderwidth=2, relief="ridge")
+        self.image_canvas.pack(fill="both", expand=True)
+
+        # Notebook con pestañas para "Model 3D" y "Data"
+        notebook = ttk.Notebook(main_content_frame)
+        notebook.pack(side="right", fill="both", expand=True, padx=5, pady=5)
+
+        # Pestaña "Model 3D"
+        model_3d_tab = tk.Frame(notebook, bg="gray95")
+        notebook.add(model_3d_tab, text="Model 3D")
+
+        # Variable para manejar el estado de los botones de opción
+        self.model_3d_option = tk.StringVar(value="Centroid")  # Valor inicial
+
+        # Frame para los botones de opción
+        buttons_frame = tk.Frame(model_3d_tab, bg="gray95")
+        buttons_frame.pack(side="top", fill="x", pady=5)
+
+        # Crear los botones de opción
+        options = ["Centroid", "Core", "0.5-cut", "Support"]
+        for option in options:
+            tk.Radiobutton(
+                buttons_frame, 
+                text=option, 
+                variable=self.model_3d_option, 
+                value=option, 
+                bg="gray95", 
+                font=("Arial", 10),
+                command=self.on_option_select
+            ).pack(side="left", padx=20)
 
         # Canvas para la gráfica 3D
-        self.Canvas1 = tk.Canvas(model_frame, bg="white", borderwidth=2, relief="ridge")
+        self.Canvas1 = tk.Canvas(model_3d_tab, bg="white", borderwidth=2, relief="ridge")
         self.Canvas1.pack(fill="both", expand=True)
 
-        # Pestaña derecha: LabelFrame "Data"
-        data_frame = tk.LabelFrame(main_canvas_frame, text="Data", bg="gray95", padx=10, pady=10, font=("Arial", 12, "bold"))
-        data_frame.pack(side="right", fill="both", expand=True, padx=5, pady=5)
+        # Crear un Frame a la derecha para los botones de color
+        colors_frame = tk.Frame(model_3d_tab, bg="gray95")
+        colors_frame.pack(side="right", fill="y", padx=10)
 
-        # Canvas para la tabla de datos
-        self.Canvas2 = tk.Canvas(data_frame, bg="white", borderwidth=2, relief="ridge")
+        # Botón "Select All"
+        select_all_button = tk.Button(
+            colors_frame,
+            text="Select All",
+            bg="lightgray",
+            font=("Arial", 10),
+            command=self.select_color  # Asume que tienes una función para esto
+        )
+        select_all_button.pack(pady=5)
+
+
+        # Pestaña "Data"
+        data_tab = tk.Frame(notebook, bg="gray95")
+        notebook.add(data_tab, text="Data")
+
+        self.Canvas2 = tk.Canvas(data_tab, bg="white", borderwidth=2, relief="ridge")
         self.Canvas2.pack(side="left", fill="both", expand=True)
 
-        # Barra de desplazamiento para la tabla de datos
-        self.scrollbar = Scrollbar(data_frame, orient="vertical", command=self.Canvas2.yview)
+        self.scrollbar = Scrollbar(data_tab, orient="vertical", command=self.Canvas2.yview)
         self.scrollbar.pack(side="right", fill="y")
-
-        # Asociar scrollbar al Canvas
         self.Canvas2.configure(yscrollcommand=self.scrollbar.set)
 
         # Variables adicionales
@@ -103,6 +170,12 @@ class PyFCSApp:
         self.graph_widget = None  # Para rastrear el gráfico en el Canvas izquierdo
 
         self.root.bind("<Escape>", self.toggle_fullscreen)
+
+
+
+
+
+
 
 
 
@@ -135,12 +208,6 @@ class PyFCSApp:
             input_class = Input.instance(extension)
             color_data = input_class.read_file(filename)
 
-            # Guardar los datos RGB para la gráfica 3D
-            self.rgb_data = [
-                tuple(map(lambda x: int(x * 255), color.lab2rgb([color_value['positive_prototype']])[0]))
-                for color_name, color_value in color_data.items()
-            ]
-
             # Limpiar el Canvas de la tabla de datos
             self.Canvas2.delete("all")
             self.Canvas2.configure(scrollregion=(0, 0, 1000, len(color_data) * 30 + 50))  # Ajustar área de scroll
@@ -150,7 +217,7 @@ class PyFCSApp:
             rect_width, rect_height = 50, 20  # Tamaño de los rectángulos de color
 
             # Dibujar encabezados de la tabla
-            headers = ["R", "G", "B", "Label", "Color"]
+            headers = ["L", "a", "b", "Label", "Color"]
             column_widths = [50, 50, 50, 150, 70]  # Ancho de cada columna
             for i, header in enumerate(headers):
                 self.Canvas2.create_text(
@@ -162,80 +229,56 @@ class PyFCSApp:
             y_start += 30  # Espacio entre encabezados y datos
 
             # Dibujar datos en filas
-            for color_name, rgb in zip(color_data.keys(), self.rgb_data):
-                # Columna R
+            for color_name, color_value in color_data.items():
+                lab = color_value['positive_prototype']
+                lab = np.array(lab)
+
+                # Columna L (el primer componente de LAB)
                 self.Canvas2.create_text(
                     x_start + column_widths[0] / 2, y_start,
-                    text=str(rgb[0]), anchor="center"
+                    text=str(round(lab[0], 2)), anchor="center"  # Mostrar el valor L con 2 decimales
                 )
-                # Columna G
+                # Columna A (el segundo componente de LAB)
                 self.Canvas2.create_text(
                     x_start + column_widths[0] + column_widths[1] / 2, y_start,
-                    text=str(rgb[1]), anchor="center"
+                    text=str(round(lab[1], 2)), anchor="center"  # Mostrar el valor A con 2 decimales
                 )
-                # Columna B
+                # Columna B (el tercer componente de LAB)
                 self.Canvas2.create_text(
                     x_start + sum(column_widths[:2]) + column_widths[2] / 2, y_start,
-                    text=str(rgb[2]), anchor="center"
+                    text=str(round(lab[2], 2)), anchor="center"  # Mostrar el valor B con 2 decimales
                 )
                 # Columna Label
                 self.Canvas2.create_text(
                     x_start + sum(column_widths[:3]) + column_widths[3] / 2, y_start,
                     text=color_name, anchor="center"
                 )
-                # Columna Color (rectángulo)
+
+                # Guardar los datos RGB para la gráfica 3D
+                rgb_data = tuple(map(lambda x: int(x * 255), color.lab2rgb([color_value['positive_prototype']])[0]))
+                self.hex_color.append(f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}')
+
                 self.Canvas2.create_rectangle(
                     x_start + sum(column_widths[:4]) + 10, y_start - rect_height / 2,
                     x_start + sum(column_widths[:4]) + 10 + rect_width, y_start + rect_height / 2,
-                    fill=f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}', outline="black"
+                    fill=f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}', outline="black"  
                 )
 
                 # Avanzar a la siguiente fila
                 y_start += 30
 
+
             # Actualizar la gráfica 3D
-            self.draw_3d_points(filename, len(color_data))
+            self.COLOR_SPACE = True
+            file_base_name = os.path.splitext(os.path.basename(filename))[0]
+
+            fig = Visual_tools.plot_all_centroids(file_base_name, color_data, self.hex_color)
+            self.draw_model_3D(fig)
+
+            self.file_base_name = file_base_name
+            self.color_data = color_data
         else:
             messagebox.showwarning("No File Selected", "No file was selected.")
-
-    def draw_3d_points(self, filename, num_elements):
-        """Dibuja los puntos RGB en 3D en el Canvas izquierdo usando Matplotlib."""
-        if self.graph_widget:
-            self.graph_widget.get_tk_widget().destroy()
-
-        fig = plt.Figure(figsize=(5, 4), dpi=100)
-        ax = fig.add_subplot(111, projection='3d')
-
-        # Separar los datos RGB
-        r_values = [rgb[0] for rgb in self.rgb_data]
-        g_values = [rgb[1] for rgb in self.rgb_data]
-        b_values = [rgb[2] for rgb in self.rgb_data]
-
-        # Normalizar los valores RGB a [0, 1]
-        r_values_normalized = np.array(r_values) / 255
-        g_values_normalized = np.array(g_values) / 255
-        b_values_normalized = np.array(b_values) / 255
-
-        # Graficar los puntos RGB en 3D con colores normalizados
-        ax.scatter(
-            r_values_normalized,
-            g_values_normalized,
-            b_values_normalized,
-            c=list(zip(r_values_normalized, g_values_normalized, b_values_normalized)),
-            marker='o'
-        )
-
-        # Títulos y etiquetas
-        file_base_name = os.path.splitext(os.path.basename(filename))[0]
-        ax.set_title(f'{file_base_name} - {num_elements} colors', fontsize=10)
-        ax.set_xlabel("R")
-        ax.set_ylabel("G")
-        ax.set_zlabel("B")
-
-        # Agregar la gráfica al Canvas
-        self.graph_widget = FigureCanvasTkAgg(fig, master=self.Canvas1)
-        self.graph_widget.draw()
-        self.graph_widget.get_tk_widget().pack(fill="both", expand=True)
 
     
     def save_color_space(self):

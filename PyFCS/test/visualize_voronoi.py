@@ -43,8 +43,8 @@ def main():
 
 
     # Step 3: Visualization of the Voronoi Regions
-    # Visual_tools.plot_3d_all(prototypes)
-    Visual_tools.plot_prototype(prototypes[0], volume_limits)
+    Visual_tools.plot_all_prototypes(prototypes, volume_limits)
+    # Visual_tools.plot_prototype(prototypes[0], volume_limits)
 
 
 if __name__ == "__main__":
