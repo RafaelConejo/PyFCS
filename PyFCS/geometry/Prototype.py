@@ -11,14 +11,32 @@ from PyFCS.colorspace.ReferenceDomain import ReferenceDomain
 
 
 class Prototype:
-    def __init__(self, label, positive, negatives):
+    false_negatives = [
+            (0, -128, -128), (0, -128, 127), (0, 127, -128), (0, 127, 127), 
+            (100, -128, -128), (100, -128, 127), (100, 127, -128), (100, 127, 127),
+            (0, -128, -0.5), (0, 127, -0.5), (100, -128, -0.5), (100, 127, -0.5),
+            (0, -0.5, -128), (0, -0.5, 127), (100, -0.5, -128), (100, -0.5, 127),
+            (50, -128, -128), (50, -128, 127), (50, 127, -128), (50, 127, 127),
+            (50, -128, -0.5), (50, 127, -0.5), (50, -0.5, -128), (50, -0.5, 127),
+            (0, -0.5, -0.5), (100, -0.5, -0.5)
+        ]
+    
+    def __init__(self, label, positive, negatives, add_false=False):
         self.label = label
         self.positive = positive
         self.negatives = negatives
 
+        if add_false:
+            self.negatives = np.vstack((self.negatives, Prototype.false_negatives))
+
         # Create Voronoi volume
         self.run_qvoronoi()
         self.voronoi_volume = self.read_from_voronoi_file()
+
+
+    @staticmethod
+    def get_falseNegatives():
+        return Prototype.false_negatives
 
 
     def run_qvoronoi(self):

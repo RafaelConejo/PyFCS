@@ -38,13 +38,13 @@ def main():
         negative_prototypes = color_value['negative_prototypes']
 
         # Create a Prototype object for each color
-        prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes)
+        prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes, add_false=True)
         prototypes.append(prototype)
 
 
     # Step 3: Visualization of the Voronoi Regions
     # Visual_tools.plot_3d_all(prototypes)
-    Visual_tools.create_voronoi_volume_shape(prototypes[2], volume_limits)
+    Visual_tools.plot_prototype(prototypes[0], volume_limits)
 
 
 if __name__ == "__main__":

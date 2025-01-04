@@ -57,7 +57,7 @@ def main():
         negative_prototypes = color_value['negative_prototypes']
 
         # Create a Prototype object for each color
-        prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes)
+        prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes, add_false=True)
         prototypes.append(prototype)
 
 
