@@ -33,6 +33,11 @@ class Visual_tools:
         ax.set_ylabel("a*")
         ax.set_zlabel("b*")
 
+        # Definir los límites de los ejes
+        ax.set_xlim(0, 100)      # L* en el rango [0, 100]
+        ax.set_ylim(-128, 127)   # a* en el rango [-128, 127]
+        ax.set_zlim(-128, 127)   # b* en el rango [-128, 127]
+
         return fig  # Devolver la figura
 
 
@@ -193,7 +198,7 @@ class Visual_tools:
         ax.set_zlim(volume_limits.comp3[0], volume_limits.comp3[1])
 
         # Mostrar el gráfico
-        plt.show()
+        return fig
 
 
 

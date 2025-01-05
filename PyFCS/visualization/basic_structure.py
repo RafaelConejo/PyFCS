@@ -13,15 +13,20 @@ pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
 sys.path.append(pyfcs_dir)
 
 ### my libraries ###
-from PyFCS import Input, Visual_tools
+from PyFCS import Input, Visual_tools, ReferenceDomain, Prototype
 
 class PyFCSApp:
     def on_option_select(self):
             if self.COLOR_SPACE:
                 option = self.model_3d_option.get()  # Obtiene el valor seleccionado
                 if option == "Centroid":
-                    fig = Visual_tools.plot_all_centroids(self.file_base_name, self.hex_color) 
+                    fig = Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.colors) 
                     self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
+                
+                elif option == "0.5-cut":
+                    fig = Visual_tools.plot_all_prototypes(self.selected_proto, self.volume_limits) 
+                    self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
+
 
     def draw_model_3D(self, fig):
         """Dibuja la gráfica 3D en el canvas de Tkinter."""
@@ -31,10 +36,82 @@ class PyFCSApp:
         self.graph_widget = FigureCanvasTkAgg(fig, master=self.Canvas1)  # Crear el widget de matplotlib
         self.graph_widget.draw()  # Dibujar la figura
         self.graph_widget.get_tk_widget().pack(fill="both", expand=True)  # Empacar el widget en el canvas
+
+        self.display_color_buttons(self.color_matrix)
     
+
+    def select_all_color(self):
+        # Función que maneja los botones de opción
+        self.selected_centroids = self.color_data
+        self.colors = self.hex_color
+        self.selected_proto = self.prototypes
+
+        # Desmarcar todos los botones
+        for color, var in self.selected_colors.items():
+            var.set(False) 
+        
+        self.on_option_select()
+
+
+
     def select_color(self):
         # Función que maneja los botones de opción
-        pass
+        # Crear una lista para guardar las posiciones de los colores seleccionados
+        selected_centroids = {}
+        selected_indices = []
+
+        # Iterar sobre los colores y verificar cuáles están seleccionados
+        for color_name, selected in self.selected_colors.items():
+            if selected.get():  # Si el color está marcado
+                # Obtener la posición del color en color_data
+                if color_name in self.color_data:
+                    selected_centroids[color_name] = self.color_data[color_name]
+                    keys = list(self.color_data.keys())
+                    selected_indices.append(keys.index(color_name))
+        
+        self.colors = [self.hex_color[i] for i in selected_indices]
+        self.selected_proto = [self.prototypes[i] for i in selected_indices]
+        
+        self.selected_centroids = selected_centroids
+        self.on_option_select()
+
+        
+
+    def display_color_buttons(self, colors):
+        # Si ya existían botones previamente, mantener los colores seleccionados
+        selected_colors = {color for color, var in self.selected_colors.items() if var.get()} if hasattr(self, 'selected_colors') else set()
+
+        # Solo eliminar los botones si los colores han cambiado
+        if hasattr(self, 'color_buttons'):
+            for button in self.color_buttons:
+                button.destroy()
+
+        # Crear un botón por cada color cargado
+        self.selected_colors = {}  # Reiniciar el diccionario de variables
+        self.color_buttons = []  # Lista para almacenar los botones creados
+
+        for color in colors:
+            # Si el color estaba seleccionado previamente, lo mantenemos marcado
+            is_selected = color in selected_colors
+
+            # Crear la variable BooleanVar con el estado correspondiente
+            self.selected_colors[color] = tk.BooleanVar(value=is_selected)
+
+            # Crear el botón
+            button = tk.Checkbutton(
+                self.colors_frame,
+                text=color,
+                variable=self.selected_colors[color],  # Variable para seleccionar el color
+                bg="gray95",  # Fondo del botón
+                font=("Arial", 10),
+                onvalue=True,  # Valor cuando está marcado
+                offvalue=False,  # Valor cuando no está marcado
+                command=lambda c=color: self.select_color(),
+            )
+            button.pack(anchor="w", pady=2, padx=10)
+            
+            self.color_buttons.append(button)  # Almacenamos el botón creado
+
 
 
 
@@ -137,21 +214,21 @@ class PyFCSApp:
 
         # Canvas para la gráfica 3D
         self.Canvas1 = tk.Canvas(model_3d_tab, bg="white", borderwidth=2, relief="ridge")
-        self.Canvas1.pack(fill="both", expand=True)
+        self.Canvas1.pack(side="left", fill="both", expand=True)
 
         # Crear un Frame a la derecha para los botones de color
-        colors_frame = tk.Frame(model_3d_tab, bg="gray95")
-        colors_frame.pack(side="right", fill="y", padx=10)
+        self.colors_frame = tk.Frame(model_3d_tab, bg="gray95")
+        self.colors_frame.pack(side="right", fill="y", padx=10, pady=10)
 
         # Botón "Select All"
-        select_all_button = tk.Button(
-            colors_frame,
+        self.select_all_button = tk.Button(
+            self.colors_frame,
             text="Select All",
             bg="lightgray",
             font=("Arial", 10),
-            command=self.select_color  # Asume que tienes una función para esto
+            command=self.select_all_color  # Asume que tienes una función para esto
         )
-        select_all_button.pack(pady=5)
+        self.select_all_button.pack(pady=5)
 
 
         # Pestaña "Data"
@@ -229,9 +306,12 @@ class PyFCSApp:
             y_start += 30  # Espacio entre encabezados y datos
 
             # Dibujar datos en filas
+            self.color_matrix = []
             for color_name, color_value in color_data.items():
                 lab = color_value['positive_prototype']
                 lab = np.array(lab)
+
+                self.color_matrix.append(color_name)
 
                 # Columna L (el primer componente de LAB)
                 self.Canvas2.create_text(
@@ -268,17 +348,39 @@ class PyFCSApp:
                 y_start += 30
 
 
+            # Create Voronoi
+            self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
+
+            # Step 2: Creating Prototype objects for each color
+            self.prototypes = []
+            for color_name, color_value in color_data.items():
+                # Assume that 'color_value' contains the positive prototype and set of negatives
+                positive_prototype = color_value['positive_prototype']
+                negative_prototypes = color_value['negative_prototypes']
+
+                # Create a Prototype object for each color
+                prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes, add_false=True)
+                self.prototypes.append(prototype)
+
+
             # Actualizar la gráfica 3D
             self.COLOR_SPACE = True
-            file_base_name = os.path.splitext(os.path.basename(filename))[0]
-
-            fig = Visual_tools.plot_all_centroids(file_base_name, color_data, self.hex_color)
-            self.draw_model_3D(fig)
-
-            self.file_base_name = file_base_name
+            self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
             self.color_data = color_data
+
+            self.selected_centroids = color_data
+            self.colors = self.hex_color
+            self.selected_proto = self.prototypes
+            self.on_option_select()
+
         else:
             messagebox.showwarning("No File Selected", "No file was selected.")
+
+
+
+
+
+
 
     
     def save_color_space(self):
