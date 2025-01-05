@@ -4,6 +4,7 @@ from PyFCS.geometry.Face import Face
 from PyFCS.geometry.Volume import Volume
 from PyFCS.geometry.GeometryTools import GeometryTools
 from PyFCS.colorspace.ReferenceDomain import ReferenceDomain
+from PyFCS import Prototype
 
 class FuzzyColor():
     @staticmethod
@@ -66,9 +67,12 @@ class FuzzyColor():
 
             for face in proto.voronoi_volume.getFaces():
                     FuzzyColor.add_face_to_core_support(face, Point(*proto.positive), core_volume, support_volume, scaling_factor)
+
+            core_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=core_volume, add_false=proto.add_false)
+            support_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=support_volume, add_false=proto.add_false)
             
-            core_volumes.append(core_volume)
-            support_volumes.append(support_volume)
+            core_volumes.append(core_volume_dict)
+            support_volumes.append(support_volume_dict)
 
         return core_volumes, support_volumes
     
@@ -101,8 +105,8 @@ class FuzzyColor():
 
             xyz = new_color
 
-            if supports[proto].isInside(xyz) and not supports[proto].isInFace(xyz):
-                if cores[proto].isInside(xyz):
+            if supports[proto].voronoi_volume.isInside(xyz) and not supports[proto].voronoi_volume.isInFace(xyz):
+                if cores[proto].voronoi_volume.isInside(xyz):
                     value = 1
                     result[label] = value
                 else:
@@ -114,9 +118,9 @@ class FuzzyColor():
                         print("No intersection with cube")
 
                     dist_face = float('inf')
-                    p_face = GeometryTools.intersection_with_volume(cores[proto], cores[proto].getRepresentative(), xyz)
+                    p_face = GeometryTools.intersection_with_volume(cores[proto].voronoi_volume, cores[proto].voronoi_volume.getRepresentative(), xyz)
                     if p_face is not None:
-                        dist_face = GeometryTools.euclidean_distance(cores[proto].getRepresentative(), p_face)
+                        dist_face = GeometryTools.euclidean_distance(cores[proto].voronoi_volume.getRepresentative(), p_face)
                     else:
                         dist_face = dist_cube
                     param_a = dist_face
@@ -130,9 +134,9 @@ class FuzzyColor():
                     param_b = dist_face
 
                     dist_face = float('inf')
-                    p_face = GeometryTools.intersection_with_volume(supports[proto], supports[proto].getRepresentative(), xyz)
+                    p_face = GeometryTools.intersection_with_volume(supports[proto].voronoi_volume, supports[proto].voronoi_volume.getRepresentative(), xyz)
                     if p_face is not None:
-                        dist_face = GeometryTools.euclidean_distance(supports[proto].getRepresentative(), p_face)
+                        dist_face = GeometryTools.euclidean_distance(supports[proto].voronoi_volume.getRepresentative(), p_face)
                     else:
                         dist_face = dist_cube
                     param_c = dist_face

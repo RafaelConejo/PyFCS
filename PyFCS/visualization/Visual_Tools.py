@@ -4,6 +4,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib import cm
 
 ### my libraries ###
+from PyFCS.geometry.Point import Point
 from PyFCS import Prototype
 
 class Visual_tools:
@@ -279,6 +280,9 @@ class Visual_tools:
 
         # Limitar coordenadas a los valores del volumen
         for vertex in vertices:
+            if isinstance(vertex, Point):
+                vertex = vertex.get_double_point()
+    
             adjusted_vertex = np.array([
                 np.clip(vertex[0], volume_limits.comp1[0], volume_limits.comp1[1]),
                 np.clip(vertex[1], volume_limits.comp2[0], volume_limits.comp2[1]),

@@ -13,7 +13,7 @@ pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
 sys.path.append(pyfcs_dir)
 
 ### my libraries ###
-from PyFCS import Input, Visual_tools, ReferenceDomain, Prototype
+from PyFCS import Input, Visual_tools, ReferenceDomain, Prototype, FuzzyColorSpace
 
 class PyFCSApp:
     def on_option_select(self):
@@ -25,6 +25,14 @@ class PyFCSApp:
                 
                 elif option == "0.5-cut":
                     fig = Visual_tools.plot_all_prototypes(self.selected_proto, self.volume_limits) 
+                    self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
+                
+                elif option == "Core":
+                    fig = Visual_tools.plot_all_prototypes(self.selected_core, self.volume_limits) 
+                    self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
+                
+                elif option == "Support":
+                    fig = Visual_tools.plot_all_prototypes(self.selected_support, self.volume_limits) 
                     self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
 
 
@@ -71,6 +79,8 @@ class PyFCSApp:
         
         self.colors = [self.hex_color[i] for i in selected_indices]
         self.selected_proto = [self.prototypes[i] for i in selected_indices]
+        self.selected_core = [self.cores[i] for i in selected_indices]
+        self.selected_support = [self.supports[i] for i in selected_indices]
         
         self.selected_centroids = selected_centroids
         self.on_option_select()
@@ -361,6 +371,10 @@ class PyFCSApp:
                 # Create a Prototype object for each color
                 prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes, add_false=True)
                 self.prototypes.append(prototype)
+            
+            fuzzy_color_space = FuzzyColorSpace(space_name=" " , prototypes=self.prototypes)
+            self.cores = fuzzy_color_space.get_cores()
+            self.supports = fuzzy_color_space.get_supports()
 
 
             # Actualizar la gráfica 3D
@@ -371,6 +385,8 @@ class PyFCSApp:
             self.selected_centroids = color_data
             self.colors = self.hex_color
             self.selected_proto = self.prototypes
+            self.selected_core = self.cores
+            self.selected_support = self.supports
             self.on_option_select()
 
         else:

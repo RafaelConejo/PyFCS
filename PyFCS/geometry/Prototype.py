@@ -21,17 +21,22 @@ class Prototype:
             (0, -0.5, -0.5), (100, -0.5, -0.5)
         ]
     
-    def __init__(self, label, positive, negatives, add_false=False):
+
+    def __init__(self, label, positive, negatives, voronoi_volume=None, add_false=False):
         self.label = label
         self.positive = positive
         self.negatives = negatives
-
+        self.add_false = add_false
+        
         if add_false:
             self.negatives = np.vstack((self.negatives, Prototype.false_negatives))
 
-        # Create Voronoi volume
-        self.run_qvoronoi()
-        self.voronoi_volume = self.read_from_voronoi_file()
+        if voronoi_volume is not None:
+            self.voronoi_volume = voronoi_volume
+        else:
+            # Create Voronoi volume
+            self.run_qvoronoi()
+            self.voronoi_volume = self.read_from_voronoi_file()
 
 
     @staticmethod
