@@ -116,6 +116,7 @@ class GeometryTools:
 
         return p_plane_k
 
+
     @staticmethod
     def intersection_plane_rect(hyperplane, point0, point1):
         denom = 0

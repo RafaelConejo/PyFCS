@@ -24,15 +24,15 @@ class PyFCSApp:
                     self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
                 
                 elif option == "0.5-cut":
-                    fig = Visual_tools.plot_all_prototypes(self.selected_proto, self.volume_limits) 
+                    fig = Visual_tools.plot_all_prototypes(self.selected_proto, self.volume_limits, self.hex_color) 
                     self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
                 
                 elif option == "Core":
-                    fig = Visual_tools.plot_all_prototypes(self.selected_core, self.volume_limits) 
+                    fig = Visual_tools.plot_all_prototypes(self.selected_core, self.volume_limits, self.hex_color) 
                     self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
                 
                 elif option == "Support":
-                    fig = Visual_tools.plot_all_prototypes(self.selected_support, self.volume_limits) 
+                    fig = Visual_tools.plot_all_prototypes(self.selected_support, self.volume_limits, self.hex_color) 
                     self.draw_model_3D(fig)  # Pasar la figura al Canvas para dibujarla
 
 
@@ -77,7 +77,11 @@ class PyFCSApp:
                     keys = list(self.color_data.keys())
                     selected_indices.append(keys.index(color_name))
         
-        self.colors = [self.hex_color[i] for i in selected_indices]
+        self.colors = {
+            hex_color_key: lab_value for index in selected_indices
+            for hex_color_key, lab_value in self.hex_color.items()
+            if np.array_equal(lab_value, self.color_data[keys[index]]['positive_prototype'])
+        }
         self.selected_proto = [self.prototypes[i] for i in selected_indices]
         self.selected_core = [self.cores[i] for i in selected_indices]
         self.selected_support = [self.supports[i] for i in selected_indices]
@@ -316,6 +320,7 @@ class PyFCSApp:
             y_start += 30  # Espacio entre encabezados y datos
 
             # Dibujar datos en filas
+            self.hex_color = {}
             self.color_matrix = []
             for color_name, color_value in color_data.items():
                 lab = color_value['positive_prototype']
@@ -346,7 +351,7 @@ class PyFCSApp:
 
                 # Guardar los datos RGB para la gráfica 3D
                 rgb_data = tuple(map(lambda x: int(x * 255), color.lab2rgb([color_value['positive_prototype']])[0]))
-                self.hex_color.append(f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}')
+                self.hex_color[(f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}')] = lab
 
                 self.Canvas2.create_rectangle(
                     x_start + sum(column_widths[:4]) + 10, y_start - rect_height / 2,

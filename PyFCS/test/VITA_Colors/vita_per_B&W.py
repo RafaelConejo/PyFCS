@@ -60,7 +60,7 @@ def update(label):
 def main():
     global prototypes, lab_image, fuzzy_color_space, prototype_labels, ax, fig
 
-    var = "m_A1"
+    var = "VITA_CLASSICAL\\A1"
 
     colorspace_name = 'VITA-CLASSICAL-BLACK.cns'
     img_path = os.path.join(".", "imagen_test", f"{var}.png")

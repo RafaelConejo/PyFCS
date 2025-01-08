@@ -184,8 +184,8 @@ class FuzzyColor():
 
         xyz = new_color
 
-        if support.isInside(xyz) and not support.isInFace(xyz):
-            if core.isInside(xyz):
+        if support.voronoi_volume.isInside(xyz) and not support.voronoi_volume.isInFace(xyz):
+            if core.voronoi_volume.isInside(xyz):
                 value = 1
                 result = value
             else:
@@ -197,9 +197,9 @@ class FuzzyColor():
                     print("No intersection with cube")
 
                 dist_face = float('inf')
-                p_face = GeometryTools.intersection_with_volume(core, core.getRepresentative(), xyz)
+                p_face = GeometryTools.intersection_with_volume(core.voronoi_volume, core.voronoi_volume.getRepresentative(), xyz)
                 if p_face is not None:
-                    dist_face = GeometryTools.euclidean_distance(core.getRepresentative(), p_face)
+                    dist_face = GeometryTools.euclidean_distance(core.voronoi_volume.getRepresentative(), p_face)
                 else:
                     dist_face = dist_cube
                 param_a = dist_face
@@ -213,9 +213,9 @@ class FuzzyColor():
                 param_b = dist_face
 
                 dist_face = float('inf')
-                p_face = GeometryTools.intersection_with_volume(support, support.getRepresentative(), xyz)
+                p_face = GeometryTools.intersection_with_volume(support.voronoi_volume, support.voronoi_volume.getRepresentative(), xyz)
                 if p_face is not None:
-                    dist_face = GeometryTools.euclidean_distance(support.getRepresentative(), p_face)
+                    dist_face = GeometryTools.euclidean_distance(support.voronoi_volume.getRepresentative(), p_face)
                 else:
                     dist_face = dist_cube
                 param_c = dist_face
