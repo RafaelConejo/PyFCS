@@ -4,6 +4,8 @@ from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar
 import numpy as np
 from skimage import color
 from PIL import Image, ImageTk
+import matplotlib.pyplot as plt
+
 
 def about_info(root):
     """Muestra la ventana emergente con la información 'About'."""
@@ -27,7 +29,9 @@ def about_info(root):
 
 
 
+
 def get_proto_percentage(prototypes, image, fuzzy_color_space, selected_option):
+    """Genera la imagen en escala de grises sin necesidad de una figura de matplotlib."""
     # Convertir la imagen a un array NumPy
     img_np = np.array(image)
 
@@ -48,7 +52,8 @@ def get_proto_percentage(prototypes, image, fuzzy_color_space, selected_option):
             lab_color = lab_image[y, x]
             membership_degree = fuzzy_color_space.calculate_membership_for_prototype(lab_color, selected_option)
 
-            # Scale to grayscale
-            grayscale_image[y, x] = int(membership_degree * 255)  
-    
+            # Escalar a escala de grises
+            grayscale_image[y, x] = int(membership_degree * 255)
+
+    # Devolver la imagen en escala de grises como un array
     return grayscale_image

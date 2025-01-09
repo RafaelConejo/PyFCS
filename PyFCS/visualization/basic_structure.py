@@ -6,6 +6,7 @@ from skimage import color
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from PIL import Image, ImageTk
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 current_dir = os.path.dirname(__file__)
 pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
@@ -475,11 +476,35 @@ class PyFCSApp:
 
         # Cargar la imagen y asociarla al window_id
         img = Image.open(filename)
-        img.thumbnail((300, 300))  # Ajustar el tamaño si es necesario
+        original_width, original_height = img.size
+
+        # Dimensiones del rectangulo donde la imagen
+        rect_width = 200
+        rect_height = 250
+
+        # Calcular la escala máxima para ajustar la imagen sin distorsionarla
+        scale_width = rect_width / original_width
+        scale_height = rect_height / original_height
+
+        # Usar la escala más pequeña para mantener la proporción
+        scale = min(scale_width, scale_height)
+
+        # Redimensionar la imagen aplicando la escala
+        new_width = int(original_width * scale)
+        new_height = int(original_height * scale)
+
+        # Redimensionar la imagen a las nuevas dimensiones
+        img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        # Guardar las dimensiones originales en un diccionario 
+        if not hasattr(self, "image_dimensions"):
+            self.image_dimensions = {}  # Inicializar el diccionario si no existe
+        self.image_dimensions[window_id] = (new_width, new_height)
+
 
         self.images = {}
-        self.images[window_id] = img
-        img_tk = ImageTk.PhotoImage(img)
+        self.images[window_id] = img_resized
+        img_tk = ImageTk.PhotoImage(img_resized)
 
         # Guardar la referencia de la imagen en un diccionario
         if not hasattr(self, "floating_images"):
@@ -489,12 +514,12 @@ class PyFCSApp:
 
         # Crear rectángulo de fondo para la ventana
         self.image_canvas.create_rectangle(
-            x, y, x + 320, y + 360, outline="black", fill="white", width=2, tags=(window_id, "floating")
+            x, y, x + rect_width, y + rect_height+50, outline="black", fill="white", width=2, tags=(window_id, "floating")
         )
 
         # Crear barra de título en la parte superior
         self.image_canvas.create_rectangle(
-            x, y, x + 320, y + 30, outline="black", fill="gray", tags=(window_id, "floating")
+            x, y, x + rect_width, y + 30, outline="black", fill="gray", tags=(window_id, "floating")
         )
 
         # Agregar texto con el nombre del archivo en la barra de título
@@ -504,10 +529,10 @@ class PyFCSApp:
 
         # Agregar botón de cierre en la barra de título
         self.image_canvas.create_rectangle(
-            x + 290, y + 5, x + 310, y + 25, outline="black", fill="red", tags=(window_id, "floating", f"{window_id}_close_button")
+            x + 175, y + 5, x + 195, y + 25, outline="black", fill="red", tags=(window_id, "floating", f"{window_id}_close_button")
         )
         self.image_canvas.create_text(
-            x + 300, y + 15, text="X", fill="white", font=("Arial", 10, "bold"), tags=(window_id, "floating", f"{window_id}_close_button")
+            x + 185, y + 15, text="X", fill="white", font=("Arial", 10, "bold"), tags=(window_id, "floating", f"{window_id}_close_button")
         )
 
         # Agregar una flecha en la parte izquierda de la barra de título
@@ -515,37 +540,44 @@ class PyFCSApp:
             x + 15, y + 15, text="▼", fill="white", font=("Arial", 12), tags=(window_id, "floating", f"{window_id}_arrow_button")
         )
 
-        # Dibujar la imagen dentro del rectángulo de la ventana
-        self.image_canvas.create_image(
-            x + 10, y + 40, anchor="nw", image=self.floating_images[window_id], tags=(window_id, "floating")
+        # Crear un Frame dentro del canvas
+        frame = tk.Frame(self.image_canvas, width=300, height=300, bg="white")
+        self.floating_frames[window_id] = frame
+
+        # Posicionar el Frame en el canvas
+        self.image_canvas.create_window(
+            x + 10, y + 40, anchor="nw", window=frame, tags=(window_id, "floating", f"{window_id}_image")
         )
+
+        # Mostrar la imagen dentro del Frame utilizando un Label
+        label = tk.Label(frame, image=self.floating_images[window_id], bg="white")
+        label.pack(expand=True, fill=tk.BOTH)
 
         # Función para cerrar la ventana flotante
         def close_window(event):
             # Eliminar todos los elementos asociados al window_id
             self.image_canvas.delete(window_id)
+            
             # Eliminar la imagen del diccionario
             del self.floating_images[window_id]
             
-            # Cerrar y eliminar el Frame del diccionario
+            # Cerrar y eliminar el Frame principal
             if window_id in self.floating_frames:
-                # Destruir el Frame
-                self.floating_frames[window_id].destroy()  
-                
-                # Verificar si este Frame es el proto_options actual
-                if self.proto_options is self.floating_frames[window_id]:
-                    self.proto_options = None  # Restablecer la referencia a None
-
-                # Eliminar del diccionario
+                self.floating_frames[window_id].destroy()
                 del self.floating_frames[window_id]
+
+            # Cerrar y eliminar el proto_options asociado si existe
+            if hasattr(self, "proto_options") and window_id in self.proto_options:
+                if self.proto_options[window_id].winfo_exists():
+                    self.proto_options[window_id].destroy()
+                del self.proto_options[window_id]
+
 
         # Función para mostrar el menú desplegable
         def show_menu_image(event):
             menu = Menu(self.root, tearoff=0)
             menu.add_command(label="Original Image", state=DISABLED)
-
             menu.add_separator()
-
             menu.add_command(
                 label="Get MemberDegree",
                 state=NORMAL if self.COLOR_SPACE else DISABLED,  # Habilitar/Deshabilitar
@@ -561,9 +593,52 @@ class PyFCSApp:
         def move_window(event):
             # Calcular el desplazamiento
             dx, dy = event.x - self.last_x, event.y - self.last_y
-            # Mover todos los elementos asociados al window_id
+            
+            # Mover todos los elementos asociados al window_id (ventana flotante)
             self.image_canvas.move(window_id, dx, dy)
+            
+            # Asegurarse de que la ventana flotante y todos sus elementos pasen al frente
+            self.image_canvas.tag_raise(window_id)  # Elevar el rectángulo y la ventana
+            
+            # También elevar la barra de título y el botón de cierre
+            self.image_canvas.tag_raise(f"{window_id}_close_button")
+            self.image_canvas.tag_raise(f"{window_id}_arrow_button")
+            self.image_canvas.tag_raise(f"{window_id}_image")
+            
+            # Mover el proto_options asociado si existe
+            if hasattr(self, "proto_options") and window_id in self.proto_options:
+                proto_option_frame = self.proto_options[window_id]
+                
+                if proto_option_frame.winfo_exists():
+                    # Mover el proto_options junto con la ventana flotante
+                    # Obtener la posición actual de la ventana flotante
+                    items = self.image_canvas.find_withtag(window_id)
+                    if items:
+                        x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
+                        # Calcular la nueva posición para el proto_option
+                        frame_x = x2 + 10 + dx  # Mover con la misma distancia
+                        frame_y = y1 + dy
+                        
+                        # Restringir el proto_options al área del canvas
+                        canvas_width = self.image_canvas.winfo_width()
+                        canvas_height = self.image_canvas.winfo_height()
+
+                        if frame_x + 120 > canvas_width:  # Evitar que se salga por la derecha
+                            frame_x = canvas_width - 120
+
+                        if frame_y + 150 > canvas_height:  # Evitar que se salga por abajo
+                            frame_y = canvas_height - 150
+
+                        # Mover el proto_options
+                        proto_option_frame.place(x=frame_x, y=frame_y)
+                        
+                        # Asegurarse de que el proto_option_frame se pase al frente también
+                        proto_option_frame.lift()
+
+            # Actualizar las coordenadas para el próximo movimiento
             self.last_x, self.last_y = event.x, event.y
+
+
 
         # Vincular eventos para mover la ventana
         self.image_canvas.tag_bind(window_id, "<Button-1>", start_move)
@@ -576,6 +651,8 @@ class PyFCSApp:
 
 
 
+
+
     def plot_proto_options(self, window_id):
         """Crea un Frame dentro de image_canvas con Radiobuttons y scrollbars."""
         items = self.image_canvas.find_withtag(window_id)
@@ -583,106 +660,107 @@ class PyFCSApp:
             print(f"No se encontró una ventana flotante con id {window_id}")
             return
 
-        # Si ya existe el Frame de opciones para este window_id, simplemente lo traemos a primer plano
-        if window_id in self.floating_frames:
-            self.proto_options = self.floating_frames[window_id] 
-            self.proto_options.tkraise()  # Lleva el Frame al frente
-            return
+        # Inicializar el diccionario si no existe
+        if not hasattr(self, "proto_options"):
+            self.proto_options = {}
 
-        # Si no existe, creamos un nuevo Frame
-        self.proto_options = tk.Frame(self.image_canvas, bg="white", relief="solid", bd=1)
-        self.floating_frames[window_id] = self.proto_options  # Guardar el Frame en el diccionario
+        # Si el proto_options para este window_id ya existe, destruirlo
+        if window_id in self.proto_options and self.proto_options[window_id].winfo_exists():
+            self.proto_options[window_id].destroy()
 
-        # Continuar con la creación del Canvas y los Radiobuttons como antes...
-        self.canvas = tk.Canvas(self.proto_options, bg="white")
+        # Crear el nuevo proto_options para este window_id
+        proto_options = tk.Frame(self.image_canvas, bg="white", relief="solid", bd=1)
+        self.proto_options[window_id] = proto_options
+
+        # Configurar el Canvas y agregar elementos como antes
+        self.canvas = tk.Canvas(proto_options, bg="white")
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
         self.inner_frame = tk.Frame(self.canvas, bg="white")
         self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
 
-        # Aquí puedes seguir con la creación de Radiobuttons, Scrollbars, etc.
+        # Crear Radiobuttons u otros elementos
         colors = self.color_matrix
-        self.current_proto = tk.StringVar(value=colors[0])
+        self.current_proto = tk.StringVar(value=0)
 
         for color in colors:
             rb = tk.Radiobutton(self.inner_frame, text=color, variable=self.current_proto, value=color,
-                                bg="white", anchor="w", font=("Arial", 10), relief="flat", command=self.get_proto_percentage(window_id))
+                                bg="white", anchor="w", font=("Arial", 10), relief="flat",
+                                command=lambda color=color: self.get_proto_percentage(window_id))
             rb.pack(fill="x", padx=5, pady=2)
 
-        # Configurar scrollbars y demás...
-        self.v_scroll = tk.Scrollbar(self.proto_options, orient=tk.VERTICAL, command=self.canvas.yview)
+        # Configurar scrollbars
+        self.v_scroll = tk.Scrollbar(proto_options, orient=tk.VERTICAL, command=self.canvas.yview)
         self.v_scroll.grid(row=0, column=1, sticky="ns", padx=5)
 
-        self.h_scroll = tk.Scrollbar(self.proto_options, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        self.h_scroll = tk.Scrollbar(proto_options, orient=tk.HORIZONTAL, command=self.canvas.xview)
         self.h_scroll.grid(row=1, column=0, sticky="ew", padx=5)
 
         self.canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
         self.inner_frame.update_idletasks()
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
 
-        self.proto_options.grid_rowconfigure(0, weight=1)
-        self.proto_options.grid_columnconfigure(0, weight=1)
+        proto_options.grid_rowconfigure(0, weight=1)
+        proto_options.grid_columnconfigure(0, weight=1)
 
+        # Posicionar proto_options al lado de la ventana flotante
         x1, y1, x2, y2 = self.image_canvas.bbox(items[0])  
         frame_x = x2 + 10
         frame_y = y1
-        self.proto_options.place(x=frame_x, y=frame_y, width=100, height=200)
-
-        # Vincular el movimiento del Frame a la ventana flotante
-        self.image_canvas.bind("<B1-Motion>", lambda event: self.copy_main_move(event, window_id))
-
-
-
-
-    def copy_main_move(self, event, window_id):
-        """Mover la barra de opciones junto con la ventana flotante."""
-        items = self.image_canvas.find_withtag(window_id)
-        if items:
-            x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
-            frame_width = 120
-            frame_height = 150
-
-            # Calcular nueva posición del Frame
-            frame_x = x2 + 10
-            frame_y = y1
-
-            # Restringir el Frame al área de `image_canvas`
-            canvas_width = self.image_canvas.winfo_width()
-            canvas_height = self.image_canvas.winfo_height()
-
-            if frame_x + frame_width > canvas_width:  # Si se sale por la derecha
-                frame_x = canvas_width - frame_width
-
-            if frame_y + frame_height > canvas_height:  # Si se sale por abajo
-                frame_y = canvas_height - frame_height
-
-            if hasattr(self, "proto_options") and self.proto_options is not None:
-                self.proto_options.place(x=frame_x, y=frame_y)
+        proto_options.place(x=frame_x, y=frame_y, width=100, height=200)
 
 
 
 
     def get_proto_percentage(self, window_id):
-        """Acción al hacer clic en un botón de color."""
+        """Acción al hacer clic en un botón de color, genera y muestra la imagen en escala de grises."""
+        # Mostrar un indicador de carga mientras se procesa
         self.show_loading()
-        pos = self.color_matrix.index(self.current_proto.get())
-        fig = utils_structure.get_proto_percentage(prototypes=self.prototypes, image=self.images[window_id], fuzzy_color_space=self.fuzzy_color_space, selected_option=pos)
-        self.hide_loading()
 
-        # Convertir la figura a un objeto compatible con Tkinter
-        canvas = FigureCanvasTkAgg(fig, master=self.image_canvas)
-        canvas.draw() 
+        try:
+            # Obtener el índice del prototipo seleccionado
+            pos = self.color_matrix.index(self.current_proto.get())
 
-        # Obtener la imagen de la figura
-        img = canvas.get_tk_widget()
+            # Generar la imagen en escala de grises
+            grayscale_image_array = utils_structure.get_proto_percentage(
+                prototypes=self.prototypes,
+                image=self.images[window_id],
+                fuzzy_color_space=self.fuzzy_color_space,
+                selected_option=pos
+            )
 
-        # Primero, calcula la posición donde quieres colocar la imagen
-        x, y, _, _ = self.image_canvas.bbox(window_id) 
+            # Convertir el array a una imagen que tkinter pueda mostrar
+            grayscale_image = Image.fromarray(grayscale_image_array)
 
-        # Colocar el widget de la imagen en la ventana flotante
-        img.place(x=x + 10, y=y + 40)
+            # Convertir la imagen a un formato compatible con tkinter
+            (new_width, new_height) = self.image_dimensions[window_id]
+            grayscale_image = grayscale_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            img_tk = ImageTk.PhotoImage(grayscale_image)
+
+            # Actualizar el Frame asociado al window_id
+            frame = self.floating_frames.get(window_id)
+            if frame:
+                # Eliminar los widgets previos dentro del frame
+                for widget in frame.winfo_children():
+                    widget.destroy()
+
+                # Crear un Label y mostrar la nueva imagen
+                label = tk.Label(frame, image=img_tk, bg="black")
+                label.image = img_tk  # Mantener referencia para evitar que la imagen sea recolectada por el GC
+                label.pack(expand=True, fill=tk.BOTH)
+            else:
+                print(f"Frame no encontrado para window_id: {window_id}")
+
+        except Exception as e:
+            print(f"Error en get_proto_percentage: {e}")
+
+        finally:
+            # Ocultar el indicador de carga
+            self.hide_loading()
+
+
+
     
-
 
 
 
