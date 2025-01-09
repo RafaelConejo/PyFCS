@@ -23,6 +23,8 @@ class PyFCSApp:
     def __init__(self, root):
         self.root = root
         self.COLOR_SPACE = False
+        self.ORIGINAL_IMG = {}
+        self.MEMBERDEGREE = {}
         self.hex_color = []         # Save points colors
 
         # Configuración general de la ventana
@@ -300,6 +302,7 @@ class PyFCSApp:
 
             # Actualizar la gráfica 3D
             self.COLOR_SPACE = True
+            self.MEMBERDEGREE = {key: True for key in self.MEMBERDEGREE}
             self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
             self.color_data = color_data
 
@@ -474,12 +477,15 @@ class PyFCSApp:
         # Generar un identificador único para la ventana
         window_id = f"floating_{len(self.image_canvas.find_all())}"
 
+        self.MEMBERDEGREE[window_id] = True if self.COLOR_SPACE else False
+        self.ORIGINAL_IMG[window_id] = False
+
         # Cargar la imagen y asociarla al window_id
         img = Image.open(filename)
         original_width, original_height = img.size
 
         # Dimensiones del rectangulo donde la imagen
-        rect_width = 200
+        rect_width = 250
         rect_height = 250
 
         # Calcular la escala máxima para ajustar la imagen sin distorsionarla
@@ -501,6 +507,9 @@ class PyFCSApp:
             self.image_dimensions = {}  # Inicializar el diccionario si no existe
         self.image_dimensions[window_id] = (new_width, new_height)
 
+        rect_width = new_width
+        rect_height = new_height
+
 
         self.images = {}
         self.images[window_id] = img_resized
@@ -514,12 +523,12 @@ class PyFCSApp:
 
         # Crear rectángulo de fondo para la ventana
         self.image_canvas.create_rectangle(
-            x, y, x + rect_width, y + rect_height+50, outline="black", fill="white", width=2, tags=(window_id, "floating")
+            x, y, x + rect_width+30, y + rect_height+50, outline="black", fill="white", width=2, tags=(window_id, "floating")
         )
 
         # Crear barra de título en la parte superior
         self.image_canvas.create_rectangle(
-            x, y, x + rect_width, y + 30, outline="black", fill="gray", tags=(window_id, "floating")
+            x, y, x + rect_width+30, y + 30, outline="black", fill="gray", tags=(window_id, "floating")
         )
 
         # Agregar texto con el nombre del archivo en la barra de título
@@ -529,10 +538,10 @@ class PyFCSApp:
 
         # Agregar botón de cierre en la barra de título
         self.image_canvas.create_rectangle(
-            x + 175, y + 5, x + 195, y + 25, outline="black", fill="red", tags=(window_id, "floating", f"{window_id}_close_button")
+            x + rect_width+25, y + 5, x + rect_width+5, y + 25, outline="black", fill="red", tags=(window_id, "floating", f"{window_id}_close_button")
         )
         self.image_canvas.create_text(
-            x + 185, y + 15, text="X", fill="white", font=("Arial", 10, "bold"), tags=(window_id, "floating", f"{window_id}_close_button")
+            x + rect_width+15, y + 15, text="X", fill="white", font=("Arial", 10, "bold"), tags=(window_id, "floating", f"{window_id}_close_button")
         )
 
         # Agregar una flecha en la parte izquierda de la barra de título
@@ -541,7 +550,7 @@ class PyFCSApp:
         )
 
         # Crear un Frame dentro del canvas
-        frame = tk.Frame(self.image_canvas, width=300, height=300, bg="white")
+        frame = tk.Frame(self.image_canvas, width=rect_width, height=rect_height, bg="white")
         self.floating_frames[window_id] = frame
 
         # Posicionar el Frame en el canvas
@@ -576,11 +585,17 @@ class PyFCSApp:
         # Función para mostrar el menú desplegable
         def show_menu_image(event):
             menu = Menu(self.root, tearoff=0)
-            menu.add_command(label="Original Image", state=DISABLED)
+            menu.add_command(
+                label="Original Image", 
+                state=NORMAL if self.ORIGINAL_IMG[window_id] else DISABLED, 
+                command=lambda: self.show_original_image(window_id)         
+            )
+
             menu.add_separator()
+
             menu.add_command(
                 label="Get MemberDegree",
-                state=NORMAL if self.COLOR_SPACE else DISABLED,  # Habilitar/Deshabilitar
+                state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,  # Habilitar/Deshabilitar
                 command=lambda: self.plot_proto_options(window_id)  
             )
             menu.post(event.x_root, event.y_root)
@@ -659,6 +674,9 @@ class PyFCSApp:
         if not items:
             print(f"No se encontró una ventana flotante con id {window_id}")
             return
+        
+        self.MEMBERDEGREE[window_id] = False
+        self.ORIGINAL_IMG[window_id] = True
 
         # Inicializar el diccionario si no existe
         if not hasattr(self, "proto_options"):
@@ -758,6 +776,50 @@ class PyFCSApp:
             # Ocultar el indicador de carga
             self.hide_loading()
 
+
+
+    def show_original_image(self, window_id):
+        """Muestra la imagen original almacenada en floating_images."""
+        try:
+            # Recuperar la imagen original almacenada
+            img_tk = self.floating_images.get(window_id)
+
+            if img_tk is not None:
+                # Actualizar el Frame asociado al window_id
+                frame = self.floating_frames.get(window_id)
+                if frame:
+                    # Eliminar los widgets previos dentro del frame
+                    for widget in frame.winfo_children():
+                        widget.destroy()
+
+                    # Crear un Label y mostrar la imagen original
+                    label = tk.Label(frame, image=img_tk, bg="white")
+                    label.image = img_tk  # Mantener referencia para evitar que la imagen sea recolectada por el GC
+                    label.pack(expand=True, fill=tk.BOTH)
+
+
+                    if hasattr(self, "proto_options") and window_id in self.proto_options:
+                        try:
+                            # Verificar si la ventana existe antes de destruirla
+                            if self.proto_options[window_id].winfo_exists():
+                                self.proto_options[window_id].destroy()
+                            
+                            # Eliminar la referencia de proto_options
+                            del self.proto_options[window_id]
+                        except Exception as e:
+                            print(f"Error al intentar destruir la ventana auxiliar: {e}")
+
+                    self.ORIGINAL_IMG[window_id] = False
+                    if self.COLOR_SPACE:
+                        self.MEMBERDEGREE[window_id] = True
+
+                else:
+                    print(f"Frame no encontrado para window_id: {window_id}")
+            else:
+                print(f"No se encontró la imagen original para window_id: {window_id}")
+
+        except Exception as e:
+            print(f"Error al mostrar la imagen original: {e}")
 
 
     
