@@ -608,50 +608,50 @@ class PyFCSApp:
         def move_window(event):
             # Calcular el desplazamiento
             dx, dy = event.x - self.last_x, event.y - self.last_y
-            
-            # Mover todos los elementos asociados al window_id (ventana flotante)
+
+            # Mover todos los elementos asociados al window_id
             self.image_canvas.move(window_id, dx, dy)
-            
-            # Asegurarse de que la ventana flotante y todos sus elementos pasen al frente
-            self.image_canvas.tag_raise(window_id)  # Elevar el rectángulo y la ventana
-            
-            # También elevar la barra de título y el botón de cierre
+
+            # Elevar todos los elementos del canvas al frente
+            self.image_canvas.tag_raise(window_id)
             self.image_canvas.tag_raise(f"{window_id}_close_button")
             self.image_canvas.tag_raise(f"{window_id}_arrow_button")
             self.image_canvas.tag_raise(f"{window_id}_image")
-            
+
+            # Asegurarse de que el Frame se pase al frente
+            if window_id in self.floating_frames:
+                frame = self.floating_frames[window_id]
+                self.image_canvas.tag_raise(f"{window_id}_image")  # Asegurar el frame en el canvas
+                frame.lift()  # Elevar el frame sobre otros frames
+
             # Mover el proto_options asociado si existe
             if hasattr(self, "proto_options") and window_id in self.proto_options:
                 proto_option_frame = self.proto_options[window_id]
-                
                 if proto_option_frame.winfo_exists():
-                    # Mover el proto_options junto con la ventana flotante
-                    # Obtener la posición actual de la ventana flotante
+                    # Obtener la posición actual del rectángulo principal
                     items = self.image_canvas.find_withtag(window_id)
                     if items:
                         x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
-                        # Calcular la nueva posición para el proto_option
-                        frame_x = x2 + 10 + dx  # Mover con la misma distancia
-                        frame_y = y1 + dy
-                        
+                        frame_x = x2 + 10  # Nueva posición x del proto_option
+                        frame_y = y1
+
                         # Restringir el proto_options al área del canvas
                         canvas_width = self.image_canvas.winfo_width()
                         canvas_height = self.image_canvas.winfo_height()
 
-                        if frame_x + 120 > canvas_width:  # Evitar que se salga por la derecha
+                        if frame_x + 120 > canvas_width:  # Evitar que salga por la derecha
                             frame_x = canvas_width - 120
 
-                        if frame_y + 150 > canvas_height:  # Evitar que se salga por abajo
+                        if frame_y + 150 > canvas_height:  # Evitar que salga por abajo
                             frame_y = canvas_height - 150
 
                         # Mover el proto_options
                         proto_option_frame.place(x=frame_x, y=frame_y)
-                        
-                        # Asegurarse de que el proto_option_frame se pase al frente también
-                        proto_option_frame.lift()
+                        proto_option_frame.lift()  # Elevar proto_options al frente
 
             # Actualizar las coordenadas para el próximo movimiento
             self.last_x, self.last_y = event.x, event.y
+
 
 
 
