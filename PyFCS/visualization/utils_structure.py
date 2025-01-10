@@ -8,52 +8,78 @@ import matplotlib.pyplot as plt
 
 
 def about_info(root):
-    """Muestra la ventana emergente con la información 'About'."""
-    about_window = tk.Toplevel(root)  # Crear una nueva ventana emergente
-    about_window.title("About PyFCS")
+    """Displays a popup window with 'About' information."""
+    # Create a new top-level window (popup)
+    about_window = tk.Toplevel(root)  
+    about_window.title("About PyFCS")  # Set the title of the popup window
     
-    # Desactivar la posibilidad de redimensionar la ventana
+    # Disable resizing of the popup window
     about_window.resizable(False, False)
 
-    # Contenido del "About"
-    about_label = tk.Label(about_window, text="PyFCS: Python Fuzzy Color Software\n"
-                                                "A color modeling Python Software based on Fuzzy Color Spaces.\n"
-                                                "Version 0.1\n\n"
-                                                "Contact: rafaconejo@ugr.es", 
-                            padx=20, pady=20, font=("Arial", 12), justify="center")
-    about_label.pack()
+    # Create and add a label with the software information
+    about_label = tk.Label(
+        about_window, 
+        text="PyFCS: Python Fuzzy Color Software\n"
+              "A color modeling Python Software based on Fuzzy Color Spaces.\n"
+              "Version 0.1\n\n"
+              "Contact: rafaconejo@ugr.es", 
+        padx=20, pady=20, font=("Arial", 12), justify="center"
+    )
+    about_label.pack()  # Add the label to the popup window
 
-    # Botón para cerrar la ventana de "About"
+    # Create a 'Close' button to close the popup window
     close_button = tk.Button(about_window, text="Close", command=about_window.destroy)
-    close_button.pack(pady=10)
+    close_button.pack(pady=10)  # Add the button to the popup window
 
 
 
 
 def get_proto_percentage(prototypes, image, fuzzy_color_space, selected_option):
-    """Genera la imagen en escala de grises sin necesidad de una figura de matplotlib."""
-    # Convertir la imagen a un array NumPy
+    """Generates a grayscale image without using a matplotlib figure."""
+    # Convert the image to a NumPy array
     img_np = np.array(image)
 
-    # Comprobar si la imagen tiene un canal alfa (RGBA)
-    if img_np.shape[-1] == 4:  # Si tiene 4 canales (RGBA)
-        img_np = img_np[..., :3]  # Elimina el canal alfa para quedarte solo con RGB
+    # Check if the image has an alpha channel (RGBA)
+    if img_np.shape[-1] == 4:  # If it has 4 channels (RGBA)
+        img_np = img_np[..., :3]  # Remove the alpha channel and keep only RGB
 
-    # Normalizar los valores de la imagen a rango [0, 1]
+    # Normalize the image values to the range [0, 1]
     img_np = img_np / 255.0
 
+    # Convert the image from RGB to LAB color space
     lab_image = color.rgb2lab(img_np)
+
+    # Retrieve the selected prototype
     selected_prototype = prototypes[selected_option]
     print(f"Selected Prototype: {selected_prototype.label}")
 
+    # Create an empty grayscale image (same dimensions as the input image)
     grayscale_image = np.zeros((lab_image.shape[0], lab_image.shape[1]), dtype=np.uint8)
-    for y in range(lab_image.shape[0]):
-        for x in range(lab_image.shape[1]):
-            lab_color = lab_image[y, x]
+    
+    # Dictionary to store computed membership values for each lab_color
+    membership_cache = {}
+
+    # Vectorize: Flatten the lab_image for processing
+    lab_image_flat = lab_image.reshape(-1, 3)
+
+    # Precompute membership for all unique colors
+    unique_lab_colors = np.unique(lab_image_flat, axis=0)
+
+    # Calculate membership for all unique lab colors
+    for lab_color in unique_lab_colors:
+        lab_color_tuple = tuple(lab_color)
+        if lab_color_tuple not in membership_cache:
             membership_degree = fuzzy_color_space.calculate_membership_for_prototype(lab_color, selected_option)
+            membership_cache[lab_color_tuple] = membership_degree
 
-            # Escalar a escala de grises
-            grayscale_image[y, x] = int(membership_degree * 255)
+    # Map the computed membership values to the flattened image
+    flattened_memberships = np.array([membership_cache[tuple(color)] for color in lab_image_flat])
 
-    # Devolver la imagen en escala de grises como un array
+    # Reshape back to the original image dimensions and scale to grayscale
+    grayscale_image = (flattened_memberships * 255).reshape(lab_image.shape[0], lab_image.shape[1]).astype(np.uint8)
+
+    # Return the generated grayscale image as a NumPy array
     return grayscale_image
+
+
+
