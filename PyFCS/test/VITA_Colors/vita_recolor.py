@@ -23,11 +23,11 @@ from PyFCS import Input, Prototype, FuzzyColorSpace
 from PyFCS.input_output.utils import Utils
 
 def main():
-    var = "VITA_CLASSICAL\A2"
+    var = "VITA_CLASSICAL\\A2"
     colorspace_name = 'VITA-CLASSICAL-BLACK-2.cns'
 
-
-    img_path = os.path.join(".", "imagen_test", f"{var}.png")
+    initial_directory = os.getcwd()
+    img_path = os.path.join(initial_directory, "image_test", f"{var}.png")
 
     IMG_WIDTH = 308 
     IMG_HEIGHT = 448 

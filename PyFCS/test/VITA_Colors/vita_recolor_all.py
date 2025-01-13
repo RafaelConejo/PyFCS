@@ -64,7 +64,7 @@ def reconstruct_and_save_image_with_legend(colorized_image, prototypes, prototyp
 # Main function to process all images in the directory
 def main():
     colorspace_name = 'VITA-CLASSICAL-BLACK-2.cns'
-    img_dir = os.path.join(".", "imagen_test", "VITA_CLASSICAL")
+    img_dir = os.path.join(".", "imagen_test", "VITA_CLASSICAL\\")
     IMG_WIDTH = 308
     IMG_HEIGHT = 448
 
