@@ -53,7 +53,6 @@ class PyFCSApp:
         fuzzy_menu = Menu(menubar, tearoff=0)
         fuzzy_menu.add_command(label="New Color Space", command=self.new_color_space)  # Create new color space
         fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space)  # Load existing color space
-        fuzzy_menu.add_command(label="Save Color Space", command=self.save_color_space)  # Save current color space
         menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
 
         # Help menu
@@ -71,7 +70,6 @@ class PyFCSApp:
 
         # Buttons for image operations
         tk.Button(image_manager_frame, text="Open Image", command=self.open_image).pack(side="left", padx=5)
-        tk.Button(image_manager_frame, text="Flickr").pack(side="left", padx=5)  # Placeholder for Flickr feature
         tk.Button(image_manager_frame, text="Save Image").pack(side="left", padx=5)
 
         # "Fuzzy Color Space Manager" section
@@ -79,9 +77,8 @@ class PyFCSApp:
         fuzzy_manager_frame.grid(row=0, column=1, padx=5, pady=5)
 
         # Buttons for fuzzy color space management
-        tk.Button(fuzzy_manager_frame, text="New Color Space").pack(side="left", padx=5)
+        tk.Button(fuzzy_manager_frame, text="New Color Space", command=self.new_color_space).pack(side="left", padx=5)
         tk.Button(fuzzy_manager_frame, text="Load Color Space", command=self.load_color_space).pack(side="left", padx=5)
-        tk.Button(fuzzy_manager_frame, text="Save Color Space").pack(side="left", padx=5)
 
         # Main content frame for tabs and the right area
         main_content_frame = tk.Frame(root, bg="gray82")
@@ -104,12 +101,12 @@ class PyFCSApp:
         notebook.add(model_3d_tab, text="Model 3D")
 
         # Radiobuttons for selecting 3D visualization modes
-        self.model_3d_option = tk.StringVar(value="Centroid")  # Default value for options
+        self.model_3d_option = tk.StringVar(value="Representative")  # Default value for options
         buttons_frame = tk.Frame(model_3d_tab, bg="gray95")
         buttons_frame.pack(side="top", fill="x", pady=5)
 
         # Create radiobuttons for different 3D options
-        options = ["Centroid", "Core", "0.5-cut", "Support"]
+        options = ["Representative", "Core", "0.5-cut", "Support"]
         for option in options:
             tk.Radiobutton(
                 buttons_frame,
@@ -352,22 +349,137 @@ class PyFCSApp:
 
 
 
+    @staticmethod
+    def rgb_to_hex(rgb):
+        return "#%02x%02x%02x" % rgb
+    
+    def create_color_space(self):
+        # Get selected colors
+        selected_colors = [name for name, var in self.color_checks.items() if var.get()]
+
+        if not selected_colors:
+            messagebox.showwarning("Warning", "You must select at least one color.")
+            return
+
+        # Ask for the name of the new color space
+        name = tk.simpledialog.askstring("Color Space Name", "Enter a name for the new Color Space:")
+
+        if name:
+            # Logic for creating the new color space would go here
+            messagebox.showinfo("Color Space Created", f"Color Space '{name}' created with the following colors: {', '.join(selected_colors)}")
+        else:
+            messagebox.showinfo("Cancelled", "Color Space creation was cancelled.")
+
+
+    
 
     def new_color_space(self):
         """
         Placeholder logic for creating a new fuzzy color space.
         Displays a message indicating this action.
         """
-        messagebox.showinfo("New Color Space", "Creating a new color space...")
+        color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces\\BASIC.cns') 
+        input_class = Input.instance('.cns')
+        color_data = input_class.read_file(color_space_path)
 
-    def save_color_space(self):
-        """
-        Placeholder logic for saving the current fuzzy color space.
-        Displays a message indicating this action.
-        """
-        messagebox.showinfo("Save Color Space", "Saving the current color space...")
+        # Convertir los colores a RGB
+        colors = {}
+        for color_name, color_value in color_data.items():
+            lab = np.array(color_value['positive_prototype'])
+            rgb = tuple(map(lambda x: int(x * 255), color.lab2rgb([lab])[0]))
+            colors[color_name] = {"rgb": rgb, "lab": lab}
 
+        # Crear ventana emergente
+        popup = tk.Toplevel(self.root)
+        popup.title("Select colors for your Color Space")
+        popup.geometry("350x500")
+        popup.configure(bg="#f5f5f5")
 
+        # Encabezado
+        tk.Label(
+            popup,
+            text="Select colors for your Color Space",
+            font=("Helvetica", 14, "bold"),
+            bg="#f5f5f5"
+        ).pack(pady=15)
+
+        # Frame para mostrar los colores con scrollbar
+        frame_container = ttk.Frame(popup)
+        frame_container.pack(pady=10, fill="both", expand=True)
+
+        canvas = tk.Canvas(frame_container, bg="#f5f5f5")
+        scrollbar = ttk.Scrollbar(frame_container, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Diccionario para almacenar los Checkbuttons
+        self.color_checks = {}
+
+        for color_name, data in colors.items():
+            rgb = data["rgb"]
+            lab = data["lab"]
+
+            frame = ttk.Frame(scrollable_frame)
+            frame.pack(fill="x", pady=8, padx=10)
+
+            # Muestra el recuadro del color
+            color_box = tk.Label(frame, bg=self.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
+            color_box.pack(side="left", padx=10)
+
+            # Muestra el nombre del color
+            tk.Label(
+                frame,
+                text=color_name,
+                font=("Helvetica", 12),
+                bg="#f5f5f5"
+            ).pack(side="left", padx=10)
+
+            # Muestra los valores LAB
+            lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
+            tk.Label(
+                frame,
+                text=lab_values,
+                font=("Helvetica", 10, "italic"),
+                bg="#f5f5f5"
+            ).pack(side="left", padx=10)
+
+            # Checkbutton para seleccionar
+            var = tk.BooleanVar()
+            self.color_checks[color_name] = var
+            check = ttk.Checkbutton(frame, variable=var)
+            check.pack(side="right", padx=10)
+
+        # Botones de acción
+        button_frame = ttk.Frame(popup)
+        button_frame.pack(pady=20)
+
+        close_button = ttk.Button(
+            button_frame,
+            text="Close",
+            command=popup.destroy,
+            style="Accent.TButton"
+        )
+        close_button.pack(side="left", padx=20)
+
+        create_button = ttk.Button(
+            button_frame,
+            text="Create Color Space",
+            command=self.create_color_space,
+            style="Accent.TButton"
+        )
+        create_button.pack(side="left", padx=20)
+
+        # Estilo para botones
+        style = ttk.Style()
+        style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
 
 
 
@@ -379,7 +491,7 @@ class PyFCSApp:
             
             # Dictionary to map the options to their corresponding functions
             option_map = {
-                "Centroid": lambda: Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.colors),
+                "Representative": lambda: Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.colors),
                 "0.5-cut": lambda: Visual_tools.plot_all_prototypes(self.selected_proto, self.volume_limits, self.hex_color),
                 "Core": lambda: Visual_tools.plot_all_prototypes(self.selected_core, self.volume_limits, self.hex_color),
                 "Support": lambda: Visual_tools.plot_all_prototypes(self.selected_support, self.volume_limits, self.hex_color),
