@@ -28,7 +28,7 @@ class PyFCSApp:
         self.hex_color = []  # Save points colors for visualization
 
         # General configuration for the main window
-        root.title("PyFCS")  # Set the window title
+        root.title("PyFCS Interface")  # Set the window title
         root.geometry("1000x500")  # Set default window size
         # self.root.attributes("-fullscreen", True)
         root.configure(bg="gray82")  # Set background color for the window
@@ -770,6 +770,15 @@ class PyFCSApp:
                 label="Color Mapping",
                 state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,  # Enable or disable based on the state
                 command=lambda: self.plot_proto_options(window_id)  # Function to plot color mapping options
+            )
+
+            menu.add_separator()  # Add a separator line in the menu
+
+            # Add the "Color Mapping" option to the menu, which is enabled based on the color mapping state
+            menu.add_command(
+                label="Get Fuzzy Color Space",
+                state=NORMAL,  # Enable or disable based on the state
+                # command=lambda: self.plot_proto_options(window_id)  # Function to plot color mapping options
             )
             
             # Display the menu at the location of the mouse click
