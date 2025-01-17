@@ -7,6 +7,8 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from PIL import Image, ImageTk
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from sklearn.cluster import DBSCAN
+from sklearn.preprocessing import StandardScaler
 
 current_dir = os.path.dirname(__file__)
 pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
@@ -20,7 +22,7 @@ import PyFCS.visualization.utils_structure as utils_structure
 
 class PyFCSApp:
     def __init__(self, root):
-        # Initialize main app variables
+        # Initialize main app variablesG
         self.root = root
         self.COLOR_SPACE = False  # Flag for managing color spaces
         self.ORIGINAL_IMG = {}  # Bool function original image 
@@ -778,7 +780,7 @@ class PyFCSApp:
             menu.add_command(
                 label="Get Fuzzy Color Space",
                 state=NORMAL,  # Enable or disable based on the state
-                # command=lambda: self.plot_proto_options(window_id)  # Function to plot color mapping options
+                command=lambda: self.get_fuzzy_color_space(window_id)  # Function to plot color mapping options
             )
             
             # Display the menu at the location of the mouse click
@@ -850,6 +852,169 @@ class PyFCSApp:
 
         # Bind events for the arrow button (to show the context menu)
         self.image_canvas.tag_bind(f"{window_id}_arrow_button", "<Button-1>", show_menu_image)  # Show menu on click
+
+
+
+
+
+
+
+
+    def display_detected_colors(self, colors):
+        """
+        Muestra los colores detectados en una ventana con opciones para ver los valores LAB
+        y permitir que el usuario cambie el nombre del color.
+        """
+        # Crear ventana emergente
+        popup = tk.Toplevel(self.root)
+        popup.title("Detected Colors")
+        popup.geometry("400x600")
+        popup.configure(bg="#f5f5f5")
+
+        # Encabezado
+        tk.Label(
+            popup,
+            text="Detected Colors",
+            font=("Helvetica", 14, "bold"),
+            bg="#f5f5f5"
+        ).pack(pady=15)
+
+        # Frame para mostrar los colores con scrollbar
+        frame_container = ttk.Frame(popup)
+        frame_container.pack(pady=10, fill="both", expand=True)
+
+        canvas = tk.Canvas(frame_container, bg="#f5f5f5")
+        scrollbar = ttk.Scrollbar(frame_container, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Mostrar los colores
+        self.color_entries = {}  # Guardar referencias a los campos de entrada
+
+        for i, color in enumerate(colors):
+            rgb = color["rgb"]
+            lab = color["lab"]
+            default_name = f"Color {i + 1}"  # Nombre predeterminado
+
+            frame = ttk.Frame(scrollable_frame)
+            frame.pack(fill="x", pady=8, padx=10)
+
+            # Muestra del color
+            color_box = tk.Label(frame, bg=self.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
+            color_box.pack(side="left", padx=10)
+
+            # Campo de entrada para el nombre del color
+            entry = ttk.Entry(frame, font=("Helvetica", 12))
+            entry.insert(0, default_name)  # Nombre inicial
+            entry.pack(side="left", padx=10, fill="x", expand=True)
+            self.color_entries[f"color_{i}"] = entry
+
+            # Valores LAB
+            lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
+            tk.Label(
+                frame,
+                text=lab_values,
+                font=("Helvetica", 10, "italic"),
+                bg="#f5f5f5"
+            ).pack(side="left", padx=10)
+
+        # Botones de acción
+        button_frame = ttk.Frame(popup)
+        button_frame.pack(pady=20)
+
+        close_button = ttk.Button(
+            button_frame,
+            text="Close",
+            command=popup.destroy,
+            style="Accent.TButton"
+        )
+        close_button.pack(side="left", padx=20)
+
+        save_button = ttk.Button(
+            button_frame,
+            text="Save Colors",
+            command=self.save_color_data,
+            style="Accent.TButton"
+        )
+        save_button.pack(side="left", padx=20)
+
+        # Estilo para botones
+        style = ttk.Style()
+        style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
+
+
+    def save_color_data(self):
+        """
+        Guarda los nombres de los colores editados por el usuario.
+        """
+        for key, entry in self.color_entries.items():
+            color_name = entry.get()
+            print(f"{key}: {color_name}")
+
+
+    def get_fuzzy_color_space(self, window_id):
+        """
+        Detecta los colores principales en una imagen usando clustering DBSCAN
+        y muestra los resultados en una ventana con opciones de edición.
+        """
+        # Buscar la ventana asociada al window_id
+        items = self.image_canvas.find_withtag(window_id)
+
+        if not items:
+            print(f"No floating window found with id {window_id}")
+            return
+
+        # Obtener la imagen asociada al window_id
+        image = self.images[window_id]
+        img_np = np.array(image)
+
+        # Manejar canal alfa si está presente
+        if img_np.shape[-1] == 4:  # Si tiene 4 canales (RGBA)
+            img_np = img_np[..., :3]  # Elimina el canal alfa y conserva solo RGB
+
+        # Normalizar los valores de los píxeles
+        img_np = img_np / 255.0
+
+        # Convertir la imagen en una lista de píxeles
+        pixels = img_np.reshape((-1, 3))
+
+        # Escalar los valores de los colores para clustering
+        scaler = StandardScaler()
+        scaled_pixels = scaler.fit_transform(pixels)
+
+        # Aplicar clustering DBSCAN
+        dbscan = DBSCAN(eps=0.3, min_samples=100)       # AJUSTAR
+        labels = dbscan.fit_predict(scaled_pixels)
+
+        # Obtener colores representativos
+        unique_labels = set(labels)
+        colors = []
+        for label in unique_labels:
+            if label == -1:  # Ignorar ruido
+                continue
+            group = pixels[labels == label]
+            # Calcular el promedio del grupo y desnormalizar a escala RGB
+            mean_color_rgb = tuple((group.mean(axis=0) * 255).astype(int))
+            mean_color_lab = group.mean(axis=0)  # LAB ya está normalizado entre 0 y 1
+            colors.append({"rgb": mean_color_rgb, "lab": mean_color_lab})
+
+        # Mostrar los colores detectados en una ventana
+        self.display_detected_colors(colors)
+
+
+
+
+
+
+
 
 
 
