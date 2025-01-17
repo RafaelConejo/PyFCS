@@ -899,9 +899,9 @@ class PyFCSApp:
         # Mostrar los colores
         self.color_entries = {}  # Guardar referencias a los campos de entrada
 
-        for i, color in enumerate(colors):
-            rgb = color["rgb"]
-            lab = color["lab"]
+        for i, dect_color in enumerate(colors):
+            rgb = dect_color["rgb"]
+            lab = color.rgb2lab(np.array(dect_color["rgb"], dtype=np.uint8).reshape(1, 1, 3) / 255)
             default_name = f"Color {i + 1}"  # Nombre predeterminado
 
             frame = ttk.Frame(scrollable_frame)
@@ -918,6 +918,7 @@ class PyFCSApp:
             self.color_entries[f"color_{i}"] = entry
 
             # Valores LAB
+            lab = lab[0, 0]
             lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
             tk.Label(
                 frame,
