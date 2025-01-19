@@ -862,13 +862,13 @@ class PyFCSApp:
 
     def display_detected_colors(self, colors):
         """
-        Muestra los colores detectados en una ventana con opciones para ver los valores LAB
-        y permitir que el usuario cambie el nombre del color.
+        Muestra los colores detectados en una ventana con opciones para ver los valores LAB,
+        permitir que el usuario cambie el nombre del color, y eliminar colores.
         """
         # Crear ventana emergente
         popup = tk.Toplevel(self.root)
         popup.title("Detected Colors")
-        popup.geometry("400x600")
+        popup.geometry("500x600")
         popup.configure(bg="#f5f5f5")
 
         # Encabezado
@@ -897,7 +897,17 @@ class PyFCSApp:
         scrollbar.pack(side="right", fill="y")
 
         # Mostrar los colores
-        self.color_entries = {}  # Guardar referencias a los campos de entrada
+        color_entries = {}  # Guardar referencias a los campos de entrada
+
+        def remove_color(frame, index):
+            frame.destroy()  # Eliminar la fila del color
+            colors.pop(index)  # Eliminar el color de la lista
+            # Actualizar las referencias de las entradas
+            color_entries = {
+                f"color_{i}": entry
+                for i, (key, entry) in enumerate(color_entries.items())
+                if key != f"color_{index}"
+            }
 
         for i, dect_color in enumerate(colors):
             rgb = dect_color["rgb"]
@@ -915,7 +925,7 @@ class PyFCSApp:
             entry = ttk.Entry(frame, font=("Helvetica", 12))
             entry.insert(0, default_name)  # Nombre inicial
             entry.pack(side="left", padx=10, fill="x", expand=True)
-            self.color_entries[f"color_{i}"] = entry
+            color_entries[f"color_{i}"] = entry
 
             # Valores LAB
             lab = lab[0, 0]
@@ -926,6 +936,17 @@ class PyFCSApp:
                 font=("Helvetica", 10, "italic"),
                 bg="#f5f5f5"
             ).pack(side="left", padx=10)
+
+            # Botón para eliminar color
+            remove_button = tk.Button(
+                frame,
+                text="❌",
+                font=("Helvetica", 10, "bold"),
+                command=lambda f=frame, idx=i: remove_color(f, idx),
+                bg="#f5f5f5",
+                relief="flat"
+            )
+            remove_button.pack(side="right", padx=5)
 
         # Botones de acción
         button_frame = ttk.Frame(popup)
@@ -941,8 +962,8 @@ class PyFCSApp:
 
         save_button = ttk.Button(
             button_frame,
-            text="Save Colors",
-            command=self.save_color_data,
+            text="Create Fuzzy Color Space",
+            command=lambda: self.save_fuzzy_color_space(color_entries, colors),
             style="Accent.TButton"
         )
         save_button.pack(side="left", padx=20)
@@ -952,13 +973,66 @@ class PyFCSApp:
         style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
 
 
-    def save_color_data(self):
+
+    def save_fuzzy_color_space(self, color_entries, colors):
         """
-        Guarda los nombres de los colores editados por el usuario.
+        Guarda los nombres de los colores editados por el usuario en un archivo con extensión .cns.
         """
-        for key, entry in self.color_entries.items():
-            color_name = entry.get()
-            print(f"{key}: {color_name}")
+        # Pedir al usuario que ingrese el nombre del puesto
+        name = tk.simpledialog.askstring("Input", "Name for the fuzzy color space:")
+        if not name:
+            return  # Si no se ingresa un nombre, salir de la función
+
+        # Crear el contenido del archivo
+        output_lines = []
+        output_lines.append(f"@name{name}")
+
+        output_lines.append("@colorSpace_LAB")
+        output_lines.append("3")  # Número de componentes del espacio de color LAB
+
+        # Guardar la cantidad de colores
+        num_colors = len(color_entries)
+        output_lines.append(str(num_colors))  # Número de casos
+
+        # Inicializar listas para los valores LAB y los nombres
+        lab_values = []
+        color_names = []
+
+        # Primer bucle: recorrer los colores para obtener valores LAB
+        for i, dect_color in enumerate(colors):
+            rgb = dect_color["rgb"]  # Acceder al valor RGB del color
+
+            # Convertir de RGB a LAB
+            lab = color.rgb2lab(np.array(rgb, dtype=np.uint8).reshape(1, 1, 3) / 255)[0][0]
+
+            # Guardar valores LAB
+            lab_values.append(f"{lab[0]:.1f}\t{lab[1]:.1f}\t{lab[2]:.1f}")
+
+        # Segundo bucle: recorrer las entradas para obtener nombres de colores
+        for i, (key, entry) in enumerate(color_entries.items()):
+            color_name = entry.get()  # Obtener el nombre del color desde la entrada
+            color_names.append(color_name)
+
+        # Añadir LAB y nombres al contenido del archivo
+        output_lines.extend(lab_values)
+        output_lines.extend(color_names)
+
+        # Definir la ruta de la carpeta y asegurarse de que exista
+        directory = os.path.join(os.getcwd(), 'fuzzy_color_spaces')
+        os.makedirs(directory, exist_ok=True)  # Crea la carpeta si no existe
+
+        # Definir el nombre del archivo
+        file_name = f"{name.replace(' ', '_')}.cns"  # Reemplaza espacios por guiones bajos
+        file_path = os.path.join(directory, file_name)
+
+        # Crear y escribir el archivo .cns
+        with open(file_path, "w") as file:
+            file.write("\n".join(output_lines))  # Escribir las líneas en el archivo
+
+        # Mensaje de confirmación
+        tk.messagebox.showinfo("Success", f"Archivo guardado en: {file_path}")
+
+
 
 
     def get_fuzzy_color_space(self, window_id):
@@ -983,17 +1057,18 @@ class PyFCSApp:
 
         # Normalizar los valores de los píxeles
         img_np = img_np / 255.0
+        lab_img = color.rgb2lab(img_np)
 
         # Convertir la imagen en una lista de píxeles
-        pixels = img_np.reshape((-1, 3))
+        pixels = lab_img.reshape((-1, 3))
 
-        # Escalar los valores de los colores para clustering
-        scaler = StandardScaler()
-        scaled_pixels = scaler.fit_transform(pixels)
+        # # Escalar los valores de los colores para clustering
+        # scaler = StandardScaler()
+        # scaled_pixels = scaler.fit_transform(pixels)
 
         # Aplicar clustering DBSCAN
-        dbscan = DBSCAN(eps=0.3, min_samples=100)       # AJUSTAR
-        labels = dbscan.fit_predict(scaled_pixels)
+        dbscan = DBSCAN(eps=1.0, min_samples=160)       
+        labels = dbscan.fit_predict(pixels)
 
         # Obtener colores representativos
         unique_labels = set(labels)
@@ -1002,10 +1077,14 @@ class PyFCSApp:
             if label == -1:  # Ignorar ruido
                 continue
             group = pixels[labels == label]
-            # Calcular el promedio del grupo y desnormalizar a escala RGB
-            mean_color_rgb = tuple((group.mean(axis=0) * 255).astype(int))
-            mean_color_lab = group.mean(axis=0)  # LAB ya está normalizado entre 0 y 1
-            colors.append({"rgb": mean_color_rgb, "lab": mean_color_lab})
+            # Calcular el promedio del grupo en LAB
+            mean_color_lab = group.mean(axis=0)
+            
+            # Convertir el promedio de LAB a RGB
+            mean_color_rgb = color.lab2rgb([[mean_color_lab]])  # lab2rgb espera un array 2D
+            mean_color_rgb = (mean_color_rgb[0, 0] * 255).astype(int)  # Escalar a [0, 255]
+
+            colors.append({"rgb": tuple(mean_color_rgb), "lab": tuple(mean_color_lab)})
 
         # Mostrar los colores detectados en una ventana
         self.display_detected_colors(colors)
