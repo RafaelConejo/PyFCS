@@ -860,11 +860,7 @@ class PyFCSApp:
 
 
 
-    def display_detected_colors(self, colors):
-        """
-        Muestra los colores detectados en una ventana con opciones para ver los valores LAB,
-        permitir que el usuario cambie el nombre del color, y eliminar colores.
-        """
+    def display_detected_colors(self, colors, window_id, threshold, min_samples):
         # Crear ventana emergente
         popup = tk.Toplevel(self.root)
         popup.title("Detected Colors")
@@ -878,6 +874,72 @@ class PyFCSApp:
             font=("Helvetica", 14, "bold"),
             bg="#f5f5f5"
         ).pack(pady=15)
+
+        # Umbral y controles
+        controls_frame = tk.Frame(popup, bg="#f5f5f5", pady=10)
+        controls_frame.pack(pady=10)
+
+        # Create a rectangular frame for the Threshold section
+        threshold_frame = tk.Frame(controls_frame, bg="#e5e5e5", bd=1, relief="solid", padx=10, pady=5)
+        threshold_frame.grid(row=0, column=0, columnspan=2, padx=10, pady=5)
+
+        tk.Label(
+            threshold_frame,
+            text="Threshold:",
+            font=("Helvetica", 12),
+            bg="#f5f5f5"
+        ).grid(row=0, column=0, padx=5)
+
+        threshold_label = tk.Label(
+            threshold_frame,
+            text=f"{threshold:.2f}",
+            font=("Helvetica", 12),
+            bg="#f5f5f5"
+        )
+        threshold_label.grid(row=0, column=1, padx=5)
+
+        def increase_threshold():
+            nonlocal threshold, min_samples
+            if threshold < 1.0:  
+                threshold = min(threshold + 0.05, 1.0)
+                min_samples = max(10, min_samples - 20)  
+                threshold_label.config(text=f"{threshold:.2f}")
+
+        def decrease_threshold():
+            nonlocal threshold, min_samples
+            if threshold > 0.0:  
+                threshold = max(threshold - 0.05, 0.0)
+                min_samples += 20  
+                threshold_label.config(text=f"{threshold:.2f}")
+
+
+        # Adjust the order and styling of buttons
+        tk.Button(
+            controls_frame,
+            text="-",
+            command=decrease_threshold,
+            bg="#f0d2d2",
+            font=("Helvetica", 10, "bold"),
+            width=2
+        ).grid(row=0, column=2, padx=2)
+
+        tk.Button(
+            controls_frame,
+            text="+",
+            command=increase_threshold,
+            bg="#d4f0d2",
+            font=("Helvetica", 10, "bold"),
+            width=2
+        ).grid(row=0, column=3, padx=2)
+
+        tk.Button(
+            controls_frame,
+            text="Recalculate",
+            command=lambda: [self.get_fuzzy_color_space(window_id, threshold, min_samples), popup.destroy()],
+            bg="#d2dff0",
+            font=("Helvetica", 10, "bold"),
+            padx=10
+        ).grid(row=0, column=4, padx=10)
 
         # Frame para mostrar los colores con scrollbar
         frame_container = ttk.Frame(popup)
@@ -974,6 +1036,8 @@ class PyFCSApp:
 
 
 
+
+
     def save_fuzzy_color_space(self, color_entries, colors):
         """
         Guarda los nombres de los colores editados por el usuario en un archivo con extensión .cns.
@@ -1035,7 +1099,7 @@ class PyFCSApp:
 
 
 
-    def get_fuzzy_color_space(self, window_id):
+    def get_fuzzy_color_space(self, window_id, threshold=0.5, min_samples=160):
         """
         Detecta los colores principales en una imagen usando clustering DBSCAN
         y muestra los resultados en una ventana con opciones de edición.
@@ -1062,12 +1126,9 @@ class PyFCSApp:
         # Convertir la imagen en una lista de píxeles
         pixels = lab_img.reshape((-1, 3))
 
-        # # Escalar los valores de los colores para clustering
-        # scaler = StandardScaler()
-        # scaled_pixels = scaler.fit_transform(pixels)
-
         # Aplicar clustering DBSCAN
-        dbscan = DBSCAN(eps=1.0, min_samples=160)       
+        eps = 1.5 - threshold
+        dbscan = DBSCAN(eps=eps, min_samples= min_samples)       
         labels = dbscan.fit_predict(pixels)
 
         # Obtener colores representativos
@@ -1087,7 +1148,7 @@ class PyFCSApp:
             colors.append({"rgb": tuple(mean_color_rgb), "lab": tuple(mean_color_lab)})
 
         # Mostrar los colores detectados en una ventana
-        self.display_detected_colors(colors)
+        self.display_detected_colors(colors, window_id, threshold, min_samples)
 
 
 
