@@ -53,7 +53,7 @@ class PyFCSApp:
 
         # Fuzzy Color Space Manager menu
         fuzzy_menu = Menu(menubar, tearoff=0)
-        fuzzy_menu.add_command(label="New Color Space", command=self.new_color_space)  # Create new color space
+        fuzzy_menu.add_command(label="New Color Space", command=self.show_menu_create_fcs)  # Create new color space
         fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space)  # Load existing color space
         menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
 
@@ -79,7 +79,11 @@ class PyFCSApp:
         fuzzy_manager_frame.grid(row=0, column=1, padx=5, pady=5)
 
         # Buttons for fuzzy color space management
-        tk.Button(fuzzy_manager_frame, text="New Color Space", command=self.new_color_space).pack(side="left", padx=5)
+        tk.Button(fuzzy_manager_frame, text="New Color Space", command=self.show_menu_create_fcs).pack(side="left", padx=5)
+        self.menu_create_fcs = Menu(root, tearoff=0)
+        self.menu_create_fcs.add_command(label="Palette-Based Creation", command=self.palette_based_creation)
+        self.menu_create_fcs.add_command(label="Image-Based Creation")#, command=self.image_based_creation)
+
         tk.Button(fuzzy_manager_frame, text="Load Color Space", command=self.load_color_space).pack(side="left", padx=5)
 
         # Main content frame for tabs and the right area
@@ -162,8 +166,6 @@ class PyFCSApp:
 
 
 
-
-
     ########################################################################################### Utils APP ###########################################################################################
     def exit_app(self):
         """
@@ -213,6 +215,10 @@ class PyFCSApp:
         Delegates the display logic to a utility function for better separation of concerns.
         """
         utils_structure.about_info(self.root)  
+
+    def show_menu_create_fcs(self):
+        # Mostrar el menú contextual cerca del botón
+        self.menu_create_fcs.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
 
 
 
@@ -375,7 +381,7 @@ class PyFCSApp:
 
     
 
-    def new_color_space(self):
+    def palette_based_creation(self):
         """
         Placeholder logic for creating a new fuzzy color space.
         Displays a message indicating this action.
@@ -902,14 +908,14 @@ class PyFCSApp:
             nonlocal threshold, min_samples
             if threshold < 1.0:  
                 threshold = min(threshold + 0.05, 1.0)
-                min_samples = max(10, min_samples - 20)  
+                min_samples = max(15, min_samples - 15)  
                 threshold_label.config(text=f"{threshold:.2f}")
 
         def decrease_threshold():
             nonlocal threshold, min_samples
             if threshold > 0.0:  
                 threshold = max(threshold - 0.05, 0.0)
-                min_samples += 20  
+                min_samples += 15  
                 threshold_label.config(text=f"{threshold:.2f}")
 
 
