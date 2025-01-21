@@ -64,6 +64,86 @@ class Visual_tools:
 
 
     @staticmethod
+    def plot_all_prototypes(prototypes, volume_limits, hex_color):
+        """
+        Dibuja los volúmenes de múltiples prototipos, cada uno en un color diferente.
+        """
+        fig = Figure(figsize=(8, 6), dpi=120)
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Filtra todos los puntos
+        all_points = np.vstack((np.array(prototypes[0].positive), np.array(prototypes[0].negatives)))
+        false_negatives = Prototype.get_falseNegatives()
+        negatives_filtered_no_false = [
+            point for point in all_points
+            if not any(np.array_equal(point, fn) for fn in false_negatives)
+        ]
+        all_points = np.array(negatives_filtered_no_false)
+
+        # Limita los puntos al rango de volumen especificado
+        all_points = all_points[
+            (all_points[:, 0] >= volume_limits.comp1[0]) & (all_points[:, 0] <= volume_limits.comp1[1]) &
+            (all_points[:, 1] >= volume_limits.comp2[0]) & (all_points[:, 1] <= volume_limits.comp2[1]) &
+            (all_points[:, 2] >= volume_limits.comp3[0]) & (all_points[:, 2] <= volume_limits.comp3[1])
+        ]
+
+        # Dibuja los puntos individuales
+        for i in range(all_points.shape[0]):
+            point = all_points[i]
+            color = '#000000'  # Default a negro si no se encuentra coincidencia
+            for hex_color_key, lab_value in hex_color.items():
+                if np.array_equal(point, lab_value):  # Compara el punto con el valor LAB
+                    color = hex_color_key
+                    break
+
+            ax.scatter(
+                all_points[i, 0], all_points[i, 1], all_points[i, 2],
+                color=color, marker='o', s=30, label=f'Points {i + 1}', edgecolor='k', alpha=0.8
+            )
+
+        # Dibuja los volúmenes de Voronoi
+        for idx, prototype in enumerate(prototypes):
+            # Usa el color basado en `hex_color` si es posible
+            color = '#000000'  # Color por defecto
+            for hex_color_key, lab_value in hex_color.items():
+                if np.array_equal(prototype.positive, lab_value):  # Asocia prototipos con colores
+                    color = hex_color_key
+                    break
+
+            # Agregar las caras del volumen de Voronoi
+            faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
+            for face in faces:
+                vertices = np.array(face.vertex)
+                if face.infinity:
+                    continue  # Ignorar caras infinitas
+                else:
+                    vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)
+                    if len(vertices_clipped) >= 3:  # Al menos 3 vértices para formar una cara
+                        poly3d = Poly3DCollection(
+                            [vertices_clipped], facecolors=color, edgecolors='black',
+                            linewidths=1, alpha=0.5
+                        )
+                        ax.add_collection3d(poly3d)
+
+        # Configuración de los ejes
+        ax.set_xlabel('L* (Luminosity)', fontsize=10, labelpad=10)
+        ax.set_ylabel('a* (Green-Red)', fontsize=10, labelpad=10)
+        ax.set_zlabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
+
+        # Ajustar los límites de los ejes según los límites del volumen
+        ax.set_xlim(volume_limits.comp1[0], volume_limits.comp1[1])
+        ax.set_ylim(volume_limits.comp2[0], volume_limits.comp2[1])
+        ax.set_zlim(volume_limits.comp3[0], volume_limits.comp3[1])
+
+        # Estilización adicional
+        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
+
+        return fig
+
+
+
+
+    @staticmethod
     def plot_prototype(prototype, volume_limits):
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
@@ -143,85 +223,6 @@ class Visual_tools:
 
         # Mostrar el gráfico
         plt.show()
-
-
-
-    @staticmethod
-    def plot_all_prototypes(prototypes, volume_limits, hex_color):
-        """
-        Dibuja los volúmenes de múltiples prototipos, cada uno en un color diferente.
-        """
-        fig = Figure(figsize=(8, 6), dpi=120)
-        ax = fig.add_subplot(111, projection='3d')
-
-        # Colores predefinidos para los volúmenes
-        colormap = cm.get_cmap('viridis', len(prototypes))
-
-        all_points = np.vstack((np.array(prototypes[0].positive), np.array(prototypes[0].negatives)))
-        false_negatives = Prototype.get_falseNegatives()
-        negatives_filtered_no_false = [
-            point for point in all_points
-            if not any(np.array_equal(point, fn) for fn in false_negatives)
-        ]
-        all_points = np.array(negatives_filtered_no_false)
-
-        all_points = all_points[
-            (all_points[:, 0] >= volume_limits.comp1[0]) & (all_points[:, 0] <= volume_limits.comp1[1]) &
-            (all_points[:, 1] >= volume_limits.comp2[0]) & (all_points[:, 1] <= volume_limits.comp2[1]) &
-            (all_points[:, 2] >= volume_limits.comp3[0]) & (all_points[:, 2] <= volume_limits.comp3[1])
-        ]
-
-        for i in range(all_points.shape[0]):
-            point = all_points[i]
-            
-            color = '#000000' 
-            for hex_color_key, lab_value in hex_color.items():
-                if np.array_equal(point, lab_value):  # Compara el punto con el valor LAB
-                    color = hex_color_key
-                    break
-
-            ax.scatter(
-                all_points[i, 0], all_points[i, 1], all_points[i, 2],
-                color=color, marker='o', s=30, label=f'Points {i + 1}', edgecolor='k', alpha=0.8
-            )
-
-
-        for idx, prototype in enumerate(prototypes):
-            color = colormap(idx)  # Color único para cada prototipo
-
-            # ** Volumen de Voronoi **
-            faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
-
-            for face in faces:
-                vertices = np.array(face.vertex)
-
-                if face.infinity:
-                    # Si la cara es infinita, se podrían calcular intersecciones con el volumen (opcional)
-                    continue
-                else:
-                    # Recortar las caras finitas al volumen
-                    vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)
-                    if len(vertices_clipped) >= 3:  # Al menos 3 vértices para formar una cara
-                        poly3d = Poly3DCollection(
-                            [vertices_clipped], facecolors=color, edgecolors='black',
-                            linewidths=1, alpha=0.5
-                        )
-                        ax.add_collection3d(poly3d)
-
-        # Configuración de los ejes
-        ax.set_xlabel('L* (Luminosity)', fontsize=10, labelpad=10)
-        ax.set_ylabel('a* (Green-Red)', fontsize=10, labelpad=10)
-        ax.set_zlabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
-
-        # Ajustar los límites de los ejes según los límites del volumen
-        ax.set_xlim(volume_limits.comp1[0], volume_limits.comp1[1])
-        ax.set_ylim(volume_limits.comp2[0], volume_limits.comp2[1])
-        ax.set_zlim(volume_limits.comp3[0], volume_limits.comp3[1])
-
-        # Estilización adicional
-        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
-
-        return fig
 
 
 
