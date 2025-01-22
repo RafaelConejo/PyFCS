@@ -5,32 +5,242 @@ import numpy as np
 from skimage import color
 from PIL import Image, ImageTk
 import matplotlib.pyplot as plt
+from sklearn.cluster import DBSCAN
 
+### my libraries ###
+from PyFCS import Input, Visual_tools, ReferenceDomain, Prototype, FuzzyColorSpace
 
-def about_info(root):
-    """Displays a popup window with 'About' information."""
-    # Create a new top-level window (popup)
-    about_window = tk.Toplevel(root)  
-    about_window.title("About PyFCS")  # Set the title of the popup window
-    
-    # Disable resizing of the popup window
-    about_window.resizable(False, False)
-
-    # Create and add a label with the software information
-    about_label = tk.Label(
-        about_window, 
-        text="PyFCS: Python Fuzzy Color Software\n"
-              "A color modeling Python Software based on Fuzzy Color Spaces.\n"
-              "Version 0.1\n\n"
-              "Contact: rafaconejo@ugr.es", 
-        padx=20, pady=20, font=("Arial", 12), justify="center"
+def prompt_file_selection(initial_subdir):
+    """
+    Prompts the user to select a file and returns the selected filename.
+    """
+    initial_directory = os.path.join(os.getcwd(), initial_subdir)
+    filetypes = [("All Files", "*.*")]
+    return filedialog.askopenfilename(
+        title="Select Fuzzy Color Space File",
+        initialdir=initial_directory,
+        filetypes=filetypes
     )
-    about_label.pack()  # Add the label to the popup window
 
-    # Create a 'Close' button to close the popup window
-    close_button = tk.Button(about_window, text="Close", command=about_window.destroy)
-    close_button.pack(pady=10)  # Add the button to the popup window
 
+
+def read_and_prepare_color_data(filename):
+    """
+    Reads the file and prepares color data along with metadata.
+    """
+    extension = os.path.splitext(filename)[1]
+    input_class = Input.instance(extension)
+    color_data = input_class.read_file(filename)
+    return color_data, extension, input_class
+
+
+
+def draw_table_headers(canvas, x_start, y_start, column_widths):
+    """
+    Draws table headers on the canvas.
+    """
+    headers = ["L", "a", "b", "Label", "Color"]
+    for i, header in enumerate(headers):
+        canvas.create_text(
+            x_start + sum(column_widths[:i]) + column_widths[i] / 2, y_start,
+            text=header, anchor="center", font=("Arial", 10, "bold")
+        )
+
+
+
+def draw_color_rows(canvas, color_data, x_start, y_start, column_widths):
+    """
+    Draws color rows and stores hex color data.
+    """
+    hex_color = {}
+    color_matrix = []
+    rect_width, rect_height = 50, 20
+
+    for color_name, color_value in color_data.items():
+        lab = color_value['positive_prototype']
+        lab = np.array(lab)
+        color_matrix.append(color_name)
+
+        # Draw individual columns (L, a, b, Label)
+        for i, value in enumerate([lab[0], lab[1], lab[2], color_name]):
+            canvas.create_text(
+                x_start + sum(column_widths[:i]) + column_widths[i] / 2, y_start,
+                text=str(round(value, 2)) if i < 3 else value, anchor="center"
+            )
+
+        # Convert LAB to RGB and store hex colors
+        rgb_data = tuple(map(lambda x: int(x * 255), color.lab2rgb([color_value['positive_prototype']])[0]))
+        hex_color[(f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}')] = lab
+
+        # Draw color rectangle
+        canvas.create_rectangle(
+            x_start + sum(column_widths[:4]) + 10, y_start - rect_height / 2,
+            x_start + sum(column_widths[:4]) + 10 + rect_width, y_start + rect_height / 2,
+            fill=f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}', outline="black"
+        )
+
+        # Move to the next row
+        y_start += 30
+
+    return hex_color, color_matrix
+
+
+
+def process_prototypes(color_data):
+    """
+    Creates prototypes from color data.
+    """
+    prototypes = []
+    for color_name, color_value in color_data.items():
+        positive_prototype = color_value['positive_prototype']
+        negative_prototypes = color_value['negative_prototypes']
+        prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes, add_false=True)
+        prototypes.append(prototype)
+    return prototypes
+
+
+
+@staticmethod
+def rgb_to_hex(rgb):
+    return "#%02x%02x%02x" % rgb
+
+
+
+def load_color_data(file_path):
+    """
+    Reads color data from a file and converts LAB values to RGB.
+    Returns a dictionary of colors with their LAB and RGB values.
+    """
+    input_class = Input.instance('.cns')
+    color_data = input_class.read_file(file_path)
+
+    colors = {}
+    for color_name, color_value in color_data.items():
+        lab = np.array(color_value['positive_prototype'])
+        rgb = tuple(map(lambda x: int(x * 255), color.lab2rgb([lab])[0]))
+        colors[color_name] = {"rgb": rgb, "lab": lab}
+    return colors
+
+
+
+def create_popup_window(parent, title, width, height, header_text):
+    """
+    Creates a popup window with a header and a scrollable frame.
+    Returns the popup window and the scrollable frame.
+    """
+    popup = tk.Toplevel(parent)
+    popup.title(title)
+    popup.geometry(f"{width}x{height}")
+    popup.configure(bg="#f5f5f5")
+
+    tk.Label(
+        popup,
+        text=header_text,
+        font=("Helvetica", 14, "bold"),
+        bg="#f5f5f5"
+    ).pack(pady=15)
+
+    # Create a scrollable frame
+    frame_container = ttk.Frame(popup)
+    frame_container.pack(pady=10, fill="both", expand=True)
+
+    canvas = tk.Canvas(frame_container, bg="#f5f5f5")
+    scrollbar = ttk.Scrollbar(frame_container, orient="vertical", command=canvas.yview)
+    scrollable_frame = ttk.Frame(canvas)
+
+    scrollable_frame.bind(
+        "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+    )
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    return popup, scrollable_frame
+
+
+
+def create_color_display_frame(parent, color_name, rgb, lab, color_checks):
+    """
+    Creates a frame for displaying color information, including a color box, labels, and a Checkbutton.
+    """
+    frame = ttk.Frame(parent)
+    frame.pack(fill="x", pady=8, padx=10)
+
+    # Color box
+    color_box = tk.Label(frame, bg=rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
+    color_box.pack(side="left", padx=10)
+
+    # Color name
+    tk.Label(
+        frame,
+        text=color_name,
+        font=("Helvetica", 12),
+        bg="#f5f5f5"
+    ).pack(side="left", padx=10)
+
+    # LAB values
+    lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
+    tk.Label(
+        frame,
+        text=lab_values,
+        font=("Helvetica", 10, "italic"),
+        bg="#f5f5f5"
+    ).pack(side="left", padx=10)
+
+    # Checkbutton for selection
+    var = tk.BooleanVar()
+    color_checks[color_name] = var
+    ttk.Checkbutton(frame, variable=var).pack(side="right", padx=10)
+
+
+
+def create_selection_popup(parent, title, width, height, items):
+    """
+    Creates a popup window with a listbox to select an item.
+    Returns the popup window and the listbox widget.
+    """
+    popup = tk.Toplevel(parent)
+    popup.title(title)
+    popup.geometry(f"{width}x{height}")
+    popup.resizable(False, False)
+
+    # Add a listbox to display the items
+    listbox = tk.Listbox(popup, width=40, height=10)
+    for item in items:
+        listbox.insert(tk.END, item)
+    listbox.pack(pady=10)
+
+    # Center the popup relative to the parent window
+    popup.transient(parent)
+    popup.grab_set()
+
+    return popup, listbox
+
+
+
+def handle_image_selection(event, listbox, popup, images_names, callback):
+    """
+    Handles the selection of an image from the listbox.
+    Closes the popup and triggers a callback with the selected image ID.
+    """
+    selected_index = listbox.curselection()
+    if not selected_index:
+        return  # Do nothing if no selection is made
+
+    selected_filename = listbox.get(selected_index)
+
+    # Find the image ID associated with the selected filename
+    selected_img_id = next(
+        img_id for img_id, fname in images_names.items() if os.path.basename(fname) == selected_filename
+    )
+
+    # Close the popup
+    popup.destroy()
+
+    # Call the provided callback with the selected image ID
+    callback(selected_img_id)
 
 
 
@@ -80,6 +290,56 @@ def get_proto_percentage(prototypes, image, fuzzy_color_space, selected_option):
 
     # Return the generated grayscale image as a NumPy array
     return grayscale_image
+
+
+
+def get_fuzzy_color_space(window_id, image, threshold=0.5, min_samples=160):
+    """
+    Detects the main colors in an image using DBSCAN clustering and triggers a callback with the detected colors.
+
+    Args:
+        image: PIL Image object to process.
+        threshold: Float, controls the DBSCAN epsilon (closeness of clusters).
+        min_samples: Int, minimum number of points to form a cluster.
+        display_callback: Callable, function to execute with the detected colors.
+    """
+    # Convert image to numpy array
+    img_np = np.array(image)
+
+    # Handle alpha channel if present
+    if img_np.shape[-1] == 4:  # If it has 4 channels (RGBA)
+        img_np = img_np[..., :3]  # Remove the alpha channel and keep only RGB
+
+    # Normalize pixel values
+    img_np = img_np / 255.0
+    lab_img = color.rgb2lab(img_np)
+
+    # Flatten the image into a list of pixels
+    pixels = lab_img.reshape((-1, 3))
+
+    # Apply DBSCAN clustering
+    eps = 1.5 - threshold
+    dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+    labels = dbscan.fit_predict(pixels)
+
+    # Extract representative colors
+    unique_labels = set(labels)
+    colors = []
+    for label in unique_labels:
+        if label == -1:  # Ignore noise
+            continue
+        group = pixels[labels == label]
+        # Calculate the mean color of the group in LAB
+        mean_color_lab = group.mean(axis=0)
+
+        # Convert mean LAB to RGB
+        mean_color_rgb = color.lab2rgb([[mean_color_lab]])  # lab2rgb expects a 2D array
+        mean_color_rgb = (mean_color_rgb[0, 0] * 255).astype(int)  # Scale to [0, 255]
+
+        colors.append({"rgb": tuple(mean_color_rgb), "lab": tuple(mean_color_lab)})
+
+    # Trigger the callback with the detected colors
+    return colors
 
 
 

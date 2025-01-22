@@ -6,9 +6,6 @@ from skimage import color
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from PIL import Image, ImageTk
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from sklearn.cluster import DBSCAN
-from sklearn.preprocessing import StandardScaler
 
 current_dir = os.path.dirname(__file__)
 pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
@@ -70,21 +67,63 @@ class PyFCSApp:
         image_manager_frame = tk.LabelFrame(main_frame, text="Image Manager", bg="gray95", padx=10, pady=10)
         image_manager_frame.grid(row=0, column=0, padx=5, pady=5)
 
+        # Load Icons 
+        load_image = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'LoadImage.png')
+        load_image = Image.open(load_image)
+        load_image = ImageTk.PhotoImage(load_image)
+
+        save_image = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'SaveImage.png')
+        save_image = Image.open(save_image)
+        save_image = ImageTk.PhotoImage(save_image)
+
+        new_fcs = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'NewFCS1.png')
+        new_fcs = Image.open(new_fcs)
+        new_fcs = ImageTk.PhotoImage(new_fcs)
+
+        load_fcs = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'LoadFCS.png')
+        load_fcs = Image.open(load_fcs)
+        load_fcs = ImageTk.PhotoImage(load_fcs)
         # Buttons for image operations
-        tk.Button(image_manager_frame, text="Open Image", command=self.open_image).pack(side="left", padx=5)
-        tk.Button(image_manager_frame, text="Save Image").pack(side="left", padx=5)
+        tk.Button(
+            image_manager_frame,
+            image=load_image,
+            text="Open Image",
+            command=self.open_image,
+            compound="left"  
+        ).pack(side="left", padx=5)
+        image_manager_frame.load_image = load_image
+
+        tk.Button(image_manager_frame, 
+            image=save_image, 
+            text=" Save Image", 
+            compound="left"
+        ).pack(side="left", padx=5)
+        image_manager_frame.save_image = save_image
 
         # "Fuzzy Color Space Manager" section
         fuzzy_manager_frame = tk.LabelFrame(main_frame, text="Fuzzy Color Space Manager", bg="gray95", padx=10, pady=10)
         fuzzy_manager_frame.grid(row=0, column=1, padx=5, pady=5)
 
         # Buttons for fuzzy color space management
-        tk.Button(fuzzy_manager_frame, text="New Color Space", command=self.show_menu_create_fcs).pack(side="left", padx=5)
+        tk.Button(fuzzy_manager_frame,
+            text="New Color Space", 
+            image=new_fcs,
+            command=self.show_menu_create_fcs,
+            compound="left" 
+        ).pack(side="left", padx=5)
+        fuzzy_manager_frame.new_fcs = new_fcs
+
         self.menu_create_fcs = Menu(root, tearoff=0)
         self.menu_create_fcs.add_command(label="Palette-Based Creation", command=self.palette_based_creation)
-        self.menu_create_fcs.add_command(label="Image-Based Creation")#, command=self.image_based_creation)
+        self.menu_create_fcs.add_command(label="Image-Based Creation", command=self.image_based_creation)
 
-        tk.Button(fuzzy_manager_frame, text="Load Color Space", command=self.load_color_space).pack(side="left", padx=5)
+        tk.Button(fuzzy_manager_frame,
+            text="Load Color Space", 
+            image=load_fcs,
+            command=self.load_color_space,
+            compound="left" 
+        ).pack(side="left", padx=5)
+        fuzzy_manager_frame.load_fcs = load_fcs
 
         # Main content frame for tabs and the right area
         main_content_frame = tk.Frame(root, bg="gray82")
@@ -210,15 +249,75 @@ class PyFCSApp:
             self.load_window.destroy()
 
     def about_info(self):
-        """
-        Display the "About" information dialog.
-        Delegates the display logic to a utility function for better separation of concerns.
-        """
-        utils_structure.about_info(self.root)  
+        """Displays a popup window with 'About' information."""
+        # Create a new top-level window (popup)
+        about_window = tk.Toplevel(self.root)  
+        about_window.title("About PyFCS")  # Set the title of the popup window
+        
+        # Disable resizing of the popup window
+        about_window.resizable(False, False)
+
+        # Center the popup window
+        self.center_popup(about_window, 600, 200)
+
+        # Create and add a label with the software information
+        about_label = tk.Label(
+            about_window, 
+            text="PyFCS: Python Fuzzy Color Software\n"
+                "A color modeling Python Software based on Fuzzy Color Spaces.\n"
+                "Version 0.1\n\n"
+                "Contact: rafaconejo@ugr.es", 
+            padx=20, pady=20, font=("Helvetica", 12, "bold"), justify="center",
+            bg="#f0f0f0", fg="#333333"  # Background color and text color
+        )
+        
+        about_label.pack(pady=20)  # Add the label to the popup window with padding
+
+        # Create a frame to style the close button
+        button_frame = tk.Frame(about_window, bg="#f0f0f0")
+        button_frame.pack(pady=10)
+
+        # Create a 'Close' button to close the popup window with enhanced styling
+        close_button = tk.Button(
+            button_frame,
+            text="Close",
+            command=about_window.destroy,
+            font=("Helvetica", 10, "bold"),
+            bg="#4CAF50",  # Green background
+            fg="white",    # White text
+            relief=tk.FLAT,
+            padx=10,
+            pady=5
+        )
+        close_button.pack(pady=10)  # Add the button to the frame
 
     def show_menu_create_fcs(self):
         # Mostrar el menú contextual cerca del botón
         self.menu_create_fcs.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
+
+    def center_popup(self, popup, width, height):
+        """
+        Centers a popup window on the same screen as the parent widget.
+        
+        Args:
+            parent: The parent widget (e.g., self.root).
+            popup: The popup window to center.
+            width: The width of the popup window.
+            height: The height of the popup window.
+        """
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+
+        popup_x = root_x + (root_width - width) // 2
+        popup_y = root_y + (root_height - height) // 2
+
+        popup.geometry(f"{width}x{height}+{popup_x}+{popup_y}")
+
+
+
+
 
 
 
@@ -235,108 +334,39 @@ class PyFCSApp:
         Allows the user to select a fuzzy color space file and displays its color data in a scrollable table.
         This includes loading the file, extracting the data, and displaying it visually on a canvas.
         """
-        # Set the initial directory to the fuzzy_color_spaces folder
-        initial_directory = os.path.join(os.getcwd(), 'fuzzy_color_spaces\\')
-        filetypes = [("All Files", "*.*")]
-        
         # Prompt the user to select a file
-        filename = filedialog.askopenfilename(
-            title="Select Fuzzy Color Space File",
-            initialdir=initial_directory,
-            filetypes=filetypes
-        )
-        
+        filename = utils_structure.prompt_file_selection('fuzzy_color_spaces\\')
+
         if filename:
-            ################ HERE LOADING ???? #########################################
             # Activate the 'Original Image' option for all open windows
             if hasattr(self, 'floating_images') and self.floating_images:
                 for window_id in self.floating_images.keys():
                     self.show_original_image(window_id)
-        
-            # Read the file and extract color data
-            extension = os.path.splitext(filename)[1]
-            input_class = Input.instance(extension)
-            color_data = input_class.read_file(filename)
+
+            # Read the file and prepare color data
+            color_data, _, _ = utils_structure.read_and_prepare_color_data(filename)
 
             # Clear the Canvas and adjust scroll region for new data
             self.Canvas2.delete("all")
             self.Canvas2.configure(scrollregion=(0, 0, 1000, len(color_data) * 30 + 50))
 
-            # Table column properties
-            x_start = 10  # Starting X-coordinate for columns
-            y_start = 10  # Starting Y-coordinate for header row
-            rect_width, rect_height = 50, 20  # Dimensions of color rectangles
-
             # Draw table headers
-            headers = ["L", "a", "b", "Label", "Color"]
+            x_start, y_start = 10, 10
             column_widths = [50, 50, 50, 150, 70]
-            for i, header in enumerate(headers):
-                self.Canvas2.create_text(
-                    x_start + sum(column_widths[:i]) + column_widths[i] / 2, y_start,
-                    text=header, anchor="center", font=("Arial", 10, "bold")
-                )
+            utils_structure.draw_table_headers(self.Canvas2, x_start, y_start, column_widths)
 
-            # Offset for data rows
+            # Draw color data rows
             y_start += 30
+            self.hex_color, self.color_matrix = utils_structure.draw_color_rows(self.Canvas2, color_data, x_start, y_start, column_widths)
 
-
-            # Generate the Voronoi diagram using color data
+            # Generate prototypes
             self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
-            self.prototypes = []
-
-            # Draw color data in rows
-            self.hex_color = {}
-            self.color_matrix = []
-            for color_name, color_value in color_data.items():
-                lab = color_value['positive_prototype']
-                lab = np.array(lab)
-                self.color_matrix.append(color_name)
-
-                # Draw individual columns (L, a, b, Label)
-                self.Canvas2.create_text(
-                    x_start + column_widths[0] / 2, y_start,
-                    text=str(round(lab[0], 2)), anchor="center"
-                )
-                self.Canvas2.create_text(
-                    x_start + column_widths[0] + column_widths[1] / 2, y_start,
-                    text=str(round(lab[1], 2)), anchor="center"
-                )
-                self.Canvas2.create_text(
-                    x_start + sum(column_widths[:2]) + column_widths[2] / 2, y_start,
-                    text=str(round(lab[2], 2)), anchor="center"
-                )
-                self.Canvas2.create_text(
-                    x_start + sum(column_widths[:3]) + column_widths[3] / 2, y_start,
-                    text=color_name, anchor="center"
-                )
-
-                # Convert LAB to RGB and store hex colors
-                rgb_data = tuple(map(lambda x: int(x * 255), color.lab2rgb([color_value['positive_prototype']])[0]))
-                self.hex_color[(f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}')] = lab
-
-                # Draw color rectangle
-                self.Canvas2.create_rectangle(
-                    x_start + sum(column_widths[:4]) + 10, y_start - rect_height / 2,
-                    x_start + sum(column_widths[:4]) + 10 + rect_width, y_start + rect_height / 2,
-                    fill=f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}', outline="black"
-                )
-
-                # Move to the next row
-                y_start += 30
-
-
-                # Prototype creation
-                positive_prototype = color_value['positive_prototype']
-                negative_prototypes = color_value['negative_prototypes']
-                prototype = Prototype(label=color_name, positive=positive_prototype, negatives=negative_prototypes, add_false=True)
-                self.prototypes.append(prototype)
-                
+            self.prototypes = utils_structure.process_prototypes(color_data)
 
             # Create and save the fuzzy color space
             self.fuzzy_color_space = FuzzyColorSpace(space_name=" ", prototypes=self.prototypes)
             self.cores = self.fuzzy_color_space.get_cores()
             self.supports = self.fuzzy_color_space.get_supports()
-
 
             # Update 3D graph and app state vars
             self.COLOR_SPACE = True
@@ -356,10 +386,6 @@ class PyFCSApp:
             messagebox.showwarning("No File Selected", "No file was selected.")
 
 
-
-    @staticmethod
-    def rgb_to_hex(rgb):
-        return "#%02x%02x%02x" % rgb
     
     def create_color_space(self):
         # Get selected colors
@@ -374,7 +400,7 @@ class PyFCSApp:
 
         if name:
             # Logic for creating the new color space would go here
-            messagebox.showinfo("Color Space Created", f"Color Space '{name}' created with the following colors: {', '.join(selected_colors)}")
+            messagebox.showinfo("Color Space Created", f"Color Space '{name}' created.")
         else:
             messagebox.showinfo("Cancelled", "Color Space creation was cancelled.")
 
@@ -383,111 +409,101 @@ class PyFCSApp:
 
     def palette_based_creation(self):
         """
-        Placeholder logic for creating a new fuzzy color space.
-        Displays a message indicating this action.
+        Logic for creating a new fuzzy color space using a predefined palette.
+        Allows the user to select colors through a popup and creates a new fuzzy color space.
         """
-        color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces\\BASIC.cns') 
-        input_class = Input.instance('.cns')
-        color_data = input_class.read_file(color_space_path)
+        # Load color data from the BASIC.cns file
+        color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces\\BASIC.cns')
+        colors = utils_structure.load_color_data(color_space_path)
 
-        # Convertir los colores a RGB
-        colors = {}
-        for color_name, color_value in color_data.items():
-            lab = np.array(color_value['positive_prototype'])
-            rgb = tuple(map(lambda x: int(x * 255), color.lab2rgb([lab])[0]))
-            colors[color_name] = {"rgb": rgb, "lab": lab}
-
-        # Crear ventana emergente
-        popup = tk.Toplevel(self.root)
-        popup.title("Select colors for your Color Space")
-        popup.geometry("350x500")
-        popup.configure(bg="#f5f5f5")
-
-        # Encabezado
-        tk.Label(
-            popup,
-            text="Select colors for your Color Space",
-            font=("Helvetica", 14, "bold"),
-            bg="#f5f5f5"
-        ).pack(pady=15)
-
-        # Frame para mostrar los colores con scrollbar
-        frame_container = ttk.Frame(popup)
-        frame_container.pack(pady=10, fill="both", expand=True)
-
-        canvas = tk.Canvas(frame_container, bg="#f5f5f5")
-        scrollbar = ttk.Scrollbar(frame_container, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind(
-            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        # Create a popup window for color selection
+        popup, scrollable_frame = utils_structure.create_popup_window(
+            parent=self.root,
+            title="Select colors for your Color Space",
+            width=350,
+            height=500,
+            header_text="Select colors for your Color Space"
         )
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        # Center the popup
+        self.center_popup(popup, 350, 500)
 
-        # Diccionario para almacenar los Checkbuttons
+        # Dictionary to store the Checkbuttons for selected colors
         self.color_checks = {}
 
+        # Populate the scrollable frame with color data
         for color_name, data in colors.items():
-            rgb = data["rgb"]
-            lab = data["lab"]
+            utils_structure.create_color_display_frame(
+                parent=scrollable_frame,
+                color_name=color_name,
+                rgb=data["rgb"],
+                lab=data["lab"],
+                color_checks=self.color_checks
+            )
 
-            frame = ttk.Frame(scrollable_frame)
-            frame.pack(fill="x", pady=8, padx=10)
-
-            # Muestra el recuadro del color
-            color_box = tk.Label(frame, bg=self.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
-            color_box.pack(side="left", padx=10)
-
-            # Muestra el nombre del color
-            tk.Label(
-                frame,
-                text=color_name,
-                font=("Helvetica", 12),
-                bg="#f5f5f5"
-            ).pack(side="left", padx=10)
-
-            # Muestra los valores LAB
-            lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
-            tk.Label(
-                frame,
-                text=lab_values,
-                font=("Helvetica", 10, "italic"),
-                bg="#f5f5f5"
-            ).pack(side="left", padx=10)
-
-            # Checkbutton para seleccionar
-            var = tk.BooleanVar()
-            self.color_checks[color_name] = var
-            check = ttk.Checkbutton(frame, variable=var)
-            check.pack(side="right", padx=10)
-
-        # Botones de acción
+        # Add action buttons to the popup
         button_frame = ttk.Frame(popup)
         button_frame.pack(pady=20)
 
-        close_button = ttk.Button(
+        ttk.Button(
             button_frame,
             text="Close",
             command=popup.destroy,
             style="Accent.TButton"
-        )
-        close_button.pack(side="left", padx=20)
+        ).pack(side="left", padx=20)
 
-        create_button = ttk.Button(
+        ttk.Button(
             button_frame,
             text="Create Color Space",
             command=self.create_color_space,
             style="Accent.TButton"
-        )
-        create_button.pack(side="left", padx=20)
+        ).pack(side="left", padx=20)
 
-        # Estilo para botones
+        # Style configuration for buttons
         style = ttk.Style()
         style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
+
+
+
+    def image_based_creation(self):
+        """
+        Displays a popup window to select an image by filename and creates a floating window for the selected image.
+        """
+        # Verify if there are available images to display
+        if not hasattr(self, "load_images_names") or not self.load_images_names:
+            tk.messagebox.showinfo("No Images", "No images are currently available to display.")
+            return
+
+        # Create a popup window for image selection
+        popup, listbox = utils_structure.create_selection_popup(
+            parent=self.image_canvas,
+            title="Select an Image",
+            width=200,
+            height=200,
+            items=[os.path.basename(filename) for filename in self.load_images_names.values()]
+        )
+
+        # Center the popup
+        self.center_popup(popup, 200, 200)
+
+        # Bind the listbox selection event to handle image selection
+        listbox.bind(
+            "<<ListboxSelect>>",
+            lambda event: utils_structure.handle_image_selection(
+                event=event,
+                listbox=listbox,
+                popup=popup,
+                images_names=self.load_images_names,
+                callback=self.get_fuzzy_color_space
+            )
+        )
+
+
+
+
+
+
+
 
 
 
@@ -622,6 +638,8 @@ class PyFCSApp:
 
 
 
+
+
     ########################################################################################### Functions Image Display ###########################################################################################
     def open_image(self):
         """Allows the user to select an image file and display its colors in columns with a scrollbar."""
@@ -648,6 +666,11 @@ class PyFCSApp:
         """Creates a floating window with the selected image, a title bar, and a dropdown menu."""
         # Generate a unique window ID based on the number of existing images
         window_id = f"floating_{len(self.image_canvas.find_all())}"
+
+        # Initialize the load_images_names dictionary if it doesn't exist
+        if not hasattr(self, "load_images_names"):
+            self.load_images_names = {}
+        self.load_images_names[window_id] = filename
 
         # Set initial values for whether the window should display color space and original image
         self.MEMBERDEGREE[window_id] = True if self.COLOR_SPACE else False
@@ -756,6 +779,10 @@ class PyFCSApp:
                 if self.proto_options[window_id].winfo_exists():
                     self.proto_options[window_id].destroy()
                 del self.proto_options[window_id]
+            
+            # Remove the window ID from load_images_names
+            if hasattr(self, "load_images_names") and window_id in self.load_images_names:
+                del self.load_images_names[window_id]
 
 
         # Function to show the dropdown menu when the arrow button is clicked
@@ -778,15 +805,6 @@ class PyFCSApp:
                 label="Color Mapping",
                 state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,  # Enable or disable based on the state
                 command=lambda: self.plot_proto_options(window_id)  # Function to plot color mapping options
-            )
-
-            menu.add_separator()  # Add a separator line in the menu
-
-            # Add the "Color Mapping" option to the menu, which is enabled based on the color mapping state
-            menu.add_command(
-                label="Get Fuzzy Color Space",
-                state=NORMAL,  # Enable or disable based on the state
-                command=lambda: self.get_fuzzy_color_space(window_id)  # Function to plot color mapping options
             )
             
             # Display the menu at the location of the mouse click
@@ -862,16 +880,14 @@ class PyFCSApp:
 
 
 
-
-
-
-
     def display_detected_colors(self, colors, window_id, threshold, min_samples):
         # Crear ventana emergente
         popup = tk.Toplevel(self.root)
         popup.title("Detected Colors")
-        popup.geometry("500x600")
         popup.configure(bg="#f5f5f5")
+
+        # Centrar la ventana emergente
+        self.center_popup(popup, 500, 600)
 
         # Encabezado
         tk.Label(
@@ -986,7 +1002,7 @@ class PyFCSApp:
             frame.pack(fill="x", pady=8, padx=10)
 
             # Muestra del color
-            color_box = tk.Label(frame, bg=self.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
+            color_box = tk.Label(frame, bg=utils_structure.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
             color_box.pack(side="left", padx=10)
 
             # Campo de entrada para el nombre del color
@@ -1043,7 +1059,7 @@ class PyFCSApp:
 
 
 
-
+    # CHANGE TO .FCS FILE
     def save_fuzzy_color_space(self, color_entries, colors):
         """
         Guarda los nombres de los colores editados por el usuario en un archivo con extensión .cns.
@@ -1106,61 +1122,9 @@ class PyFCSApp:
 
 
     def get_fuzzy_color_space(self, window_id, threshold=0.5, min_samples=160):
-        """
-        Detecta los colores principales en una imagen usando clustering DBSCAN
-        y muestra los resultados en una ventana con opciones de edición.
-        """
-        # Buscar la ventana asociada al window_id
-        items = self.image_canvas.find_withtag(window_id)
-
-        if not items:
-            print(f"No floating window found with id {window_id}")
-            return
-
-        # Obtener la imagen asociada al window_id
         image = self.images[window_id]
-        img_np = np.array(image)
-
-        # Manejar canal alfa si está presente
-        if img_np.shape[-1] == 4:  # Si tiene 4 canales (RGBA)
-            img_np = img_np[..., :3]  # Elimina el canal alfa y conserva solo RGB
-
-        # Normalizar los valores de los píxeles
-        img_np = img_np / 255.0
-        lab_img = color.rgb2lab(img_np)
-
-        # Convertir la imagen en una lista de píxeles
-        pixels = lab_img.reshape((-1, 3))
-
-        # Aplicar clustering DBSCAN
-        eps = 1.5 - threshold
-        dbscan = DBSCAN(eps=eps, min_samples= min_samples)       
-        labels = dbscan.fit_predict(pixels)
-
-        # Obtener colores representativos
-        unique_labels = set(labels)
-        colors = []
-        for label in unique_labels:
-            if label == -1:  # Ignorar ruido
-                continue
-            group = pixels[labels == label]
-            # Calcular el promedio del grupo en LAB
-            mean_color_lab = group.mean(axis=0)
-            
-            # Convertir el promedio de LAB a RGB
-            mean_color_rgb = color.lab2rgb([[mean_color_lab]])  # lab2rgb espera un array 2D
-            mean_color_rgb = (mean_color_rgb[0, 0] * 255).astype(int)  # Escalar a [0, 255]
-
-            colors.append({"rgb": tuple(mean_color_rgb), "lab": tuple(mean_color_lab)})
-
-        # Mostrar los colores detectados en una ventana
+        colors = utils_structure.get_fuzzy_color_space(window_id, image, threshold, min_samples)
         self.display_detected_colors(colors, window_id, threshold, min_samples)
-
-
-
-
-
-
 
 
 
