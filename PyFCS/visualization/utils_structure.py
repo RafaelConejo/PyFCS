@@ -244,7 +244,7 @@ def handle_image_selection(event, listbox, popup, images_names, callback):
 
 
 
-def get_proto_percentage(prototypes, image, fuzzy_color_space, selected_option):
+def get_proto_percentage(prototypes, image, fuzzy_color_space, selected_option, progress_callback=None):
     """Generates a grayscale image without using a matplotlib figure."""
     # Convert the image to a NumPy array
     img_np = np.array(image)
@@ -276,11 +276,14 @@ def get_proto_percentage(prototypes, image, fuzzy_color_space, selected_option):
     unique_lab_colors = np.unique(lab_image_flat, axis=0)
 
     # Calculate membership for all unique lab colors
-    for lab_color in unique_lab_colors:
+    for index, lab_color in enumerate(unique_lab_colors):
         lab_color_tuple = tuple(lab_color)
         if lab_color_tuple not in membership_cache:
             membership_degree = fuzzy_color_space.calculate_membership_for_prototype(lab_color, selected_option)
             membership_cache[lab_color_tuple] = membership_degree
+
+        if progress_callback:
+            progress_callback(index + 1, len(unique_lab_colors))
 
     # Map the computed membership values to the flattened image
     flattened_memberships = np.array([membership_cache[tuple(color)] for color in lab_image_flat])

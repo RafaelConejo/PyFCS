@@ -6,6 +6,7 @@ from skimage import color
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from PIL import Image, ImageTk
+import threading
 
 current_dir = os.path.dirname(__file__)
 pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
@@ -225,17 +226,26 @@ class PyFCSApp:
 
     def show_loading(self):
         """
-        Display a loading window to indicate a background process.
-        This creates a new small window with a "Loading..." label.
+        Display a visually appealing loading window with a progress bar.
         """
         # Create a new top-level window for the loading message
         self.load_window = tk.Toplevel(self.root)
         self.load_window.title("Loading")
-        label = tk.Label(self.load_window, text="Loading...", padx=20, pady=20)
-        label.pack()
+        self.load_window.resizable(False, False)  # Disable resizing
 
-        # Set size and position for the loading window
-        self.load_window.geometry("200x100")
+        # Label for the loading message
+        label = tk.Label(self.load_window, text="Processing...", font=("Arial", 12), padx=10, pady=10)
+        label.pack(pady=(10, 5))
+
+        # Progress bar
+        self.progress = ttk.Progressbar(self.load_window, orient="horizontal", mode="determinate", length=200)
+        self.progress.pack(pady=(0, 10))
+
+        # Center the popup
+        self.center_popup(self.load_window, 300, 150)
+
+        # Disable interactions with the main window
+        self.load_window.grab_set()
 
         # Ensure the loading window updates and displays properly
         self.root.update_idletasks()
@@ -1214,48 +1224,68 @@ class PyFCSApp:
         # Show a loading indicator while processing
         self.show_loading()
 
+        def update_progress(current_step, total_steps):
+            """Callback to update the progress bar."""
+            progress_percentage = (current_step / total_steps) * 100
+            self.progress["value"] = progress_percentage
+            self.load_window.update_idletasks()
+
+        def run_process():
+            """Processing function that will run in a separate thread."""
+            try:
+                # Get the index of the selected prototype color
+                pos = self.color_matrix.index(self.current_proto.get())
+
+                # Generate the grayscale image
+                grayscale_image_array = utils_structure.get_proto_percentage(
+                    prototypes=self.prototypes,          # Prototypes used for the transformation
+                    image=self.images[window_id],        # The current image for the given window_id
+                    fuzzy_color_space=self.fuzzy_color_space,  # Fuzzy color space
+                    selected_option=pos,                 # Index of the selected option
+                    progress_callback=update_progress    # Progress callback function
+                )
+
+                # Send the result back to the main thread for further processing
+                self.display_color_mapping(grayscale_image_array, window_id)
+            except Exception as e:
+                print(f"Error in run_process: {e}")
+            finally:
+                # Hide the loading indicator once processing is complete
+                self.hide_loading()
+
+        # Execute the processing function in a separate thread
+        threading.Thread(target=run_process).start()
+
+
+
+    def display_color_mapping(self, grayscale_image_array, window_id):
+        """Displays the generated grayscale image in the graphical interface."""
         try:
-            # Retrieve the index of the selected prototype color from the color matrix
-            pos = self.color_matrix.index(self.current_proto.get())
-
-            # Generate the grayscale image based on the selected prototype
-            grayscale_image_array = utils_structure.get_proto_percentage(
-                prototypes=self.prototypes,        # The prototypes to use for the transformation
-                image=self.images[window_id],      # The current image for the window
-                fuzzy_color_space=self.fuzzy_color_space,  # The color space for fuzzy mapping
-                selected_option=pos                # The selected color option (index)
-            )
-
-            # Convert the array into an image format that can be displayed with tkinter
+            # Convert the array into an image that Tkinter can use
             grayscale_image = Image.fromarray(grayscale_image_array)
 
-            # Resize the grayscale image to match the dimensions of the original image
-            (new_width, new_height) = self.image_dimensions[window_id]
+            # Resize the image to match the original dimensions
+            new_width, new_height = self.image_dimensions[window_id]
             grayscale_image = grayscale_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-            # Convert the image into a PhotoImage object for tkinter compatibility
+            # Convert the image to a PhotoImage format
             img_tk = ImageTk.PhotoImage(grayscale_image)
 
-            # Update the Frame associated with the given window_id to display the new image
+            # Update the Frame associated with the given window_id
             frame = self.floating_frames.get(window_id)
             if frame:
-                # Remove all previous widgets in the frame (if any)
+                # Clear any previous widgets in the frame
                 for widget in frame.winfo_children():
                     widget.destroy()
 
-                # Create a new Label widget to display the new grayscale image
+                # Create a new Label to display the image
                 label = tk.Label(frame, image=img_tk, bg="black")
-                label.image = img_tk  # Keep a reference to the image to prevent it from being garbage collected
+                label.image = img_tk  # Keep a reference to prevent garbage collection
                 label.pack(expand=True, fill=tk.BOTH)
             else:
                 print(f"Frame not found for window_id: {window_id}")
-
         except Exception as e:
-            print(f"Error in get_proto_percentage: {e}")
-
-        finally:
-            # Hide the loading indicator once processing is complete
-            self.hide_loading()
+            print(f"Error displaying the image: {e}")
 
 
 
