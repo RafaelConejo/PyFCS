@@ -35,57 +35,6 @@ def read_and_prepare_color_data(filename):
 
 
 
-def draw_table_headers(canvas, x_start, y_start, column_widths):
-    """
-    Draws table headers on the canvas.
-    """
-    headers = ["L", "a", "b", "Label", "Color"]
-    for i, header in enumerate(headers):
-        canvas.create_text(
-            x_start + sum(column_widths[:i]) + column_widths[i] / 2, y_start,
-            text=header, anchor="center", font=("Arial", 10, "bold")
-        )
-
-
-
-def draw_color_rows(canvas, color_data, x_start, y_start, column_widths):
-    """
-    Draws color rows and stores hex color data.
-    """
-    hex_color = {}
-    color_matrix = []
-    rect_width, rect_height = 50, 20
-
-    for color_name, color_value in color_data.items():
-        lab = color_value['positive_prototype']
-        lab = np.array(lab)
-        color_matrix.append(color_name)
-
-        # Draw individual columns (L, a, b, Label)
-        for i, value in enumerate([lab[0], lab[1], lab[2], color_name]):
-            canvas.create_text(
-                x_start + sum(column_widths[:i]) + column_widths[i] / 2, y_start,
-                text=str(round(value, 2)) if i < 3 else value, anchor="center"
-            )
-
-        # Convert LAB to RGB and store hex colors
-        rgb_data = tuple(map(lambda x: int(x * 255), color.lab2rgb([color_value['positive_prototype']])[0]))
-        hex_color[(f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}')] = lab
-
-        # Draw color rectangle
-        canvas.create_rectangle(
-            x_start + sum(column_widths[:4]) + 10, y_start - rect_height / 2,
-            x_start + sum(column_widths[:4]) + 10 + rect_width, y_start + rect_height / 2,
-            fill=f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}', outline="black"
-        )
-
-        # Move to the next row
-        y_start += 30
-
-    return hex_color, color_matrix
-
-
-
 def process_prototypes(color_data):
     """
     Creates prototypes from color data.
@@ -103,6 +52,19 @@ def process_prototypes(color_data):
 @staticmethod
 def rgb_to_hex(rgb):
     return "#%02x%02x%02x" % rgb
+
+def lab_to_rgb(lab):
+    if isinstance(lab, dict):
+        lab = np.array([[lab['L'], lab['A'], lab['B']]])
+    else:
+        lab = np.array([lab])  
+
+    rgb = color.lab2rgb(lab)  
+
+    # RGB to [0, 255]
+    rgb_scaled = (rgb[0] * 255).astype(int)
+
+    return tuple(np.clip(rgb_scaled, 0, 255))
 
 
 
@@ -182,6 +144,42 @@ def create_color_display_frame(parent, color_name, rgb, lab, color_checks):
 
     # LAB values
     lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
+    tk.Label(
+        frame,
+        text=lab_values,
+        font=("Helvetica", 10, "italic"),
+        bg="#f5f5f5"
+    ).pack(side="left", padx=10)
+
+    # Checkbutton for selection
+    var = tk.BooleanVar()
+    color_checks[color_name] = var
+    ttk.Checkbutton(frame, variable=var).pack(side="right", padx=10)
+
+
+def create_color_display_frame_add(parent, color_name, lab, color_checks):
+    """
+    Creates a frame for displaying color information, including labels for the color name, LAB values, and a Checkbutton.
+    """
+    frame = ttk.Frame(parent)
+    frame.pack(fill="x", pady=8, padx=10)
+
+    rgb = lab_to_rgb(lab)
+
+    # Color box
+    color_box = tk.Label(frame, bg=rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
+    color_box.pack(side="left", padx=10)
+
+    # Color name
+    tk.Label(
+        frame,
+        text=color_name,
+        font=("Helvetica", 12),
+        bg="#f5f5f5"
+    ).pack(side="left", padx=10)
+
+    # LAB values
+    lab_values = f"L: {lab['L']:.1f}, A: {lab['A']:.1f}, B: {lab['B']:.1f}"
     tk.Label(
         frame,
         text=lab_values,
@@ -343,6 +341,4 @@ def get_fuzzy_color_space(window_id, image, threshold=0.5, min_samples=160):
 
     # Trigger the callback with the detected colors
     return colors
-
-
 
