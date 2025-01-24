@@ -66,7 +66,7 @@ class Visual_tools:
     @staticmethod
     def plot_all_prototypes(prototypes, volume_limits, hex_color):
         """
-        Dibuja los volúmenes de múltiples prototipos, cada uno en un color diferente.
+        Dibuja los volúmenes de múltiples prototipos, con el eje L* siempre en el eje Z.
         """
         fig = Figure(figsize=(8, 6), dpi=120)
         ax = fig.add_subplot(111, projection='3d')
@@ -87,7 +87,7 @@ class Visual_tools:
             (all_points[:, 2] >= volume_limits.comp3[0]) & (all_points[:, 2] <= volume_limits.comp3[1])
         ]
 
-        # Dibuja los puntos individuales
+        # Dibuja los puntos individuales con L* en el eje Z
         for i in range(all_points.shape[0]):
             point = all_points[i]
             color = '#000000'  # Default a negro si no se encuentra coincidencia
@@ -97,11 +97,11 @@ class Visual_tools:
                     break
 
             ax.scatter(
-                all_points[i, 0], all_points[i, 1], all_points[i, 2],
+                all_points[i, 1], all_points[i, 2], all_points[i, 0],  # Cambiar orden: a*, b*, L*
                 color=color, marker='o', s=30, label=f'Points {i + 1}', edgecolor='k', alpha=0.8
             )
 
-        # Dibuja los volúmenes de Voronoi
+        # Dibuja los volúmenes de Voronoi con L* en el eje Z
         for idx, prototype in enumerate(prototypes):
             # Usa el color basado en `hex_color` si es posible
             color = '#000000'  # Color por defecto
@@ -119,26 +119,29 @@ class Visual_tools:
                 else:
                     vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)
                     if len(vertices_clipped) >= 3:  # Al menos 3 vértices para formar una cara
+                        # Cambiar orden de los vértices: a*, b*, L*
+                        vertices_clipped = vertices_clipped[:, [1, 2, 0]]
                         poly3d = Poly3DCollection(
                             [vertices_clipped], facecolors=color, edgecolors='black',
                             linewidths=1, alpha=0.5
                         )
                         ax.add_collection3d(poly3d)
 
-        # Configuración de los ejes
-        ax.set_xlabel('L* (Luminosity)', fontsize=10, labelpad=10)
-        ax.set_ylabel('a* (Green-Red)', fontsize=10, labelpad=10)
-        ax.set_zlabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
+        # Configuración de los ejes (ajustados para que L* esté en el eje Z)
+        ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)
+        ax.set_ylabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
+        ax.set_zlabel('L* (Luminosity)', fontsize=10, labelpad=10)
 
         # Ajustar los límites de los ejes según los límites del volumen
-        ax.set_xlim(volume_limits.comp1[0], volume_limits.comp1[1])
-        ax.set_ylim(volume_limits.comp2[0], volume_limits.comp2[1])
-        ax.set_zlim(volume_limits.comp3[0], volume_limits.comp3[1])
+        ax.set_xlim(volume_limits.comp2[0], volume_limits.comp2[1])  # a*
+        ax.set_ylim(volume_limits.comp3[0], volume_limits.comp3[1])  # b*
+        ax.set_zlim(volume_limits.comp1[0], volume_limits.comp1[1])  # L*
 
         # Estilización adicional
         ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
 
         return fig
+
 
 
 
