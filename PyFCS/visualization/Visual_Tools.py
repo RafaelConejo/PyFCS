@@ -12,54 +12,55 @@ class Visual_tools:
     @staticmethod
     def plot_all_centroids(filename, color_data, hex_color):
         """Dibuja los puntos RGB en 3D en el Canvas izquierdo usando Matplotlib y devuelve la figura."""
-        fig = Figure(figsize=(6, 5), dpi=120)
-        ax = fig.add_subplot(111, projection='3d')
+        if len(color_data) != 0:
+            fig = Figure(figsize=(6, 5), dpi=120)
+            ax = fig.add_subplot(111, projection='3d')
 
-        # Extraer los valores LAB de los datos
-        lab_values = [color_value['positive_prototype'] for color_value in color_data.values()]
-        lab_array = np.array(lab_values)
+            # Extraer los valores LAB de los datos
+            lab_values = [color_value['positive_prototype'] for color_value in color_data.values()]
+            lab_array = np.array(lab_values)
 
-        # Separar los componentes LAB
-        L_values = lab_array[:, 0]  # L* (luminosidad)
-        A_values = lab_array[:, 1]  # a* (componente de verde a rojo)
-        B_values = lab_array[:, 2]  # b* (componente de azul a amarillo)
+            # Separar los componentes LAB
+            L_values = lab_array[:, 0]  # L* (luminosidad)
+            A_values = lab_array[:, 1]  # a* (componente de verde a rojo)
+            B_values = lab_array[:, 2]  # b* (componente de azul a amarillo)
 
-        # Obtener los colores hexadecimales en el mismo orden que los datos
-        colors = []
-        for lab in lab_values:
-            # Inicializar un color por defecto
-            color_found = '#000000'  # Color negro por defecto
-            
-            # Buscar si el lab está en hex_color
-            for hex_key, lab_value in hex_color.items():
-                if np.array_equal(lab, lab_value):  # Comparar usando np.array_equal
-                    color_found = hex_key  # Obtener el color hexadecimal correspondiente
-                    break  # Salir del bucle si se encuentra el color
+            # Obtener los colores hexadecimales en el mismo orden que los datos
+            colors = []
+            for lab in lab_values:
+                # Inicializar un color por defecto
+                color_found = '#000000'  # Color negro por defecto
+                
+                # Buscar si el lab está en hex_color
+                for hex_key, lab_value in hex_color.items():
+                    if np.array_equal(lab, lab_value):  # Comparar usando np.array_equal
+                        color_found = hex_key  # Obtener el color hexadecimal correspondiente
+                        break  # Salir del bucle si se encuentra el color
 
-            colors.append(color_found)  # Agregar el color encontrado a la lista
+                colors.append(color_found)  # Agregar el color encontrado a la lista
 
-        # Graficar los puntos en 3D
-        scatter = ax.scatter(
-            L_values, A_values, B_values,
-            c=colors, marker='o', s=50, edgecolor='k', alpha=0.8
-        )
+            # Graficar los puntos en 3D
+            scatter = ax.scatter(
+                L_values, A_values, B_values,
+                c=colors, marker='o', s=50, edgecolor='k', alpha=0.8
+            )
 
-        # Configuración de títulos y etiquetas
-        ax.set_title(f'{filename} - {len(color_data)} colors', fontsize=10, fontweight='bold', pad=15)
-        ax.set_xlabel("L* (Luminosity)", fontsize=9, labelpad=10)
-        ax.set_ylabel("a* (Green-Red)", fontsize=9, labelpad=10)
-        ax.set_zlabel("b* (Blue-Yellow)", fontsize=9, labelpad=10)
+            # Configuración de títulos y etiquetas
+            ax.set_title(f'{filename} - {len(color_data)} colors', fontsize=10, fontweight='bold', pad=15)
+            ax.set_xlabel("L* (Luminosity)", fontsize=9, labelpad=10)
+            ax.set_ylabel("a* (Green-Red)", fontsize=9, labelpad=10)
+            ax.set_zlabel("b* (Blue-Yellow)", fontsize=9, labelpad=10)
 
-        # Ajuste de los límites de los ejes
-        ax.set_xlim(0, 100)          # Rango típico para L* [0, 100]
-        ax.set_ylim(-128, 127)       # Rango típico para a* [-128, 127]
-        ax.set_zlim(-128, 127)       # Rango típico para b* [-128, 127]
+            # Ajuste de los límites de los ejes
+            ax.set_xlim(0, 100)          # Rango típico para L* [0, 100]
+            ax.set_ylim(-128, 127)       # Rango típico para a* [-128, 127]
+            ax.set_zlim(-128, 127)       # Rango típico para b* [-128, 127]
 
-        # Estilización adicional de la gráfica
-        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
-        ax.tick_params(axis='both', which='major', labelsize=8)
+            # Estilización adicional de la gráfica
+            ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
+            ax.tick_params(axis='both', which='major', labelsize=8)
 
-        return fig  # Devolver la figura
+            return fig  # Devolver la figura
 
 
 
@@ -68,79 +69,80 @@ class Visual_tools:
         """
         Dibuja los volúmenes de múltiples prototipos, con el eje L* siempre en el eje Z.
         """
-        fig = Figure(figsize=(8, 6), dpi=120)
-        ax = fig.add_subplot(111, projection='3d')
+        if len(prototypes) != 0:
+            fig = Figure(figsize=(8, 6), dpi=120)
+            ax = fig.add_subplot(111, projection='3d')
 
-        # Filtra todos los puntos
-        all_points = np.vstack((np.array(prototypes[0].positive), np.array(prototypes[0].negatives)))
-        false_negatives = Prototype.get_falseNegatives()
-        negatives_filtered_no_false = [
-            point for point in all_points
-            if not any(np.array_equal(point, fn) for fn in false_negatives)
-        ]
-        all_points = np.array(negatives_filtered_no_false)
+            # Filtra todos los puntos
+            all_points = np.vstack((np.array(prototypes[0].positive), np.array(prototypes[0].negatives)))
+            false_negatives = Prototype.get_falseNegatives()
+            negatives_filtered_no_false = [
+                point for point in all_points
+                if not any(np.array_equal(point, fn) for fn in false_negatives)
+            ]
+            all_points = np.array(negatives_filtered_no_false)
 
-        # Limita los puntos al rango de volumen especificado
-        all_points = all_points[
-            (all_points[:, 0] >= volume_limits.comp1[0]) & (all_points[:, 0] <= volume_limits.comp1[1]) &
-            (all_points[:, 1] >= volume_limits.comp2[0]) & (all_points[:, 1] <= volume_limits.comp2[1]) &
-            (all_points[:, 2] >= volume_limits.comp3[0]) & (all_points[:, 2] <= volume_limits.comp3[1])
-        ]
+            # Limita los puntos al rango de volumen especificado
+            all_points = all_points[
+                (all_points[:, 0] >= volume_limits.comp1[0]) & (all_points[:, 0] <= volume_limits.comp1[1]) &
+                (all_points[:, 1] >= volume_limits.comp2[0]) & (all_points[:, 1] <= volume_limits.comp2[1]) &
+                (all_points[:, 2] >= volume_limits.comp3[0]) & (all_points[:, 2] <= volume_limits.comp3[1])
+            ]
 
-        # Dibuja los puntos individuales con L* en el eje Z
-        for i in range(all_points.shape[0]):
-            point = all_points[i]
-            color = '#000000'  # Default a negro si no se encuentra coincidencia
-            for hex_color_key, lab_value in hex_color.items():
-                if np.array_equal(point, lab_value):  # Compara el punto con el valor LAB
-                    color = hex_color_key
-                    break
+            # Dibuja los puntos individuales con L* en el eje Z
+            for i in range(all_points.shape[0]):
+                point = all_points[i]
+                color = '#000000'  # Default a negro si no se encuentra coincidencia
+                for hex_color_key, lab_value in hex_color.items():
+                    if np.array_equal(point, lab_value):  # Compara el punto con el valor LAB
+                        color = hex_color_key
+                        break
 
-            ax.scatter(
-                all_points[i, 1], all_points[i, 2], all_points[i, 0],  # Cambiar orden: a*, b*, L*
-                color=color, marker='o', s=30, label=f'Points {i + 1}', edgecolor='k', alpha=0.8
-            )
+                ax.scatter(
+                    all_points[i, 1], all_points[i, 2], all_points[i, 0],  # Cambiar orden: a*, b*, L*
+                    color=color, marker='o', s=30, label=f'Points {i + 1}', edgecolor='k', alpha=0.8
+                )
 
-        # Dibuja los volúmenes de Voronoi con L* en el eje Z
-        for idx, prototype in enumerate(prototypes):
-            # Usa el color basado en `hex_color` si es posible
-            color = '#000000'  # Color por defecto
-            for hex_color_key, lab_value in hex_color.items():
-                if np.array_equal(prototype.positive, lab_value):  # Asocia prototipos con colores
-                    color = hex_color_key
-                    break
+            # Dibuja los volúmenes de Voronoi con L* en el eje Z
+            for idx, prototype in enumerate(prototypes):
+                # Usa el color basado en `hex_color` si es posible
+                color = '#000000'  # Color por defecto
+                for hex_color_key, lab_value in hex_color.items():
+                    if np.array_equal(prototype.positive, lab_value):  # Asocia prototipos con colores
+                        color = hex_color_key
+                        break
 
-            # Agregar las caras del volumen de Voronoi
-            faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
-            for face in faces:
-                vertices = np.array(face.vertex)
-                if face.infinity:
-                    continue  # Ignorar caras infinitas
-                else:
-                    vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)
-                    if len(vertices_clipped) >= 3:  # Al menos 3 vértices para formar una cara
-                        # Cambiar orden de los vértices: a*, b*, L*
-                        vertices_clipped = vertices_clipped[:, [1, 2, 0]]
-                        poly3d = Poly3DCollection(
-                            [vertices_clipped], facecolors=color, edgecolors='black',
-                            linewidths=1, alpha=0.5
-                        )
-                        ax.add_collection3d(poly3d)
+                # Agregar las caras del volumen de Voronoi
+                faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
+                for face in faces:
+                    vertices = np.array(face.vertex)
+                    if face.infinity:
+                        continue  # Ignorar caras infinitas
+                    else:
+                        vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)
+                        if len(vertices_clipped) >= 3:  # Al menos 3 vértices para formar una cara
+                            # Cambiar orden de los vértices: a*, b*, L*
+                            vertices_clipped = vertices_clipped[:, [1, 2, 0]]
+                            poly3d = Poly3DCollection(
+                                [vertices_clipped], facecolors=color, edgecolors='black',
+                                linewidths=1, alpha=0.5
+                            )
+                            ax.add_collection3d(poly3d)
 
-        # Configuración de los ejes (ajustados para que L* esté en el eje Z)
-        ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)
-        ax.set_ylabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
-        ax.set_zlabel('L* (Luminosity)', fontsize=10, labelpad=10)
+            # Configuración de los ejes (ajustados para que L* esté en el eje Z)
+            ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)
+            ax.set_ylabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
+            ax.set_zlabel('L* (Luminosity)', fontsize=10, labelpad=10)
 
-        # Ajustar los límites de los ejes según los límites del volumen
-        ax.set_xlim(volume_limits.comp2[0], volume_limits.comp2[1])  # a*
-        ax.set_ylim(volume_limits.comp3[0], volume_limits.comp3[1])  # b*
-        ax.set_zlim(volume_limits.comp1[0], volume_limits.comp1[1])  # L*
+            # Ajustar los límites de los ejes según los límites del volumen
+            ax.set_xlim(volume_limits.comp2[0], volume_limits.comp2[1])  # a*
+            ax.set_ylim(volume_limits.comp3[0], volume_limits.comp3[1])  # b*
+            ax.set_zlim(volume_limits.comp1[0], volume_limits.comp1[1])  # L*
 
-        # Estilización adicional
-        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
+            # Estilización adicional
+            ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
 
-        return fig
+            return fig
 
 
 

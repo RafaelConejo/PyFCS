@@ -171,18 +171,42 @@ class PyFCSApp:
         self.Canvas1.pack(side="left", fill="both", expand=True)
 
         # Frame for color buttons on the right
-        self.colors_frame = tk.Frame(model_3d_tab, bg="gray95")
-        self.colors_frame.pack(side="right", fill="y", padx=10, pady=10)
+        self.colors_frame = tk.Frame(model_3d_tab, bg="gray95", width=50)
+        self.colors_frame.pack(side="right", fill="y", padx=2, pady=10)
+
+        # Canvas to enable scrolling
+        self.scrollable_canvas = tk.Canvas(self.colors_frame, bg="gray95", highlightthickness=0)
+        self.scrollable_canvas.pack(side="left", fill="both", expand=True)
+
+        # Scrollbar for the canvas
+        self.scrollbar = tk.Scrollbar(self.colors_frame, orient="vertical", command=self.scrollable_canvas.yview)
+        self.scrollbar.pack(side="right", fill="y")
+
+        # Configure the canvas and scrollbar
+        self.scrollable_canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollable_canvas.configure(width=150)
+
+        # Frame inside the canvas to hold the buttons
+        self.inner_frame = tk.Frame(self.scrollable_canvas, bg="gray95")
+        self.inner_frame.bind(
+            "<Configure>",
+            lambda e: self.scrollable_canvas.configure(scrollregion=self.scrollable_canvas.bbox("all"))
+        )
+
+        # Add the inner_frame to the canvas
+        self.canvas_window = self.scrollable_canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
 
         # "Select All" button for color operations
         self.select_all_button = tk.Button(
-            self.colors_frame,
+            self.inner_frame,
             text="Select All",
             bg="lightgray",
             font=("Arial", 10),
             command=self.select_all_color  
         )
         self.select_all_button.pack(pady=5)
+
+
 
 
 
@@ -198,20 +222,38 @@ class PyFCSApp:
         self.file_name_entry.pack(side="top", pady=5)
         self.file_name_entry.insert(0, "")  # Initial file name
 
-        # Main area with canvas and horizontal scrollbar at the bottom
+        # Main area with canvas and scrollbars
         canvas_frame = tk.Frame(data_tab, bg="white")
         canvas_frame.pack(fill="both", expand=True)
 
+        # Canvas for color table
         self.data_window = tk.Canvas(canvas_frame, bg="white", borderwidth=2, relief="ridge")
-        self.data_window.pack(side="top", fill="both", expand=True)
+        self.data_window.grid(row=0, column=0, sticky="nsew")  # Expandir en todas las direcciones
 
-        self.data_scrollbar = Scrollbar(canvas_frame, orient="horizontal", command=self.data_window.xview)
-        self.data_scrollbar.pack(side="bottom", fill="x")
-        self.data_window.configure(xscrollcommand=self.data_scrollbar.set)
+        # Configure canvas_frame for dinamic restructure
+        canvas_frame.rowconfigure(0, weight=1)  
+        canvas_frame.columnconfigure(0, weight=1)  
 
-        # Frame for color data inside the canvas
+        # Vertical scrollbar
+        self.data_scrollbar_v = Scrollbar(canvas_frame, orient="vertical", command=self.data_window.yview)
+        self.data_scrollbar_v.grid(row=0, column=1, sticky="ns")  
+
+        # Horizontal scrollbar
+        self.data_scrollbar_h = Scrollbar(canvas_frame, orient="horizontal", command=self.data_window.xview)
+        self.data_scrollbar_h.grid(row=1, column=0, sticky="ew")  
+
+        self.data_window.configure(yscrollcommand=self.data_scrollbar_v.set, xscrollcommand=self.data_scrollbar_h.set)
+
+
+        # Frame for the content inside the canvas
         self.inner_frame_data = tk.Frame(self.data_window, bg="white")
         self.data_window.create_window((0, 0), window=self.inner_frame_data, anchor="nw")
+
+        # Ensure the canvas scrolls properly with the frame
+        def update_scroll_region(event):
+            self.data_window.configure(scrollregion=self.data_window.bbox("all"))
+
+        self.inner_frame_data.bind("<Configure>", update_scroll_region)
 
         # Bottom bar with centered "Add Color" and "Apply" buttons
         bottom_bar = tk.Frame(data_tab, bg="#e0e0e0", pady=5)
@@ -222,15 +264,16 @@ class PyFCSApp:
 
         add_button = tk.Button(
             button_container, text="Add Color", font=("Helvetica", 12, "bold"),
-            bg="#d4f4d2", command=self.addColor_data_window
+            bg="#d4f4d2", command=lambda: self.addColor_data_window()
         )
         add_button.pack(side="left", padx=20)
 
         apply_button = tk.Button(
             button_container, text="Apply", font=("Helvetica", 12, "bold"),
-            bg="#cce5ff", command=self.apply_changes
+            bg="#cce5ff", command=lambda: self.apply_changes()
         )
         apply_button.pack(side="left", padx=20)
+
 
 
 
@@ -343,7 +386,6 @@ class PyFCSApp:
         close_button.pack(pady=10)  # Add the button to the frame
 
     def show_menu_create_fcs(self):
-        # Mostrar el menú contextual cerca del botón
         self.menu_create_fcs.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
 
     def center_popup(self, popup, width, height):
@@ -379,6 +421,25 @@ class PyFCSApp:
 
 
     ########################################################################################### Main Functions ###########################################################################################
+    def update_prototypes(self):
+        self.prototypes = utils_structure.process_prototypes(self.color_data)
+
+        # Create and save the fuzzy color space
+        self.fuzzy_color_space = FuzzyColorSpace(space_name=" ", prototypes=self.prototypes)
+        self.cores = self.fuzzy_color_space.get_cores()
+        self.supports = self.fuzzy_color_space.get_supports()
+
+        # Update 3D graph and app state vars
+        self.COLOR_SPACE = True
+        self.MEMBERDEGREE = {key: True for key in self.MEMBERDEGREE}
+
+        self.selected_centroids = self.color_data
+        self.selected_hex_color = self.hex_color
+        self.selected_proto = self.prototypes
+        self.selected_core = self.cores
+        self.selected_support = self.supports
+        self.on_option_select()
+
 
     def load_color_space(self):
         """
@@ -397,30 +458,18 @@ class PyFCSApp:
             # Read the file and prepare color data
             color_data, _, _ = utils_structure.read_and_prepare_color_data(filename)
 
-            # Clear the Canvas and adjust scroll region for new data
-            self.display_data_window(color_data)
-
-            # Generate prototypes
-            self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
-            self.prototypes = utils_structure.process_prototypes(color_data)
-
-            # Create and save the fuzzy color space
-            self.fuzzy_color_space = FuzzyColorSpace(space_name=" ", prototypes=self.prototypes)
-            self.cores = self.fuzzy_color_space.get_cores()
-            self.supports = self.fuzzy_color_space.get_supports()
-
-            # Update 3D graph and app state vars
-            self.COLOR_SPACE = True
-            self.MEMBERDEGREE = {key: True for key in self.MEMBERDEGREE}
             self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
             self.color_data = color_data
 
-            self.selected_centroids = color_data
-            self.colors = self.hex_color
-            self.selected_proto = self.prototypes
-            self.selected_core = self.cores
-            self.selected_support = self.supports
-            self.on_option_select()
+            # Clear the Canvas and adjust scroll region for new data
+            self.display_data_window()
+
+            # Generate prototypes
+            self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
+            
+            self.update_prototypes()
+
+            
 
         else:
             # Notify the user if no file was selected
@@ -453,39 +502,39 @@ class PyFCSApp:
         The user cannot interact with other windows until this popup is closed.
         Once the values are submitted, the color is added to the color list and returned.
         """
-        # Crear una ventana emergente modal
+        # Create a modal popup window
         popup = tk.Toplevel(window)
         popup.title("Add New Color")
         popup.geometry("500x500")
         popup.resizable(False, False)
-        popup.transient(window)  # Hace que esta ventana sea modal
-        popup.grab_set()  # Bloquea interacción con otras ventanas
+        popup.transient(window)  # Makes the popup modal
+        popup.grab_set()  # Locks interaction with other windows
 
-        # Centrar la ventana emergente
+        # Center the popup window on the screen
         self.center_popup(popup, 500, 300)
 
-        # Variables para almacenar los valores ingresados por el usuario
+        # Variables to hold user input
         color_name_var = tk.StringVar()
         l_value_var = tk.StringVar()
         a_value_var = tk.StringVar()
         b_value_var = tk.StringVar()
 
-        # Contenedor mutable para almacenar el resultado
+        # Container to store the result
         result = {"color_name": None, "lab": None}
 
-        # Título y descripción
+        # Title and description
         ttk.Label(popup, text="Add New Color", font=("Helvetica", 14, "bold")).pack(pady=10)
         ttk.Label(popup, text="Enter the LAB values and the color name:").pack(pady=5)
 
-        # Marco para organizar etiquetas y entradas
+        # Frame to organize form fields
         form_frame = ttk.Frame(popup)
         form_frame.pack(padx=20, pady=10)
 
-        # Campo para ingresar el nombre del color
+        # Input field for the color name
         ttk.Label(form_frame, text="Color Name:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=color_name_var, width=30).grid(row=0, column=1, padx=5, pady=5)
 
-        # Campos para ingresar los valores L, A, B
+        # Input fields for LAB values
         ttk.Label(form_frame, text="L Value (0-100):").grid(row=1, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=l_value_var, width=10).grid(row=1, column=1, padx=5, pady=5)
 
@@ -495,16 +544,16 @@ class PyFCSApp:
         ttk.Label(form_frame, text="B Value (-128 to 127):").grid(row=3, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=b_value_var, width=10).grid(row=3, column=1, padx=5, pady=5)
 
-        # Función para manejar la confirmación del color
+        # Function to handle color confirmation
         def confirm_color():
             try:
-                # Validar y convertir los valores LAB
+                # Validate and convert LAB input values
                 color_name = color_name_var.get().strip()
                 l_value = float(l_value_var.get())
                 a_value = float(a_value_var.get())
                 b_value = float(b_value_var.get())
 
-                # Validaciones básicas
+                # Perform basic validations
                 if not color_name:
                     raise ValueError("The color name cannot be empty.")
                 if not (0 <= l_value <= 100):
@@ -513,42 +562,42 @@ class PyFCSApp:
                     raise ValueError("A value must be between -128 and 127.")
                 if not (-128 <= b_value <= 127):
                     raise ValueError("B value must be between -128 and 127.")
-                
-                # Verificar si el nombre del color ya existe
+
+                # Check if the color name already exists
                 if color_name in colors:
                     raise ValueError(f"The color name '{color_name}' already exists. Please choose another name.")
 
-                # Almacenar el resultado en el contenedor
+                # Store the result in the container
                 result["color_name"] = color_name
                 result["lab"] = {"L": l_value, "A": a_value, "B": b_value}
 
-                # Añadir el color a la estructura de colores
+                # Add the new color to the dataset
                 colors[color_name] = {
                     "lab": result["lab"]
                 }
 
-                # Cerrar la ventana emergente
+                # Close the popup window
                 popup.destroy()
 
             except ValueError as e:
-                # Mostrar un mensaje de error si los datos son inválidos
+                # Display an error message for invalid input
                 messagebox.showerror("Invalid Input", str(e))
 
-        # Botones para confirmar o cancelar
+        # Buttons for confirmation or cancellation
         button_frame = ttk.Frame(popup)
         button_frame.pack(pady=20)
 
         ttk.Button(button_frame, text="Add", command=confirm_color, style="Accent.TButton").pack(side="left", padx=10)
         ttk.Button(button_frame, text="Cancel", command=popup.destroy, style="Accent.TButton").pack(side="left", padx=10)
 
-        # Configuración de estilo para botones
+        # Button style configuration
         style = ttk.Style()
         style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
 
-        # Esperar hasta que la ventana emergente se cierre
+        # Wait until the popup is closed
         popup.wait_window()
 
-        # Retornar el resultado
+        # Return the result (either the new color or None if canceled)
         return result["color_name"], result["lab"]
 
 
@@ -672,7 +721,7 @@ class PyFCSApp:
             
             # Dictionary to map the options to their corresponding functions
             option_map = {
-                "Representative": lambda: Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.colors),
+                "Representative": lambda: Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.selected_hex_color),
                 "0.5-cut": lambda: Visual_tools.plot_all_prototypes(self.selected_proto, self.volume_limits, self.hex_color),
                 "Core": lambda: Visual_tools.plot_all_prototypes(self.selected_core, self.volume_limits, self.hex_color),
                 "Support": lambda: Visual_tools.plot_all_prototypes(self.selected_support, self.volume_limits, self.hex_color),
@@ -704,13 +753,13 @@ class PyFCSApp:
     def select_all_color(self):
         """Handles the 'select all' option for colors."""
         self.selected_centroids = self.color_data
-        self.colors = self.hex_color
+        self.selected_hex_color = self.hex_color
         self.selected_proto = self.prototypes
         self.selected_core = self.cores
         self.selected_support = self.supports
 
         # Uncheck all the color selection buttons
-        for color, var in self.selected_colors.items():
+        for _, var in self.selected_colors.items():
             var.set(False)
         
         self.on_option_select()  # Redraw the 3D model after selecting all colors
@@ -732,7 +781,7 @@ class PyFCSApp:
                     selected_indices.append(keys.index(color_name))
 
         # Update the selected colors and prototypes
-        self.colors = {
+        self.selected_hex_color = {
             hex_color_key: lab_value for index in selected_indices
             for hex_color_key, lab_value in self.hex_color.items()
             if np.array_equal(lab_value, self.color_data[keys[index]]['positive_prototype'])
@@ -761,7 +810,7 @@ class PyFCSApp:
         self.selected_colors = {}
         self.color_buttons = []
 
-        # Create a checkbox for each color
+        # Create a checkbox for each color inside the scrollable inner_frame
         for color in colors:
             is_selected = color in selected_colors  # Check if the color was previously selected
 
@@ -770,7 +819,7 @@ class PyFCSApp:
 
             # Create the checkbox button
             button = tk.Checkbutton(
-                self.colors_frame,
+                self.inner_frame,  # Use the inner_frame for scrollable content
                 text=color,
                 variable=self.selected_colors[color],  # Variable for the checkbox state
                 bg="gray95",  # Button background color
@@ -782,6 +831,10 @@ class PyFCSApp:
             button.pack(anchor="w", pady=2, padx=10)  # Pack the button into the UI frame
             
             self.color_buttons.append(button)  # Store the created button
+
+        # Update the scrollregion of the canvas to fit new content
+        self.scrollable_canvas.update_idletasks()
+        self.scrollable_canvas.configure(scrollregion=self.scrollable_canvas.bbox("all"))
 
 
 
@@ -798,70 +851,74 @@ class PyFCSApp:
 
     ########################################################################################### Funtions Data ###########################################################################################
     # ADD IF FCS
-    def display_data_window(self, color_data):
+    def display_data_window(self):
+        # Update the "Name" field with the current file name
+        self.file_name_entry.delete(0, "end")  # Clear previous text in the entry
+        self.file_name_entry.insert(0, self.file_base_name)  # Insert the current file name
+
         # Clear the canvas
         self.data_window.delete("all")
-        self.data_window.update_idletasks()  # Asegura que el Canvas esté actualizado
+        self.data_window.update_idletasks()  # Ensure the canvas is updated
 
-        canvas_width = self.data_window.winfo_width()  # Ancho del Canvas
-        table_width = sum([80, 80, 80, 200, 150])  # Ancho total de la tabla (sin Action)
-        margin = (canvas_width - table_width) // 3  # Calcula el margen dinámico proporcional al tamaño del Canvas
+        # Calculate canvas and table dimensions
+        canvas_width = self.data_window.winfo_width()  # Canvas width
+        column_widths = [80, 80, 80, 200, 150]  # Column widths (without Action)
+        table_width = sum(column_widths)  # Total table width
+        margin = max((canvas_width - table_width) // 2, 20)  # Dynamic margin or minimum of 20
 
-        # Si el Canvas es más pequeño que la tabla, asegura un margen mínimo
-        if canvas_width <= table_width:
-            margin = 20  # Margen mínimo si la tabla es más ancha que el Canvas
-
-        # Calcula el punto de inicio centrado con margen dinámico
+        # Starting coordinates
         x_start = margin
         y_start = 20
 
-        # Column configuration
-        column_widths = [80, 80, 80, 200, 150]  # Sin Action
+        # Column headers and dimensions
         headers = ["L", "a", "b", "Label", "Color"]
+        header_height = 30
 
         # Draw table headers
-        header_height = 30
         for i, header in enumerate(headers):
-            x_pos = x_start + sum(column_widths[:i])
+            x_pos = x_start + sum(column_widths[:i])  # Calculate header position
             self.data_window.create_rectangle(
-                x_pos, y_start, x_pos + column_widths[i], y_start + header_height, fill="#d3d3d3", outline="#a9a9a9"
+                x_pos, y_start, x_pos + column_widths[i], y_start + header_height,
+                fill="#d3d3d3", outline="#a9a9a9"
             )
             self.data_window.create_text(
                 x_pos + column_widths[i] / 2, y_start + header_height / 2,
                 text=header, anchor="center", font=("Arial", 10, "bold")
             )
 
-        # Draw rows
+        # Adjust starting point for rows
         y_start += header_height + 10
         row_height = 40
-        rect_width = 120  # Tamaño del rectángulo de color
+        rect_width = 120  # Width of the color rectangle
         rect_height = 30
 
-        self.hex_color = {}
-        self.color_matrix = []
+        self.hex_color = {}  # Store HEX color mapping
+        self.color_matrix = []  # Store color names
 
-        for i, (color_name, color_value) in enumerate(color_data.items()):
-            lab = color_value['positive_prototype']
-            lab = np.array(lab)
+        # Iterate through color data and populate rows
+        for i, (color_name, color_value) in enumerate(self.color_data.items()):
+            lab = color_value['positive_prototype']  # Extract LAB color values
+            lab = np.array(lab)  # Convert to numpy array
             self.color_matrix.append(color_name)
 
-            # Dibujar columnas (L, a, b, Label)
+            # Draw table columns (L, a, b, Label)
             for j, value in enumerate([lab[0], lab[1], lab[2], color_name]):
-                x_pos = x_start + sum(column_widths[:j])
+                x_pos = x_start + sum(column_widths[:j])  # Column starting position
                 self.data_window.create_rectangle(
-                    x_pos, y_start, x_pos + column_widths[j], y_start + row_height, fill="white", outline="#a9a9a9"
+                    x_pos, y_start, x_pos + column_widths[j], y_start + row_height,
+                    fill="white", outline="#a9a9a9"
                 )
                 self.data_window.create_text(
                     x_pos + column_widths[j] / 2, y_start + row_height / 2,
                     text=str(round(value, 2)) if j < 3 else value, anchor="center", font=("Arial", 10)
                 )
 
-            # Convertir LAB a RGB y dibujar rectángulo de color
+            # Convert LAB to RGB and draw the color rectangle
             rgb_data = tuple(map(lambda x: int(x * 255), color.lab2rgb([color_value['positive_prototype']])[0]))
             hex_color = f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}'
             self.hex_color[hex_color] = lab
 
-            color_x_pos = x_start + sum(column_widths[:4])
+            color_x_pos = x_start + sum(column_widths[:4])  # Color column position
             self.data_window.create_rectangle(
                 color_x_pos + (column_widths[4] - rect_width) / 2, y_start + (row_height - rect_height) / 2,
                 color_x_pos + (column_widths[4] - rect_width) / 2 + rect_width,
@@ -869,8 +926,8 @@ class PyFCSApp:
                 fill=hex_color, outline="black"
             )
 
-            # Dibujar botón de eliminar fuera de la tabla
-            action_x_pos = x_start + table_width + 20  # A la derecha del final de la tabla
+            # Draw the delete button outside the table
+            action_x_pos = x_start + table_width + 20  # Position to the right of the table
             self.data_window.create_text(
                 action_x_pos, y_start + row_height / 2,
                 text="❌", fill="black", font=("Arial", 10, "bold"), anchor="center",
@@ -878,34 +935,95 @@ class PyFCSApp:
             )
             self.data_window.tag_bind(f"delete_{i}", "<Button-1>", lambda event, idx=i: self.remove_color(idx))
 
-            # Avanzar a la siguiente fila
+            # Move to the next row
             y_start += row_height + 10
 
+        # Adjust the scrollable region of the canvas
+        self.data_window.configure(scrollregion=self.data_window.bbox("all"))
+        self.data_window.bind("<Configure>", lambda event: self.display_data_window())
 
-
-
-
+            
 
     def remove_color(self, index):
-        """Remove color at a specific index and refresh display."""
+        """Remove a color at a specific index and refresh the display."""
+        if len(self.color_data) <= 2:
+            # Ensure at least two colors remain in the dataset
+            messagebox.showwarning("Cannot Remove Color", "At least two colors must remain. The color was not removed.")
+            return  
+        
+        # Get the name of the color to remove using the provided index
         color_name = self.color_matrix[index]
+        
+        # Check if the color exists in color_data
         if color_name in self.color_data:
-            del self.color_data[color_name]  # Delete from the source data
-        self.display_data_window(self.color_data)  # Refresh the display
-
+            # Iterate over other colors to remove the corresponding negative prototype
+            for other_color, data in self.color_data.items():
+                # Filter out the negative prototypes matching the positive prototype of the color being removed
+                data["negative_prototypes"] = [
+                    prototype for prototype in data["negative_prototypes"]
+                    if not np.array_equal(prototype, self.color_data[color_name]["positive_prototype"])
+                ]
+            
+            # Remove the color from color_data
+            del self.color_data[color_name]
+        
+        # Refresh the display and prototypes to reflect the changes
+        self.display_data_window()
+        self.update_prototypes()
 
 
 
     def addColor_data_window(self):
-        # USAR self.addColor()
-        
-        self.display_color_rows()
+        """Add a new color to the dataset and update the display."""
+        # Call `addColor` to get the new color's data
+        new_color_data = self.color_data.copy()
+        new_color, lab_values = self.addColor(self.inner_frame_data, new_color_data)
+        new_color_data = self.color_data.copy()
+
+        # Verify if the user added a valid color
+        if new_color and lab_values:
+            # Create the data structure for the new color
+            positive_prototype = np.array([lab_values["L"], lab_values["A"], lab_values["B"]])
+            negative_prototypes = []
+
+            # Gather positive prototypes of other colors to use as negative prototypes for the new color
+            for existing_color, data in new_color_data.items():
+                negative_prototypes.append(data["positive_prototype"])
+
+            # Convert the list of negative prototypes into a NumPy array
+            negative_prototypes = np.array(negative_prototypes)
+
+            # Add the new color to color_data
+            new_color_data[new_color] = {
+                "Color": [lab_values["L"], lab_values["A"], lab_values["B"]],
+                "positive_prototype": positive_prototype,
+                "negative_prototypes": negative_prototypes
+            }
+
+            # Add the new color's positive prototype as a negative prototype to other colors
+            for existing_color, data in new_color_data.items():
+                if existing_color != new_color:
+                    existing_prototypes = data["negative_prototypes"]
+                    updated_prototypes = (
+                        np.vstack([existing_prototypes, positive_prototype]) 
+                        if len(existing_prototypes) > 0 
+                        else positive_prototype
+                    )
+                    new_color_data[existing_color]["negative_prototypes"] = updated_prototypes
+
+            # Update color_data with the new dataset
+            self.color_data = new_color_data.copy()
+
+            # Refresh the display and prototypes to include the new color
+            self.display_data_window()
+            self.update_prototypes()
+
 
 
 
     def apply_changes(self):
         """Aplica los cambios hechos en la lista de colores."""
-        print("Applied changes:", self.color_data)
+        
 
 
 
