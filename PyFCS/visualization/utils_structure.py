@@ -24,17 +24,6 @@ def prompt_file_selection(initial_subdir):
 
 
 
-def read_and_prepare_color_data(filename):
-    """
-    Reads the file and prepares color data along with metadata.
-    """
-    extension = os.path.splitext(filename)[1]
-    input_class = Input.instance(extension)
-    color_data = input_class.read_file(filename)
-    return color_data, extension, input_class
-
-
-
 def process_prototypes(color_data):
     """
     Creates prototypes from color data.
@@ -153,7 +142,7 @@ def create_color_display_frame(parent, color_name, rgb, lab, color_checks):
 
     # Checkbutton for selection
     var = tk.BooleanVar()
-    color_checks[color_name] = var
+    color_checks[color_name] = {"var": var, "lab": lab}
     ttk.Checkbutton(frame, variable=var).pack(side="right", padx=10)
 
 
@@ -189,7 +178,7 @@ def create_color_display_frame_add(parent, color_name, lab, color_checks):
 
     # Checkbutton for selection
     var = tk.BooleanVar()
-    color_checks[color_name] = var
+    color_checks[color_name] = {"var": var, "lab": lab}
     ttk.Checkbutton(frame, variable=var).pack(side="right", padx=10)
 
 
@@ -342,3 +331,31 @@ def get_fuzzy_color_space(window_id, image, threshold=0.5, min_samples=160):
     # Trigger the callback with the detected colors
     return colors
 
+
+
+
+
+def extract_planes_and_vertex(prototypes):
+    data = []
+    
+    for prototype in prototypes:
+        data.append(prototype.label)
+        for face in getattr(prototype.voronoi_volume, "faces", []):  
+            plane = getattr(face, "p", None)  
+            infinity = getattr(face, "infinity", None)
+            vertex = getattr(face, "vertex", [])  # Extrae los vértices
+            
+            if plane:
+                A = getattr(plane, "A", None)
+                B = getattr(plane, "B", None)
+                C = getattr(plane, "C", None)
+                D = getattr(plane, "D", None)
+                
+                if None not in (A, B, C, D):
+                    # Extrae las coordenadas de los vértices si existen
+                    vertex_coords = [(v.x, v.y, v.z) if hasattr(v, 'x') else tuple(v) for v in vertex]
+                    data.append((A, B, C, D, infinity))
+                    data.append(len(vertex_coords))
+                    data.append(vertex_coords)
+    
+    return data

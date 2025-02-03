@@ -27,6 +27,8 @@ class PyFCSApp:
         self.MEMBERDEGREE = {}  # Bool function Color Mapping
         self.hex_color = []  # Save points colors for visualization
 
+        self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
+
         # General configuration for the main window
         root.title("PyFCS Interface")  # Set the window title
         root.geometry("1000x500")  # Set default window size
@@ -421,7 +423,7 @@ class PyFCSApp:
 
 
     ########################################################################################### Main Functions ###########################################################################################
-    def update_prototypes(self):
+    def update_volumes(self):
         self.prototypes = utils_structure.process_prototypes(self.color_data)
 
         # Create and save the fuzzy color space
@@ -429,6 +431,10 @@ class PyFCSApp:
         self.cores = self.fuzzy_color_space.get_cores()
         self.supports = self.fuzzy_color_space.get_supports()
 
+        self.update_prototypes_info()
+    
+
+    def update_prototypes_info(self):
         # Update 3D graph and app state vars
         self.COLOR_SPACE = True
         self.MEMBERDEGREE = {key: True for key in self.MEMBERDEGREE}
@@ -455,21 +461,31 @@ class PyFCSApp:
                 for window_id in self.floating_images.keys():
                     self.show_original_image(window_id)
 
-            # Read the file and prepare color data
-            color_data, _, _ = utils_structure.read_and_prepare_color_data(filename)
-
             self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
-            self.color_data = color_data
 
-            # Clear the Canvas and adjust scroll region for new data
-            self.display_data_window()
+            extension = os.path.splitext(filename)[1]
+            if extension == '.cns':
+                # Read the file and prepare color data
+                input_class = Input.instance(extension)
+                self.color_data = input_class.read_file(filename)
 
-            # Generate prototypes
-            self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
-            
-            self.update_prototypes()
+                self.display_data_window()
+                self.update_volumes()
 
-            
+            elif extension == '.fcs':
+                input_class = Input.instance(extension)
+                self.color_data, self.fuzzy_color_space = input_class.read_file(filename)
+
+                self.cores = self.fuzzy_color_space.get_cores()
+                self.supports = self.fuzzy_color_space.get_supports()
+                self.prototypes = self.fuzzy_color_space.get_prototypes()
+
+                self.display_data_window()
+                self.update_prototypes_info()
+
+            else:
+                messagebox.showwarning("File Error", "Unsupported file format.")
+                        
 
         else:
             # Notify the user if no file was selected
@@ -478,21 +494,105 @@ class PyFCSApp:
 
     
     def create_color_space(self):
-        # Get selected colors
-        selected_colors = [name for name, var in self.color_checks.items() if var.get()]
+        # Get selected colors and their LAB values
+        selected_colors_lab = {
+            name: np.array([data["lab"]["L"], data["lab"]["A"], data["lab"]["B"]]) if isinstance(data["lab"], dict) else np.array(data["lab"])
+            for name, data in self.color_checks.items() if data["var"].get()
+        }
 
-        if not selected_colors:
-            messagebox.showwarning("Warning", "You must select at least one color.")
+        if len(selected_colors_lab) < 2:
+            messagebox.showwarning("Warning", "You must select at least two color.")
             return
 
         # Ask for the name of the new color space
         name = tk.simpledialog.askstring("Color Space Name", "Enter a name for the new Color Space:")
-
-        if name:
-            # Logic for creating the new color space would go here
-            messagebox.showinfo("Color Space Created", f"Color Space '{name}' created.")
-        else:
+        if not name:
             messagebox.showinfo("Cancelled", "Color Space creation was cancelled.")
+            return
+
+        # Step 1 & 2: Create Prototype objects
+        prototypes = [
+            Prototype(
+                label=color_name,
+                positive=lab_value,
+                negatives=[lab for other_name, lab in selected_colors_lab.items() if other_name != color_name],
+                add_false=True
+            )
+            for color_name, lab_value in selected_colors_lab.items()
+        ]
+
+        # Step 3: Create the fuzzy color space
+        fuzzy_color_space = FuzzyColorSpace(space_name=name, prototypes=prototypes)
+
+        cores_planes = utils_structure.extract_planes_and_vertex(getattr(fuzzy_color_space, "cores", []))
+        voronoi_planes = utils_structure.extract_planes_and_vertex(getattr(fuzzy_color_space, "prototypes", []))
+        supports_planes = utils_structure.extract_planes_and_vertex(getattr(fuzzy_color_space, "supports", []))
+
+        # MOVER ESTO AL INPUTFCS
+
+        # Step 4: Save in the .fcs file
+        save_path = os.path.join(os.getcwd(), "fuzzy_color_spaces")
+        os.makedirs(save_path, exist_ok=True)
+        file_path = os.path.join(save_path, f"{name}.fcs")
+
+        with open(file_path, "w") as file:
+            file.write("@name " + f"{name}\n")
+            file.write("@colorSpace LAB " + "\n")
+            file.write("@numberOfColors " + f"{len(prototypes)}\n")
+
+            for color_name, lab_value in selected_colors_lab.items():
+                file.write(f"{color_name} {lab_value[0]} {lab_value[1]} {lab_value[2]}\n")
+
+            if cores_planes:
+                file.write("@core\n")
+                i = 0
+                while i < len(cores_planes):
+                    label = cores_planes[i]  # Extrae el label
+                    file.write(f"@volume {label}\n")  # Escribimos la etiqueta
+                    i += 1
+                    
+                    while i < len(cores_planes) and not isinstance(cores_planes[i], str):  
+                        plane_str = "\t".join(map(str, cores_planes[i]))  
+                        num_vertex = str(cores_planes[i + 1])  
+                        vertices_str = "\n".join(" ".join(map(str, v)) for v in cores_planes[i + 2])  
+                        file.write(f"{plane_str}\n{num_vertex}\n{vertices_str}\n")
+                        i += 3  # Avanza al siguiente conjunto de datos dentro del mismo volumen
+
+            if voronoi_planes:
+                file.write("@voronoi\n")
+                i = 0
+                while i < len(voronoi_planes):
+                    label = voronoi_planes[i]
+                    file.write(f"@volume {label}\n")
+                    i += 1
+
+                    while i < len(voronoi_planes) and not isinstance(voronoi_planes[i], str):  
+                        plane_str = "\t".join(map(str, voronoi_planes[i]))  
+                        num_vertex = str(voronoi_planes[i + 1])  
+                        vertices_str = "\n".join(" ".join(map(str, v)) for v in voronoi_planes[i + 2])  
+                        file.write(f"{plane_str}\n{num_vertex}\n{vertices_str}\n")
+                        i += 3  
+
+            if supports_planes:
+                file.write("@support\n")
+                i = 0
+                while i < len(supports_planes):
+                    label = supports_planes[i]
+                    file.write(f"@volume {label}\n")
+                    i += 1
+
+                    while i < len(supports_planes) and not isinstance(supports_planes[i], str):  
+                        plane_str = "\t".join(map(str, supports_planes[i]))  
+                        num_vertex = str(supports_planes[i + 1])  
+                        vertices_str = "\n".join(" ".join(map(str, v)) for v in supports_planes[i + 2])  
+                        file.write(f"{plane_str}\n{num_vertex}\n{vertices_str}\n")
+                        i += 3  
+
+        messagebox.showinfo("Color Space Created", f"Color Space '{name}' created.")
+
+
+
+
 
 
 
@@ -619,7 +719,7 @@ class PyFCSApp:
         Allows the user to select colors through a popup and creates a new fuzzy color space.
         """
         # Load color data from the BASIC.cns file
-        color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces\\BASIC.cns')
+        color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces\\cns\\BASIC.cns')
         colors = utils_structure.load_color_data(color_space_path)
 
         # Create a popup window for color selection
@@ -751,18 +851,19 @@ class PyFCSApp:
     
 
     def select_all_color(self):
-        """Handles the 'select all' option for colors."""
-        self.selected_centroids = self.color_data
-        self.selected_hex_color = self.hex_color
-        self.selected_proto = self.prototypes
-        self.selected_core = self.cores
-        self.selected_support = self.supports
+        if self.COLOR_SPACE:
+            """Handles the 'select all' option for colors."""
+            self.selected_centroids = self.color_data
+            self.selected_hex_color = self.hex_color
+            self.selected_proto = self.prototypes
+            self.selected_core = self.cores
+            self.selected_support = self.supports
 
-        # Uncheck all the color selection buttons
-        for _, var in self.selected_colors.items():
-            var.set(False)
-        
-        self.on_option_select()  # Redraw the 3D model after selecting all colors
+            # Uncheck all the color selection buttons
+            for _, var in self.selected_colors.items():
+                var.set(False)
+            
+            self.on_option_select()  # Redraw the 3D model after selecting all colors
 
 
 
@@ -969,54 +1070,55 @@ class PyFCSApp:
         
         # Refresh the display and prototypes to reflect the changes
         self.display_data_window()
-        self.update_prototypes()
+        self.update_volumes()
 
 
 
     def addColor_data_window(self):
         """Add a new color to the dataset and update the display."""
-        # Call `addColor` to get the new color's data
-        new_color_data = self.color_data.copy()
-        new_color, lab_values = self.addColor(self.inner_frame_data, new_color_data)
-        new_color_data = self.color_data.copy()
+        if self.COLOR_SPACE:
+            # Call `addColor` to get the new color's data
+            new_color_data = self.color_data.copy()
+            new_color, lab_values = self.addColor(self.inner_frame_data, new_color_data)
+            new_color_data = self.color_data.copy()
 
-        # Verify if the user added a valid color
-        if new_color and lab_values:
-            # Create the data structure for the new color
-            positive_prototype = np.array([lab_values["L"], lab_values["A"], lab_values["B"]])
-            negative_prototypes = []
+            # Verify if the user added a valid color
+            if new_color and lab_values:
+                # Create the data structure for the new color
+                positive_prototype = np.array([lab_values["L"], lab_values["A"], lab_values["B"]])
+                negative_prototypes = []
 
-            # Gather positive prototypes of other colors to use as negative prototypes for the new color
-            for existing_color, data in new_color_data.items():
-                negative_prototypes.append(data["positive_prototype"])
+                # Gather positive prototypes of other colors to use as negative prototypes for the new color
+                for existing_color, data in new_color_data.items():
+                    negative_prototypes.append(data["positive_prototype"])
 
-            # Convert the list of negative prototypes into a NumPy array
-            negative_prototypes = np.array(negative_prototypes)
+                # Convert the list of negative prototypes into a NumPy array
+                negative_prototypes = np.array(negative_prototypes)
 
-            # Add the new color to color_data
-            new_color_data[new_color] = {
-                "Color": [lab_values["L"], lab_values["A"], lab_values["B"]],
-                "positive_prototype": positive_prototype,
-                "negative_prototypes": negative_prototypes
-            }
+                # Add the new color to color_data
+                new_color_data[new_color] = {
+                    "Color": [lab_values["L"], lab_values["A"], lab_values["B"]],
+                    "positive_prototype": positive_prototype,
+                    "negative_prototypes": negative_prototypes
+                }
 
-            # Add the new color's positive prototype as a negative prototype to other colors
-            for existing_color, data in new_color_data.items():
-                if existing_color != new_color:
-                    existing_prototypes = data["negative_prototypes"]
-                    updated_prototypes = (
-                        np.vstack([existing_prototypes, positive_prototype]) 
-                        if len(existing_prototypes) > 0 
-                        else positive_prototype
-                    )
-                    new_color_data[existing_color]["negative_prototypes"] = updated_prototypes
+                # Add the new color's positive prototype as a negative prototype to other colors
+                for existing_color, data in new_color_data.items():
+                    if existing_color != new_color:
+                        existing_prototypes = data["negative_prototypes"]
+                        updated_prototypes = (
+                            np.vstack([existing_prototypes, positive_prototype]) 
+                            if len(existing_prototypes) > 0 
+                            else positive_prototype
+                        )
+                        new_color_data[existing_color]["negative_prototypes"] = updated_prototypes
 
-            # Update color_data with the new dataset
-            self.color_data = new_color_data.copy()
+                # Update color_data with the new dataset
+                self.color_data = new_color_data.copy()
 
-            # Refresh the display and prototypes to include the new color
-            self.display_data_window()
-            self.update_prototypes()
+                # Refresh the display and prototypes to include the new color
+                self.display_data_window()
+                self.update_volumes()
 
 
 

@@ -6,6 +6,9 @@ class Input(ABC):
         if ext == '.cns':
             from PyFCS.input_output.InputCNS import InputCNS
             return InputCNS()
+        elif ext == '.fcs':
+            from PyFCS.input_output.InputFCS import InputFCS
+            return InputFCS()
         else:
             raise ValueError("Unsupported file format")
 
