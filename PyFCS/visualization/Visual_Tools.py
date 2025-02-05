@@ -116,7 +116,7 @@ class Visual_tools:
                 faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
                 for face in faces:
                     vertices = np.array(face.vertex)
-                    if face.infinity:
+                    if face.infinity or face.infinity != 'false':
                         continue  # Ignorar caras infinitas
                     else:
                         vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)

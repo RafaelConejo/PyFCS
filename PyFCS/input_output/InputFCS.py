@@ -3,6 +3,7 @@ from PyFCS.geometry.Face import Face
 from PyFCS.geometry.Plane import Plane
 from PyFCS.geometry.Vector import Vector
 from PyFCS.geometry.Volume import Volume
+from PyFCS.geometry.Point import Point
 
 from PyFCS import Prototype, FuzzyColorSpace
 
@@ -53,13 +54,15 @@ class InputFCS(Input):
 
                 # Read Core, alpha-cut and support
                 faces = []
+                cores = []
+                prototypes = []
+                supports = []
                 for line in lines:
                     line = line.strip()
 
                     if line == "@core":
                         i = 0
                         next(lines)
-                        cores = []
                         while True:
                             line = next(lines).strip()
 
@@ -73,6 +76,13 @@ class InputFCS(Input):
                                 i += 1
 
                             elif line.startswith("@voronoi"):
+                                negatives = [color[1:] for idx, color in enumerate(colors) if idx != i]
+                                voronoi_volume = Volume(colors[i][0], faces)
+
+                                cores.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
+                                
+                                faces = []
+                                i += 1
                                 break
 
                             else:
@@ -86,8 +96,9 @@ class InputFCS(Input):
 
                                 # Get Vertex
                                 num_vertex = int(next(lines).strip())
-                                vertex = [Vector.from_array(list(map(float, next(lines).strip().split()))) 
-                                            for _ in range(num_vertex)]
+                                # vertex = [Vector.from_array(list(map(float, next(lines).strip().split()))) for _ in range(num_vertex)]
+                                points = [Point(*map(float, next(lines).strip().split())) for _ in range(num_vertex)]
+                                vertex = vertex = Vector.from_array(points)
                                 
                                 # Create Face
                                 faces.append(Face(plane, vertex, infinity))
@@ -95,7 +106,6 @@ class InputFCS(Input):
                         
                         i = 0
                         next(lines)
-                        prototypes = []
                         while True:
                             line = next(lines).strip()
 
@@ -109,6 +119,13 @@ class InputFCS(Input):
                                 i += 1
                             
                             elif line.startswith("@support"):
+                                negatives = [color[1:] for idx, color in enumerate(colors) if idx != i]
+                                voronoi_volume = Volume(colors[i][0], faces)
+
+                                prototypes.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
+                                
+                                faces = []
+                                i += 1
                                 break
 
                             else:
@@ -122,8 +139,8 @@ class InputFCS(Input):
 
                                 # Get Vertex
                                 num_vertex = int(next(lines).strip())
-                                vertex = [Vector.from_array(list(map(float, next(lines).strip().split()))) 
-                                            for _ in range(num_vertex)]
+                                points = [Point(*map(float, next(lines).strip().split())) for _ in range(num_vertex)]
+                                vertex = vertex = Vector.from_array(points)
                                 
                                 # Create Face
                                 faces.append(Face(plane, vertex, infinity))
@@ -131,11 +148,17 @@ class InputFCS(Input):
 
                         i = 0
                         next(lines)
-                        supports = []
                         while True:
                             try:
                                 line = next(lines).strip()
                             except StopIteration:
+                                negatives = [color[1:] for idx, color in enumerate(colors) if idx != i]
+                                voronoi_volume = Volume(colors[i][0], faces)
+
+                                supports.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
+                                
+                                faces = []
+                                i += 1
                                 break 
 
                             if line.startswith("@volume"):
@@ -158,8 +181,8 @@ class InputFCS(Input):
 
                                 # Get Vertex
                                 num_vertex = int(next(lines).strip())
-                                vertex = [Vector.from_array(list(map(float, next(lines).strip().split()))) 
-                                            for _ in range(num_vertex)]
+                                points = [Point(*map(float, next(lines).strip().split())) for _ in range(num_vertex)]
+                                vertex = vertex = Vector.from_array(points)
                                 
                                 # Create Face
                                 faces.append(Face(plane, vertex, infinity))
