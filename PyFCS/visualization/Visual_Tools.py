@@ -41,20 +41,20 @@ class Visual_tools:
 
             # Graficar los puntos en 3D
             scatter = ax.scatter(
-                L_values, A_values, B_values,
+                A_values, B_values, L_values,
                 c=colors, marker='o', s=50, edgecolor='k', alpha=0.8
             )
 
             # Configuración de títulos y etiquetas
             ax.set_title(f'{filename} - {len(color_data)} colors', fontsize=10, fontweight='bold', pad=15)
-            ax.set_xlabel("L* (Luminosity)", fontsize=9, labelpad=10)
-            ax.set_ylabel("a* (Green-Red)", fontsize=9, labelpad=10)
-            ax.set_zlabel("b* (Blue-Yellow)", fontsize=9, labelpad=10)
+            ax.set_xlabel("a* (Green-Red)", fontsize=9, labelpad=10)
+            ax.set_ylabel("b* (Blue-Yellow)", fontsize=9, labelpad=10)
+            ax.set_zlabel("L* (Luminosity)", fontsize=9, labelpad=10)
 
             # Ajuste de los límites de los ejes
-            ax.set_xlim(0, 100)          # Rango típico para L* [0, 100]
-            ax.set_ylim(-128, 127)       # Rango típico para a* [-128, 127]
-            ax.set_zlim(-128, 127)       # Rango típico para b* [-128, 127]
+            ax.set_xlim(-128, 127)   # a* 
+            ax.set_ylim(-128, 127)   # b* 
+            ax.set_zlim(0, 100)      # L* 
 
             # Estilización adicional de la gráfica
             ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
@@ -116,7 +116,7 @@ class Visual_tools:
                 faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
                 for face in faces:
                     vertices = np.array(face.vertex)
-                    if face.infinity or face.infinity != 'false':
+                    if face.infinity:
                         continue  # Ignorar caras infinitas
                     else:
                         vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)

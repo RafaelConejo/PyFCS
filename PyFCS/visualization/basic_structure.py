@@ -7,6 +7,8 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from PIL import Image, ImageTk
 import threading
+import colorsys
+import math
 
 current_dir = os.path.dirname(__file__)
 pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
@@ -502,14 +504,31 @@ class PyFCSApp:
 
         if len(selected_colors_lab) < 2:
             messagebox.showwarning("Warning", "You must select at least two color.")
-            return
+        
+        else:
+            # Ask the user to enter the name for the color space
+            popup = tk.Toplevel(self.root)  # Create a secondary window
+            popup.title("Color Space Name")
+            self.center_popup(popup, 300, 100)
+            tk.Label(popup, text="Name for the fuzzy color space:").pack(pady=5)
+            name_entry = tk.Entry(popup)
+            name_entry.pack(pady=5)
 
-        # Ask for the name of the new color space
-        name = tk.simpledialog.askstring("Color Space Name", "Enter a name for the new Color Space:")
-        if not name:
-            messagebox.showinfo("Cancelled", "Color Space creation was cancelled.")
-            return
+            name = tk.StringVar()
 
+            def on_ok():
+                name.set(name_entry.get())  # Set the value in the StringVar
+                popup.destroy()
+
+                self.save_cs(name.get(), selected_colors_lab)
+
+            # OK button
+            ok_button = tk.Button(popup, text="OK", command=on_ok)
+            ok_button.pack(pady=5)
+
+            popup.deiconify()
+
+    def save_cs(self, name, selected_colors_lab):
         # Step 1 & 2: Create Prototype objects
         prototypes = [
             Prototype(
@@ -536,105 +555,90 @@ class PyFCSApp:
         file_path = os.path.join(save_path, f"{name}.fcs")
 
         with open(file_path, "w") as file:
-            file.write("@name " + f"{name}\n")
-            file.write("@colorSpace LAB " + "\n")
-            file.write("@numberOfColors " + f"{len(prototypes)}\n")
+            file.write("@name" + f"{name}\n")
+            file.write("@colorSpaceLAB " + "\n")
+            file.write("@numberOfColors" + f"{len(prototypes)}\n")
 
             for color_name, lab_value in selected_colors_lab.items():
                 file.write(f"{color_name} {lab_value[0]} {lab_value[1]} {lab_value[2]}\n")
 
-            if cores_planes:
-                file.write("@core\n")
-                i = 0
-                while i < len(cores_planes):
-                    label = cores_planes[i]  # Extrae el label
-                    file.write(f"@volume {label}\n")  # Escribimos la etiqueta
-                    i += 1
-                    
-                    while i < len(cores_planes) and not isinstance(cores_planes[i], str):  
-                        plane_str = "\t".join(map(str, cores_planes[i]))  
-                        num_vertex = str(cores_planes[i + 1])  
-                        vertices_str = "\n".join(" ".join(map(str, v)) for v in cores_planes[i + 2])  
+            c = vol = s = 0
+            while c < len(cores_planes) and vol < len(voronoi_planes) and s < len(supports_planes):
+                if cores_planes:
+                    file.write("@core\n")
+                    c += 1
+        
+                    while c < len(cores_planes) and not isinstance(cores_planes[c], str):  
+                        plane_str = "\t".join(map(str, cores_planes[c]))  
+                        num_vertex = str(cores_planes[c + 1])  
+                        vertices_str = "\n".join(" ".join(map(str, v)) for v in cores_planes[c + 2])  
                         file.write(f"{plane_str}\n{num_vertex}\n{vertices_str}\n")
-                        i += 3  # Avanza al siguiente conjunto de datos dentro del mismo volumen
+                        c += 3  # Avanza al siguiente conjunto de datos dentro del mismo volumen
+                        
+                    # Borrar todos los elementos procesados hasta llegar al primer string
+                    del cores_planes[:c]
+                    c = 0
 
-            if voronoi_planes:
-                file.write("@voronoi\n")
-                i = 0
-                while i < len(voronoi_planes):
-                    label = voronoi_planes[i]
-                    file.write(f"@volume {label}\n")
-                    i += 1
+                if voronoi_planes:
+                    file.write("@voronoi\n")
+                    vol += 1
 
-                    while i < len(voronoi_planes) and not isinstance(voronoi_planes[i], str):  
-                        plane_str = "\t".join(map(str, voronoi_planes[i]))  
-                        num_vertex = str(voronoi_planes[i + 1])  
-                        vertices_str = "\n".join(" ".join(map(str, v)) for v in voronoi_planes[i + 2])  
+                    while vol < len(voronoi_planes) and not isinstance(voronoi_planes[vol], str):  
+                        plane_str = "\t".join(map(str, voronoi_planes[vol]))  
+                        num_vertex = str(voronoi_planes[vol + 1])  
+                        vertices_str = "\n".join(" ".join(map(str, v)) for v in voronoi_planes[vol + 2])  
                         file.write(f"{plane_str}\n{num_vertex}\n{vertices_str}\n")
-                        i += 3  
+                        vol += 3 
+                        
+                    # Borrar todos los elementos procesados hasta llegar al primer string
+                    del voronoi_planes[:vol] 
+                    vol = 0
 
-            if supports_planes:
-                file.write("@support\n")
-                i = 0
-                while i < len(supports_planes):
-                    label = supports_planes[i]
-                    file.write(f"@volume {label}\n")
-                    i += 1
+                if supports_planes:
+                    file.write("@support\n")
+                    s += 1
 
-                    while i < len(supports_planes) and not isinstance(supports_planes[i], str):  
-                        plane_str = "\t".join(map(str, supports_planes[i]))  
-                        num_vertex = str(supports_planes[i + 1])  
-                        vertices_str = "\n".join(" ".join(map(str, v)) for v in supports_planes[i + 2])  
+                    while s < len(supports_planes) and not isinstance(supports_planes[s], str):  
+                        plane_str = "\t".join(map(str, supports_planes[s]))  
+                        num_vertex = str(supports_planes[s + 1])  
+                        vertices_str = "\n".join(" ".join(map(str, v)) for v in supports_planes[s + 2])  
                         file.write(f"{plane_str}\n{num_vertex}\n{vertices_str}\n")
-                        i += 3  
+                        s += 3  
+                        
+                    # Borrar todos los elementos procesados hasta llegar al primer string
+                    del supports_planes[:s] 
+                    s = 0
 
         messagebox.showinfo("Color Space Created", f"Color Space '{name}' created.")
 
 
 
-
-
-
-
     def addColor(self, window, colors):
-        """
-        Opens a modal popup window where the user can input LAB values and a name for a new color.
-        The user cannot interact with other windows until this popup is closed.
-        Once the values are submitted, the color is added to the color list and returned.
-        """
-        # Create a modal popup window
         popup = tk.Toplevel(window)
         popup.title("Add New Color")
         popup.geometry("500x500")
         popup.resizable(False, False)
-        popup.transient(window)  # Makes the popup modal
-        popup.grab_set()  # Locks interaction with other windows
+        popup.transient(window)
+        popup.grab_set()
 
-        # Center the popup window on the screen
         self.center_popup(popup, 500, 300)
 
-        # Variables to hold user input
         color_name_var = tk.StringVar()
         l_value_var = tk.StringVar()
         a_value_var = tk.StringVar()
         b_value_var = tk.StringVar()
 
-        # Container to store the result
         result = {"color_name": None, "lab": None}
 
-        # Title and description
         ttk.Label(popup, text="Add New Color", font=("Helvetica", 14, "bold")).pack(pady=10)
         ttk.Label(popup, text="Enter the LAB values and the color name:").pack(pady=5)
 
-        # Frame to organize form fields
         form_frame = ttk.Frame(popup)
         form_frame.pack(padx=20, pady=10)
 
-        # Input field for the color name
         ttk.Label(form_frame, text="Color Name:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=color_name_var, width=30).grid(row=0, column=1, padx=5, pady=5)
 
-        # Input fields for LAB values
         ttk.Label(form_frame, text="L Value (0-100):").grid(row=1, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=l_value_var, width=10).grid(row=1, column=1, padx=5, pady=5)
 
@@ -644,16 +648,13 @@ class PyFCSApp:
         ttk.Label(form_frame, text="B Value (-128 to 127):").grid(row=3, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=b_value_var, width=10).grid(row=3, column=1, padx=5, pady=5)
 
-        # Function to handle color confirmation
         def confirm_color():
             try:
-                # Validate and convert LAB input values
                 color_name = color_name_var.get().strip()
                 l_value = float(l_value_var.get())
                 a_value = float(a_value_var.get())
                 b_value = float(b_value_var.get())
 
-                # Perform basic validations
                 if not color_name:
                     raise ValueError("The color name cannot be empty.")
                 if not (0 <= l_value <= 100):
@@ -662,43 +663,99 @@ class PyFCSApp:
                     raise ValueError("A value must be between -128 and 127.")
                 if not (-128 <= b_value <= 127):
                     raise ValueError("B value must be between -128 and 127.")
-
-                # Check if the color name already exists
                 if color_name in colors:
-                    raise ValueError(f"The color name '{color_name}' already exists. Please choose another name.")
+                    raise ValueError(f"The color name '{color_name}' already exists.")
 
-                # Store the result in the container
                 result["color_name"] = color_name
                 result["lab"] = {"L": l_value, "A": a_value, "B": b_value}
 
-                # Add the new color to the dataset
-                colors[color_name] = {
-                    "lab": result["lab"]
-                }
-
-                # Close the popup window
+                colors[color_name] = {"lab": result["lab"]}
                 popup.destroy()
 
             except ValueError as e:
-                # Display an error message for invalid input
                 messagebox.showerror("Invalid Input", str(e))
 
-        # Buttons for confirmation or cancellation
+        def browse_color():
+            """Abre una ventana con una rueda de colores para seleccionar un color."""
+            color_picker = tk.Toplevel()
+            color_picker.title("Select a Color")
+            color_picker.geometry("350x450")
+            color_picker.transient(popup)
+            color_picker.grab_set()
+
+            # Posicionar la ventana a la derecha de "Add New Color"
+            x_offset = popup.winfo_x() + popup.winfo_width() + 10
+            y_offset = popup.winfo_y()
+            color_picker.geometry(f"350x450+{x_offset}+{y_offset}")
+
+            canvas_size = 300
+            center = canvas_size // 2
+            radius = center - 5
+
+            def hsv_to_rgb(h, s, v):
+                """Convierte HSV a RGB en escala 0-255."""
+                r, g, b = colorsys.hsv_to_rgb(h, s, v)
+                return int(r * 255), int(g * 255), int(b * 255)
+
+            def draw_color_wheel():
+                """Dibuja la rueda de colores en el Canvas."""
+                for y in range(canvas_size):
+                    for x in range(canvas_size):
+                        dx, dy = x - center, y - center
+                        dist = math.sqrt(dx**2 + dy**2)
+                        if dist <= radius:
+                            angle = math.atan2(dy, dx)
+                            hue = (angle / (2 * math.pi)) % 1
+                            r, g, b = hsv_to_rgb(hue, 1, 1)
+                            color_code = f'#{r:02x}{g:02x}{b:02x}'
+                            canvas.create_line(x, y, x + 1, y, fill=color_code)
+
+            def on_click(event):
+                """Obtiene el color seleccionado al hacer clic en la rueda."""
+                x, y = event.x, event.y
+                dx, dy = x - center, y - center
+                dist = math.sqrt(dx**2 + dy**2)
+
+                if dist <= radius:
+                    angle = math.atan2(dy, dx)
+                    hue = (angle / (2 * math.pi)) % 1
+                    r, g, b = hsv_to_rgb(hue, 1, 1)
+                    color_hex = f'#{r:02x}{g:02x}{b:02x}'
+
+                    preview_canvas.config(bg=color_hex)
+
+                    # Convertir a LAB
+                    rgb = np.array([[r, g, b]]) / 255
+                    lab = color.rgb2lab(rgb.reshape((1, 1, 3)))[0][0]
+
+                    # Actualizar los valores en la ventana principal
+                    l_value_var.set(f"{lab[0]:.2f}")
+                    a_value_var.set(f"{lab[1]:.2f}")
+                    b_value_var.set(f"{lab[2]:.2f}")
+
+            def confirm_selection():
+                color_picker.destroy()
+
+            canvas = tk.Canvas(color_picker, width=canvas_size, height=canvas_size)
+            canvas.pack()
+            draw_color_wheel()
+            canvas.bind("<Button-1>", on_click)
+
+            preview_canvas = tk.Canvas(color_picker, width=100, height=50, bg="white")
+            preview_canvas.pack(pady=10)
+
+            ttk.Button(color_picker, text="Confirm", command=confirm_selection).pack(pady=10)
+
         button_frame = ttk.Frame(popup)
         button_frame.pack(pady=20)
 
         ttk.Button(button_frame, text="Add", command=confirm_color, style="Accent.TButton").pack(side="left", padx=10)
+        ttk.Button(button_frame, text="Browse Color", command=browse_color, style="Accent.TButton").pack(side="left", padx=10)
         ttk.Button(button_frame, text="Cancel", command=popup.destroy, style="Accent.TButton").pack(side="left", padx=10)
 
-        # Button style configuration
-        style = ttk.Style()
-        style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
-
-        # Wait until the popup is closed
         popup.wait_window()
-
-        # Return the result (either the new color or None if canceled)
         return result["color_name"], result["lab"]
+
 
 
 
@@ -1488,57 +1545,69 @@ class PyFCSApp:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # Mostrar los colores
-        color_entries = {}  # Guardar referencias a los campos de entrada
-
-        def remove_color(frame, index):
+        color_entries ={}
+        def remove_detect_color(frame, index, color_entries):
             frame.destroy()  # Eliminar la fila del color
             colors.pop(index)  # Eliminar el color de la lista
-            # Actualizar las referencias de las entradas
-            color_entries = {
-                f"color_{i}": entry
-                for i, (key, entry) in enumerate(color_entries.items())
-                if key != f"color_{index}"
-            }
 
-        for i, dect_color in enumerate(colors):
-            rgb = dect_color["rgb"]
-            lab = color.rgb2lab(np.array(dect_color["rgb"], dtype=np.uint8).reshape(1, 1, 3) / 255)
-            default_name = f"Color {i + 1}"  # Nombre predeterminado
+            # Eliminar la entrada correspondiente sin reconstruir el diccionario
+            color_entries.pop(f"color_{index}", None)
 
-            frame = ttk.Frame(scrollable_frame)
-            frame.pack(fill="x", pady=8, padx=10)
+            # Actualizar los índices en color_entries
+            for new_index, old_key in enumerate(list(color_entries.keys())):
+                color_entries[f"color_{new_index}"] = color_entries.pop(old_key)
 
-            # Muestra del color
-            color_box = tk.Label(frame, bg=utils_structure.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
-            color_box.pack(side="left", padx=10)
+            # Reorganizar los frames y sus botones después de eliminar
+            update_color_frames()
 
-            # Campo de entrada para el nombre del color
-            entry = ttk.Entry(frame, font=("Helvetica", 12))
-            entry.insert(0, default_name)  # Nombre inicial
-            entry.pack(side="left", padx=10, fill="x", expand=True)
-            color_entries[f"color_{i}"] = entry
+        def update_color_frames():
+            # Limpiar el contenedor de colores antes de volver a dibujarlos
+            for widget in scrollable_frame.winfo_children():
+                widget.destroy()
 
-            # Valores LAB
-            lab = lab[0, 0]
-            lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
-            tk.Label(
-                frame,
-                text=lab_values,
-                font=("Helvetica", 10, "italic"),
-                bg="#f5f5f5"
-            ).pack(side="left", padx=10)
+            # Mostrar los colores actualizados
+            color_entries.clear()  # Reiniciar el diccionario de entradas
+            for i, dect_color in enumerate(colors):
+                rgb = dect_color["rgb"]
+                lab = color.rgb2lab(np.array(dect_color["rgb"], dtype=np.uint8).reshape(1, 1, 3) / 255)
+                default_name = f"Color {i + 1}"  # Nombre predeterminado
 
-            # Botón para eliminar color
-            remove_button = tk.Button(
-                frame,
-                text="❌",
-                font=("Helvetica", 10, "bold"),
-                command=lambda f=frame, idx=i: remove_color(f, idx),
-                bg="#f5f5f5",
-                relief="flat"
-            )
-            remove_button.pack(side="right", padx=5)
+                frame = ttk.Frame(scrollable_frame)
+                frame.pack(fill="x", pady=8, padx=10)
+
+                # Muestra del color
+                color_box = tk.Label(frame, bg=utils_structure.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
+                color_box.pack(side="left", padx=10)
+
+                # Campo de entrada para el nombre del color
+                entry = ttk.Entry(frame, font=("Helvetica", 12))
+                entry.insert(0, default_name)  # Nombre inicial
+                entry.pack(side="left", padx=10, fill="x", expand=True)
+                color_entries[f"color_{i}"] = entry
+
+                # Valores LAB
+                lab = lab[0, 0]
+                lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
+                tk.Label(
+                    frame,
+                    text=lab_values,
+                    font=("Helvetica", 10, "italic"),
+                    bg="#f5f5f5"
+                ).pack(side="left", padx=10)
+
+                # Botón para eliminar color
+                remove_button = tk.Button(
+                    frame,
+                    text="❌",
+                    font=("Helvetica", 10, "bold"),
+                    command=lambda f=frame, idx=i: remove_detect_color(f, idx, color_entries),
+                    bg="#f5f5f5",
+                    relief="flat"
+                )
+                remove_button.pack(side="right", padx=5)
+
+        # Mostrar los colores inicialmente
+        update_color_frames()
 
         # Botones de acción
         button_frame = ttk.Frame(popup)
@@ -1555,7 +1624,7 @@ class PyFCSApp:
         save_button = ttk.Button(
             button_frame,
             text="Create Fuzzy Color Space",
-            command=lambda: self.save_fuzzy_color_space(color_entries, colors),
+            command=lambda: self.procces_fcs(color_entries, colors),
             style="Accent.TButton"
         )
         save_button.pack(side="left", padx=20)
@@ -1568,15 +1637,37 @@ class PyFCSApp:
 
 
     # CHANGE TO .FCS FILE
-    def save_fuzzy_color_space(self, color_entries, colors):
+    def process_fcs(self, color_entries, colors):
         """
-        Guarda los nombres de los colores editados por el usuario en un archivo con extensión .cns.
+        Saves the names of the colors edited by the user in a file with a .cns extension.
         """
-        # Pedir al usuario que ingrese el nombre del puesto
-        name = tk.simpledialog.askstring("Input", "Name for the fuzzy color space:")
-        if not name:
-            return  # Si no se ingresa un nombre, salir de la función
+        if len(color_entries) < 2:
+            tk.messagebox.showwarning("Not enough colors", "You must select at least two colors to create the Color Space")
+            return
 
+        # Ask the user to enter the name for the color space
+        popup = tk.Toplevel(self.root)  # Create a secondary window
+        popup.title("Input")
+        self.center_popup(popup, 300, 100)
+        tk.Label(popup, text="Name for the fuzzy color space:").pack(pady=5)
+        name_entry = tk.Entry(popup)
+        name_entry.pack(pady=5)
+
+        name = tk.StringVar()
+
+        def on_ok():
+            name.set(name_entry.get())  # Set the value in the StringVar
+            popup.destroy()
+
+            self.save_fcs(name.get(), color_entries, colors)
+
+        # OK button
+        ok_button = tk.Button(popup, text="OK", command=on_ok)
+        ok_button.pack(pady=5)
+
+        popup.deiconify()
+
+    def save_fcs(self, name, color_entries, colors):
         # Crear el contenido del archivo
         output_lines = []
         output_lines.append(f"@name{name}")

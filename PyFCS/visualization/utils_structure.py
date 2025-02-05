@@ -343,7 +343,7 @@ def extract_planes_and_vertex(prototypes):
         for face in getattr(prototype.voronoi_volume, "faces", []):  
             plane = getattr(face, "p", None)  
             infinity = getattr(face, "infinity", None)
-            vertex = getattr(face, "vertex", [])  # Extrae los vértices
+            vertex = getattr(face, "vertex", [])  
             
             if plane:
                 A = getattr(plane, "A", None)
