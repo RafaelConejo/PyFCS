@@ -9,6 +9,7 @@ from PIL import Image, ImageTk
 import threading
 import colorsys
 import math
+import random
 
 current_dir = os.path.dirname(__file__)
 pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
@@ -28,6 +29,8 @@ class PyFCSApp:
         self.ORIGINAL_IMG = {}  # Bool function original image 
         self.MEMBERDEGREE = {}  # Bool function Color Mapping
         self.hex_color = []  # Save points colors for visualization
+        self.images = {}
+        self.color_entry_detect = {}
 
         self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
 
@@ -197,6 +200,8 @@ class PyFCSApp:
             lambda e: self.scrollable_canvas.configure(scrollregion=self.scrollable_canvas.bbox("all"))
         )
 
+        self.inner_frame.bind("<MouseWheel>", lambda event: self.on_mouse_wheel(event, self.scrollable_canvas))
+
         # Add the inner_frame to the canvas
         self.canvas_window = self.scrollable_canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
 
@@ -245,6 +250,7 @@ class PyFCSApp:
         # Horizontal scrollbar
         self.data_scrollbar_h = Scrollbar(canvas_frame, orient="horizontal", command=self.data_window.xview)
         self.data_scrollbar_h.grid(row=1, column=0, sticky="ew")  
+        self.data_scrollbar_h.bind("<MouseWheel>", lambda event: self.on_mouse_wheel(event, self.data_scrollbar_h))
 
         self.data_window.configure(yscrollcommand=self.data_scrollbar_v.set, xscrollcommand=self.data_scrollbar_h.set)
 
@@ -392,6 +398,9 @@ class PyFCSApp:
     def show_menu_create_fcs(self):
         self.menu_create_fcs.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
 
+    def on_mouse_wheel(self, event, scrollbar):
+        scrollbar.yview_scroll(-1 * (event.delta // 120), "units")
+
     def center_popup(self, popup, width, height):
         """
         Centers a popup window on the same screen as the parent widget.
@@ -529,88 +538,26 @@ class PyFCSApp:
             popup.deiconify()
 
     def save_cs(self, name, selected_colors_lab):
-        # Step 1 & 2: Create Prototype objects
-        prototypes = [
-            Prototype(
-                label=color_name,
-                positive=lab_value,
-                negatives=[lab for other_name, lab in selected_colors_lab.items() if other_name != color_name],
-                add_false=True
-            )
-            for color_name, lab_value in selected_colors_lab.items()
-        ]
+        self.show_loading()  # Mostrar indicador de carga
 
-        # Step 3: Create the fuzzy color space
-        fuzzy_color_space = FuzzyColorSpace(space_name=name, prototypes=prototypes)
+        def update_progress(current_line, total_lines):
+            """Actualiza la barra de progreso en función de las líneas escritas."""
+            progress_percentage = (current_line / total_lines) * 100
+            self.progress["value"] = progress_percentage
+            self.load_window.update_idletasks()  # Refresca la UI
 
-        cores_planes = utils_structure.extract_planes_and_vertex(getattr(fuzzy_color_space, "cores", []))
-        voronoi_planes = utils_structure.extract_planes_and_vertex(getattr(fuzzy_color_space, "prototypes", []))
-        supports_planes = utils_structure.extract_planes_and_vertex(getattr(fuzzy_color_space, "supports", []))
+        def run_save_process():
+            """Función que guarda el archivo en un hilo separado."""
+            try:
+                input_class = Input.instance('.fcs')
+                input_class.write_file(name, selected_colors_lab, progress_callback=update_progress)
+            except Exception as e:
+                print(f"Error en run_save_process: {e}")
+            finally:
+                self.load_window.after(0, self.hide_loading)
+                self.load_window.after(0, lambda: messagebox.showinfo("Color Space Created", f"Color Space '{name}' created."))
 
-        # MOVER ESTO AL INPUTFCS
-
-        # Step 4: Save in the .fcs file
-        save_path = os.path.join(os.getcwd(), "fuzzy_color_spaces")
-        os.makedirs(save_path, exist_ok=True)
-        file_path = os.path.join(save_path, f"{name}.fcs")
-
-        with open(file_path, "w") as file:
-            file.write("@name" + f"{name}\n")
-            file.write("@colorSpaceLAB " + "\n")
-            file.write("@numberOfColors" + f"{len(prototypes)}\n")
-
-            for color_name, lab_value in selected_colors_lab.items():
-                file.write(f"{color_name} {lab_value[0]} {lab_value[1]} {lab_value[2]}\n")
-
-            c = vol = s = 0
-            while c < len(cores_planes) and vol < len(voronoi_planes) and s < len(supports_planes):
-                if cores_planes:
-                    file.write("@core\n")
-                    c += 1
-        
-                    while c < len(cores_planes) and not isinstance(cores_planes[c], str):  
-                        plane_str = "\t".join(map(str, cores_planes[c]))  
-                        num_vertex = str(cores_planes[c + 1])  
-                        vertices_str = "\n".join(" ".join(map(str, v)) for v in cores_planes[c + 2])  
-                        file.write(f"{plane_str}\n{num_vertex}\n{vertices_str}\n")
-                        c += 3  # Avanza al siguiente conjunto de datos dentro del mismo volumen
-                        
-                    # Borrar todos los elementos procesados hasta llegar al primer string
-                    del cores_planes[:c]
-                    c = 0
-
-                if voronoi_planes:
-                    file.write("@voronoi\n")
-                    vol += 1
-
-                    while vol < len(voronoi_planes) and not isinstance(voronoi_planes[vol], str):  
-                        plane_str = "\t".join(map(str, voronoi_planes[vol]))  
-                        num_vertex = str(voronoi_planes[vol + 1])  
-                        vertices_str = "\n".join(" ".join(map(str, v)) for v in voronoi_planes[vol + 2])  
-                        file.write(f"{plane_str}\n{num_vertex}\n{vertices_str}\n")
-                        vol += 3 
-                        
-                    # Borrar todos los elementos procesados hasta llegar al primer string
-                    del voronoi_planes[:vol] 
-                    vol = 0
-
-                if supports_planes:
-                    file.write("@support\n")
-                    s += 1
-
-                    while s < len(supports_planes) and not isinstance(supports_planes[s], str):  
-                        plane_str = "\t".join(map(str, supports_planes[s]))  
-                        num_vertex = str(supports_planes[s + 1])  
-                        vertices_str = "\n".join(" ".join(map(str, v)) for v in supports_planes[s + 2])  
-                        file.write(f"{plane_str}\n{num_vertex}\n{vertices_str}\n")
-                        s += 3  
-                        
-                    # Borrar todos los elementos procesados hasta llegar al primer string
-                    del supports_planes[:s] 
-                    s = 0
-
-        messagebox.showinfo("Color Space Created", f"Color Space '{name}' created.")
-
+        threading.Thread(target=run_save_process).start()
 
 
     def addColor(self, window, colors):
@@ -1229,12 +1176,16 @@ class PyFCSApp:
 
     def create_floating_window(self, x, y, filename):
         """Creates a floating window with the selected image, a title bar, and a dropdown menu."""
-        # Generate a unique window ID based on the number of existing images
-        window_id = f"floating_{len(self.image_canvas.find_all())}"
-
         # Initialize the load_images_names dictionary if it doesn't exist
         if not hasattr(self, "load_images_names"):
             self.load_images_names = {}
+
+        # Generate a unique window ID based on the number of existing images
+        while True:
+            window_id = f"floating_{random.randint(1000, 9999)}"  
+            if window_id not in self.load_images_names:
+                break 
+
         self.load_images_names[window_id] = filename
 
         # Set initial values for whether the window should display color space and original image
@@ -1273,7 +1224,6 @@ class PyFCSApp:
         rect_height = new_height
 
         # Create a dictionary to store the image
-        self.images = {}
         self.images[window_id] = img_resized
         img_tk = ImageTk.PhotoImage(img_resized)
 
@@ -1445,7 +1395,56 @@ class PyFCSApp:
 
 
 
-    def display_detected_colors(self, colors, window_id, threshold, min_samples):
+
+
+    def add_new_image_colors(self, popup, colors, threshold, min_samples):
+        """
+        Permite al usuario seleccionar otra imagen y añade los colores detectados a la lista actual.
+        """
+        unique_ids = {id.get("source_image") for id in colors}
+        if not hasattr(self, "load_images_names") or not self.load_images_names:
+            tk.messagebox.showinfo("No Images", "No images are currently available to display.")
+            return
+        
+        available_image_ids = [
+            image_id for image_id in self.images.keys() 
+            if image_id not in unique_ids
+        ]
+
+        if not available_image_ids:
+            tk.messagebox.showinfo("No Available Images", "All images have already been selected.")
+            return
+        
+        available_image_names = [
+            self.load_images_names[image_id] for image_id in available_image_ids if image_id in self.load_images_names
+        ]
+
+
+        # Crear ventana emergente para seleccionar nueva imagen
+        select_popup, listbox = utils_structure.create_selection_popup(
+            parent=popup,
+            title="Select Another Image",
+            width=200,
+            height=200,
+            items=[os.path.basename(filename) for filename in available_image_names]
+        )
+
+        self.center_popup(select_popup, 200, 200)
+
+        # Bind para manejar la selección de la imagen y actualizar la lista de colores
+        listbox.bind(
+            "<<ListboxSelect>>",
+            lambda event: utils_structure.handle_image_selection(
+                event=event,
+                listbox=listbox,
+                popup=select_popup,
+                images_names=self.load_images_names,
+                callback=lambda window_id: [self.get_fuzzy_color_space_merge(window_id, colors, threshold, min_samples), popup.destroy()]
+            )
+        )
+
+
+    def display_detected_colors(self, colors, threshold, min_samples):
         # Crear ventana emergente
         popup = tk.Toplevel(self.root)
         popup.title("Detected Colors")
@@ -1522,7 +1521,7 @@ class PyFCSApp:
         tk.Button(
             controls_frame,
             text="Recalculate",
-            command=lambda: [self.get_fuzzy_color_space(window_id, threshold, min_samples), popup.destroy()],
+            command=lambda: [self.get_fuzzy_color_space_recalculate(colors, threshold, min_samples, popup), popup.destroy()],
             bg="#d2dff0",
             font=("Helvetica", 10, "bold"),
             padx=10
@@ -1535,6 +1534,7 @@ class PyFCSApp:
         canvas = tk.Canvas(frame_container, bg="#f5f5f5")
         scrollbar = ttk.Scrollbar(frame_container, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
+        canvas.bind("<MouseWheel>", lambda event: self.on_mouse_wheel(event, canvas))
 
         scrollable_frame.bind(
             "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
@@ -1545,28 +1545,30 @@ class PyFCSApp:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        color_entries ={}
-        def remove_detect_color(frame, index, color_entries):
+        def remove_detect_color(frame, index):
             frame.destroy()  # Eliminar la fila del color
             colors.pop(index)  # Eliminar el color de la lista
 
             # Eliminar la entrada correspondiente sin reconstruir el diccionario
-            color_entries.pop(f"color_{index}", None)
+            self.color_entry_detect.pop(f"color_{index}", None)
 
-            # Actualizar los índices en color_entries
-            for new_index, old_key in enumerate(list(color_entries.keys())):
-                color_entries[f"color_{new_index}"] = color_entries.pop(old_key)
+            # Actualizar los índices en self.color_entry_detect
+            for new_index, old_key in enumerate(list(self.color_entry_detect.keys())):
+                self.color_entry_detect[f"color_{new_index}"] = self.color_entry_detect.pop(old_key)
 
             # Reorganizar los frames y sus botones después de eliminar
             update_color_frames()
 
         def update_color_frames():
+            # Guardar los nombres personalizados antes de limpiar
+            previous_names = {key: entry.get() for key, entry in self.color_entry_detect.items()}
+
             # Limpiar el contenedor de colores antes de volver a dibujarlos
             for widget in scrollable_frame.winfo_children():
                 widget.destroy()
 
-            # Mostrar los colores actualizados
-            color_entries.clear()  # Reiniciar el diccionario de entradas
+            self.color_entry_detect.clear()  # Reiniciar el diccionario de entradas
+
             for i, dect_color in enumerate(colors):
                 rgb = dect_color["rgb"]
                 lab = color.rgb2lab(np.array(dect_color["rgb"], dtype=np.uint8).reshape(1, 1, 3) / 255)
@@ -1579,11 +1581,15 @@ class PyFCSApp:
                 color_box = tk.Label(frame, bg=utils_structure.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
                 color_box.pack(side="left", padx=10)
 
+                # Recuperar el nombre guardado o usar el predeterminado
+                entry_name_key = f"color_{i}"
+                saved_name = previous_names.get(entry_name_key, default_name)
+
                 # Campo de entrada para el nombre del color
                 entry = ttk.Entry(frame, font=("Helvetica", 12))
-                entry.insert(0, default_name)  # Nombre inicial
+                entry.insert(0, saved_name)  # Insertar el nombre recuperado o predeterminado
                 entry.pack(side="left", padx=10, fill="x", expand=True)
-                color_entries[f"color_{i}"] = entry
+                self.color_entry_detect[entry_name_key] = entry
 
                 # Valores LAB
                 lab = lab[0, 0]
@@ -1600,7 +1606,7 @@ class PyFCSApp:
                     frame,
                     text="❌",
                     font=("Helvetica", 10, "bold"),
-                    command=lambda f=frame, idx=i: remove_detect_color(f, idx, color_entries),
+                    command=lambda f=frame, idx=i: remove_detect_color(f, idx),
                     bg="#f5f5f5",
                     relief="flat"
                 )
@@ -1613,18 +1619,18 @@ class PyFCSApp:
         button_frame = ttk.Frame(popup)
         button_frame.pack(pady=20)
 
-        close_button = ttk.Button(
+        add_colors_button = ttk.Button(
             button_frame,
-            text="Close",
-            command=popup.destroy,
+            text="Add New Image Colors",
+            command=lambda: self.add_new_image_colors(popup, colors, threshold, min_samples),
             style="Accent.TButton"
         )
-        close_button.pack(side="left", padx=20)
+        add_colors_button.pack(side="left", padx=20)
 
         save_button = ttk.Button(
             button_frame,
             text="Create Fuzzy Color Space",
-            command=lambda: self.procces_fcs(color_entries, colors),
+            command=lambda: self.process_fcs(colors),
             style="Accent.TButton"
         )
         save_button.pack(side="left", padx=20)
@@ -1637,11 +1643,11 @@ class PyFCSApp:
 
 
     # CHANGE TO .FCS FILE
-    def process_fcs(self, color_entries, colors):
+    def process_fcs(self, colors):
         """
         Saves the names of the colors edited by the user in a file with a .cns extension.
         """
-        if len(color_entries) < 2:
+        if len(self.color_entry_detect) < 2:
             tk.messagebox.showwarning("Not enough colors", "You must select at least two colors to create the Color Space")
             return
 
@@ -1659,7 +1665,7 @@ class PyFCSApp:
             name.set(name_entry.get())  # Set the value in the StringVar
             popup.destroy()
 
-            self.save_fcs(name.get(), color_entries, colors)
+            self.save_fcs(name.get(), colors)
 
         # OK button
         ok_button = tk.Button(popup, text="OK", command=on_ok)
@@ -1667,55 +1673,28 @@ class PyFCSApp:
 
         popup.deiconify()
 
-    def save_fcs(self, name, color_entries, colors):
-        # Crear el contenido del archivo
-        output_lines = []
-        output_lines.append(f"@name{name}")
+    def save_fcs(self, name, colors):
+        color_dict = {key: np.array(colors[idx]['lab']) for idx, key in enumerate(self.color_entry_detect)}
+        self.show_loading()  # Mostrar indicador de carga
 
-        output_lines.append("@colorSpace_LAB")
-        output_lines.append("3")  # Número de componentes del espacio de color LAB
+        def update_progress(current_line, total_lines):
+            """Actualiza la barra de progreso en función de las líneas escritas."""
+            progress_percentage = (current_line / total_lines) * 100
+            self.progress["value"] = progress_percentage
+            self.load_window.update_idletasks()  # Refresca la UI
 
-        # Guardar la cantidad de colores
-        num_colors = len(color_entries)
-        output_lines.append(str(num_colors))  # Número de casos
+        def run_save_process():
+            """Función que guarda el archivo en un hilo separado."""
+            try:
+                input_class = Input.instance('.fcs')
+                input_class.write_file(name, color_dict, progress_callback=update_progress)
+            except Exception as e:
+                print(f"Error en run_save_process: {e}")
+            finally:
+                self.load_window.after(0, self.hide_loading)
+                self.load_window.after(0, lambda: messagebox.showinfo("Color Space Created", f"Color Space '{name}' created."))
 
-        # Inicializar listas para los valores LAB y los nombres
-        lab_values = []
-        color_names = []
-
-        # Primer bucle: recorrer los colores para obtener valores LAB
-        for i, dect_color in enumerate(colors):
-            rgb = dect_color["rgb"]  # Acceder al valor RGB del color
-
-            # Convertir de RGB a LAB
-            lab = color.rgb2lab(np.array(rgb, dtype=np.uint8).reshape(1, 1, 3) / 255)[0][0]
-
-            # Guardar valores LAB
-            lab_values.append(f"{lab[0]:.1f}\t{lab[1]:.1f}\t{lab[2]:.1f}")
-
-        # Segundo bucle: recorrer las entradas para obtener nombres de colores
-        for i, (key, entry) in enumerate(color_entries.items()):
-            color_name = entry.get()  # Obtener el nombre del color desde la entrada
-            color_names.append(color_name)
-
-        # Añadir LAB y nombres al contenido del archivo
-        output_lines.extend(lab_values)
-        output_lines.extend(color_names)
-
-        # Definir la ruta de la carpeta y asegurarse de que exista
-        directory = os.path.join(os.getcwd(), 'fuzzy_color_spaces')
-        os.makedirs(directory, exist_ok=True)  # Crea la carpeta si no existe
-
-        # Definir el nombre del archivo
-        file_name = f"{name.replace(' ', '_')}.cns"  # Reemplaza espacios por guiones bajos
-        file_path = os.path.join(directory, file_name)
-
-        # Crear y escribir el archivo .cns
-        with open(file_path, "w") as file:
-            file.write("\n".join(output_lines))  # Escribir las líneas en el archivo
-
-        # Mensaje de confirmación
-        tk.messagebox.showinfo("Success", f"Archivo guardado en: {file_path}")
+        threading.Thread(target=run_save_process).start()
 
 
 
@@ -1723,7 +1702,69 @@ class PyFCSApp:
     def get_fuzzy_color_space(self, window_id, threshold=0.5, min_samples=160):
         image = self.images[window_id]
         colors = utils_structure.get_fuzzy_color_space(window_id, image, threshold, min_samples)
-        self.display_detected_colors(colors, window_id, threshold, min_samples)
+
+        # Añadir el identificador de la imagen a cada color si no lo tiene
+        for id in colors:
+            if "source_image" not in id:
+                id["source_image"] = window_id
+
+        self.display_detected_colors(colors, threshold, min_samples)
+
+
+    def get_fuzzy_color_space_merge(self, new_window_id, colors, threshold, min_samples):
+        """
+        Obtiene los colores de la nueva imagen y los añade a la lista de colores actual.
+        """
+        if new_window_id and not any(id.get("source_image") == new_window_id for id in colors):
+            new_colors = utils_structure.get_fuzzy_color_space(new_window_id, self.images[new_window_id], threshold, min_samples)
+
+            for id in new_colors:  # Itera sobre los nuevos colores
+                if "source_image" not in id:  
+                    id["source_image"] = new_window_id 
+                
+            colors.extend(new_colors)  
+            self.display_detected_colors(colors, threshold, min_samples)
+
+
+    def recalculate(self, window_id, colors, threshold, min_samples):
+        # Evitar errores de nombres previos
+        self.color_entry_detect = {}
+        # Filtrar los colores que no tienen el mismo ID que la ventana actual
+        filtered_colors = [id for id in colors if id.get("source_image") != window_id]
+        self.get_fuzzy_color_space_merge(window_id, filtered_colors, threshold, min_samples)
+
+
+    def get_fuzzy_color_space_recalculate(self, colors, threshold=0.5, min_samples=160, popup = None):
+        # Verificar cuántos IDs diferentes hay en colors
+        unique_ids = {id.get("source_image") for id in colors}
+
+        if len(unique_ids) > 1:
+            # Si hay más de 2 IDs diferentes, preguntar al usuario cuál imagen quiere recalcular
+            popup, listbox = utils_structure.create_selection_popup(
+                parent=self.image_canvas,
+                title="Select an Image",
+                width=200,
+                height=200,
+                items=[os.path.basename(filename) for filename in self.load_images_names.values()]
+            )
+
+            self.center_popup(popup, 200, 200)
+
+            # Bind para manejar la selección de la imagen
+            listbox.bind(
+                "<<ListboxSelect>>",
+                lambda event: utils_structure.handle_image_selection(
+                    event=event,
+                    listbox=listbox,
+                    popup=popup,
+                    images_names=self.load_images_names,
+                    callback=lambda window_id: [self.recalculate(window_id, colors, threshold, min_samples), popup.destroy()]
+                )
+            )
+
+        else:
+            self.get_fuzzy_color_space(unique_ids.pop(), threshold, min_samples)
+            popup.destroy()
 
 
 
@@ -1788,6 +1829,7 @@ class PyFCSApp:
         # Create horizontal scrollbar for the proto_options canvas
         self.h_scroll = tk.Scrollbar(proto_options, orient=tk.HORIZONTAL, command=self.canvas.xview)
         self.h_scroll.grid(row=1, column=0, sticky="ew", padx=5)
+        self.h_scroll.bind("<MouseWheel>", lambda event: self.on_mouse_wheel(event, self.h_scroll))
 
         # Configure the canvas to respond to the scrollbars
         self.canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)

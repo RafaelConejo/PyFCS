@@ -335,27 +335,3 @@ def get_fuzzy_color_space(window_id, image, threshold=0.5, min_samples=160):
 
 
 
-def extract_planes_and_vertex(prototypes):
-    data = []
-    
-    for prototype in prototypes:
-        data.append(prototype.label)
-        for face in getattr(prototype.voronoi_volume, "faces", []):  
-            plane = getattr(face, "p", None)  
-            infinity = getattr(face, "infinity", None)
-            vertex = getattr(face, "vertex", [])  
-            
-            if plane:
-                A = getattr(plane, "A", None)
-                B = getattr(plane, "B", None)
-                C = getattr(plane, "C", None)
-                D = getattr(plane, "D", None)
-                
-                if None not in (A, B, C, D):
-                    # Extrae las coordenadas de los vértices si existen
-                    vertex_coords = [(v.x, v.y, v.z) if hasattr(v, 'x') else tuple(v) for v in vertex]
-                    data.append((A, B, C, D, infinity))
-                    data.append(len(vertex_coords))
-                    data.append(vertex_coords)
-    
-    return data
