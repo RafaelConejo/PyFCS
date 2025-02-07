@@ -133,6 +133,22 @@ class PyFCSApp:
         ).pack(side="left", padx=5)
         fuzzy_manager_frame.load_fcs = load_fcs
 
+
+        # "Color Evaluation" section
+        color_evaluation_frame = tk.LabelFrame(main_frame, text="Color Evaluation", bg="gray95", padx=10, pady=10)
+        color_evaluation_frame.grid(row=0, column=2, padx=5, pady=5)
+
+        tk.Button(color_evaluation_frame,
+            text="Deploy AT", 
+            command=self.deploy_at
+        ).pack(side="left", padx=5)
+
+        tk.Button(color_evaluation_frame,
+            text="Deploy PT", 
+            command=self.deploy_pt
+        ).pack(side="left", padx=5)
+
+
         # Main content frame for tabs and the right area
         main_content_frame = tk.Frame(root, bg="gray82")
         main_content_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -552,7 +568,8 @@ class PyFCSApp:
                 input_class = Input.instance('.fcs')
                 input_class.write_file(name, selected_colors_lab, progress_callback=update_progress)
             except Exception as e:
-                print(f"Error en run_save_process: {e}")
+                tk.messagebox.showwarning("Error", f"Error en run_save_process: {e}")
+                return
             finally:
                 self.load_window.after(0, self.hide_loading)
                 self.load_window.after(0, lambda: messagebox.showinfo("Color Space Created", f"Color Space '{name}' created."))
@@ -1689,7 +1706,9 @@ class PyFCSApp:
                 input_class = Input.instance('.fcs')
                 input_class.write_file(name, color_dict, progress_callback=update_progress)
             except Exception as e:
-                print(f"Error en run_save_process: {e}")
+                tk.messagebox.showwarning("Error", f"Error en run_save_process: {e}")
+                return
+
             finally:
                 self.load_window.after(0, self.hide_loading)
                 self.load_window.after(0, lambda: messagebox.showinfo("Color Space Created", f"Color Space '{name}' created."))
@@ -1776,7 +1795,7 @@ class PyFCSApp:
         
         # If no window is found with the given window_id, print an error message and return
         if not items:
-            print(f"No floating window found with id {window_id}")
+            tk.messagebox.showwarning("No window", f"No floating window found with id {window_id}")
             return
 
         # Set initial states for the member degree and original image for the window
@@ -1879,7 +1898,9 @@ class PyFCSApp:
                 # Send the result back to the main thread for further processing
                 self.display_color_mapping(grayscale_image_array, window_id)
             except Exception as e:
-                print(f"Error in run_process: {e}")
+                tk.messagebox.showwarning("Error", f"Error in run_process: {e}")
+                return
+
             finally:
                 # Hide the loading indicator once processing is complete
                 self.hide_loading()
@@ -1914,9 +1935,12 @@ class PyFCSApp:
                 label.image = img_tk  # Keep a reference to prevent garbage collection
                 label.pack(expand=True, fill=tk.BOTH)
             else:
-                print(f"Frame not found for window_id: {window_id}")
+                tk.messagebox.showwarning("Not Frame", f"Frame not found for window_id: {window_id}")
+                return
+
         except Exception as e:
-            print(f"Error displaying the image: {e}")
+            tk.messagebox.showwarning("Display error", f"Error displaying the image: {e}")
+            return
 
 
 
@@ -1949,7 +1973,8 @@ class PyFCSApp:
                             # Remove the reference to the proto_options window
                             del self.proto_options[window_id]
                         except Exception as e:
-                            print(f"Error trying to destroy the proto_options window: {e}")
+                            tk.messagebox.showwarning("Window error", f"Error trying to destroy the proto_options window: {e}")
+                            return
 
                     # Set the image to be the original (reset flags)
                     self.ORIGINAL_IMG[window_id] = False
@@ -1957,16 +1982,87 @@ class PyFCSApp:
                         self.MEMBERDEGREE[window_id] = True
 
                 else:
-                    print(f"Frame not found for window_id: {window_id}")
+                    tk.messagebox.showwarning("Not Frame", f"Frame not found for window_id: {window_id}")
+                    return
             else:
-                print(f"Original image not found for window_id: {window_id}")
+                tk.messagebox.showwarning("Not Original Image", f"Original image not found for window_id: {window_id}")
+                return
 
         except Exception as e:
-            print(f"Error displaying the original image: {e}")
+            tk.messagebox.showwarning("Display Error", f"Error displaying the original image: {e}")
+            return
 
 
 
     
+
+
+
+
+
+
+
+
+
+
+
+
+    ########################################################################################### Color Evaluation Functions ###########################################################################################
+    def get_umbral_points(self, threshold):
+        # Verificar si el espacio de color difuso está cargado
+        if not hasattr(self, 'COLOR_SPACE') or not self.COLOR_SPACE:
+            messagebox.showwarning("No Color Space", "Please load a fuzzy color space before deploying AT.")
+            return
+
+        # Obtener la opción seleccionada en el menú desplegable
+        option = self.model_3d_option.get()
+
+        # Mapa de opciones para acceder a los volúmenes correspondientes
+        option_map = {
+            "Representative": lambda: Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.selected_hex_color),
+            "Core": self.selected_core,
+            "Support": self.selected_support,
+            "0.5-cut": self.selected_proto
+        }
+
+        if option != 'Representative':
+            selected_volume = option_map[option]
+            filtered_points = {}  # Diccionario para almacenar los puntos filtrados
+
+            # Iterar sobre cada volumen y su prototipo correspondiente
+            for idx, prototype in enumerate(selected_volume):
+                positive = prototype.positive
+
+                # Generar puntos dentro del volumen de Voronoi
+                points_inside = utils_structure.generate_points_within_volume(prototype.voronoi_volume, step=1.0)
+                points_within_threshold = []
+
+                # Filtrar puntos por diferencia de color (deltaE)
+                for point in points_inside:
+                    point_lab = tuple(point)  # Convertir a formato (L, a, b)
+                    delta_e = utils_structure.delta_e_ciede2000(positive, point_lab)
+
+                    if delta_e < threshold:
+                        points_within_threshold.append(point)
+
+                filtered_points[f'Volume_{idx}'] = points_within_threshold
+
+                
+            fig = Visual_tools.plot_all_prototypes_filtered_points(selected_volume, self.volume_limits, self.hex_color, filtered_points)
+            self.draw_model_3D(fig)  # Pass the figure to draw it on the Tkinter Canvas
+
+
+
+    def deploy_at(self):
+        self.get_umbral_points(self, 0.8)
+
+    def deploy_pt(self):
+        self.get_umbral_points(self, 1.8)
+
+
+
+
+
 
 
 

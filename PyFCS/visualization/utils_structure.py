@@ -335,3 +335,132 @@ def get_fuzzy_color_space(window_id, image, threshold=0.5, min_samples=160):
 
 
 
+def generate_points_within_volume(volume, step=1.0):
+    """
+    Genera puntos dentro de un volumen de Voronoi, limitando el rango de búsqueda a los extremos de sus caras.
+    """
+    # Obtener los límites reales a partir de las caras del volumen
+    all_vertices = np.array([[vertex.x, vertex.y, vertex.z] for face in volume.faces if not face.infinity for vertex in face.vertex])
+    
+    # Definir límites de búsqueda según los puntos extremos de las caras
+    L_min, L_max = np.min(all_vertices[:, 0]), np.max(all_vertices[:, 0])
+    a_min, a_max = np.min(all_vertices[:, 1]), np.max(all_vertices[:, 1])
+    b_min, b_max = np.min(all_vertices[:, 2]), np.max(all_vertices[:, 2])
+    
+    # Generar puntos dentro de estos límites
+    L_range = np.arange(L_min, L_max, step)
+    a_range = np.arange(a_min, a_max, step)
+    b_range = np.arange(b_min, b_max, step)
+
+    L, a, b = np.meshgrid(L_range, a_range, b_range, indexing='ij')
+    points = np.vstack((L.ravel(), a.ravel(), b.ravel())).T
+
+    # Filtrar puntos que están dentro del volumen de Voronoi
+    points_inside = [pt for pt in points if is_point_inside_volume(pt, volume)]
+
+    return points_inside
+
+
+def is_point_inside_volume(point, volume):
+    """
+    Verifica si un punto está dentro de un volumen de Voronoi, evaluando su relación con los planos de las caras.
+    """
+    for face in volume.faces:
+        if face.infinity:
+            continue  # Ignorar caras infinitas
+        
+        plane = face.p
+        if plane:
+            # Evaluar la ecuación del plano: Ax + By + Cz + D
+            A, B, C, D = plane.A, plane.B, plane.C, plane.D
+            if (A * point[0] + B * point[1] + C * point[2] + D) > 0:
+                return False  # Está fuera si no cumple la desigualdad
+    return True  # Si cumple todas, está dentro
+
+
+
+
+def delta_e_ciede2000(lab1, lab2):
+    """
+    Implementación de la fórmula CIEDE2000 para calcular la diferencia de color entre dos colores en el espacio Lab.
+
+    Parámetros:
+    - lab1: Tuple o lista con valores (L, a, b) del primer color.
+    - lab2: Tuple o lista con valores (L, a, b) del segundo color.
+
+    Retorna:
+    - delta_E: Diferencia de color según CIEDE2000.
+    """
+    L1, a1, b1 = lab1
+    L2, a2, b2 = lab2
+
+    # Paso 1: Calcular C*
+    C1 = np.sqrt(a1**2 + b1**2)
+    C2 = np.sqrt(a2**2 + b2**2)
+    
+    # Promedio de Chroma
+    C_avg = (C1 + C2) / 2
+    
+    # Factor G
+    G = 0.5 * (1 - np.sqrt((C_avg**7) / (C_avg**7 + 25**7)))
+    
+    # Ajuste de a'
+    a1_prime = (1 + G) * a1
+    a2_prime = (1 + G) * a2
+
+    # Nuevo C'
+    C1_prime = np.sqrt(a1_prime**2 + b1**2)
+    C2_prime = np.sqrt(a2_prime**2 + b2**2)
+
+    # Paso 2: Calcular h'
+    h1_prime = np.degrees(np.arctan2(b1, a1_prime)) % 360
+    h2_prime = np.degrees(np.arctan2(b2, a2_prime)) % 360
+
+    # Paso 3: Diferencias de color
+    delta_L = L2 - L1
+    delta_C = C2_prime - C1_prime
+
+    # Cálculo de delta_h
+    delta_h = h2_prime - h1_prime
+    if abs(delta_h) > 180:
+        delta_h -= 360 * np.sign(delta_h)
+    delta_H = 2 * np.sqrt(C1_prime * C2_prime) * np.sin(np.radians(delta_h / 2))
+
+    # Promedios para CIEDE2000
+    L_avg = (L1 + L2) / 2
+    C_avg_prime = (C1_prime + C2_prime) / 2
+
+    # Cálculo de H_avg
+    if C1_prime * C2_prime == 0:
+        H_avg = h1_prime + h2_prime
+    else:
+        if abs(h1_prime - h2_prime) > 180:
+            H_avg = (h1_prime + h2_prime + 360) / 2
+        else:
+            H_avg = (h1_prime + h2_prime) / 2
+
+    # Pesos para ajustes
+    T = (1 - 0.17 * np.cos(np.radians(H_avg - 30)) +
+         0.24 * np.cos(np.radians(2 * H_avg)) +
+         0.32 * np.cos(np.radians(3 * H_avg + 6)) -
+         0.20 * np.cos(np.radians(4 * H_avg - 63)))
+
+    # Factores de ajuste SL, SC, SH
+    SL = 1 + ((0.015 * (L_avg - 50) ** 2) / np.sqrt(20 + (L_avg - 50) ** 2))
+    SC = 1 + 0.045 * C_avg_prime
+    SH = 1 + 0.015 * C_avg_prime * T
+
+    # Factor de rotación
+    delta_theta = 30 * np.exp(-((H_avg - 275) / 25) ** 2)
+    RC = 2 * np.sqrt((C_avg_prime ** 7) / (C_avg_prime ** 7 + 25 ** 7))
+    RT = -RC * np.sin(np.radians(2 * delta_theta))
+
+    # Cálculo final de Delta E 2000
+    delta_E = np.sqrt(
+        (delta_L / SL) ** 2 +
+        (delta_C / SC) ** 2 +
+        (delta_H / SH) ** 2 +
+        RT * (delta_C / SC) * (delta_H / SH)
+    )
+
+    return delta_E

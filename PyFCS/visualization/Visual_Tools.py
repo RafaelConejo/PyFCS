@@ -147,6 +147,110 @@ class Visual_tools:
 
 
 
+    @staticmethod
+    def plot_all_prototypes_filtered_points(prototypes, volume_limits, hex_color, threshold_points):
+        """
+        Dibuja los volúmenes de múltiples prototipos y marca con una 'X' los puntos dentro del volumen que cumplen el umbral.
+
+        Parámetros:
+        - prototypes: Lista de prototipos (cada uno con su volumen de Voronoi).
+        - volume_limits: Límites del volumen para restringir la visualización.
+        - hex_color: Diccionario con colores hex para los prototipos.
+        - threshold_points: Lista de puntos (L*, a*, b*) que cumplen con el umbral, para ser marcados con "X".
+        """
+        if len(prototypes) != 0:
+            fig = plt.figure(figsize=(8, 6), dpi=120)
+            ax = fig.add_subplot(111, projection='3d')
+
+            # Filtra todos los puntos
+            all_points = np.vstack((np.array(prototypes[0].positive), np.array(prototypes[0].negatives)))
+            false_negatives = Prototype.get_falseNegatives()
+            negatives_filtered_no_false = [
+                point for point in all_points
+                if not any(np.array_equal(point, fn) for fn in false_negatives)
+            ]
+            all_points = np.array(negatives_filtered_no_false)
+
+            # Limita los puntos al rango de volumen especificado
+            all_points = all_points[
+                (all_points[:, 0] >= volume_limits.comp1[0]) & (all_points[:, 0] <= volume_limits.comp1[1]) &
+                (all_points[:, 1] >= volume_limits.comp2[0]) & (all_points[:, 1] <= volume_limits.comp2[1]) &
+                (all_points[:, 2] >= volume_limits.comp3[0]) & (all_points[:, 2] <= volume_limits.comp3[1])
+            ]
+
+            # Dibuja los puntos individuales con L* en el eje Z
+            for i in range(all_points.shape[0]):
+                point = all_points[i]
+                color = '#000000'  # Default a negro si no se encuentra coincidencia
+                for hex_color_key, lab_value in hex_color.items():
+                    if np.array_equal(point, lab_value):  # Compara el punto con el valor LAB
+                        color = hex_color_key
+                        break
+
+                ax.scatter(
+                    all_points[i, 1], all_points[i, 2], all_points[i, 0],  # Cambiar orden: a*, b*, L*
+                    color=color, marker='o', s=30, edgecolor='k', alpha=0.8
+                )
+
+            # Dibuja los puntos dentro del volumen que cumplen el umbral con una "X"
+            all_filtered_points = np.vstack([np.array(v) for v in threshold_points.values()])
+            for point in all_filtered_points:
+                ax.scatter(
+                    point[1], point[2], point[0],  # Cambiar orden: a*, b*, L*
+                    color='b', marker='x', s=20, linewidths=2, label='Threshold Points'
+                )
+
+            # Dibuja los volúmenes de Voronoi con L* en el eje Z
+            for idx, prototype in enumerate(prototypes):
+                color = '#000000'  # Color por defecto
+                for hex_color_key, lab_value in hex_color.items():
+                    if np.array_equal(prototype.positive, lab_value):
+                        color = hex_color_key
+                        break
+
+                faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
+                for face in faces:
+                    vertices = np.array(face.vertex)
+                    if face.infinity:
+                        continue
+                    else:
+                        vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)
+                        if len(vertices_clipped) >= 3:
+                            vertices_clipped = vertices_clipped[:, [1, 2, 0]]
+                            poly3d = Poly3DCollection(
+                                [vertices_clipped], facecolors=color, edgecolors='black',
+                                linewidths=1, alpha=0.5
+                            )
+                            ax.add_collection3d(poly3d)
+
+            # Configuración de los ejes (ajustados para que L* esté en el eje Z)
+            ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)
+            ax.set_ylabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
+            ax.set_zlabel('L* (Luminosity)', fontsize=10, labelpad=10)
+
+            # Ajustar los límites de los ejes según los límites del volumen
+            ax.set_xlim(volume_limits.comp2[0], volume_limits.comp2[1])  # a*
+            ax.set_ylim(volume_limits.comp3[0], volume_limits.comp3[1])  # b*
+            ax.set_zlim(volume_limits.comp1[0], volume_limits.comp1[1])  # L*
+
+            # Estilización adicional
+            ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
+
+            return fig
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     @staticmethod
     def plot_prototype(prototype, volume_limits):
