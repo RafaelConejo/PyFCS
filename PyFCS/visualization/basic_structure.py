@@ -1234,6 +1234,8 @@ class PyFCSApp:
         # Store the resized image dimensions in a dictionary for later reference
         if not hasattr(self, "image_dimensions"):
             self.image_dimensions = {}  # Initialize the dictionary if it doesn't exist
+            self.original_image_dimensions = {}
+        self.original_image_dimensions[window_id] = (original_width, original_height)
         self.image_dimensions[window_id] = (new_width, new_height)
 
         # Update the rectangle dimensions to match the resized image
@@ -1247,10 +1249,11 @@ class PyFCSApp:
         # Initialize the dictionaries to store floating images and frames if they don't exist
         if not hasattr(self, "floating_images"):
             self.floating_images = {}
-            self.floating_frames = {}
+            self.original_images = {}
 
         # Store the image reference in the floating images dictionary
         self.floating_images[window_id] = img_tk
+        self.original_images[window_id] = img_tk
 
         # Create a background rectangle for the floating window
         self.image_canvas.create_rectangle(
@@ -1280,18 +1283,10 @@ class PyFCSApp:
             x + 15, y + 15, text="▼", fill="white", font=("Arial", 12), tags=(window_id, "floating", f"{window_id}_arrow_button")
         )
 
-        # Create a frame inside the canvas for displaying the image
-        frame = tk.Frame(self.image_canvas, width=rect_width, height=rect_height, bg="white")
-        self.floating_frames[window_id] = frame
-
-        # Position the frame within the canvas
-        self.image_canvas.create_window(
-            x + 10, y + 40, anchor="nw", window=frame, tags=(window_id, "floating", f"{window_id}_image")
-        )
-
         # Display the image inside the frame using a Label widget
-        label = tk.Label(frame, image=self.floating_images[window_id], bg="white")
-        label.pack(expand=True, fill=tk.BOTH)
+        self.image_canvas.create_image(
+            x + 15 + rect_width // 2, y + 40 + rect_height // 2, image=self.floating_images[window_id], tags=(window_id, "floating", f"{window_id}_click_image")
+        )
 
         # Function to close the floating window when the close button is clicked
         def close_window(event):
@@ -1300,11 +1295,6 @@ class PyFCSApp:
             
             # Remove the image reference from the dictionary
             del self.floating_images[window_id]
-            
-            # Destroy and remove the frame associated with the window ID
-            if window_id in self.floating_frames:
-                self.floating_frames[window_id].destroy()
-                del self.floating_frames[window_id]
 
             # If there are any associated proto_options, destroy and remove them as well
             if hasattr(self, "proto_options") and window_id in self.proto_options:
@@ -1361,12 +1351,6 @@ class PyFCSApp:
             self.image_canvas.tag_raise(f"{window_id}_arrow_button")  # Bring the arrow button to the front
             self.image_canvas.tag_raise(f"{window_id}_image")  # Bring the image to the front
 
-            # Ensure that the frame containing the image is also raised to the front
-            if window_id in self.floating_frames:
-                frame = self.floating_frames[window_id]
-                self.image_canvas.tag_raise(f"{window_id}_image")  # Ensure the frame stays on top
-                frame.lift()  # Lift the frame above other frames in the canvas
-
             # Move the associated proto_options window if it exists
             if hasattr(self, "proto_options") and window_id in self.proto_options:
                 proto_option_frame = self.proto_options[window_id]
@@ -1399,6 +1383,63 @@ class PyFCSApp:
             # Update the coordinates for the next move event
             self.last_x, self.last_y = event.x, event.y
 
+        def get_pixel_value(event, window_id=window_id):
+            """Obtiene el valor del píxel donde se hizo clic en la imagen, considerando el movimiento de la ventana."""
+            img = self.images[window_id]  
+            
+            # Obtener dimensiones redimensionadas
+            resized_width, resized_height = self.image_dimensions[window_id]
+            
+            # Obtener dimensiones originales
+            original_width, original_height = img.size
+
+            # Obtener la posición absoluta del clic en el Canvas
+            abs_x = self.image_canvas.canvasx(event.x)
+            abs_y = self.image_canvas.canvasy(event.y)
+
+            # Obtener la posición actual de la imagen en el Canvas
+            image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
+            if not image_items:
+                tk.messagebox.showwarning("No window", f"No floating window found with id {window_id}")
+                return 
+
+            # Bounding box de la imagen
+            x1, y1, _, _ = self.image_canvas.bbox(image_items[0])
+
+            # 📏 Ajustar las coordenadas del clic en función del movimiento
+            relative_x = abs_x - x1
+            relative_y = abs_y - y1
+
+            # Escalar las coordenadas
+            scale_x = original_width / resized_width
+            scale_y = original_height / resized_height
+
+            x_original = int(relative_x * scale_x)
+            y_original = int(relative_y * scale_y)
+
+            # Verificar que las coordenadas estén dentro de la imagen original
+            if 0 <= x_original < original_width and 0 <= y_original < original_height:
+                # Obtener el valor del píxel en la imagen original
+                pixel_value = img.getpixel((x_original, y_original))
+                if len(pixel_value) == 4:
+                    pixel_value = pixel_value[:3]
+
+                pixel_rgb_np = np.array([[pixel_value]], dtype=np.uint8)
+                pixel_lab = color.rgb2lab(pixel_rgb_np)[0][0]
+
+                # print(f"Coordenadas: ({x_original}, {y_original}), Valor LAB: {pixel_value}")
+                
+                if self.COLOR_SPACE:
+                    self.display_pixel_value(x_original, y_original, pixel_lab)
+
+            # Evitar propagación del evento para que no mueva la ventana
+            return "break"
+
+
+
+        
+
+
         # Bind events for moving the window
         self.image_canvas.tag_bind(window_id, "<Button-1>", start_move)  # When mouse is pressed, start moving
         self.image_canvas.tag_bind(window_id, "<B1-Motion>", move_window)  # When mouse is dragged, move the window
@@ -1406,8 +1447,31 @@ class PyFCSApp:
         # Bind events for the close button
         self.image_canvas.tag_bind(f"{window_id}_close_button", "<Button-1>", close_window)  # Close window on click
 
+        # Bind events for click 
+        self.image_canvas.tag_bind(f"{window_id}_click_image", "<Button-1>", get_pixel_value)
+        # label.bind("<Button-1>", lambda event, window_id=window_id: get_pixel_value(event, window_id))
+
         # Bind events for the arrow button (to show the context menu)
         self.image_canvas.tag_bind(f"{window_id}_arrow_button", "<Button-1>", show_menu_image)  # Show menu on click
+
+
+
+
+    def display_pixel_value(self, x_original, y_original, pixel_lab):
+            """Muestra el valor del píxel en LAB y sus coordenadas dentro de un frame en la parte inferior."""
+        
+            # Si el frame no existe, créalo
+            if not hasattr(self, "lab_value_frame"):
+                self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray", height=40)
+                self.lab_value_frame.pack(side="bottom", fill="x", padx=10, pady=5)
+
+                self.lab_value_label = tk.Label(self.lab_value_frame, text="", bg="lightgray", font=("Arial", 12), anchor="w")
+                self.lab_value_label.pack(pady=5, padx=10)
+
+            # Actualizar el Label con los nuevos valores LAB y las coordenadas
+            lab_text = f"Coordenadas: ({x_original}, {y_original}) | LAB: {pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}"
+            self.lab_value_label.config(text=lab_text)
+
 
 
 
@@ -1923,24 +1987,20 @@ class PyFCSApp:
             # Convert the image to a PhotoImage format
             img_tk = ImageTk.PhotoImage(grayscale_image)
 
-            # Update the Frame associated with the given window_id
-            frame = self.floating_frames.get(window_id)
-            if frame:
-                # Clear any previous widgets in the frame
-                for widget in frame.winfo_children():
-                    widget.destroy()
+            # Update the PhotoImage reference to prevent garbage collection
+            self.floating_images[window_id] = img_tk
 
-                # Create a new Label to display the image
-                label = tk.Label(frame, image=img_tk, bg="black")
-                label.image = img_tk  # Keep a reference to prevent garbage collection
-                label.pack(expand=True, fill=tk.BOTH)
+            # Find the image item ID in the canvas using the window_id tag
+            image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
+
+            if image_items:
+                image_id = image_items[0]  # Assuming there's only one image per window_id
+                self.image_canvas.itemconfig(image_id, image=img_tk)
             else:
-                tk.messagebox.showwarning("Not Frame", f"Frame not found for window_id: {window_id}")
-                return
+                tk.messagebox.showwarning("Image Error", f"No image found for window_id: {window_id}")
 
         except Exception as e:
-            tk.messagebox.showwarning("Display error", f"Error displaying the image: {e}")
-            return
+            tk.messagebox.showwarning("Display Error", f"Error displaying the image: {e}")
 
 
 
@@ -1948,42 +2008,38 @@ class PyFCSApp:
         """Displays the original image stored in floating_images."""
         try:
             # Retrieve the original image stored in floating_images
-            img_tk = self.floating_images.get(window_id)
+            img_tk = self.original_images.get(window_id)
 
             if img_tk is not None:
-                # Update the Frame associated with the given window_id
-                frame = self.floating_frames.get(window_id)
-                if frame:
-                    # Remove all previous widgets in the frame
-                    for widget in frame.winfo_children():
-                        widget.destroy()
+                # Check if there is a proto_options window for this window_id
+                if hasattr(self, "proto_options") and window_id in self.proto_options:
+                    try:
+                        # If the proto_options window exists, destroy it
+                        if self.proto_options[window_id].winfo_exists():
+                            self.proto_options[window_id].destroy()
 
-                    # Create a Label widget to display the original image
-                    label = tk.Label(frame, image=img_tk, bg="white")
-                    label.image = img_tk  # Keep a reference to the image to prevent garbage collection
-                    label.pack(expand=True, fill=tk.BOTH)
+                        # Remove the reference to the proto_options window
+                        del self.proto_options[window_id]
+                    except Exception as e:
+                        tk.messagebox.showwarning("Window Error", f"Error trying to destroy the proto_options window: {e}")
+                        return
 
-                    # Check if there is a proto_options window for this window_id
-                    if hasattr(self, "proto_options") and window_id in self.proto_options:
-                        try:
-                            # If the proto_options window exists, destroy it
-                            if self.proto_options[window_id].winfo_exists():
-                                self.proto_options[window_id].destroy()
+                # Find the image item in the canvas using the window_id tag
+                image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
 
-                            # Remove the reference to the proto_options window
-                            del self.proto_options[window_id]
-                        except Exception as e:
-                            tk.messagebox.showwarning("Window error", f"Error trying to destroy the proto_options window: {e}")
-                            return
-
-                    # Set the image to be the original (reset flags)
-                    self.ORIGINAL_IMG[window_id] = False
-                    if self.COLOR_SPACE:
-                        self.MEMBERDEGREE[window_id] = True
-
+                if image_items:
+                    image_id = image_items[0]  # Assuming there's only one image per window_id
+                    # Update the image to the original
+                    self.image_canvas.itemconfig(image_id, image=img_tk)
                 else:
-                    tk.messagebox.showwarning("Not Frame", f"Frame not found for window_id: {window_id}")
+                    tk.messagebox.showwarning("Image Error", f"No canvas image found for window_id: {window_id}")
                     return
+
+                # Reset flags
+                self.ORIGINAL_IMG[window_id] = False
+                if self.COLOR_SPACE:
+                    self.MEMBERDEGREE[window_id] = True
+
             else:
                 tk.messagebox.showwarning("Not Original Image", f"Original image not found for window_id: {window_id}")
                 return
@@ -1991,6 +2047,7 @@ class PyFCSApp:
         except Exception as e:
             tk.messagebox.showwarning("Display Error", f"Error displaying the original image: {e}")
             return
+
 
 
 
@@ -2054,10 +2111,10 @@ class PyFCSApp:
 
 
     def deploy_at(self):
-        self.get_umbral_points(self, 0.8)
+        self.get_umbral_points(0.8)
 
     def deploy_pt(self):
-        self.get_umbral_points(self, 1.8)
+        self.get_umbral_points(1.8)
 
 
 

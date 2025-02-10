@@ -16,7 +16,7 @@ from PyFCS.input_output.utils import Utils
 
 
 def main():
-    colorspace_name = 'BRUGUER-WORLD COLORS.cns'
+    colorspace_name = 'cns\\BRUGUER-WORLD COLORS.cns'
 
     option = input("Select an option:\n 1. Enter LAB value\n 2. Select a pixel on an image\n")
     if option == "1":

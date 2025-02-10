@@ -235,7 +235,7 @@ class InputFCS(Input):
                                 line = next(lines).strip()
                                 if line.startswith("@voronoi"):
                                     negatives = [color[1:] for idx, color in enumerate(colors) if idx != i]
-                                    voronoi_volume = Volume(colors[i][0], faces)
+                                    voronoi_volume = Volume(Point(*colors[i][1:]), faces)
 
                                     cores.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
                                     
@@ -262,7 +262,7 @@ class InputFCS(Input):
                             
                                 line = next(lines).strip()
                                 if line.startswith("@support"):
-                                    voronoi_volume = Volume(colors[i][0], faces)
+                                    voronoi_volume = Volume(Point(*colors[i][1:]), faces)
 
                                     prototypes.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
                                     
@@ -289,7 +289,7 @@ class InputFCS(Input):
                             
                                 line = next(lines).strip()
                                 if line.startswith("@core"):
-                                    voronoi_volume = Volume(colors[i][0], faces)
+                                    voronoi_volume = Volume(Point(*colors[i][1:]), faces)
                                     supports.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
                                     
                                     faces = []
@@ -297,7 +297,7 @@ class InputFCS(Input):
                                     break
 
                     except StopIteration:
-                        voronoi_volume = Volume(colors[i][0], faces)
+                        voronoi_volume = Volume(Point(*colors[i][1:]), faces)
                         supports.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
                         break
 

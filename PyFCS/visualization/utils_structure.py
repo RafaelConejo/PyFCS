@@ -340,7 +340,11 @@ def generate_points_within_volume(volume, step=1.0):
     Genera puntos dentro de un volumen de Voronoi, limitando el rango de búsqueda a los extremos de sus caras.
     """
     # Obtener los límites reales a partir de las caras del volumen
-    all_vertices = np.array([[vertex.x, vertex.y, vertex.z] for face in volume.faces if not face.infinity for vertex in face.vertex])
+    all_vertices = np.array([
+        [vertex.x, vertex.y, vertex.z] if hasattr(vertex, "x") else vertex 
+        for face in volume.faces if not face.infinity 
+        for vertex in face.vertex
+    ])
     
     # Definir límites de búsqueda según los puntos extremos de las caras
     L_min, L_max = np.min(all_vertices[:, 0]), np.max(all_vertices[:, 0])
