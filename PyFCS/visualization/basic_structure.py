@@ -289,14 +289,14 @@ class PyFCSApp:
         button_container.pack(pady=5)
 
         add_button = tk.Button(
-            button_container, text="Add Color", font=("Helvetica", 12, "bold"),
-            bg="#d4f4d2", command=lambda: self.addColor_data_window()
+            button_container, text="Add New Color", font=("Helvetica", 12, "bold"),
+            bg="#E0F2E9", command=lambda: self.addColor_data_window()
         )
         add_button.pack(side="left", padx=20)
 
         apply_button = tk.Button(
-            button_container, text="Apply", font=("Helvetica", 12, "bold"),
-            bg="#cce5ff", command=lambda: self.apply_changes()
+            button_container, text="Apply Changes", font=("Helvetica", 12, "bold"),
+            bg="#E0F2E9", command=lambda: self.apply_changes()
         )
         apply_button.pack(side="left", padx=20)
 
@@ -482,102 +482,143 @@ class PyFCSApp:
         # Prompt the user to select a file
         filename = utils_structure.prompt_file_selection('fuzzy_color_spaces\\')
 
-        if filename:
-            # Activate the 'Original Image' option for all open windows
-            if hasattr(self, 'floating_images') and self.floating_images:
-                for window_id in self.floating_images.keys():
-                    self.show_original_image(window_id)
-
-            self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
-
-            extension = os.path.splitext(filename)[1]
-            if extension == '.cns':
-                # Read the file and prepare color data
-                input_class = Input.instance(extension)
-                self.color_data = input_class.read_file(filename)
-
-                self.display_data_window()
-                self.update_volumes()
-
-            elif extension == '.fcs':
-                input_class = Input.instance(extension)
-                self.color_data, self.fuzzy_color_space = input_class.read_file(filename)
-
-                self.cores = self.fuzzy_color_space.get_cores()
-                self.supports = self.fuzzy_color_space.get_supports()
-                self.prototypes = self.fuzzy_color_space.get_prototypes()
-
-                self.display_data_window()
-                self.update_prototypes_info()
-
-            else:
-                messagebox.showwarning("File Error", "Unsupported file format.")
-                        
-
-        else:
+        if not filename:
             # Notify the user if no file was selected
             messagebox.showwarning("No File Selected", "No file was selected.")
+            return  # Early return to avoid unnecessary processing
+
+        # Activate the 'Original Image' option for all open windows
+        if hasattr(self, 'floating_images') and self.floating_images:
+            for window_id in self.floating_images:
+                self.show_original_image(window_id)
+
+        # Store file path and base name
+        self.file_path = filename
+        self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
+
+        # Determine file extension
+        extension = os.path.splitext(filename)[1].lower()  # Use lower() for case-insensitive comparison
+
+        # Initialize input class based on file extension
+        input_class = Input.instance(extension)
+
+        if extension == '.cns':
+            # Read the file and prepare color data
+            self.color_data = input_class.read_file(filename)
+            self.display_data_window()
+            self.update_volumes()
+
+        elif extension == '.fcs':
+            # Read the file and prepare color data along with fuzzy color space
+            self.color_data, self.fuzzy_color_space = input_class.read_file(filename)
+
+            # Cache frequently accessed data to avoid multiple method calls
+            self.cores = self.fuzzy_color_space.cores  
+            self.supports = self.fuzzy_color_space.supports
+            self.prototypes = self.fuzzy_color_space.prototypes
+
+            self.display_data_window()
+            self.update_prototypes_info()
+
+        else:
+            # Notify the user if the file format is unsupported
+            messagebox.showwarning("File Error", "Unsupported file format.")
 
 
-    
+    # CHANGE TO FCS
     def create_color_space(self):
-        # Get selected colors and their LAB values
+        """
+        Creates a fuzzy color space from selected colors and prompts the user to name it.
+        The selected colors are converted to LAB values, and the color space is saved.
+        """
+        # Extract selected colors and their LAB values
         selected_colors_lab = {
-            name: np.array([data["lab"]["L"], data["lab"]["A"], data["lab"]["B"]]) if isinstance(data["lab"], dict) else np.array(data["lab"])
+            name: np.array([data["lab"]["L"], data["lab"]["A"], data["lab"]["B"]]) if isinstance(data["lab"], dict)
+            else np.array(data["lab"])
             for name, data in self.color_checks.items() if data["var"].get()
         }
 
+        # Ensure at least two colors are selected
         if len(selected_colors_lab) < 2:
-            messagebox.showwarning("Warning", "You must select at least two color.")
-        
-        else:
-            # Ask the user to enter the name for the color space
-            popup = tk.Toplevel(self.root)  # Create a secondary window
-            popup.title("Color Space Name")
-            self.center_popup(popup, 300, 100)
-            tk.Label(popup, text="Name for the fuzzy color space:").pack(pady=5)
-            name_entry = tk.Entry(popup)
-            name_entry.pack(pady=5)
+            messagebox.showwarning("Warning", "You must select at least two colors.")
+            return  # Early return to avoid unnecessary processing
 
-            name = tk.StringVar()
+        # Create a popup window for the user to name the color space
+        popup = tk.Toplevel(self.root)  # Create a secondary window
+        popup.title("Color Space Name")
+        self.center_popup(popup, 300, 100)  # Center the popup window
 
-            def on_ok():
-                name.set(name_entry.get())  # Set the value in the StringVar
-                popup.destroy()
+        # Add a label and entry field for the color space name
+        tk.Label(popup, text="Name for the fuzzy color space:").pack(pady=5)
+        name_entry = tk.Entry(popup)
+        name_entry.pack(pady=5)
 
-                self.save_cs(name.get(), selected_colors_lab)
+        # Variable to store the entered name
+        name = tk.StringVar()
 
-            # OK button
-            ok_button = tk.Button(popup, text="OK", command=on_ok)
-            ok_button.pack(pady=5)
+        def on_ok():
+            """Callback function for the OK button."""
+            name.set(name_entry.get())  # Set the value in the StringVar
+            popup.destroy()  # Close the popup window
+            self.save_cs(name.get(), selected_colors_lab)  # Save the color space
 
-            popup.deiconify()
+        # Add an OK button to confirm the name
+        ok_button = tk.Button(popup, text="OK", command=on_ok)
+        ok_button.pack(pady=5)
+
+        # Display the popup window
+        popup.deiconify()
+
 
     def save_cs(self, name, selected_colors_lab):
-        self.show_loading()  # Mostrar indicador de carga
+        """
+        Saves the color space with the given name and LAB values.
+        Displays a loading indicator and updates the progress bar during the save process.
+        """
+        self.show_loading()  # Show loading indicator
 
         def update_progress(current_line, total_lines):
-            """Actualiza la barra de progreso en función de las líneas escritas."""
+            """
+            Updates the progress bar based on the number of lines written.
+            
+            Args:
+                current_line (int): The current line being processed.
+                total_lines (int): The total number of lines to process.
+            """
             progress_percentage = (current_line / total_lines) * 100
             self.progress["value"] = progress_percentage
-            self.load_window.update_idletasks()  # Refresca la UI
+            self.load_window.update_idletasks()  # Refresh the UI
 
         def run_save_process():
-            """Función que guarda el archivo en un hilo separado."""
+            """
+            Saves the file in a separate thread to avoid blocking the main UI.
+            Handles exceptions and ensures the loading indicator is hidden afterward.
+            """
             try:
+                # Initialize the input class for .fcs files
                 input_class = Input.instance('.fcs')
+                # Write the file with the provided name, LAB values, and progress callback
                 input_class.write_file(name, selected_colors_lab, progress_callback=update_progress)
             except Exception as e:
-                tk.messagebox.showwarning("Error", f"Error en run_save_process: {e}")
-                return
+                # Show an error message if something goes wrong
+                tk.messagebox.showerror("Error", f"An error occurred while saving: {e}")
             finally:
+                # Ensure the loading indicator is hidden and show a success message
                 self.load_window.after(0, self.hide_loading)
-                self.load_window.after(0, lambda: messagebox.showinfo("Color Space Created", f"Color Space '{name}' created."))
+                self.load_window.after(0, lambda: messagebox.showinfo(
+                    "Color Space Created", f"Color Space '{name}' created successfully."
+                ))
 
-        threading.Thread(target=run_save_process).start()
+        # Start the save process in a separate thread
+        threading.Thread(target=run_save_process, daemon=True).start()
 
 
+    
     def addColor(self, window, colors):
+        """
+        Opens a popup window to add a new color by entering LAB values or selecting a color from a color wheel.
+        Returns the color name and LAB values if the user confirms the input.
+        """
         popup = tk.Toplevel(window)
         popup.title("Add New Color")
         popup.geometry("500x500")
@@ -585,40 +626,52 @@ class PyFCSApp:
         popup.transient(window)
         popup.grab_set()
 
-        self.center_popup(popup, 500, 300)
+        self.center_popup(popup, 500, 300)  # Center the popup window
 
+        # Variables to store user input
         color_name_var = tk.StringVar()
         l_value_var = tk.StringVar()
         a_value_var = tk.StringVar()
         b_value_var = tk.StringVar()
 
-        result = {"color_name": None, "lab": None}
+        result = {"color_name": None, "lab": None}  # Dictionary to store the result
 
+        # Title and instructions
         ttk.Label(popup, text="Add New Color", font=("Helvetica", 14, "bold")).pack(pady=10)
         ttk.Label(popup, text="Enter the LAB values and the color name:").pack(pady=5)
 
+        # Form frame for input fields
         form_frame = ttk.Frame(popup)
         form_frame.pack(padx=20, pady=10)
 
+        # Color name field
         ttk.Label(form_frame, text="Color Name:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=color_name_var, width=30).grid(row=0, column=1, padx=5, pady=5)
 
+        # L value field
         ttk.Label(form_frame, text="L Value (0-100):").grid(row=1, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=l_value_var, width=10).grid(row=1, column=1, padx=5, pady=5)
 
+        # A value field
         ttk.Label(form_frame, text="A Value (-128 to 127):").grid(row=2, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=a_value_var, width=10).grid(row=2, column=1, padx=5, pady=5)
 
+        # B value field
         ttk.Label(form_frame, text="B Value (-128 to 127):").grid(row=3, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=b_value_var, width=10).grid(row=3, column=1, padx=5, pady=5)
 
         def confirm_color():
+            """
+            Validates the input and adds the new color to the colors dictionary.
+            Closes the popup if the input is valid.
+            """
             try:
                 color_name = color_name_var.get().strip()
                 l_value = float(l_value_var.get())
                 a_value = float(a_value_var.get())
                 b_value = float(b_value_var.get())
 
+                # Validate inputs
                 if not color_name:
                     raise ValueError("The color name cannot be empty.")
                 if not (0 <= l_value <= 100):
@@ -630,24 +683,29 @@ class PyFCSApp:
                 if color_name in colors:
                     raise ValueError(f"The color name '{color_name}' already exists.")
 
+                # Store the result
                 result["color_name"] = color_name
                 result["lab"] = {"L": l_value, "A": a_value, "B": b_value}
 
+                # Add the color to the dictionary
                 colors[color_name] = {"lab": result["lab"]}
-                popup.destroy()
+                popup.destroy()  # Close the popup
 
             except ValueError as e:
-                messagebox.showerror("Invalid Input", str(e))
+                messagebox.showerror("Invalid Input", str(e))  # Show error message for invalid input
 
         def browse_color():
-            """Abre una ventana con una rueda de colores para seleccionar un color."""
+            """
+            Opens a color picker window to select a color from a color wheel.
+            Converts the selected color to LAB values and updates the input fields.
+            """
             color_picker = tk.Toplevel()
             color_picker.title("Select a Color")
             color_picker.geometry("350x450")
             color_picker.transient(popup)
             color_picker.grab_set()
 
-            # Posicionar la ventana a la derecha de "Add New Color"
+            # Position the color picker window to the right of the "Add New Color" window
             x_offset = popup.winfo_x() + popup.winfo_width() + 10
             y_offset = popup.winfo_y()
             color_picker.geometry(f"350x450+{x_offset}+{y_offset}")
@@ -657,12 +715,12 @@ class PyFCSApp:
             radius = center - 5
 
             def hsv_to_rgb(h, s, v):
-                """Convierte HSV a RGB en escala 0-255."""
+                """Converts HSV to RGB in the range 0-255."""
                 r, g, b = colorsys.hsv_to_rgb(h, s, v)
                 return int(r * 255), int(g * 255), int(b * 255)
 
             def draw_color_wheel():
-                """Dibuja la rueda de colores en el Canvas."""
+                """Draws the color wheel on the canvas."""
                 for y in range(canvas_size):
                     for x in range(canvas_size):
                         dx, dy = x - center, y - center
@@ -675,7 +733,7 @@ class PyFCSApp:
                             canvas.create_line(x, y, x + 1, y, fill=color_code)
 
             def on_click(event):
-                """Obtiene el color seleccionado al hacer clic en la rueda."""
+                """Gets the selected color from the color wheel and updates the LAB values."""
                 x, y = event.x, event.y
                 dx, dy = x - center, y - center
                 dist = math.sqrt(dx**2 + dy**2)
@@ -686,39 +744,43 @@ class PyFCSApp:
                     r, g, b = hsv_to_rgb(hue, 1, 1)
                     color_hex = f'#{r:02x}{g:02x}{b:02x}'
 
-                    preview_canvas.config(bg=color_hex)
+                    preview_canvas.config(bg=color_hex)  # Update the preview canvas
 
-                    # Convertir a LAB
+                    # Convert RGB to LAB
                     rgb = np.array([[r, g, b]]) / 255
                     lab = color.rgb2lab(rgb.reshape((1, 1, 3)))[0][0]
 
-                    # Actualizar los valores en la ventana principal
+                    # Update the LAB values in the main window
                     l_value_var.set(f"{lab[0]:.2f}")
                     a_value_var.set(f"{lab[1]:.2f}")
                     b_value_var.set(f"{lab[2]:.2f}")
 
             def confirm_selection():
+                """Closes the color picker window."""
                 color_picker.destroy()
 
+            # Create and draw the color wheel
             canvas = tk.Canvas(color_picker, width=canvas_size, height=canvas_size)
             canvas.pack()
             draw_color_wheel()
             canvas.bind("<Button-1>", on_click)
 
+            # Preview canvas for selected color
             preview_canvas = tk.Canvas(color_picker, width=100, height=50, bg="white")
             preview_canvas.pack(pady=10)
 
+            # Confirm button
             ttk.Button(color_picker, text="Confirm", command=confirm_selection).pack(pady=10)
 
+        # Button frame for "Browse Color" and "Add" buttons
         button_frame = ttk.Frame(popup)
         button_frame.pack(pady=20)
 
-        ttk.Button(button_frame, text="Add", command=confirm_color, style="Accent.TButton").pack(side="left", padx=10)
         ttk.Button(button_frame, text="Browse Color", command=browse_color, style="Accent.TButton").pack(side="left", padx=10)
-        ttk.Button(button_frame, text="Cancel", command=popup.destroy, style="Accent.TButton").pack(side="left", padx=10)
+        ttk.Button(button_frame, text="Add", command=confirm_color, style="Accent.TButton").pack(side="left", padx=10)
 
-        popup.wait_window()
-        return result["color_name"], result["lab"]
+        popup.wait_window()  # Wait for the popup to close
+        return result["color_name"], result["lab"]  # Return the result
 
 
 
@@ -1146,6 +1208,24 @@ class PyFCSApp:
 
     def apply_changes(self):
         """Aplica los cambios hechos en la lista de colores."""
+        if not self.file_path:
+            messagebox.showerror("Error", "No se ha cargado ningún archivo.")
+            return
+
+        try:
+            # Eliminar el archivo original
+            if os.path.exists(self.file_path):
+                with open(self.file_path, 'w') as f:
+                    f.close()
+                os.remove(self.file_path)
+
+            # Guardar los cambios en un nuevo archivo con el mismo nombre
+            with open(self.file_path, "w", encoding="utf-8") as file:
+                    color_dict = {key: value['positive_prototype'] for key, value in self.color_data.items()}
+                    self.save_fcs(self.file_name_entry.get(), self.color_data, color_dict)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudieron guardar los cambios: {e}")
         
 
 
@@ -1468,9 +1548,14 @@ class PyFCSApp:
                 self.lab_value_label = tk.Label(self.lab_value_frame, text="", bg="lightgray", font=("Arial", 12), anchor="w")
                 self.lab_value_label.pack(pady=5, padx=10)
 
+            membership_degrees = self.fuzzy_color_space.calculate_membership(pixel_lab)
+            max_proto = max(membership_degrees, key=membership_degrees.get)
+
             # Actualizar el Label con los nuevos valores LAB y las coordenadas
-            lab_text = f"Coordenadas: ({x_original}, {y_original}) | LAB: {pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}"
+            lab_text = f"Coordinates: ({x_original}, {y_original})   |   LAB: {pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}   |   Prototype: {max_proto}   |   {round(membership_degrees[max_proto], 2)}"
             self.lab_value_label.config(text=lab_text)
+
+            # Add More info boton
 
 
 
@@ -1723,7 +1808,6 @@ class PyFCSApp:
 
 
 
-    # CHANGE TO .FCS FILE
     def process_fcs(self, colors):
         """
         Saves the names of the colors edited by the user in a file with a .cns extension.
@@ -1754,8 +1838,10 @@ class PyFCSApp:
 
         popup.deiconify()
 
-    def save_fcs(self, name, colors):
-        color_dict = {key: np.array(colors[idx]['lab']) for idx, key in enumerate(self.color_entry_detect)}
+    def save_fcs(self, name, colors, color_dict=None):
+        if color_dict is None:
+            color_dict = {key: np.array(colors[idx]['lab']) for idx, key in enumerate(self.color_entry_detect)}
+
         self.show_loading()  # Mostrar indicador de carga
 
         def update_progress(current_line, total_lines):
