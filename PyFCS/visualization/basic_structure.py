@@ -326,6 +326,8 @@ class PyFCSApp:
         if confirm_exit:
             self.root.destroy()
 
+
+
     def toggle_fullscreen(self, event=None):
         """
         Toggle between fullscreen and windowed mode.
@@ -333,6 +335,8 @@ class PyFCSApp:
         """
         current_state = self.root.attributes("-fullscreen")
         self.root.attributes("-fullscreen", not current_state)
+
+
 
     def show_loading(self):
         """
@@ -360,6 +364,8 @@ class PyFCSApp:
         # Ensure the loading window updates and displays properly
         self.root.update_idletasks()
 
+
+
     def hide_loading(self):
         """
         Close the loading window if it exists.
@@ -367,6 +373,8 @@ class PyFCSApp:
         """
         if hasattr(self, 'load_window'):  # Check if the loading window exists
             self.load_window.destroy()
+
+
 
     def about_info(self):
         """Displays a popup window with 'About' information."""
@@ -411,11 +419,17 @@ class PyFCSApp:
         )
         close_button.pack(pady=10)  # Add the button to the frame
 
+
+
     def show_menu_create_fcs(self):
         self.menu_create_fcs.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
 
+
+
     def on_mouse_wheel(self, event, scrollbar):
         scrollbar.yview_scroll(-1 * (event.delta // 120), "units")
+
+
 
     def center_popup(self, popup, width, height):
         """
@@ -461,6 +475,7 @@ class PyFCSApp:
         self.update_prototypes_info()
     
 
+
     def update_prototypes_info(self):
         # Update 3D graph and app state vars
         self.COLOR_SPACE = True
@@ -472,6 +487,7 @@ class PyFCSApp:
         self.selected_core = self.cores
         self.selected_support = self.supports
         self.on_option_select()
+
 
 
     def load_color_space(self):
@@ -525,7 +541,7 @@ class PyFCSApp:
             messagebox.showwarning("File Error", "Unsupported file format.")
 
 
-    # CHANGE TO FCS
+
     def create_color_space(self):
         """
         Creates a fuzzy color space from selected colors and prompts the user to name it.
@@ -568,6 +584,7 @@ class PyFCSApp:
 
         # Display the popup window
         popup.deiconify()
+
 
 
     def save_cs(self, name, selected_colors_lab):
@@ -784,7 +801,6 @@ class PyFCSApp:
 
 
 
-
     def addColor_create_fcs(self, window, colors):
         color_name, new_color = self.addColor(window, colors)
         # Actualizar la interfaz
@@ -796,13 +812,14 @@ class PyFCSApp:
         )
     
 
+
     def palette_based_creation(self):
         """
         Logic for creating a new fuzzy color space using a predefined palette.
         Allows the user to select colors through a popup and creates a new fuzzy color space.
         """
         # Load color data from the BASIC.cns file
-        color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces\\cns\\BASIC.cns')
+        color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces', 'cns', 'BASIC.cns')
         colors = utils_structure.load_color_data(color_space_path)
 
         # Create a popup window for color selection
@@ -814,7 +831,7 @@ class PyFCSApp:
             header_text="Select colors for your Color Space"
         )
 
-        # Center the popup
+        # Center the popup window
         self.center_popup(popup, 400, 500)
 
         # Dictionary to store the Checkbuttons for selected colors
@@ -834,13 +851,15 @@ class PyFCSApp:
         button_frame = ttk.Frame(popup)
         button_frame.pack(pady=20)
 
+        # Button to add a new color
         ttk.Button(
             button_frame,
-            text="Add Color",
+            text="Add New Color",
             command=lambda: self.addColor_create_fcs(popup, colors),
             style="Accent.TButton"
         ).pack(side="left", padx=20)
 
+        # Button to create the color space
         ttk.Button(
             button_frame,
             text="Create Color Space",
@@ -857,11 +876,12 @@ class PyFCSApp:
     def image_based_creation(self):
         """
         Displays a popup window to select an image by filename and creates a floating window for the selected image.
+        If no images are available, it shows an informational message.
         """
         # Verify if there are available images to display
         if not hasattr(self, "load_images_names") or not self.load_images_names:
             tk.messagebox.showinfo("No Images", "No images are currently available to display.")
-            return
+            return  # Early return if no images are available
 
         # Create a popup window for image selection
         popup, listbox = utils_structure.create_selection_popup(
@@ -872,7 +892,7 @@ class PyFCSApp:
             items=[os.path.basename(filename) for filename in self.load_images_names.values()]
         )
 
-        # Center the popup
+        # Center the popup window
         self.center_popup(popup, 200, 200)
 
         # Bind the listbox selection event to handle image selection
@@ -886,6 +906,7 @@ class PyFCSApp:
                 callback=self.get_fuzzy_color_space
             )
         )
+
 
 
 
@@ -917,7 +938,6 @@ class PyFCSApp:
 
 
 
-
     def draw_model_3D(self, fig):
         """Draws the 3D plot on the Tkinter canvas."""
         if self.graph_widget:  # Check if a previous graph exists
@@ -930,12 +950,12 @@ class PyFCSApp:
 
         # Display the color selection buttons
         self.display_color_buttons(self.color_matrix)
-
     
 
+
     def select_all_color(self):
+        """Handles the 'select all' option for colors."""
         if self.COLOR_SPACE:
-            """Handles the 'select all' option for colors."""
             self.selected_centroids = self.color_data
             self.selected_hex_color = self.hex_color
             self.selected_proto = self.prototypes
@@ -976,7 +996,6 @@ class PyFCSApp:
         
         self.selected_centroids = selected_centroids
         self.on_option_select()  # Redraw the 3D model based on the selected colors
-
 
         
 
@@ -1034,8 +1053,11 @@ class PyFCSApp:
 
 
     ########################################################################################### Funtions Data ###########################################################################################
-    # ADD IF FCS
     def display_data_window(self):
+        """
+        Displays the color data in a scrollable table within the canvas.
+        Updates the table with LAB values, labels, and color previews.
+        """
         # Update the "Name" field with the current file name
         self.file_name_entry.delete(0, "end")  # Clear previous text in the entry
         self.file_name_entry.insert(0, self.file_base_name)  # Insert the current file name
@@ -1081,8 +1103,7 @@ class PyFCSApp:
 
         # Iterate through color data and populate rows
         for i, (color_name, color_value) in enumerate(self.color_data.items()):
-            lab = color_value['positive_prototype']  # Extract LAB color values
-            lab = np.array(lab)  # Convert to numpy array
+            lab = np.array(color_value['positive_prototype'])  # Extract and convert LAB color values
             self.color_matrix.append(color_name)
 
             # Draw table columns (L, a, b, Label)
@@ -1098,7 +1119,7 @@ class PyFCSApp:
                 )
 
             # Convert LAB to RGB and draw the color rectangle
-            rgb_data = tuple(map(lambda x: int(x * 255), color.lab2rgb([color_value['positive_prototype']])[0]))
+            rgb_data = tuple(map(lambda x: int(x * 255), color.lab2rgb([lab])[0]))
             hex_color = f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}'
             self.hex_color[hex_color] = lab
 
@@ -1141,7 +1162,7 @@ class PyFCSApp:
         # Check if the color exists in color_data
         if color_name in self.color_data:
             # Iterate over other colors to remove the corresponding negative prototype
-            for other_color, data in self.color_data.items():
+            for _, data in self.color_data.items():
                 # Filter out the negative prototypes matching the positive prototype of the color being removed
                 data["negative_prototypes"] = [
                     prototype for prototype in data["negative_prototypes"]
@@ -1205,33 +1226,28 @@ class PyFCSApp:
 
 
 
-
     def apply_changes(self):
-        """Aplica los cambios hechos en la lista de colores."""
+        """Applies the changes made to the color list."""
         if not self.file_path:
-            messagebox.showerror("Error", "No se ha cargado ningún archivo.")
+            messagebox.showerror("Error", "No file has been loaded.")
             return
 
         try:
-            # Eliminar el archivo original
+            # Delete the original file
             if os.path.exists(self.file_path):
                 with open(self.file_path, 'w') as f:
                     f.close()
                 os.remove(self.file_path)
 
-            # Guardar los cambios en un nuevo archivo con el mismo nombre
+            # Save the changes in a new file with the same name
             with open(self.file_path, "w", encoding="utf-8") as file:
-                    color_dict = {key: value['positive_prototype'] for key, value in self.color_data.items()}
-                    self.save_fcs(self.file_name_entry.get(), self.color_data, color_dict)
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudieron guardar los cambios: {e}")
+                color_dict = {key: value['positive_prototype'] for key, value in self.color_data.items()}
+                self.save_fcs(self.file_name_entry.get(), self.color_data, color_dict)
         
+        except Exception as e:
+            messagebox.showerror("Error", f"Changes could not be saved: {e}")
 
-
-
-
-
+        
 
 
 
@@ -1271,22 +1287,26 @@ class PyFCSApp:
             self.create_floating_window(50, 50, filename)
 
 
+
     def create_floating_window(self, x, y, filename):
-        """Creates a floating window with the selected image, a title bar, and a dropdown menu."""
+        """
+        Creates a floating window with the selected image, a title bar, and a dropdown menu.
+        The window is movable, resizable, and includes options for displaying the original image and color mapping.
+        """
         # Initialize the load_images_names dictionary if it doesn't exist
         if not hasattr(self, "load_images_names"):
             self.load_images_names = {}
 
         # Generate a unique window ID based on the number of existing images
         while True:
-            window_id = f"floating_{random.randint(1000, 9999)}"  
+            window_id = f"floating_{random.randint(1000, 9999)}"
             if window_id not in self.load_images_names:
-                break 
+                break
 
         self.load_images_names[window_id] = filename
 
         # Set initial values for whether the window should display color space and original image
-        self.MEMBERDEGREE[window_id] = True if self.COLOR_SPACE else False
+        self.MEMBERDEGREE[window_id] = bool(self.COLOR_SPACE)
         self.ORIGINAL_IMG[window_id] = False
 
         # Load the image from the selected file
@@ -1298,11 +1318,7 @@ class PyFCSApp:
         rect_height = 250
 
         # Calculate the maximum scale factor to fit the image within the defined rectangle size without distortion
-        scale_width = rect_width / original_width
-        scale_height = rect_height / original_height
-
-        # Use the smaller scale to maintain the aspect ratio
-        scale = min(scale_width, scale_height)
+        scale = min(rect_width / original_width, rect_height / original_height)
 
         # Calculate the new dimensions of the image after scaling
         new_width = int(original_width * scale)
@@ -1313,14 +1329,13 @@ class PyFCSApp:
 
         # Store the resized image dimensions in a dictionary for later reference
         if not hasattr(self, "image_dimensions"):
-            self.image_dimensions = {}  # Initialize the dictionary if it doesn't exist
+            self.image_dimensions = {}
             self.original_image_dimensions = {}
         self.original_image_dimensions[window_id] = (original_width, original_height)
         self.image_dimensions[window_id] = (new_width, new_height)
 
         # Update the rectangle dimensions to match the resized image
-        rect_width = new_width
-        rect_height = new_height
+        rect_width, rect_height = new_width, new_height
 
         # Create a dictionary to store the image
         self.images[window_id] = img_resized
@@ -1370,136 +1385,96 @@ class PyFCSApp:
 
         # Function to close the floating window when the close button is clicked
         def close_window(event):
-            # Remove all elements associated with the window ID from the canvas
+            """Closes the floating window and removes all associated elements."""
             self.image_canvas.delete(window_id)
-            
-            # Remove the image reference from the dictionary
             del self.floating_images[window_id]
 
-            # If there are any associated proto_options, destroy and remove them as well
             if hasattr(self, "proto_options") and window_id in self.proto_options:
                 if self.proto_options[window_id].winfo_exists():
                     self.proto_options[window_id].destroy()
                 del self.proto_options[window_id]
-            
-            # Remove the window ID from load_images_names
+
             if hasattr(self, "load_images_names") and window_id in self.load_images_names:
                 del self.load_images_names[window_id]
 
-
         # Function to show the dropdown menu when the arrow button is clicked
         def show_menu_image(event):
-            """Displays a context menu with options for the floating window (e.g., Original Image, Color Mapping)."""
-            # Create a new menu instance
+            """Displays a context menu with options for the floating window."""
             menu = Menu(self.root, tearoff=0)
-            
-            # Add the "Original Image" option to the menu, which is enabled if the window shows the original image
             menu.add_command(
-                label="Original Image", 
-                state=NORMAL if self.ORIGINAL_IMG[window_id] else DISABLED,  # Enable or disable based on the state
-                command=lambda: self.show_original_image(window_id)  # Function to show the original image
+                label="Original Image",
+                state=NORMAL if self.ORIGINAL_IMG[window_id] else DISABLED,
+                command=lambda: self.show_original_image(window_id)
             )
-
-            menu.add_separator()  # Add a separator line in the menu
-
-            # Add the "Color Mapping" option to the menu, which is enabled based on the color mapping state
+            menu.add_separator()
             menu.add_command(
                 label="Color Mapping",
-                state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,  # Enable or disable based on the state
-                command=lambda: self.plot_proto_options(window_id)  # Function to plot color mapping options
+                state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,
+                command=lambda: self.plot_proto_options(window_id)
             )
-            
-            # Display the menu at the location of the mouse click
             menu.post(event.x_root, event.y_root)
 
         # Function to make the floating window movable
         def start_move(event):
-            """Store the initial position when the mouse is pressed on the window."""
-            self.last_x, self.last_y = event.x, event.y  # Store initial x and y coordinates for movement
+            """Stores the initial position when the mouse is pressed on the window."""
+            self.last_x, self.last_y = event.x, event.y
 
         def move_window(event):
-            """Move the floating window based on the mouse drag."""
-            # Calculate the change in position
+            """Moves the floating window based on the mouse drag."""
             dx, dy = event.x - self.last_x, event.y - self.last_y
-
-            # Move all elements associated with the window_id on the canvas
             self.image_canvas.move(window_id, dx, dy)
+            self.image_canvas.tag_raise(window_id)
+            self.image_canvas.tag_raise(f"{window_id}_close_button")
+            self.image_canvas.tag_raise(f"{window_id}_arrow_button")
+            self.image_canvas.tag_raise(f"{window_id}_image")
 
-            # Raise all associated elements to the front so they are not obscured
-            self.image_canvas.tag_raise(window_id)  # Bring the window itself to the front
-            self.image_canvas.tag_raise(f"{window_id}_close_button")  # Bring the close button to the front
-            self.image_canvas.tag_raise(f"{window_id}_arrow_button")  # Bring the arrow button to the front
-            self.image_canvas.tag_raise(f"{window_id}_image")  # Bring the image to the front
-
-            # Move the associated proto_options window if it exists
             if hasattr(self, "proto_options") and window_id in self.proto_options:
                 proto_option_frame = self.proto_options[window_id]
-                
-                if proto_option_frame.winfo_exists():  # If the proto_option window exists
-                    # Get the current bounding box of the window on the canvas
+                if proto_option_frame.winfo_exists():
                     items = self.image_canvas.find_withtag(window_id)
                     if items:
-                        # Get the coordinates of the bounding box (x1, y1, x2, y2)
                         x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
-                        
-                        # Set the new x and y position of the proto_option window based on the main window's position
-                        frame_x = x2 + 10  # Position the proto_option to the right of the image
-                        frame_y = y1  # Keep the same vertical position as the main window
+                        frame_x = x2 + 10
+                        frame_y = y1
 
-                        # Ensure the proto_option stays within the canvas bounds
                         canvas_width = self.image_canvas.winfo_width()
                         canvas_height = self.image_canvas.winfo_height()
 
-                        if frame_x + 120 > canvas_width:  # Avoid moving off the right side of the canvas
+                        if frame_x + 120 > canvas_width:
                             frame_x = canvas_width - 120
-
-                        if frame_y + 150 > canvas_height:  # Avoid moving off the bottom of the canvas
+                        if frame_y + 150 > canvas_height:
                             frame_y = canvas_height - 150
 
-                        # Move the proto_option window to the new position
                         proto_option_frame.place(x=frame_x, y=frame_y)
-                        proto_option_frame.lift()  # Raise the proto_option window to the front
+                        proto_option_frame.lift()
 
-            # Update the coordinates for the next move event
             self.last_x, self.last_y = event.x, event.y
 
         def get_pixel_value(event, window_id=window_id):
-            """Obtiene el valor del píxel donde se hizo clic en la imagen, considerando el movimiento de la ventana."""
-            img = self.images[window_id]  
-            
-            # Obtener dimensiones redimensionadas
+            """Gets the pixel value where the image is clicked, considering window movement."""
+            img = self.images[window_id]
             resized_width, resized_height = self.image_dimensions[window_id]
-            
-            # Obtener dimensiones originales
             original_width, original_height = img.size
 
-            # Obtener la posición absoluta del clic en el Canvas
             abs_x = self.image_canvas.canvasx(event.x)
             abs_y = self.image_canvas.canvasy(event.y)
 
-            # Obtener la posición actual de la imagen en el Canvas
             image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
             if not image_items:
                 tk.messagebox.showwarning("No window", f"No floating window found with id {window_id}")
-                return 
+                return
 
-            # Bounding box de la imagen
             x1, y1, _, _ = self.image_canvas.bbox(image_items[0])
-
-            # 📏 Ajustar las coordenadas del clic en función del movimiento
             relative_x = abs_x - x1
             relative_y = abs_y - y1
 
-            # Escalar las coordenadas
             scale_x = original_width / resized_width
             scale_y = original_height / resized_height
 
             x_original = int(relative_x * scale_x)
             y_original = int(relative_y * scale_y)
 
-            # Verificar que las coordenadas estén dentro de la imagen original
             if 0 <= x_original < original_width and 0 <= y_original < original_height:
-                # Obtener el valor del píxel en la imagen original
                 pixel_value = img.getpixel((x_original, y_original))
                 if len(pixel_value) == 4:
                     pixel_value = pixel_value[:3]
@@ -1507,86 +1482,120 @@ class PyFCSApp:
                 pixel_rgb_np = np.array([[pixel_value]], dtype=np.uint8)
                 pixel_lab = color.rgb2lab(pixel_rgb_np)[0][0]
 
-                # print(f"Coordenadas: ({x_original}, {y_original}), Valor LAB: {pixel_value}")
-                
                 if self.COLOR_SPACE:
                     self.display_pixel_value(x_original, y_original, pixel_lab)
 
-            # Evitar propagación del evento para que no mueva la ventana
             return "break"
 
-
-
-        
-
-
         # Bind events for moving the window
-        self.image_canvas.tag_bind(window_id, "<Button-1>", start_move)  # When mouse is pressed, start moving
-        self.image_canvas.tag_bind(window_id, "<B1-Motion>", move_window)  # When mouse is dragged, move the window
+        self.image_canvas.tag_bind(window_id, "<Button-1>", start_move)
+        self.image_canvas.tag_bind(window_id, "<B1-Motion>", move_window)
 
         # Bind events for the close button
-        self.image_canvas.tag_bind(f"{window_id}_close_button", "<Button-1>", close_window)  # Close window on click
+        self.image_canvas.tag_bind(f"{window_id}_close_button", "<Button-1>", close_window)
 
-        # Bind events for click 
+        # Bind events for click
         self.image_canvas.tag_bind(f"{window_id}_click_image", "<Button-1>", get_pixel_value)
-        # label.bind("<Button-1>", lambda event, window_id=window_id: get_pixel_value(event, window_id))
 
         # Bind events for the arrow button (to show the context menu)
-        self.image_canvas.tag_bind(f"{window_id}_arrow_button", "<Button-1>", show_menu_image)  # Show menu on click
+        self.image_canvas.tag_bind(f"{window_id}_arrow_button", "<Button-1>", show_menu_image)
 
 
+    
+    def show_more_info(self):
+        messagebox.showinfo("More Info", "No prototype found or additional information about the pixel.")
 
 
     def display_pixel_value(self, x_original, y_original, pixel_lab):
-            """Muestra el valor del píxel en LAB y sus coordenadas dentro de un frame en la parte inferior."""
-        
-            # Si el frame no existe, créalo
-            if not hasattr(self, "lab_value_frame"):
-                self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray", height=40)
-                self.lab_value_frame.pack(side="bottom", fill="x", padx=10, pady=5)
+        """
+        Displays the pixel value in LAB format and its coordinates within a frame at the bottom of the canvas.
+        Also shows the closest prototype and its membership degree.
+        """
+        # Create the frame and labels only once if they don't exist
+        if not hasattr(self, "lab_value_frame"):
+            self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray", height=40)
+            self.lab_value_frame.pack(side="bottom", fill="x", padx=10, pady=5)
 
-                self.lab_value_label = tk.Label(self.lab_value_frame, text="", bg="lightgray", font=("Arial", 12), anchor="w")
-                self.lab_value_label.pack(pady=5, padx=10)
+            # Frame for left-aligned text
+            text_frame = tk.Frame(self.lab_value_frame, bg="lightgray")
+            text_frame.pack(side="left", padx=10, pady=5, fill="x")
 
-            membership_degrees = self.fuzzy_color_space.calculate_membership(pixel_lab)
+            # Define fonts for labels
+            bold_font = ("Arial", 12, "bold")
+            normal_font = ("Arial", 12)
+
+            # Coordinates label and value
+            coord_label = tk.Label(text_frame, text="Coordinates: ", font=bold_font, bg="lightgray")
+            coord_label.pack(side="left")
+            self.coord_value = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
+            self.coord_value.pack(side="left")
+
+            # LAB values label and value
+            lab_label = tk.Label(text_frame, text="LAB: ", font=bold_font, bg="lightgray")
+            lab_label.pack(side="left")
+            self.lab_value_print = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
+            self.lab_value_print.pack(side="left")
+
+            # Prototype label and value
+            proto_label = tk.Label(text_frame, text="Prototype: ", font=bold_font, bg="lightgray")
+            proto_label.pack(side="left")
+            self.proto_value = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
+            self.proto_value.pack(side="left")
+
+            # "More Info" button
+            more_info_button = tk.Button(
+                self.lab_value_frame, text="🔍", font=("Arial", 9),
+                bg="white", command=self.show_more_info, relief="flat", borderwidth=0
+            )
+            more_info_button.pack(side="right", padx=5, pady=2)
+
+        # Calculate the closest prototype and its membership degree
+        membership_degrees = self.fuzzy_color_space.calculate_membership(pixel_lab)
+        if membership_degrees:
             max_proto = max(membership_degrees, key=membership_degrees.get)
+            proto_text = f"{max_proto} | {round(membership_degrees[max_proto], 2)}"
+        else:
+            proto_text = "None"
 
-            # Actualizar el Label con los nuevos valores LAB y las coordenadas
-            lab_text = f"Coordinates: ({x_original}, {y_original})   |   LAB: {pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}   |   Prototype: {max_proto}   |   {round(membership_degrees[max_proto], 2)}"
-            self.lab_value_label.config(text=lab_text)
-
-            # Add More info boton
-
-
-
+        # Update the labels with the new values
+        self.coord_value.config(text=f"({x_original}, {y_original})    |    ")
+        self.lab_value_print.config(text=f"{pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}    |    ")
+        self.proto_value.config(text=proto_text)
 
 
 
 
     def add_new_image_colors(self, popup, colors, threshold, min_samples):
         """
-        Permite al usuario seleccionar otra imagen y añade los colores detectados a la lista actual.
+        Allows the user to select another image and adds the detected colors to the current list.
+        Ensures that only unique images are selected and handles cases where no images are available.
         """
-        unique_ids = {id.get("source_image") for id in colors}
+        # Get unique source image IDs from the current colors
+        unique_ids = {color.get("source_image") for color in colors}
+
+        # Check if there are available images to display
         if not hasattr(self, "load_images_names") or not self.load_images_names:
             tk.messagebox.showinfo("No Images", "No images are currently available to display.")
             return
-        
+
+        # Filter out images that have already been selected
         available_image_ids = [
-            image_id for image_id in self.images.keys() 
+            image_id for image_id in self.images.keys()
             if image_id not in unique_ids
         ]
 
+        # If no available images, show a message and return
         if not available_image_ids:
             tk.messagebox.showinfo("No Available Images", "All images have already been selected.")
             return
-        
+
+        # Get the filenames of the available images
         available_image_names = [
-            self.load_images_names[image_id] for image_id in available_image_ids if image_id in self.load_images_names
+            self.load_images_names[image_id] for image_id in available_image_ids
+            if image_id in self.load_images_names
         ]
 
-
-        # Crear ventana emergente para seleccionar nueva imagen
+        # Create a popup window for selecting another image
         select_popup, listbox = utils_structure.create_selection_popup(
             parent=popup,
             title="Select Another Image",
@@ -1595,9 +1604,10 @@ class PyFCSApp:
             items=[os.path.basename(filename) for filename in available_image_names]
         )
 
+        # Center the popup window
         self.center_popup(select_popup, 200, 200)
 
-        # Bind para manejar la selección de la imagen y actualizar la lista de colores
+        # Bind the listbox selection event to handle image selection
         listbox.bind(
             "<<ListboxSelect>>",
             lambda event: utils_structure.handle_image_selection(
@@ -1605,21 +1615,38 @@ class PyFCSApp:
                 listbox=listbox,
                 popup=select_popup,
                 images_names=self.load_images_names,
-                callback=lambda window_id: [self.get_fuzzy_color_space_merge(window_id, colors, threshold, min_samples), popup.destroy()]
+                callback=lambda window_id: [
+                    self.get_fuzzy_color_space_merge(window_id, colors, threshold, min_samples),
+                    popup.destroy()
+                ]
             )
         )
 
 
+
     def display_detected_colors(self, colors, threshold, min_samples):
-        # Crear ventana emergente
+        """
+        Displays a popup window showing the detected colors with options to adjust the threshold,
+        recalculate, add new image colors, and create a fuzzy color space.
+        """
+        # Create a popup window
         popup = tk.Toplevel(self.root)
         popup.title("Detected Colors")
         popup.configure(bg="#f5f5f5")
 
-        # Centrar la ventana emergente
+        # Center the popup window
         self.center_popup(popup, 500, 600)
 
-        # Encabezado
+        # Function to handle window closing
+        def on_closing():
+            """Clears the color entry dictionary when the window is closed."""
+            self.color_entry_detect.clear()  # Reset the entry dictionary
+            popup.destroy()  # Close the window
+
+        # Bind the closing event to the on_closing function
+        popup.protocol("WM_DELETE_WINDOW", on_closing)
+
+        # Header
         tk.Label(
             popup,
             text="Detected Colors",
@@ -1627,7 +1654,7 @@ class PyFCSApp:
             bg="#f5f5f5"
         ).pack(pady=15)
 
-        # Umbral y controles
+        # Threshold and controls
         controls_frame = tk.Frame(popup, bg="#f5f5f5", pady=10)
         controls_frame.pack(pady=10)
 
@@ -1693,7 +1720,7 @@ class PyFCSApp:
             padx=10
         ).grid(row=0, column=4, padx=10)
 
-        # Frame para mostrar los colores con scrollbar
+        # Frame to display colors with a scrollbar
         frame_container = ttk.Frame(popup)
         frame_container.pack(pady=10, fill="both", expand=True)
 
@@ -1712,52 +1739,53 @@ class PyFCSApp:
         scrollbar.pack(side="right", fill="y")
 
         def remove_detect_color(frame, index):
-            frame.destroy()  # Eliminar la fila del color
-            colors.pop(index)  # Eliminar el color de la lista
+            """Removes a detected color from the list and updates the UI."""
+            frame.destroy()  # Remove the color row
+            colors.pop(index)  # Remove the color from the list
 
-            # Eliminar la entrada correspondiente sin reconstruir el diccionario
+            # Remove the corresponding entry without rebuilding the dictionary
             self.color_entry_detect.pop(f"color_{index}", None)
 
-            # Actualizar los índices en self.color_entry_detect
+            # Update the indices in self.color_entry_detect
             for new_index, old_key in enumerate(list(self.color_entry_detect.keys())):
                 self.color_entry_detect[f"color_{new_index}"] = self.color_entry_detect.pop(old_key)
 
-            # Reorganizar los frames y sus botones después de eliminar
+            # Reorganize the frames and their buttons after removal
             update_color_frames()
 
         def update_color_frames():
-            # Guardar los nombres personalizados antes de limpiar
+            """Updates the color frames in the scrollable area."""
             previous_names = {key: entry.get() for key, entry in self.color_entry_detect.items()}
 
-            # Limpiar el contenedor de colores antes de volver a dibujarlos
+            # Clear the container before redrawing
             for widget in scrollable_frame.winfo_children():
                 widget.destroy()
 
-            self.color_entry_detect.clear()  # Reiniciar el diccionario de entradas
+            self.color_entry_detect.clear()  # Reset the entry dictionary
 
             for i, dect_color in enumerate(colors):
                 rgb = dect_color["rgb"]
                 lab = color.rgb2lab(np.array(dect_color["rgb"], dtype=np.uint8).reshape(1, 1, 3) / 255)
-                default_name = f"Color {i + 1}"  # Nombre predeterminado
+                default_name = f"Color {i + 1}"  # Default name
 
                 frame = ttk.Frame(scrollable_frame)
                 frame.pack(fill="x", pady=8, padx=10)
 
-                # Muestra del color
+                # Color preview
                 color_box = tk.Label(frame, bg=utils_structure.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
                 color_box.pack(side="left", padx=10)
 
-                # Recuperar el nombre guardado o usar el predeterminado
+                # Retrieve the saved name or use the default
                 entry_name_key = f"color_{i}"
                 saved_name = previous_names.get(entry_name_key, default_name)
 
-                # Campo de entrada para el nombre del color
+                # Entry field for the color name
                 entry = ttk.Entry(frame, font=("Helvetica", 12))
-                entry.insert(0, saved_name)  # Insertar el nombre recuperado o predeterminado
+                entry.insert(0, saved_name)  # Insert the saved or default name
                 entry.pack(side="left", padx=10, fill="x", expand=True)
                 self.color_entry_detect[entry_name_key] = entry
 
-                # Valores LAB
+                # LAB values
                 lab = lab[0, 0]
                 lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
                 tk.Label(
@@ -1767,7 +1795,7 @@ class PyFCSApp:
                     bg="#f5f5f5"
                 ).pack(side="left", padx=10)
 
-                # Botón para eliminar color
+                # Remove button
                 remove_button = tk.Button(
                     frame,
                     text="❌",
@@ -1778,10 +1806,10 @@ class PyFCSApp:
                 )
                 remove_button.pack(side="right", padx=5)
 
-        # Mostrar los colores inicialmente
+        # Display the initial colors
         update_color_frames()
 
-        # Botones de acción
+        # Action buttons
         button_frame = ttk.Frame(popup)
         button_frame.pack(pady=20)
 
@@ -1796,119 +1824,161 @@ class PyFCSApp:
         save_button = ttk.Button(
             button_frame,
             text="Create Fuzzy Color Space",
-            command=lambda: self.process_fcs(colors),
+            command=lambda: [self.process_fcs(colors), popup.destroy()],
             style="Accent.TButton"
         )
         save_button.pack(side="left", padx=20)
 
-        # Estilo para botones
+        # Style for buttons
         style = ttk.Style()
         style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
-
 
 
 
     def process_fcs(self, colors):
         """
         Saves the names of the colors edited by the user in a file with a .cns extension.
+        Prompts the user to enter a name for the fuzzy color space and validates the input.
         """
+        # Ensure at least two colors are selected
         if len(self.color_entry_detect) < 2:
-            tk.messagebox.showwarning("Not enough colors", "You must select at least two colors to create the Color Space")
+            tk.messagebox.showwarning("Not Enough Colors", "You must select at least two colors to create the Color Space.")
             return
+        
+        # Clear the color entry dictionary
+        self.color_entry_detect.clear()
 
-        # Ask the user to enter the name for the color space
-        popup = tk.Toplevel(self.root)  # Create a secondary window
+        # Create a popup window for the user to name the color space
+        popup = tk.Toplevel(self.root)
         popup.title("Input")
         self.center_popup(popup, 300, 100)
+
+        # Add a label and entry field for the color space name
         tk.Label(popup, text="Name for the fuzzy color space:").pack(pady=5)
         name_entry = tk.Entry(popup)
         name_entry.pack(pady=5)
 
+        # Variable to store the entered name
         name = tk.StringVar()
 
         def on_ok():
+            """Callback function for the OK button."""
             name.set(name_entry.get())  # Set the value in the StringVar
-            popup.destroy()
+            popup.destroy()  # Close the popup window
+            self.save_fcs(name.get(), colors)  # Save the color space
 
-            self.save_fcs(name.get(), colors)
-
-        # OK button
+        # Add an OK button to confirm the name
         ok_button = tk.Button(popup, text="OK", command=on_ok)
         ok_button.pack(pady=5)
 
+        # Display the popup window
         popup.deiconify()
 
+
     def save_fcs(self, name, colors, color_dict=None):
+        """
+        Saves the fuzzy color space to a file with the given name and color data.
+        Displays a loading indicator and updates the progress bar during the save process.
+        """
+        # If no color_dict is provided, create one from the detected colors
         if color_dict is None:
             color_dict = {key: np.array(colors[idx]['lab']) for idx, key in enumerate(self.color_entry_detect)}
 
-        self.show_loading()  # Mostrar indicador de carga
+        # Show loading indicator
+        self.show_loading()
 
         def update_progress(current_line, total_lines):
-            """Actualiza la barra de progreso en función de las líneas escritas."""
+            """
+            Updates the progress bar based on the number of lines written.
+            """
             progress_percentage = (current_line / total_lines) * 100
             self.progress["value"] = progress_percentage
-            self.load_window.update_idletasks()  # Refresca la UI
+            self.load_window.update_idletasks()  # Refresh the UI
 
         def run_save_process():
-            """Función que guarda el archivo en un hilo separado."""
+            """
+            Saves the file in a separate thread to avoid blocking the main UI.
+            Handles exceptions and ensures the loading indicator is hidden afterward.
+            """
             try:
+                # Initialize the input class for .fcs files
                 input_class = Input.instance('.fcs')
+                # Write the file with the provided name, color data, and progress callback
                 input_class.write_file(name, color_dict, progress_callback=update_progress)
             except Exception as e:
-                tk.messagebox.showwarning("Error", f"Error en run_save_process: {e}")
-                return
-
+                # Show an error message if something goes wrong
+                tk.messagebox.showerror("Error", f"An error occurred while saving: {e}")
             finally:
+                # Hide the loading indicator and show a success message
                 self.load_window.after(0, self.hide_loading)
-                self.load_window.after(0, lambda: messagebox.showinfo("Color Space Created", f"Color Space '{name}' created."))
+                self.load_window.after(0, lambda: messagebox.showinfo(
+                    "Color Space Created", f"Color Space '{name}' created successfully."
+                ))
 
-        threading.Thread(target=run_save_process).start()
-
-
+        # Start the save process in a separate thread
+        threading.Thread(target=run_save_process, daemon=True).start()
 
 
     def get_fuzzy_color_space(self, window_id, threshold=0.5, min_samples=160):
+        """
+        Retrieves the fuzzy color space for the specified image and displays the detected colors.
+        Adds the source image identifier to each color if it doesn't already exist.
+        """
         image = self.images[window_id]
         colors = utils_structure.get_fuzzy_color_space(window_id, image, threshold, min_samples)
 
-        # Añadir el identificador de la imagen a cada color si no lo tiene
+        # Add the source image identifier to each color if it doesn't exist
         for id in colors:
             if "source_image" not in id:
                 id["source_image"] = window_id
 
+        # Display the detected colors
         self.display_detected_colors(colors, threshold, min_samples)
+
 
 
     def get_fuzzy_color_space_merge(self, new_window_id, colors, threshold, min_samples):
         """
-        Obtiene los colores de la nueva imagen y los añade a la lista de colores actual.
+        Retrieves the fuzzy color space for a new image and merges it with the existing colors.
+        Adds the source image identifier to each new color if it doesn't already exist.
         """
         if new_window_id and not any(id.get("source_image") == new_window_id for id in colors):
             new_colors = utils_structure.get_fuzzy_color_space(new_window_id, self.images[new_window_id], threshold, min_samples)
 
-            for id in new_colors:  # Itera sobre los nuevos colores
+            # Add the source image identifier to each new color if it doesn't exist
+            for id in new_colors:  
                 if "source_image" not in id:  
                     id["source_image"] = new_window_id 
                 
+            # Merge the new colors with the existing ones
             colors.extend(new_colors)  
             self.display_detected_colors(colors, threshold, min_samples)
 
 
+
     def recalculate(self, window_id, colors, threshold, min_samples):
-        # Evitar errores de nombres previos
+        """
+        Recalculates the fuzzy color space for the specified image and updates the color list.
+        Filters out colors that do not belong to the current image.
+        """
         self.color_entry_detect = {}
-        # Filtrar los colores que no tienen el mismo ID que la ventana actual
+
+        # Filter out colors that do not belong to the current image
         filtered_colors = [id for id in colors if id.get("source_image") != window_id]
         self.get_fuzzy_color_space_merge(window_id, filtered_colors, threshold, min_samples)
 
 
+
     def get_fuzzy_color_space_recalculate(self, colors, threshold=0.5, min_samples=160, popup = None):
-        # Verificar cuántos IDs diferentes hay en colors
+        """
+        Recalculates the fuzzy color space for the selected image.
+        If multiple images are available, prompts the user to select one.
+        """
+        # Get unique source image IDs from the current colors
         unique_ids = {id.get("source_image") for id in colors}
 
         if len(unique_ids) > 1:
-            # Si hay más de 2 IDs diferentes, preguntar al usuario cuál imagen quiere recalcular
+            # If there are multiple images, prompt the user to select one
             popup, listbox = utils_structure.create_selection_popup(
                 parent=self.image_canvas,
                 title="Select an Image",
@@ -1919,7 +1989,7 @@ class PyFCSApp:
 
             self.center_popup(popup, 200, 200)
 
-            # Bind para manejar la selección de la imagen
+            # Bind the listbox selection event to handle image selection
             listbox.bind(
                 "<<ListboxSelect>>",
                 lambda event: utils_structure.handle_image_selection(
@@ -1932,20 +2002,21 @@ class PyFCSApp:
             )
 
         else:
+            # If there is only one image, recalculate its colors directly
             self.get_fuzzy_color_space(unique_ids.pop(), threshold, min_samples)
             popup.destroy()
 
 
 
-
     def plot_proto_options(self, window_id):
-        """Creates a Frame within image_canvas with Radiobuttons and scrollbars for selecting color options."""
+        """
+        Creates a frame within the image canvas with radio buttons and scrollbars for selecting color options.
+        The frame is positioned next to the floating window associated with the given window_id.
+        """
         # Find the window associated with the window_id to ensure it exists
         items = self.image_canvas.find_withtag(window_id)
-        
-        # If no window is found with the given window_id, print an error message and return
         if not items:
-            tk.messagebox.showwarning("No window", f"No floating window found with id {window_id}")
+            tk.messagebox.showwarning("No Window", f"No floating window found with id {window_id}")
             return
 
         # Set initial states for the member degree and original image for the window
@@ -1965,47 +2036,46 @@ class PyFCSApp:
         self.proto_options[window_id] = proto_options
 
         # Create the canvas within the proto_options frame and set up its grid
-        self.canvas = tk.Canvas(proto_options, bg="white")
-        self.canvas.grid(row=0, column=0, sticky="nsew")
+        canvas = tk.Canvas(proto_options, bg="white")
+        canvas.grid(row=0, column=0, sticky="nsew")
 
         # Create an inner frame inside the canvas to hold the radio buttons
-        self.inner_frame = tk.Frame(self.canvas, bg="white")
-        self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
+        inner_frame = tk.Frame(canvas, bg="white")
+        canvas.create_window((0, 0), window=inner_frame, anchor="nw")
 
         # Initialize a variable to hold the selected color (default value is '0')
         self.current_proto = tk.StringVar(value=0)
 
-        # Create Radiobuttons for each color in the color matrix
-        colors = self.color_matrix
-        for color in colors:
+        # Create radio buttons for each color in the color matrix
+        for color in self.color_matrix:
             rb = tk.Radiobutton(
-                self.inner_frame, 
-                text=color, 
-                variable=self.current_proto, 
-                value=color, 
-                bg="white", 
-                anchor="w", 
-                font=("Arial", 10), 
-                relief="flat", 
-                command=lambda color=color: self.get_proto_percentage(window_id)  # Command to fetch percentage for selected color
+                inner_frame,
+                text=color,
+                variable=self.current_proto,
+                value=color,
+                bg="white",
+                anchor="w",
+                font=("Arial", 10),
+                relief="flat",
+                command=lambda color=color: self.get_proto_percentage(window_id)  # Fetch percentage for selected color
             )
-            rb.pack(fill="x", padx=5, pady=2)  # Pack each radiobutton with padding
+            rb.pack(fill="x", padx=5, pady=2)  # Pack each radio button with padding
 
-        # Create vertical scrollbar for the proto_options canvas
-        self.v_scroll = tk.Scrollbar(proto_options, orient=tk.VERTICAL, command=self.canvas.yview)
-        self.v_scroll.grid(row=0, column=1, sticky="ns", padx=5)
+        # Create vertical scrollbar for the canvas
+        v_scroll = tk.Scrollbar(proto_options, orient=tk.VERTICAL, command=canvas.yview)
+        v_scroll.grid(row=0, column=1, sticky="ns", padx=5)
 
-        # Create horizontal scrollbar for the proto_options canvas
-        self.h_scroll = tk.Scrollbar(proto_options, orient=tk.HORIZONTAL, command=self.canvas.xview)
-        self.h_scroll.grid(row=1, column=0, sticky="ew", padx=5)
-        self.h_scroll.bind("<MouseWheel>", lambda event: self.on_mouse_wheel(event, self.h_scroll))
+        # Create horizontal scrollbar for the canvas
+        h_scroll = tk.Scrollbar(proto_options, orient=tk.HORIZONTAL, command=canvas.xview)
+        h_scroll.grid(row=1, column=0, sticky="ew", padx=5)
+        h_scroll.bind("<MouseWheel>", lambda event: self.on_mouse_wheel(event, h_scroll))
 
         # Configure the canvas to respond to the scrollbars
-        self.canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
+        canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
 
         # Update the inner frame's layout and set the scrollable region for the canvas
-        self.inner_frame.update_idletasks()
-        self.canvas.config(scrollregion=self.canvas.bbox("all"))
+        inner_frame.update_idletasks()
+        canvas.config(scrollregion=canvas.bbox("all"))
 
         # Make sure the proto_options frame resizes properly when its content changes
         proto_options.grid_rowconfigure(0, weight=1)
@@ -2152,15 +2222,19 @@ class PyFCSApp:
 
     ########################################################################################### Color Evaluation Functions ###########################################################################################
     def get_umbral_points(self, threshold):
-        # Verificar si el espacio de color difuso está cargado
+        """
+        Filters points within the fuzzy color space volumes based on the given threshold.
+        Displays the filtered points in a 3D model.
+        """
+        # Check if the fuzzy color space is loaded
         if not hasattr(self, 'COLOR_SPACE') or not self.COLOR_SPACE:
             messagebox.showwarning("No Color Space", "Please load a fuzzy color space before deploying AT.")
             return
 
-        # Obtener la opción seleccionada en el menú desplegable
+        # Get the selected option from the dropdown menu
         option = self.model_3d_option.get()
 
-        # Mapa de opciones para acceder a los volúmenes correspondientes
+        # Map of options to access the corresponding volumes
         option_map = {
             "Representative": lambda: Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.selected_hex_color),
             "Core": self.selected_core,
@@ -2168,21 +2242,22 @@ class PyFCSApp:
             "0.5-cut": self.selected_proto
         }
 
+        # If the selected option is not "Representative", filter points within the volumes
         if option != 'Representative':
             selected_volume = option_map[option]
-            filtered_points = {}  # Diccionario para almacenar los puntos filtrados
+            filtered_points = {}  # Dictionary to store filtered points
 
-            # Iterar sobre cada volumen y su prototipo correspondiente
+            # Iterate over each volume and its corresponding prototype
             for idx, prototype in enumerate(selected_volume):
                 positive = prototype.positive
 
-                # Generar puntos dentro del volumen de Voronoi
+                # Generate points within the Voronoi volume
                 points_inside = utils_structure.generate_points_within_volume(prototype.voronoi_volume, step=1.0)
                 points_within_threshold = []
 
-                # Filtrar puntos por diferencia de color (deltaE)
+                # Filter points based on color difference (deltaE)
                 for point in points_inside:
-                    point_lab = tuple(point)  # Convertir a formato (L, a, b)
+                    point_lab = tuple(point)  # Convert to (L, a, b) format
                     delta_e = utils_structure.delta_e_ciede2000(positive, point_lab)
 
                     if delta_e < threshold:
@@ -2190,7 +2265,7 @@ class PyFCSApp:
 
                 filtered_points[f'Volume_{idx}'] = points_within_threshold
 
-                
+            # Plot the filtered points and display the 3D model
             fig = Visual_tools.plot_all_prototypes_filtered_points(selected_volume, self.volume_limits, self.hex_color, filtered_points)
             self.draw_model_3D(fig)  # Pass the figure to draw it on the Tkinter Canvas
 

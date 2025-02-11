@@ -67,82 +67,88 @@ class Visual_tools:
     @staticmethod
     def plot_all_prototypes(prototypes, volume_limits, hex_color):
         """
-        Dibuja los volúmenes de múltiples prototipos, con el eje L* siempre en el eje Z.
+        Draws the volumes of multiple prototypes with L* always on the Z-axis.
+        Optimized for better performance when interacting with the 3D plot.
         """
-        if len(prototypes) != 0:
-            fig = Figure(figsize=(8, 6), dpi=120)
-            ax = fig.add_subplot(111, projection='3d')
+        if not prototypes:
+            return None  # Return early if no prototypes are provided
 
-            # Filtra todos los puntos
-            all_points = np.vstack((np.array(prototypes[0].positive), np.array(prototypes[0].negatives)))
-            false_negatives = Prototype.get_falseNegatives()
-            negatives_filtered_no_false = [
-                point for point in all_points
-                if not any(np.array_equal(point, fn) for fn in false_negatives)
-            ]
-            all_points = np.array(negatives_filtered_no_false)
+        fig = Figure(figsize=(8, 6), dpi=120)
+        ax = fig.add_subplot(111, projection='3d')
 
-            # Limita los puntos al rango de volumen especificado
-            all_points = all_points[
-                (all_points[:, 0] >= volume_limits.comp1[0]) & (all_points[:, 0] <= volume_limits.comp1[1]) &
-                (all_points[:, 1] >= volume_limits.comp2[0]) & (all_points[:, 1] <= volume_limits.comp2[1]) &
-                (all_points[:, 2] >= volume_limits.comp3[0]) & (all_points[:, 2] <= volume_limits.comp3[1])
-            ]
+        # Combine all points from prototypes and filter out false negatives
+        all_points = np.vstack((np.array(prototypes[0].positive), np.array(prototypes[0].negatives)))
+        false_negatives = Prototype.get_falseNegatives()
+        all_points = np.array([point for point in all_points if not any(np.array_equal(point, fn) for fn in false_negatives)])
 
-            # Dibuja los puntos individuales con L* en el eje Z
-            for i in range(all_points.shape[0]):
-                point = all_points[i]
-                color = '#000000'  # Default a negro si no se encuentra coincidencia
-                for hex_color_key, lab_value in hex_color.items():
-                    if np.array_equal(point, lab_value):  # Compara el punto con el valor LAB
-                        color = hex_color_key
-                        break
+        # Filter points within the specified volume limits
+        mask = (
+            (all_points[:, 0] >= volume_limits.comp1[0]) & (all_points[:, 0] <= volume_limits.comp1[1]) &
+            (all_points[:, 1] >= volume_limits.comp2[0]) & (all_points[:, 1] <= volume_limits.comp2[1]) &
+            (all_points[:, 2] >= volume_limits.comp3[0]) & (all_points[:, 2] <= volume_limits.comp3[1])
+        )
+        all_points = all_points[mask]
 
-                ax.scatter(
-                    all_points[i, 1], all_points[i, 2], all_points[i, 0],  # Cambiar orden: a*, b*, L*
-                    color=color, marker='o', s=30, label=f'Points {i + 1}', edgecolor='k', alpha=0.8
-                )
+        # Group points by color for efficient plotting
+        color_to_points = {}
+        for point in all_points:
+            color = '#000000'  # Default to black if no match is found
+            for hex_color_key, lab_value in hex_color.items():
+                if np.array_equal(point, lab_value):
+                    color = hex_color_key
+                    break
+            if color not in color_to_points:
+                color_to_points[color] = []
+            color_to_points[color].append(point)
 
-            # Dibuja los volúmenes de Voronoi con L* en el eje Z
-            for idx, prototype in enumerate(prototypes):
-                # Usa el color basado en `hex_color` si es posible
-                color = '#000000'  # Color por defecto
-                for hex_color_key, lab_value in hex_color.items():
-                    if np.array_equal(prototype.positive, lab_value):  # Asocia prototipos con colores
-                        color = hex_color_key
-                        break
+        # Plot points in batches by color
+        for color, points in color_to_points.items():
+            points = np.array(points)
+            ax.scatter(
+                points[:, 1], points[:, 2], points[:, 0],  # Reorder: a*, b*, L*
+                color=color, marker='o', s=30, edgecolor='k', alpha=0.8, label=f'Points ({color})'
+            )
 
-                # Agregar las caras del volumen de Voronoi
-                faces = prototype.voronoi_volume.faces  # Cada cara contiene sus vértices
-                for face in faces:
+        # Draw Voronoi volumes
+        for prototype in prototypes:
+            color = '#000000'  # Default color
+            for hex_color_key, lab_value in hex_color.items():
+                if np.array_equal(prototype.positive, lab_value):
+                    color = hex_color_key
+                    break
+
+            # Collect all valid faces for the prototype
+            valid_faces = []
+            for face in prototype.voronoi_volume.faces:
+                if not face.infinity:  # Skip infinite faces
                     vertices = np.array(face.vertex)
-                    if face.infinity:
-                        continue  # Ignorar caras infinitas
-                    else:
-                        vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)
-                        if len(vertices_clipped) >= 3:  # Al menos 3 vértices para formar una cara
-                            # Cambiar orden de los vértices: a*, b*, L*
-                            vertices_clipped = vertices_clipped[:, [1, 2, 0]]
-                            poly3d = Poly3DCollection(
-                                [vertices_clipped], facecolors=color, edgecolors='black',
-                                linewidths=1, alpha=0.5
-                            )
-                            ax.add_collection3d(poly3d)
+                    vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)
+                    if len(vertices_clipped) >= 3:  # At least 3 vertices to form a face
+                        vertices_clipped = vertices_clipped[:, [1, 2, 0]]  # Reorder: a*, b*, L*
+                        valid_faces.append(vertices_clipped)
 
-            # Configuración de los ejes (ajustados para que L* esté en el eje Z)
-            ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)
-            ax.set_ylabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
-            ax.set_zlabel('L* (Luminosity)', fontsize=10, labelpad=10)
+            # Plot all valid faces in a single Poly3DCollection
+            if valid_faces:
+                poly3d = Poly3DCollection(
+                    valid_faces, facecolors=color, edgecolors='black',
+                    linewidths=1, alpha=0.5
+                )
+                ax.add_collection3d(poly3d)
 
-            # Ajustar los límites de los ejes según los límites del volumen
-            ax.set_xlim(volume_limits.comp2[0], volume_limits.comp2[1])  # a*
-            ax.set_ylim(volume_limits.comp3[0], volume_limits.comp3[1])  # b*
-            ax.set_zlim(volume_limits.comp1[0], volume_limits.comp1[1])  # L*
+        # Configure axes (L* on Z-axis)
+        ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)
+        ax.set_ylabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
+        ax.set_zlabel('L* (Luminosity)', fontsize=10, labelpad=10)
 
-            # Estilización adicional
-            ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
+        # Set axis limits based on volume limits
+        ax.set_xlim(volume_limits.comp2[0], volume_limits.comp2[1])  # a*
+        ax.set_ylim(volume_limits.comp3[0], volume_limits.comp3[1])  # b*
+        ax.set_zlim(volume_limits.comp1[0], volume_limits.comp1[1])  # L*
 
-            return fig
+        # Additional styling
+        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
+
+        return fig
 
 
 
