@@ -114,6 +114,7 @@ def process_image(img_path, fuzzy_color_space):
             region_results[["top", "middle", "bottom"][region_idx]] = [
                 (proto, round(degree, 3))  # Store the prototype and its percentage
                 for proto, degree in sorted_prototypes[:3]
+                if degree >= 0.1  # Exclude prototypes with degree less than 0.1
             ]
         else:
             region_results[["top", "middle", "bottom"][region_idx]] = []  # No valid prototypes
@@ -243,13 +244,13 @@ def main():
     2. Mean LAB and memberships excluding "BLACK".
     """
     colorspace_name = 'VITA-CLASSICAL-BLACK-2.cns'  # Define the name of the fuzzy color space
-    img_dir = os.path.join(".", "imagen_test\\VITA_CLASSICAL")  # Define the directory containing images
+    img_dir = os.path.join(os.getcwd(), "image_test\\VITA_CLASSICAL")  # Define the directory containing images
 
     name_colorspace = os.path.splitext(colorspace_name)[0]  # Extract name from file
     extension = os.path.splitext(colorspace_name)[1]  # Extract file extension
 
     actual_dir = os.getcwd()  # Get the current working directory
-    color_space_path = os.path.join(actual_dir, 'fuzzy_color_spaces\\' + colorspace_name)  # Define the path to the color space file
+    color_space_path = os.path.join(actual_dir, 'fuzzy_color_spaces\\cns\\' + colorspace_name)  # Define the path to the color space file
     input_class = Input.instance(extension)  # Initialize the Input class
     color_data = input_class.read_file(color_space_path)  # Read the color space data
 
