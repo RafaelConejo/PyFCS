@@ -190,7 +190,7 @@ class PyFCSApp:
             ).pack(side="left", padx=20)
 
         # Canvas for the 3D graph
-        self.Canvas1 = tk.Canvas(model_3d_tab, bg="white", borderwidth=2, relief="ridge")
+        self.Canvas1 = tk.Frame(model_3d_tab, bg="white", borderwidth=2, relief="ridge")
         self.Canvas1.pack(side="left", fill="both", expand=True)
 
         # Frame for color buttons on the right
