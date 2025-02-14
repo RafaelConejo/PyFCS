@@ -10,6 +10,9 @@ import threading
 import colorsys
 import math
 import random
+import shutil
+import io
+
 
 current_dir = os.path.dirname(__file__)
 pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
@@ -51,9 +54,9 @@ class PyFCSApp:
 
         # Image Manager menu
         img_menu = Menu(menubar, tearoff=0)
-        img_menu.add_command(label="Open Image")  # Placeholder for opening images
-        img_menu.add_command(label="Save Image")  # Placeholder for saving images
-        img_menu.add_command(label="Close All")  # Placeholder for closing all images
+        img_menu.add_command(label="Open Image", command=self.open_image)  # Placeholder for opening images
+        img_menu.add_command(label="Save Image", command=self.save_image)  # Placeholder for saving images
+        img_menu.add_command(label="Close All", command=self.close_all_image)  # Placeholder for closing all images
         menubar.add_cascade(label="Image Manager", menu=img_menu)
 
         # Fuzzy Color Space Manager menu
@@ -104,6 +107,7 @@ class PyFCSApp:
         tk.Button(image_manager_frame, 
             image=save_image, 
             text=" Save Image", 
+            command=self.save_image,
             compound="left"
         ).pack(side="left", padx=5)
         image_manager_frame.save_image = save_image
@@ -1266,6 +1270,81 @@ class PyFCSApp:
 
 
     ########################################################################################### Functions Image Display ###########################################################################################
+    def save_image(self):
+        # Verify if there are available images to save
+        if not hasattr(self, "modified_image") or not self.modified_image:
+            tk.messagebox.showinfo("No Images", "There are currently no modified images available to save.")
+            return  # Early return if no images are available
+
+        # Create a popup window for image selection
+        popup, listbox = utils_structure.create_selection_popup(
+            parent=self.image_canvas,
+            title="Select an Image to Save",
+            width=200,
+            height=200,
+            items=[os.path.basename(filename) for filename in self.load_images_names.values()]
+        )
+
+        # Center the popup window
+        self.center_popup(popup, 200, 200)
+
+        # Function to handle selection and save the image
+        def on_select(event):
+            selection = listbox.curselection()
+            if not selection:
+                return
+            
+            index = selection[0]
+            selected_image = list(self.modified_image.values())[index]
+
+            # Ask the user where to save the image
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".png",
+                filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg"), ("All Files", "*.*")]
+            )
+
+            if save_path:
+                try:
+                    img = Image.fromarray(selected_image)
+                    img.save(save_path)
+
+                    messagebox.showinfo("Success", f"Image saved successfully at:\n{save_path}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to save image:\n{str(e)}")
+
+            popup.destroy()
+
+        # Bind the listbox selection event to the save function
+        listbox.bind("<<ListboxSelect>>", on_select)
+    
+
+
+    def close_all_image(self):
+        """
+        Closes all floating windows and cleans up associated resources.
+        """
+        if hasattr(self, "floating_images"):
+            for window_id in list(self.floating_images.keys()):
+                # Close each window
+                self.image_canvas.delete(window_id)
+                del self.floating_images[window_id]
+
+                if hasattr(self, "proto_options") and window_id in self.proto_options:
+                    if self.proto_options[window_id].winfo_exists():
+                        self.proto_options[window_id].destroy()
+                    del self.proto_options[window_id]
+
+                if hasattr(self, "load_images_names") and window_id in self.load_images_names:
+                    del self.load_images_names[window_id]
+
+        # Reset dict
+        if hasattr(self, "image_dimensions"):
+            self.image_dimensions.clear()
+        if hasattr(self, "original_image_dimensions"):
+            self.original_image_dimensions.clear()
+
+
+    
     def open_image(self):
         """Allows the user to select an image file and display its colors in columns with a scrollbar."""
         # Set the initial directory to 'image_test\\VITA_CLASSICAL\\' within the current working directory
@@ -1345,6 +1424,7 @@ class PyFCSApp:
         if not hasattr(self, "floating_images"):
             self.floating_images = {}
             self.original_images = {}
+            self.modified_image = {}
 
         # Store the image reference in the floating images dictionary
         self.floating_images[window_id] = img_tk
@@ -1502,6 +1582,7 @@ class PyFCSApp:
 
 
     
+    # ADD THIS
     def show_more_info(self):
         messagebox.showinfo("More Info", "No prototype found or additional information about the pixel.")
 
@@ -2133,6 +2214,8 @@ class PyFCSApp:
     def display_color_mapping(self, grayscale_image_array, window_id):
         """Displays the generated grayscale image in the graphical interface."""
         try:
+            self.modified_image[window_id] = grayscale_image_array
+
             # Convert the array into an image that Tkinter can use
             grayscale_image = Image.fromarray(grayscale_image_array)
 

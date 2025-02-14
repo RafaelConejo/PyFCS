@@ -63,7 +63,6 @@ class Visual_tools:
             return fig  # Devolver la figura
 
 
-
     @staticmethod
     def plot_all_prototypes(prototypes, volume_limits, hex_color):
         """
@@ -77,7 +76,8 @@ class Visual_tools:
         ax = fig.add_subplot(111, projection='3d')
 
         # Combine all points from prototypes and filter out false negatives
-        all_points = np.vstack((np.array(prototypes[0].positive), np.array(prototypes[0].negatives)))
+        all_points = np.vstack([np.array(proto.positive) for proto in prototypes] +
+                               [np.array(neg) for proto in prototypes for neg in proto.negatives])
         false_negatives = Prototype.get_falseNegatives()
         all_points = np.array([point for point in all_points if not any(np.array_equal(point, fn) for fn in false_negatives)])
 
@@ -97,9 +97,7 @@ class Visual_tools:
                 if np.array_equal(point, lab_value):
                     color = hex_color_key
                     break
-            if color not in color_to_points:
-                color_to_points[color] = []
-            color_to_points[color].append(point)
+            color_to_points.setdefault(color, []).append(point)
 
         # Plot points in batches by color
         for color, points in color_to_points.items():
