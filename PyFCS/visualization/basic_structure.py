@@ -26,7 +26,7 @@ import PyFCS.visualization.utils_structure as utils_structure
 
 class PyFCSApp:
     def __init__(self, root):
-        # Initialize main app variablesG
+        # Initialize main app variables
         self.root = root
         self.COLOR_SPACE = False  # Flag for managing color spaces
         self.ORIGINAL_IMG = {}  # Bool function original image 
@@ -1617,8 +1617,8 @@ class PyFCSApp:
             self.lab_value_print = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
             self.lab_value_print.pack(side="left")
 
-            # Prototype label and value
-            proto_label = tk.Label(text_frame, text="Prototype: ", font=bold_font, bg="lightgray")
+            # FC label and value
+            proto_label = tk.Label(text_frame, text="Fuzzy Color: ", font=bold_font, bg="lightgray")
             proto_label.pack(side="left")
             self.proto_value = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
             self.proto_value.pack(side="left")
@@ -1638,10 +1638,20 @@ class PyFCSApp:
         else:
             proto_text = "None"
 
+        
+        positive = self.color_data[max_proto]["positive_prototype"]
+        delta_e = utils_structure.delta_e_ciede2000(positive, pixel_lab)
+        if delta_e <= 0.8:
+            c = "green"
+        elif delta_e <= 1.8:
+            c = "orange"
+        else:
+            c = "red"
+
         # Update the labels with the new values
         self.coord_value.config(text=f"({x_original}, {y_original})    |    ")
         self.lab_value_print.config(text=f"{pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}    |    ")
-        self.proto_value.config(text=proto_text)
+        self.proto_value.config(text=proto_text, fg=c)
 
 
 
@@ -2006,7 +2016,7 @@ class PyFCSApp:
         Adds the source image identifier to each color if it doesn't already exist.
         """
         image = self.images[window_id]
-        colors = utils_structure.get_fuzzy_color_space(window_id, image, threshold, min_samples)
+        colors = utils_structure.get_fuzzy_color_space(image, threshold, min_samples)
 
         # Add the source image identifier to each color if it doesn't exist
         for id in colors:
@@ -2024,7 +2034,7 @@ class PyFCSApp:
         Adds the source image identifier to each new color if it doesn't already exist.
         """
         if new_window_id and not any(id.get("source_image") == new_window_id for id in colors):
-            new_colors = utils_structure.get_fuzzy_color_space(new_window_id, self.images[new_window_id], threshold, min_samples)
+            new_colors = utils_structure.get_fuzzy_color_space(self.images[new_window_id], threshold, min_samples)
 
             # Add the source image identifier to each new color if it doesn't exist
             for id in new_colors:  

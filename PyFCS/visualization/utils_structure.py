@@ -283,7 +283,7 @@ def get_proto_percentage(prototypes, image, fuzzy_color_space, selected_option, 
 
 
 
-def get_fuzzy_color_space(window_id, image, threshold=0.5, min_samples=160):
+def get_fuzzy_color_space(image, threshold=0.5, min_samples=160):
     """
     Detects the main colors in an image using DBSCAN clustering and triggers a callback with the detected colors.
 
