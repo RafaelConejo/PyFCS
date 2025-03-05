@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib import cm
+import plotly.graph_objects as go
 
 ### my libraries ###
 from PyFCS.geometry.Point import Point
@@ -10,143 +11,126 @@ from PyFCS import Prototype
 
 class Visual_tools:
     @staticmethod
-    def plot_all_centroids(filename, color_data, hex_color):
-        """Dibuja los puntos RGB en 3D en el Canvas izquierdo usando Matplotlib y devuelve la figura."""
-        if len(color_data) != 0:
-            fig = Figure(figsize=(6, 5), dpi=120)
-            ax = fig.add_subplot(111, projection='3d')
-
-            # Extraer los valores LAB de los datos
-            lab_values = [color_value['positive_prototype'] for color_value in color_data.values()]
-            lab_array = np.array(lab_values)
-
-            # Separar los componentes LAB
-            L_values = lab_array[:, 0]  # L* (luminosidad)
-            A_values = lab_array[:, 1]  # a* (componente de verde a rojo)
-            B_values = lab_array[:, 2]  # b* (componente de azul a amarillo)
-
-            # Obtener los colores hexadecimales en el mismo orden que los datos
-            colors = []
-            for lab in lab_values:
-                # Inicializar un color por defecto
-                color_found = '#000000'  # Color negro por defecto
-                
-                # Buscar si el lab está en hex_color
-                for hex_key, lab_value in hex_color.items():
-                    if np.array_equal(lab, lab_value):  # Comparar usando np.array_equal
-                        color_found = hex_key  # Obtener el color hexadecimal correspondiente
-                        break  # Salir del bucle si se encuentra el color
-
-                colors.append(color_found)  # Agregar el color encontrado a la lista
-
-            # Graficar los puntos en 3D
-            scatter = ax.scatter(
-                A_values, B_values, L_values,
-                c=colors, marker='o', s=50, edgecolor='k', alpha=0.8
-            )
-
-            # Configuración de títulos y etiquetas
-            ax.set_title(f'{filename} - {len(color_data)} colors', fontsize=10, fontweight='bold', pad=15)
-            ax.set_xlabel("a* (Green-Red)", fontsize=9, labelpad=10)
-            ax.set_ylabel("b* (Blue-Yellow)", fontsize=9, labelpad=10)
-            ax.set_zlabel("L* (Luminosity)", fontsize=9, labelpad=10)
-
-            # Ajuste de los límites de los ejes
-            ax.set_xlim(-128, 127)   # a* 
-            ax.set_ylim(-128, 127)   # b* 
-            ax.set_zlim(0, 100)      # L* 
-
-            # Estilización adicional de la gráfica
-            ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
-            ax.tick_params(axis='both', which='major', labelsize=8)
-
-            return fig  # Devolver la figura
-
+    def plot_all_centroids(fig, color_data, hex_color):
+        """Dibuja puntos RGB en 3D usando Plotly."""
+        if not color_data:
+            return
+        
+        lab_values = [v['positive_prototype'] for v in color_data.values()]
+        lab_array = np.array(lab_values)
+        A = lab_array[:, 1]  # a*
+        B = lab_array[:, 2]  # b*
+        L = lab_array[:, 0]  # L*
+        
+        colors = []
+        for lab in lab_values:
+            hex_key = next((k for k, v in hex_color.items() if np.array_equal(v, lab)), "#000000")
+            colors.append(hex_key)
+        
+        scatter = go.Scatter3d(
+            x=A, y=B, z=L,
+            mode='markers',
+            marker=dict(
+                size=5,
+                color=colors,
+                opacity=0.8,
+                line=dict(color='black', width=1)
+            ),
+            name="Centroides"
+        )
+        fig.add_trace(scatter)
 
     @staticmethod
-    def plot_all_prototypes(prototypes, volume_limits, hex_color):
-        """
-        Draws the volumes of multiple prototypes with L* always on the Z-axis.
-        Optimized for better performance when interacting with the 3D plot.
-        """
+    def triangulate_face(vertices):
+        """Convierte una cara poligonal en triángulos (fan triangulation)."""
+        triangles = []
+        for i in range(1, len(vertices) - 1):
+            triangles.append([vertices[0], vertices[i], vertices[i + 1]])
+        return triangles
+    
+    @staticmethod
+    def plot_all_prototypes(fig, prototypes, volume_limits, hex_color):
+        """Dibuja volúmenes como mallas 3D en Plotly."""
         if not prototypes:
-            return None  # Return early if no prototypes are provided
-
-        fig = Figure(figsize=(8, 6), dpi=120)
-        ax = fig.add_subplot(111, projection='3d')
-
-        # Combine all points from prototypes and filter out false negatives
-        all_points = np.vstack([np.array(proto.positive) for proto in prototypes] +
-                               [np.array(neg) for proto in prototypes for neg in proto.negatives])
-        false_negatives = Prototype.get_falseNegatives()
-        all_points = np.array([point for point in all_points if not any(np.array_equal(point, fn) for fn in false_negatives)])
-
-        # Filter points within the specified volume limits
-        mask = (
-            (all_points[:, 0] >= volume_limits.comp1[0]) & (all_points[:, 0] <= volume_limits.comp1[1]) &
-            (all_points[:, 1] >= volume_limits.comp2[0]) & (all_points[:, 1] <= volume_limits.comp2[1]) &
-            (all_points[:, 2] >= volume_limits.comp3[0]) & (all_points[:, 2] <= volume_limits.comp3[1])
-        )
-        all_points = all_points[mask]
-
-        # Group points by color for efficient plotting
-        color_to_points = {}
-        for point in all_points:
-            color = '#000000'  # Default to black if no match is found
-            for hex_color_key, lab_value in hex_color.items():
-                if np.array_equal(point, lab_value):
-                    color = hex_color_key
-                    break
-            color_to_points.setdefault(color, []).append(point)
-
-        # Plot points in batches by color
-        for color, points in color_to_points.items():
-            points = np.array(points)
-            ax.scatter(
-                points[:, 1], points[:, 2], points[:, 0],  # Reorder: a*, b*, L*
-                color=color, marker='o', s=30, edgecolor='k', alpha=0.8, label=f'Points ({color})'
-            )
-
-        # Draw Voronoi volumes
+            return
+        
         for prototype in prototypes:
-            color = '#000000'  # Default color
-            for hex_color_key, lab_value in hex_color.items():
-                if np.array_equal(prototype.positive, lab_value):
-                    color = hex_color_key
-                    break
-
-            # Collect all valid faces for the prototype
-            valid_faces = []
+            color = next((k for k, v in hex_color.items() if np.array_equal(prototype.positive, v)), "#000000")
+            vertices = []
+            faces = []
+            
             for face in prototype.voronoi_volume.faces:
-                if not face.infinity:  # Skip infinite faces
-                    vertices = np.array(face.vertex)
-                    vertices_clipped = Visual_tools.clip_face_to_volume(vertices, volume_limits)
-                    if len(vertices_clipped) >= 3:  # At least 3 vertices to form a face
-                        vertices_clipped = vertices_clipped[:, [1, 2, 0]]  # Reorder: a*, b*, L*
-                        valid_faces.append(vertices_clipped)
-
-            # Plot all valid faces in a single Poly3DCollection
-            if valid_faces:
-                poly3d = Poly3DCollection(
-                    valid_faces, facecolors=color, edgecolors='black',
-                    linewidths=1, alpha=0.5
+                if not face.infinity:
+                    clipped = Visual_tools.clip_face_to_volume(np.array(face.vertex), volume_limits)
+                    if len(clipped) >= 3:
+                        clipped = clipped[:, [1, 2, 0]]  # Reordenar a a*, b*, L*
+                        triangles = Visual_tools.triangulate_face(clipped)
+                        for tri in triangles:
+                            idx = len(vertices)
+                            vertices.extend(tri)
+                            faces.append([idx, idx + 1, idx + 2])
+            
+            if vertices:
+                vertices = np.array(vertices)
+                mesh = go.Mesh3d(
+                    x=vertices[:, 0],
+                    y=vertices[:, 1],
+                    z=vertices[:, 2],
+                    i=[f[0] for f in faces],
+                    j=[f[1] for f in faces],
+                    k=[f[2] for f in faces],
+                    color=color,
+                    opacity=0.5,
+                    name="Prototipo"
                 )
-                ax.add_collection3d(poly3d)
+                fig.add_trace(mesh)
 
-        # Configure axes (L* on Z-axis)
-        ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)
-        ax.set_ylabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
-        ax.set_zlabel('L* (Luminosity)', fontsize=10, labelpad=10)
-
-        # Set axis limits based on volume limits
-        ax.set_xlim(volume_limits.comp2[0], volume_limits.comp2[1])  # a*
-        ax.set_ylim(volume_limits.comp3[0], volume_limits.comp3[1])  # b*
-        ax.set_zlim(volume_limits.comp1[0], volume_limits.comp1[1])  # L*
-
-        # Additional styling
-        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
-
+    @staticmethod
+    def plot_combined_3D(filename, color_data, core, alpha, support, volume_limits, hex_color, selected_options):
+        """Genera figura combinada con Plotly."""
+        fig = go.Figure()
+        
+        options = {
+            "Representative": (Visual_tools.plot_all_centroids, [fig, color_data, hex_color]),
+            "0.5-cut": (Visual_tools.plot_all_prototypes, [fig, alpha, volume_limits, hex_color]),
+            "Core": (Visual_tools.plot_all_prototypes, [fig, core, volume_limits, hex_color]),
+            "Support": (Visual_tools.plot_all_prototypes, [fig, support, volume_limits, hex_color]),
+        }
+        
+        for option in selected_options:
+            if option in options:
+                func, args = options[option]
+                func(*args)
+        
+        axis_limits = {}
+        if volume_limits:
+            axis_limits = dict(
+                xaxis=dict(range=volume_limits.comp2),
+                yaxis=dict(range=volume_limits.comp3),
+                zaxis=dict(range=volume_limits.comp1)
+            )
+        
+        fig.update_layout(
+            scene=dict(
+                xaxis_title='a* (Green-Red)',
+                yaxis_title='b* (Blue-Yellow)',
+                zaxis_title='L* (Luminosity)',
+                **axis_limits
+            ),
+            margin=dict(l=0, r=0, b=0, t=0)
+        )
         return fig
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -12,6 +12,17 @@ import math
 import random
 import shutil
 import io
+from tkinterweb import HtmlFrame
+import http.server
+import socketserver
+import tempfile
+import base64
+from urllib.parse import quote
+from tkinterweb import HtmlFrame
+import webbrowser
+
+
+
 
 
 current_dir = os.path.dirname(__file__)
@@ -23,6 +34,50 @@ sys.path.append(pyfcs_dir)
 ### my libraries ###
 from PyFCS import Input, Visual_tools, ReferenceDomain, Prototype, FuzzyColorSpace
 import PyFCS.visualization.utils_structure as utils_structure
+
+
+class LocalServer:
+    def __init__(self, port=8000):
+        self.port = port
+        self.server = None
+        self.server_thread = None
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.handler = None  # Nuevo: Referencia al Handler
+
+    def start(self, html_content):
+        # Guardar archivo HTML
+        html_path = os.path.join(self.temp_dir.name, "plot.html")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        
+        # Crear Handler personalizado
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=self.server.temp_dir.name, **kwargs)  # Acceso correcto
+        
+        # Vincular Handler al servidor
+        self.handler = Handler
+        self.handler.server = self  # ¡Clave! Permite acceso al directorio
+        
+        # Iniciar servidor
+        self.server = socketserver.TCPServer(("", self.port), self.handler)
+        self.server.allow_reuse_address = True
+        
+        # Hilo del servidor
+        self.server_thread = threading.Thread(target=self.server.serve_forever)
+        self.server_thread.daemon = True
+        self.server_thread.start()
+        
+        return f"http://localhost:{self.port}/plot.html"
+
+    def stop(self):
+        if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+            self.temp_dir.cleanup()
+
+
+
 
 class PyFCSApp:
     def __init__(self, root):
@@ -175,19 +230,20 @@ class PyFCSApp:
         model_3d_tab = tk.Frame(notebook, bg="gray95")
         notebook.add(model_3d_tab, text="Model 3D")
 
-        # Radiobuttons for selecting 3D visualization modes
-        self.model_3d_option = tk.StringVar(value="Representative")  # Default value for options
+        # Dictionary to store the state of each checkbox
+        self.model_3d_options = {}
         buttons_frame = tk.Frame(model_3d_tab, bg="gray95")
         buttons_frame.pack(side="top", fill="x", pady=5)
 
         # Create radiobuttons for different 3D options
         options = ["Representative", "Core", "0.5-cut", "Support"]
         for option in options:
-            tk.Radiobutton(
+            var = tk.BooleanVar(value=False)
+            self.model_3d_options[option] = var
+            tk.Checkbutton(
                 buttons_frame,
                 text=option,
-                variable=self.model_3d_option,
-                value=option,
+                variable=var,
                 bg="gray95",
                 font=("Arial", 10),
                 command=self.on_option_select
@@ -487,7 +543,7 @@ class PyFCSApp:
 
         self.selected_centroids = self.color_data
         self.selected_hex_color = self.hex_color
-        self.selected_proto = self.prototypes
+        self.selected_alpha = self.prototypes
         self.selected_core = self.cores
         self.selected_support = self.supports
         self.on_option_select()
@@ -925,50 +981,69 @@ class PyFCSApp:
     ########################################################################################### Funtions Model 3D ###########################################################################################
     def on_option_select(self):
         if self.COLOR_SPACE:  # Check if a color space is loaded
-            option = self.model_3d_option.get()  # Get the selected option value
+            selected_options = [key for key, var in self.model_3d_options.items() if var.get()]  # Get all selected options
             
-            # Dictionary to map the options to their corresponding functions
-            option_map = {
-                "Representative": lambda: Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.selected_hex_color),
-                "0.5-cut": lambda: Visual_tools.plot_all_prototypes(self.selected_proto, self.volume_limits, self.hex_color),
-                "Core": lambda: Visual_tools.plot_all_prototypes(self.selected_core, self.volume_limits, self.hex_color),
-                "Support": lambda: Visual_tools.plot_all_prototypes(self.selected_support, self.volume_limits, self.hex_color),
-            }
+            if selected_options:
+                fig = Visual_tools.plot_combined_3D(
+                    self.file_base_name,
+                    self.selected_centroids,
+                    self.selected_core,
+                    self.selected_alpha,
+                    self.selected_support,
+                    self.volume_limits,
+                    self.hex_color,
+                    selected_options
+                )
+                self.draw_model_3D(fig)  # Pass each figure to be drawn on the Tkinter Canvas
 
-            # If the selected option is in the dictionary, generate and draw the figure
-            if option in option_map:
-                fig = option_map[option]()  # Call the corresponding function
-                self.draw_model_3D(fig)  # Pass the figure to draw it on the Tkinter Canvas
 
 
 
-    def draw_model_3D(self, fig):
-        """Draws the 3D plot on the Tkinter canvas."""
-        if self.graph_widget:  # Check if a previous graph exists
-            self.graph_widget.get_tk_widget().destroy()  # Destroy the previous widget
 
-        # Create a new matplotlib widget and draw the figure
-        self.graph_widget = FigureCanvasTkAgg(fig, master=self.Canvas1)
-        self.graph_widget.draw()  # Draw the figure
-        self.graph_widget.get_tk_widget().pack(fill="both", expand=True)  # Pack the widget into the canvas
+    def draw_model_3D(self, fig): 
+        """Renderiza la figura de Plotly en Tkinter."""
+        if self.graph_widget:
+            self.graph_widget.destroy()
+        
+        self.graph_widget = HtmlFrame(self.Canvas1)
+        self.graph_widget.pack(fill="both", expand=True)
+
+        # Guardar el HTML en un archivo temporal
+        html_path = os.path.join(os.getcwd(), "temp_plot.html")  # Guarda en el directorio actual
+        html = fig.to_html(include_plotlyjs=True)
+                
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
+
+        # Convertir la ruta a formato válido para URLs en Windows
+        # file_url = f"file://{html_path.replace(os.sep, '/')}"
+
+        # self.graph_widget.load_website("https://www.google.com")
+
+        # Cargar el archivo HTML usando load_website
+        self.graph_widget.load_file(html_path)
+        self.graph_widget.update_idletasks()
 
         # Display the color selection buttons
         self.display_color_buttons(self.color_matrix)
-    
 
+
+
+
+        
 
     def select_all_color(self):
         """Handles the 'select all' option for colors."""
         if self.COLOR_SPACE:
             self.selected_centroids = self.color_data
             self.selected_hex_color = self.hex_color
-            self.selected_proto = self.prototypes
+            self.selected_alpha = self.prototypes
             self.selected_core = self.cores
             self.selected_support = self.supports
 
             # Uncheck all the color selection buttons
             for _, var in self.selected_colors.items():
-                var.set(False)
+                var.set(True)
             
             self.on_option_select()  # Redraw the 3D model after selecting all colors
 
@@ -988,60 +1063,71 @@ class PyFCSApp:
                     keys = list(self.color_data.keys())
                     selected_indices.append(keys.index(color_name))
 
-        # Update the selected colors and prototypes
-        self.selected_hex_color = {
-            hex_color_key: lab_value for index in selected_indices
-            for hex_color_key, lab_value in self.hex_color.items()
-            if np.array_equal(lab_value, self.color_data[keys[index]]['positive_prototype'])
-        }
-        self.selected_proto = [self.prototypes[i] for i in selected_indices]
-        self.selected_core = [self.cores[i] for i in selected_indices]
-        self.selected_support = [self.supports[i] for i in selected_indices]
-        
+        # Ensure indices exist before using them
+        if selected_indices:
+            self.selected_hex_color = {
+                hex_color_key: lab_value for index in selected_indices
+                for hex_color_key, lab_value in self.hex_color.items()
+                if np.array_equal(lab_value, self.color_data[keys[index]]['positive_prototype'])
+            }
+            self.selected_alpha = [self.prototypes[i] for i in selected_indices]
+            self.selected_core = [self.cores[i] for i in selected_indices]
+            self.selected_support = [self.supports[i] for i in selected_indices]
+
+        # Store selected centroids
         self.selected_centroids = selected_centroids
-        self.on_option_select()  # Redraw the 3D model based on the selected colors
+
+        # Redraw the 3D model based on the selected colors
+        self.on_option_select()
+
 
         
 
     def display_color_buttons(self, colors):
-        """Displays color selection checkboxes."""
-        # Store previously selected colors if they exist
-        selected_colors = {color for color, var in self.selected_colors.items() if var.get()} if hasattr(self, 'selected_colors') else set()
+        """Displays color selection checkboxes with all options initially selected, but remembers previous states."""
+        
+        # Store previous selection states if they exist
+        previous_selected_colors = {
+            color: var.get() for color, var in getattr(self, 'selected_colors', {}).items()
+        } if hasattr(self, 'selected_colors') else {}
 
-        # Remove the old buttons if they exist
+        # Remove old buttons if they exist
         if hasattr(self, 'color_buttons'):
             for button in self.color_buttons:
                 button.destroy()
 
-        # Reinitialize the color variables and buttons list
+        # Reinitialize variables and button list
         self.selected_colors = {}
         self.color_buttons = []
 
         # Create a checkbox for each color inside the scrollable inner_frame
         for color in colors:
-            is_selected = color in selected_colors  # Check if the color was previously selected
-
-            # Create a BooleanVar for the checkbox state
+            # Restore previous state if it exists; otherwise, select by default
+            is_selected = previous_selected_colors.get(color, True)  
             self.selected_colors[color] = tk.BooleanVar(value=is_selected)
 
             # Create the checkbox button
             button = tk.Checkbutton(
-                self.inner_frame,  # Use the inner_frame for scrollable content
+                self.inner_frame,  # Use inner_frame for scrollable content
                 text=color,
-                variable=self.selected_colors[color],  # Variable for the checkbox state
+                variable=self.selected_colors[color],  # Variable for checkbox state
                 bg="gray95",  # Button background color
                 font=("Arial", 10),
                 onvalue=True,  # Value when checked
                 offvalue=False,  # Value when unchecked
-                command=lambda c=color: self.select_color(),  # Call select_color on change
+                command=self.select_color,  # Call select_color on change
             )
             button.pack(anchor="w", pady=2, padx=10)  # Pack the button into the UI frame
             
             self.color_buttons.append(button)  # Store the created button
 
-        # Update the scrollregion of the canvas to fit new content
+        # Update the scrollable canvas region to fit new content
         self.scrollable_canvas.update_idletasks()
         self.scrollable_canvas.configure(scrollregion=self.scrollable_canvas.bbox("all"))
+
+
+
+
 
 
 
@@ -2332,7 +2418,7 @@ class PyFCSApp:
             "Representative": lambda: Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.selected_hex_color),
             "Core": self.selected_core,
             "Support": self.selected_support,
-            "0.5-cut": self.selected_proto
+            "0.5-cut": self.selected_alpha
         }
 
         # If the selected option is not "Representative", filter points within the volumes
