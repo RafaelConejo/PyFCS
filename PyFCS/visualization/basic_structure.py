@@ -18,9 +18,12 @@ import socketserver
 import tempfile
 import base64
 from urllib.parse import quote
-from tkinterweb import HtmlFrame
-import webbrowser
-
+from tkhtmlview import HTMLLabel
+import webview
+from PyQt5.QtCore import QUrl
+from PyQt5.QtWidgets import QVBoxLayout, QWidget, QApplication, QMainWindow
+from PyQt5.QtWebEngineWidgets import QWebEngineView
+from threading import Thread
 
 
 
@@ -34,49 +37,6 @@ sys.path.append(pyfcs_dir)
 ### my libraries ###
 from PyFCS import Input, Visual_tools, ReferenceDomain, Prototype, FuzzyColorSpace
 import PyFCS.visualization.utils_structure as utils_structure
-
-
-class LocalServer:
-    def __init__(self, port=8000):
-        self.port = port
-        self.server = None
-        self.server_thread = None
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.handler = None  # Nuevo: Referencia al Handler
-
-    def start(self, html_content):
-        # Guardar archivo HTML
-        html_path = os.path.join(self.temp_dir.name, "plot.html")
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        
-        # Crear Handler personalizado
-        class Handler(http.server.SimpleHTTPRequestHandler):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, directory=self.server.temp_dir.name, **kwargs)  # Acceso correcto
-        
-        # Vincular Handler al servidor
-        self.handler = Handler
-        self.handler.server = self  # ¡Clave! Permite acceso al directorio
-        
-        # Iniciar servidor
-        self.server = socketserver.TCPServer(("", self.port), self.handler)
-        self.server.allow_reuse_address = True
-        
-        # Hilo del servidor
-        self.server_thread = threading.Thread(target=self.server.serve_forever)
-        self.server_thread.daemon = True
-        self.server_thread.start()
-        
-        return f"http://localhost:{self.port}/plot.html"
-
-    def stop(self):
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
-            self.temp_dir.cleanup()
-
-
 
 
 class PyFCSApp:
@@ -289,7 +249,8 @@ class PyFCSApp:
             font=("Arial", 10),
             command=self.select_all_color  
         )
-        self.select_all_button.pack(pady=5)
+        if self.COLOR_SPACE:
+            self.select_all_button.pack(pady=5)
 
 
 
@@ -367,6 +328,8 @@ class PyFCSApp:
         # Additional variables
         self.rgb_data = []  # RGB data for 3D visualization
         self.graph_widget = None  # Track 3D graph widget state
+        self.app_qt = None
+        self.more_graph_window = None
 
         # Bind the Escape key to toggle fullscreen mode
         self.root.bind("<Escape>", self.toggle_fullscreen)
@@ -540,6 +503,7 @@ class PyFCSApp:
         # Update 3D graph and app state vars
         self.COLOR_SPACE = True
         self.MEMBERDEGREE = {key: True for key in self.MEMBERDEGREE}
+        self.select_all_button.pack(pady=5)
 
         self.selected_centroids = self.color_data
         self.selected_hex_color = self.hex_color
@@ -994,41 +958,91 @@ class PyFCSApp:
                     self.hex_color,
                     selected_options
                 )
-                self.draw_model_3D(fig)  # Pass each figure to be drawn on the Tkinter Canvas
+                self.draw_model_3D(fig, selected_options)  # Pass each figure to be drawn on the Tkinter Canvas
 
 
 
+    def draw_model_3D(self, fig, selected_options):
+        """Draws the 3D plot on the Tkinter canvas."""
+        if self.graph_widget:  # Check if a previous graph exists
+            self.graph_widget.get_tk_widget().destroy()  # Destroy the previous widget
 
-
-    def draw_model_3D(self, fig): 
-        """Renderiza la figura de Plotly en Tkinter."""
-        if self.graph_widget:
-            self.graph_widget.destroy()
-        
-        self.graph_widget = HtmlFrame(self.Canvas1)
-        self.graph_widget.pack(fill="both", expand=True)
-
-        # Guardar el HTML en un archivo temporal
-        html_path = os.path.join(os.getcwd(), "temp_plot.html")  # Guarda en el directorio actual
-        html = fig.to_html(include_plotlyjs=True)
-                
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html)
-
-        # Convertir la ruta a formato válido para URLs en Windows
-        # file_url = f"file://{html_path.replace(os.sep, '/')}"
-
-        # self.graph_widget.load_website("https://www.google.com")
-
-        # Cargar el archivo HTML usando load_website
-        self.graph_widget.load_file(html_path)
-        self.graph_widget.update_idletasks()
+        # Create a new matplotlib widget and draw the figure
+        self.graph_widget = FigureCanvasTkAgg(fig, master=self.Canvas1)
+        self.graph_widget.draw()  # Draw the figure
+        self.graph_widget.get_tk_widget().pack(fill="both", expand=True)  # Pack the widget into the canvas
 
         # Display the color selection buttons
         self.display_color_buttons(self.color_matrix)
 
+        # Crear y añadir un botón con el símbolo "+"
+        self.add_button = tk.Button(self.Canvas1, text="Interactive Figure", font=("Arial", 12), command=lambda: self.on_add_graph(selected_options))
+        self.add_button.place(relx=0.95, rely=0.05, anchor="ne")  # Posiciona el botón en la esquina superior derecha
 
 
+
+    def on_add_graph(self, selected_options):
+        """Generates the figure with Plotly, saves it as HTML, and displays it in a PyQt5 window."""
+
+        def close_event(event):
+            """Handles the window close event."""
+            self.more_graph_window = None  # Releases the reference to the window
+            event.accept()  # Accepts the close event
+
+        fig = Visual_tools.plot_more_combined_3D(
+                    self.file_base_name,
+                    self.selected_centroids,
+                    self.selected_core,
+                    self.selected_alpha,
+                    self.selected_support,
+                    self.volume_limits,
+                    self.hex_color,
+                    selected_options
+                )
+
+        file_path = os.path.abspath("temp_plot.html")
+        fig.write_html(file_path)
+        file_path = file_path.replace("\\", "/")  # Correct solution
+
+        # Check if the application is already created
+        if self.app_qt is None:
+            self.app_qt = QApplication(sys.argv)
+
+        if self.more_graph_window is None or not self.more_graph_window.isVisible():
+            self.more_graph_window = QMainWindow()
+            self.more_graph_window.setWindowTitle("Interactive 3D Figure")
+            self.more_graph_window.setGeometry(100, 100, 800, 600)
+
+            # Create a web viewer for the HTML
+            webview = QWebEngineView()
+            webview.setUrl(QUrl(f"file:///{file_path}"))  # 🚀 Correct solution
+
+            # Add the viewer to the window
+            layout = QVBoxLayout()
+            layout.addWidget(webview)
+            central_widget = QWidget()
+            central_widget.setLayout(layout)
+            self.more_graph_window.setCentralWidget(central_widget)
+
+            # Detect the screen where the cursor is located
+            cursor_pos = QApplication.desktop().cursor().pos()
+            screen_number = QApplication.desktop().screenNumber(cursor_pos)
+            screen_geom = QApplication.desktop().screenGeometry(screen_number)
+
+            # Calculate the centered position on the same monitor
+            width = 800
+            height = 600
+            popup_x = screen_geom.x() + (screen_geom.width() - width) // 2
+            popup_y = screen_geom.y() + (screen_geom.height() - height) // 2
+
+            # Set the position on the same screen
+            self.more_graph_window.setGeometry(popup_x, popup_y, width, height)
+            self.more_graph_window.show()
+
+            # Connect the close event signal to release the reference
+            self.more_graph_window.closeEvent = close_event
+
+        self.app_qt.exec_()
 
         
 

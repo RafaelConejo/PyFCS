@@ -11,97 +11,76 @@ from PyFCS import Prototype
 
 class Visual_tools:
     @staticmethod
-    def plot_all_centroids(fig, color_data, hex_color):
-        """Dibuja puntos RGB en 3D usando Plotly."""
-        if not color_data:
-            return
-        
-        lab_values = [v['positive_prototype'] for v in color_data.values()]
-        lab_array = np.array(lab_values)
-        A = lab_array[:, 1]  # a*
-        B = lab_array[:, 2]  # b*
-        L = lab_array[:, 0]  # L*
-        
-        colors = []
-        for lab in lab_values:
-            hex_key = next((k for k, v in hex_color.items() if np.array_equal(v, lab)), "#000000")
-            colors.append(hex_key)
-        
-        scatter = go.Scatter3d(
-            x=A, y=B, z=L,
-            mode='markers',
-            marker=dict(
-                size=5,
-                color=colors,
-                opacity=0.8,
-                line=dict(color='black', width=1)
-            ),
-            name="Centroides"
-        )
-        fig.add_trace(scatter)
-
-    @staticmethod
-    def triangulate_face(vertices):
-        """Convierte una cara poligonal en triángulos (fan triangulation)."""
-        triangles = []
-        for i in range(1, len(vertices) - 1):
-            triangles.append([vertices[0], vertices[i], vertices[i + 1]])
-        return triangles
-    
-    @staticmethod
-    def plot_all_prototypes(fig, prototypes, volume_limits, hex_color):
-        """Dibuja volúmenes como mallas 3D en Plotly."""
-        if not prototypes:
-            return
-        
-        for prototype in prototypes:
-            color = next((k for k, v in hex_color.items() if np.array_equal(prototype.positive, v)), "#000000")
-            vertices = []
-            faces = []
-            
-            for face in prototype.voronoi_volume.faces:
-                if not face.infinity:
-                    clipped = Visual_tools.clip_face_to_volume(np.array(face.vertex), volume_limits)
-                    if len(clipped) >= 3:
-                        clipped = clipped[:, [1, 2, 0]]  # Reordenar a a*, b*, L*
-                        triangles = Visual_tools.triangulate_face(clipped)
-                        for tri in triangles:
-                            idx = len(vertices)
-                            vertices.extend(tri)
-                            faces.append([idx, idx + 1, idx + 2])
-            
-            if vertices:
-                vertices = np.array(vertices)
-                mesh = go.Mesh3d(
-                    x=vertices[:, 0],
-                    y=vertices[:, 1],
-                    z=vertices[:, 2],
-                    i=[f[0] for f in faces],
-                    j=[f[1] for f in faces],
-                    k=[f[2] for f in faces],
-                    color=color,
-                    opacity=0.5,
-                    name="Prototipo"
-                )
-                fig.add_trace(mesh)
-
-    @staticmethod
-    def plot_combined_3D(filename, color_data, core, alpha, support, volume_limits, hex_color, selected_options):
-        """Genera figura combinada con Plotly."""
+    def plot_more_combined_3D(filename, color_data, core, alpha, support, volume_limits, hex_color, selected_options):
+        """Genera una figura 3D en Plotly combinando centroides y prototipos según las opciones seleccionadas."""
         fig = go.Figure()
-        
-        options = {
-            "Representative": (Visual_tools.plot_all_centroids, [fig, color_data, hex_color]),
-            "0.5-cut": (Visual_tools.plot_all_prototypes, [fig, alpha, volume_limits, hex_color]),
-            "Core": (Visual_tools.plot_all_prototypes, [fig, core, volume_limits, hex_color]),
-            "Support": (Visual_tools.plot_all_prototypes, [fig, support, volume_limits, hex_color]),
+
+        def triangulate_face(vertices):
+            """Convierte una cara poligonal en triángulos (fan triangulation)."""
+            triangles = []
+            for i in range(1, len(vertices) - 1):
+                triangles.append([vertices[0], vertices[i], vertices[i + 1]])
+            return triangles
+
+        def plot_centroids():
+            """Dibuja puntos RGB en 3D."""
+            if not color_data:
+                return
+            
+            lab_values = [v['positive_prototype'] for v in color_data.values()]
+            lab_array = np.array(lab_values)
+            A, B, L = lab_array[:, 1], lab_array[:, 2], lab_array[:, 0]
+
+            colors = [next((k for k, v in hex_color.items() if np.array_equal(v, lab)), "#000000") for lab in lab_values]
+
+            fig.add_trace(go.Scatter3d(
+                x=A, y=B, z=L,
+                mode='markers',
+                marker=dict(size=5, color=colors, opacity=0.8, line=dict(color='black', width=1)),
+                name="Centroides"
+            ))
+
+        def plot_prototypes(prototypes):
+            """Dibuja volúmenes como mallas 3D."""
+            if not prototypes:
+                return
+            
+            for prototype in prototypes:
+                color = next((k for k, v in hex_color.items() if np.array_equal(prototype.positive, v)), "#000000")
+                vertices, faces = [], []
+
+                for face in prototype.voronoi_volume.faces:
+                    if not face.infinity:
+                        clipped = Visual_tools.clip_face_to_volume(np.array(face.vertex), volume_limits)
+                        if len(clipped) >= 3:
+                            clipped = clipped[:, [1, 2, 0]]  # Reordenar a a*, b*, L*
+                            triangles = triangulate_face(clipped)
+                            for tri in triangles:
+                                idx = len(vertices)
+                                vertices.extend(tri)
+                                faces.append([idx, idx + 1, idx + 2])
+
+                if vertices:
+                    vertices = np.array(vertices)
+                    fig.add_trace(go.Mesh3d(
+                        x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
+                        i=[f[0] for f in faces], j=[f[1] for f in faces], k=[f[2] for f in faces],
+                        color=color, opacity=0.5, name="Prototipo"
+                    ))
+
+        # Mapeo de opciones seleccionadas a sus funciones correspondientes
+        options_map = {
+            "Representative": plot_centroids,
+            "0.5-cut": lambda: plot_prototypes(alpha),
+            "Core": lambda: plot_prototypes(core),
+            "Support": lambda: plot_prototypes(support),
         }
-        
+
         for option in selected_options:
-            if option in options:
-                func, args = options[option]
-                func(*args)
-        
+            if option in options_map:
+                options_map[option]()
+
+        # Configuración de ejes y límites
         axis_limits = {}
         if volume_limits:
             axis_limits = dict(
@@ -109,7 +88,7 @@ class Visual_tools:
                 yaxis=dict(range=volume_limits.comp3),
                 zaxis=dict(range=volume_limits.comp1)
             )
-        
+
         fig.update_layout(
             scene=dict(
                 xaxis_title='a* (Green-Red)',
@@ -117,8 +96,10 @@ class Visual_tools:
                 zaxis_title='L* (Luminosity)',
                 **axis_limits
             ),
-            margin=dict(l=0, r=0, b=0, t=0)
+            margin=dict(l=0, r=0, b=0, t=30),
+            title=dict(text=f"{filename}", font=dict(size=10), x=0.5, y=0.95)
         )
+
         return fig
 
 
@@ -126,6 +107,67 @@ class Visual_tools:
 
 
 
+
+
+    @staticmethod
+    def plot_combined_3D(filename, color_data, core, alpha, support, volume_limits, hex_color, selected_options):
+        """Genera una sola figura combinando centroides y prototipos según las opciones seleccionadas."""
+        fig = Figure(figsize=(8, 6), dpi=120)
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Diccionario para asignar cada opción a sus datos correspondientes
+        data_map = {
+            "Representative": color_data,
+            "0.5-cut": alpha,
+            "Core": core,
+            "Support": support
+        }
+
+        for option, data in data_map.items():
+            if option in selected_options and data:
+                if isinstance(data, dict):  # Color data (centroides)
+                    lab_values = [v['positive_prototype'] for v in data.values()]
+                    lab_array = np.array(lab_values)
+
+                    L_values, A_values, B_values = lab_array[:, 0], lab_array[:, 1], lab_array[:, 2]
+
+                    colors = [
+                        next((hex_key for hex_key, lab_val in hex_color.items() if np.array_equal(lab, lab_val)), "#000000")
+                        for lab in lab_values
+                    ]
+
+                    ax.scatter(A_values, B_values, L_values, c=colors, marker='o', s=50, edgecolor='k', alpha=0.8)
+
+                elif isinstance(data, list):  # Prototypes (volúmenes Voronoi)
+                    for prototype in data:
+                        color = next(
+                            (hex_key for hex_key, lab_val in hex_color.items() if np.array_equal(prototype.positive, lab_val)),
+                            "#000000"
+                        )
+
+                        valid_faces = [
+                            Visual_tools.clip_face_to_volume(np.array(face.vertex), volume_limits)
+                            for face in prototype.voronoi_volume.faces if not face.infinity
+                        ]
+                        valid_faces = [f[:, [1, 2, 0]] for f in valid_faces if len(f) >= 3]
+
+                        if valid_faces:
+                            ax.add_collection3d(Poly3DCollection(valid_faces, facecolors=color, edgecolors='black', linewidths=1, alpha=0.5))
+
+        # Configurar ejes
+        ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)
+        ax.set_ylabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
+        ax.set_zlabel('L* (Luminosity)', fontsize=10, labelpad=10)
+
+        if volume_limits:
+            ax.set_xlim(volume_limits.comp2[0], volume_limits.comp2[1])  # a*
+            ax.set_ylim(volume_limits.comp3[0], volume_limits.comp3[1])  # b*
+            ax.set_zlim(volume_limits.comp1[0], volume_limits.comp1[1])  # L*
+
+        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
+        ax.set_title(filename, fontsize=12, pad=10)
+
+        return fig
 
 
 
