@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORMAL
+import tkinter.font as tkFont
 import sys
 import os
 from skimage import color
@@ -10,20 +11,10 @@ import threading
 import colorsys
 import math
 import random
-import shutil
-import io
-from tkinterweb import HtmlFrame
-import http.server
-import socketserver
-import tempfile
-import base64
-from urllib.parse import quote
-from tkhtmlview import HTMLLabel
-import webview
 from PyQt5.QtCore import QUrl
 from PyQt5.QtWidgets import QVBoxLayout, QWidget, QApplication, QMainWindow
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-from threading import Thread
+from PyQt5.QtCore import QEventLoop
 
 
 
@@ -59,31 +50,31 @@ class PyFCSApp:
         root.configure(bg="gray82")  # Set background color for the window
 
         # Menu bar configuration
-        menubar = Menu(root)
-        root.config(menu=menubar)  # Attach menu bar to the root window
+        self.menubar = Menu(root)
+        root.config(menu=self.menubar)  # Attach menu bar to the root window
 
         # File menu with options
-        file_menu = Menu(menubar, tearoff=0)
+        file_menu = Menu(self.menubar, tearoff=0)
         file_menu.add_command(label="Exit", command=self.exit_app)  # Add "Exit" option
-        menubar.add_cascade(label="File", menu=file_menu)  # Add "File" menu to the menu bar
+        self.menubar.add_cascade(label="File", menu=file_menu)  # Add "File" menu to the menu bar
 
         # Image Manager menu
-        img_menu = Menu(menubar, tearoff=0)
+        img_menu = Menu(self.menubar, tearoff=0)
         img_menu.add_command(label="Open Image", command=self.open_image)  # Placeholder for opening images
         img_menu.add_command(label="Save Image", command=self.save_image)  # Placeholder for saving images
         img_menu.add_command(label="Close All", command=self.close_all_image)  # Placeholder for closing all images
-        menubar.add_cascade(label="Image Manager", menu=img_menu)
+        self.menubar.add_cascade(label="Image Manager", menu=img_menu)
 
         # Fuzzy Color Space Manager menu
-        fuzzy_menu = Menu(menubar, tearoff=0)
+        fuzzy_menu = Menu(self.menubar, tearoff=0)
         fuzzy_menu.add_command(label="New Color Space", command=self.show_menu_create_fcs)  # Create new color space
         fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space)  # Load existing color space
-        menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
+        self.menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
 
         # Help menu
-        help_menu = Menu(menubar, tearoff=0)
+        help_menu = Menu(self.menubar, tearoff=0)
         help_menu.add_command(label="About", command=self.about_info)  # Show "About" information
-        menubar.add_cascade(label="Help", menu=help_menu)
+        self.menubar.add_cascade(label="Help", menu=help_menu)
 
         # Main frame for organizing sections
         main_frame = tk.Frame(root, bg="gray82")
@@ -360,6 +351,35 @@ class PyFCSApp:
         self.root.attributes("-fullscreen", not current_state)
 
 
+    
+    def custom_warning(self, title="Warning", message="Warning"):
+        """Creates a custom, aesthetic warning message window with gray tones."""
+        warning_win = tk.Toplevel(self.root)
+        warning_win.title(title)
+        warning_win.configure(bg="#f5f5f5")  # Light gray background
+
+        # Warning text
+        label = tk.Label(warning_win, text=message, font=("Arial", 11, "bold"), 
+                        fg="#333333", bg="#f5f5f5", wraplength=350)
+        label.pack(pady=15, padx=20)
+
+        # Stylized close button
+        btn_ok = tk.Button(warning_win, text="OK", font=("Arial", 11, "bold"), 
+                        bg="#999999", fg="white", bd=0, padx=10, pady=0, 
+                        relief="flat", activebackground="#8c8c8c", 
+                        command=warning_win.destroy)
+        btn_ok.pack(pady=5)
+        
+        # Center the window
+        self.center_popup(warning_win, 400, 100)
+
+        # Keep the window on top of the main one
+        warning_win.transient(self.root)
+        warning_win.grab_set()
+
+
+
+
 
     def show_loading(self):
         """
@@ -524,7 +544,7 @@ class PyFCSApp:
 
         if not filename:
             # Notify the user if no file was selected
-            messagebox.showwarning("No File Selected", "No file was selected.")
+            self.custom_warning(message="No file was selected.")
             return  # Early return to avoid unnecessary processing
 
         # Activate the 'Original Image' option for all open windows
@@ -562,7 +582,7 @@ class PyFCSApp:
 
         else:
             # Notify the user if the file format is unsupported
-            messagebox.showwarning("File Error", "Unsupported file format.")
+            self.custom_warning("File Error", "Unsupported file format.")
 
 
 
@@ -580,7 +600,7 @@ class PyFCSApp:
 
         # Ensure at least two colors are selected
         if len(selected_colors_lab) < 2:
-            messagebox.showwarning("Warning", "You must select at least two colors.")
+            self.custom_warning("Warning", "At least two colors must be selected to create the Color Space.")
             return  # Early return to avoid unnecessary processing
 
         # Create a popup window for the user to name the color space
@@ -642,7 +662,7 @@ class PyFCSApp:
                 input_class.write_file(name, selected_colors_lab, progress_callback=update_progress)
             except Exception as e:
                 # Show an error message if something goes wrong
-                tk.messagebox.showerror("Error", f"An error occurred while saving: {e}")
+                self.custom_warning("Error", f"An error occurred while saving: {e}")
             finally:
                 # Ensure the loading indicator is hidden and show a success message
                 self.load_window.after(0, self.hide_loading)
@@ -733,7 +753,7 @@ class PyFCSApp:
                 popup.destroy()  # Close the popup
 
             except ValueError as e:
-                messagebox.showerror("Invalid Input", str(e))  # Show error message for invalid input
+                self.custom_warning("Invalid Input", str(e))  # Show error message for invalid input
 
         def browse_color():
             """
@@ -818,22 +838,27 @@ class PyFCSApp:
         button_frame.pack(pady=20)
 
         ttk.Button(button_frame, text="Browse Color", command=browse_color, style="Accent.TButton").pack(side="left", padx=10)
-        ttk.Button(button_frame, text="Add", command=confirm_color, style="Accent.TButton").pack(side="left", padx=10)
+        ttk.Button(button_frame, text="Add Color", command=confirm_color, style="Accent.TButton").pack(side="left", padx=10)
 
         popup.wait_window()  # Wait for the popup to close
+
+        if result["color_name"] is None or result["lab"] is None:
+            return None, None
         return result["color_name"], result["lab"]  # Return the result
 
 
 
     def addColor_create_fcs(self, window, colors):
         color_name, new_color = self.addColor(window, colors)
-        # Actualizar la interfaz
-        utils_structure.create_color_display_frame_add(
-            parent=self.scroll_palette_create_fcs,
-            color_name=color_name,
-            lab=new_color,
-            color_checks=self.color_checks
-        )
+
+        # update interface
+        if color_name is not None:
+            utils_structure.create_color_display_frame_add(
+                parent=self.scroll_palette_create_fcs,
+                color_name=color_name,
+                lab=new_color,
+                color_checks=self.color_checks
+            )
     
 
 
@@ -904,7 +929,7 @@ class PyFCSApp:
         """
         # Verify if there are available images to display
         if not hasattr(self, "load_images_names") or not self.load_images_names:
-            tk.messagebox.showinfo("No Images", "No images are currently available to display.")
+            self.custom_warning(message="No images are currently available to display.")
             return  # Early return if no images are available
 
         # Create a popup window for image selection
@@ -947,7 +972,9 @@ class PyFCSApp:
         if self.COLOR_SPACE:  # Check if a color space is loaded
             selected_options = [key for key, var in self.model_3d_options.items() if var.get()]  # Get all selected options
             
-            if selected_options:
+            if not selected_options and self.graph_widget:
+                self.graph_widget.get_tk_widget().destroy() 
+            else:
                 fig = Visual_tools.plot_combined_3D(
                     self.file_base_name,
                     self.selected_centroids,
@@ -984,9 +1011,44 @@ class PyFCSApp:
     def on_add_graph(self, selected_options):
         """Generates the figure with Plotly, saves it as HTML, and displays it in a PyQt5 window."""
 
+        def rebuild_menu():
+            """Rebuilds the menu bar to prevent UI glitches after PyQt5 is used."""
+            self.menubar.destroy()  # Elimina la barra de menú anterior
+            self.menubar = Menu(self.root)  # Crea una nueva barra de menú
+            self.root.config(menu=self.menubar)  # Asigna la nueva barra de menú
+
+            # Define el tamaño de la fuente que se usará en los menús
+            menu_font = tkFont.Font(family="Arial", size=11)  # Puedes ajustar el tamaño (size) aquí
+
+            # File menu
+            file_menu = Menu(self.menubar, tearoff=0)
+            file_menu.add_command(label="Exit", command=self.exit_app, font=menu_font)
+            self.menubar.add_cascade(label="File", menu=file_menu)
+
+            # Image Manager menu
+            img_menu = Menu(self.menubar, tearoff=0)
+            img_menu.add_command(label="Open Image", command=self.open_image, font=menu_font)
+            img_menu.add_command(label="Save Image", command=self.save_image, font=menu_font)
+            img_menu.add_command(label="Close All", command=self.close_all_image, font=menu_font)
+            self.menubar.add_cascade(label="Image Manager", menu=img_menu)
+
+            # Fuzzy Color Space Manager menu
+            fuzzy_menu = Menu(self.menubar, tearoff=0)
+            fuzzy_menu.add_command(label="New Color Space", command=self.show_menu_create_fcs, font=menu_font)
+            fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space, font=menu_font)
+            self.menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
+
+            # Help menu
+            help_menu = Menu(self.menubar, tearoff=0)
+            help_menu.add_command(label="About", command=self.about_info, font=menu_font)
+            self.menubar.add_cascade(label="Help", menu=help_menu)
+
+
+
         def close_event(event):
             """Handles the window close event."""
             self.more_graph_window = None  # Releases the reference to the window
+            rebuild_menu() 
             event.accept()  # Accepts the close event
 
         fig = Visual_tools.plot_more_combined_3D(
@@ -1042,7 +1104,9 @@ class PyFCSApp:
             # Connect the close event signal to release the reference
             self.more_graph_window.closeEvent = close_event
 
-        self.app_qt.exec_()
+        loop = QEventLoop()
+        self.more_graph_window.destroyed.connect(loop.quit)
+        loop.exec_()
 
         
 
@@ -1257,7 +1321,7 @@ class PyFCSApp:
         """Remove a color at a specific index and refresh the display."""
         if len(self.color_data) <= 2:
             # Ensure at least two colors remain in the dataset
-            messagebox.showwarning("Cannot Remove Color", "At least two colors must remain. The color was not removed.")
+            self.custom_warning("Cannot Remove Color", "At least two colors must remain. The color was not removed.")
             return  
         
         # Get the name of the color to remove using the provided index
@@ -1333,7 +1397,7 @@ class PyFCSApp:
     def apply_changes(self):
         """Applies the changes made to the color list."""
         if not self.file_path:
-            messagebox.showerror("Error", "No file has been loaded.")
+            self.custom_warning("Error", "No file has been loaded.")
             return
 
         try:
@@ -1349,7 +1413,7 @@ class PyFCSApp:
                 self.save_fcs(self.file_name_entry.get(), self.color_data, color_dict)
         
         except Exception as e:
-            messagebox.showerror("Error", f"Changes could not be saved: {e}")
+            self.custom_warning("Error", f"Changes could not be saved: {e}")
 
         
 
@@ -1373,7 +1437,7 @@ class PyFCSApp:
     def save_image(self):
         # Verify if there are available images to save
         if not hasattr(self, "modified_image") or not self.modified_image:
-            tk.messagebox.showinfo("No Images", "There are currently no modified images available to save.")
+            self.custom_warning(message="There are currently no modified images available to save.")
             return  # Early return if no images are available
 
         # Create a popup window for image selection
@@ -1410,7 +1474,7 @@ class PyFCSApp:
 
                     messagebox.showinfo("Success", f"Image saved successfully at:\n{save_path}")
                 except Exception as e:
-                    messagebox.showerror("Error", f"Failed to save image:\n{str(e)}")
+                    self.custom_warning("Error", f"Failed to save image:\n{str(e)}")
 
             popup.destroy()
 
@@ -1641,7 +1705,7 @@ class PyFCSApp:
 
             image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
             if not image_items:
-                tk.messagebox.showwarning("No window", f"No floating window found with id {window_id}")
+                self.custom_warning("No window", f"No floating window found with id {window_id}")
                 return
 
             x1, y1, _, _ = self.image_canvas.bbox(image_items[0])
@@ -1766,7 +1830,7 @@ class PyFCSApp:
 
         # Check if there are available images to display
         if not hasattr(self, "load_images_names") or not self.load_images_names:
-            tk.messagebox.showinfo("No Images", "No images are currently available to display.")
+            self.custom_warning(message="No images are currently available to display.")
             return
 
         # Filter out images that have already been selected
@@ -1777,7 +1841,7 @@ class PyFCSApp:
 
         # If no available images, show a message and return
         if not available_image_ids:
-            tk.messagebox.showinfo("No Available Images", "All images have already been selected.")
+            self.custom_warning("No Available Images", "All images have already been selected.")
             return
 
         # Get the filenames of the available images
@@ -2033,7 +2097,7 @@ class PyFCSApp:
         """
         # Ensure at least two colors are selected
         if len(self.color_entry_detect) < 2:
-            tk.messagebox.showwarning("Not Enough Colors", "You must select at least two colors to create the Color Space.")
+            self.custom_warning("Not Enough Colors", "At least two colors must be selected to create the Color Space.")
             return
         
         # Clear the color entry dictionary
@@ -2098,7 +2162,7 @@ class PyFCSApp:
                 input_class.write_file(name, color_dict, progress_callback=update_progress)
             except Exception as e:
                 # Show an error message if something goes wrong
-                tk.messagebox.showerror("Error", f"An error occurred while saving: {e}")
+                self.custom_warning("Error", f"An error occurred while saving: {e}")
             finally:
                 # Hide the loading indicator and show a success message
                 self.load_window.after(0, self.hide_loading)
@@ -2207,7 +2271,7 @@ class PyFCSApp:
         # Find the window associated with the window_id to ensure it exists
         items = self.image_canvas.find_withtag(window_id)
         if not items:
-            tk.messagebox.showwarning("No Window", f"No floating window found with id {window_id}")
+            self.custom_warning("No Window", f"No floating window found with id {window_id}")
             return
 
         # Set initial states for the member degree and original image for the window
@@ -2309,7 +2373,7 @@ class PyFCSApp:
                 # Send the result back to the main thread for further processing
                 self.display_color_mapping(grayscale_image_array, window_id)
             except Exception as e:
-                tk.messagebox.showwarning("Error", f"Error in run_process: {e}")
+                self.custom_warning("Error", f"Error in run_process: {e}")
                 return
 
             finally:
@@ -2346,10 +2410,10 @@ class PyFCSApp:
                 image_id = image_items[0]  # Assuming there's only one image per window_id
                 self.image_canvas.itemconfig(image_id, image=img_tk)
             else:
-                tk.messagebox.showwarning("Image Error", f"No image found for window_id: {window_id}")
+                self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
 
         except Exception as e:
-            tk.messagebox.showwarning("Display Error", f"Error displaying the image: {e}")
+            self.custom_warning("Display Error", f"Error displaying the image: {e}")
 
 
 
@@ -2370,7 +2434,7 @@ class PyFCSApp:
                         # Remove the reference to the proto_options window
                         del self.proto_options[window_id]
                     except Exception as e:
-                        tk.messagebox.showwarning("Window Error", f"Error trying to destroy the proto_options window: {e}")
+                        self.custom_warning("Window Error", f"Error trying to destroy the proto_options window: {e}")
                         return
 
                 # Find the image item in the canvas using the window_id tag
@@ -2381,7 +2445,7 @@ class PyFCSApp:
                     # Update the image to the original
                     self.image_canvas.itemconfig(image_id, image=img_tk)
                 else:
-                    tk.messagebox.showwarning("Image Error", f"No canvas image found for window_id: {window_id}")
+                    self.custom_warning("Image Error", f"No canvas image found for window_id: {window_id}")
                     return
 
                 # Reset flags
@@ -2390,11 +2454,11 @@ class PyFCSApp:
                     self.MEMBERDEGREE[window_id] = True
 
             else:
-                tk.messagebox.showwarning("Not Original Image", f"Original image not found for window_id: {window_id}")
+                self.custom_warning("Not Original Image", f"Original image not found for window_id: {window_id}")
                 return
 
         except Exception as e:
-            tk.messagebox.showwarning("Display Error", f"Error displaying the original image: {e}")
+            self.custom_warning("Display Error", f"Error displaying the original image: {e}")
             return
 
 
@@ -2421,7 +2485,7 @@ class PyFCSApp:
         """
         # Check if the fuzzy color space is loaded
         if not hasattr(self, 'COLOR_SPACE') or not self.COLOR_SPACE:
-            messagebox.showwarning("No Color Space", "Please load a fuzzy color space before deploying AT.")
+            self.custom_warning("No Color Space", "Please load a fuzzy color space before deploying AT.")
             return
 
         # Get the selected option from the dropdown menu
