@@ -379,8 +379,6 @@ class PyFCSApp:
 
 
 
-
-
     def show_loading(self):
         """
         Display a visually appealing loading window with a progress bar.
@@ -436,7 +434,7 @@ class PyFCSApp:
             about_window, 
             text="PyFCS: Python Fuzzy Color Software\n"
                 "A color modeling Python Software based on Fuzzy Color Spaces.\n"
-                "Version 0.1\n\n"
+                "Version 1.0\n\n"
                 "Contact: rafaconejo@ugr.es", 
             padx=20, pady=20, font=("Helvetica", 12, "bold"), justify="center",
             bg="#f0f0f0", fg="#333333"  # Background color and text color
@@ -970,6 +968,7 @@ class PyFCSApp:
     ########################################################################################### Funtions Model 3D ###########################################################################################
     def on_option_select(self):
         if self.COLOR_SPACE:  # Check if a color space is loaded
+            self.filtered_points = {}
             selected_options = [key for key, var in self.model_3d_options.items() if var.get()]  # Get all selected options
             
             if not selected_options and self.graph_widget:
@@ -1059,7 +1058,8 @@ class PyFCSApp:
                     self.selected_support,
                     self.volume_limits,
                     self.hex_color,
-                    selected_options
+                    selected_options,
+                    self.filtered_points
                 )
 
         file_path = os.path.abspath("temp_plot.html")
@@ -2099,9 +2099,6 @@ class PyFCSApp:
         if len(self.color_entry_detect) < 2:
             self.custom_warning("Not Enough Colors", "At least two colors must be selected to create the Color Space.")
             return
-        
-        # Clear the color entry dictionary
-        self.color_entry_detect.clear()
 
         # Create a popup window for the user to name the color space
         popup = tk.Toplevel(self.root)
@@ -2138,6 +2135,7 @@ class PyFCSApp:
         # If no color_dict is provided, create one from the detected colors
         if color_dict is None:
             color_dict = {key: np.array(colors[idx]['lab']) for idx, key in enumerate(self.color_entry_detect)}
+            self.color_entry_detect.clear()
 
         # Show loading indicator
         self.show_loading()
@@ -2485,54 +2483,46 @@ class PyFCSApp:
         """
         # Check if the fuzzy color space is loaded
         if not hasattr(self, 'COLOR_SPACE') or not self.COLOR_SPACE:
-            self.custom_warning("No Color Space", "Please load a fuzzy color space before deploying AT.")
+            self.custom_warning("No Color Space", "Please load a fuzzy color space before deploying AT or PT.")
             return
 
-        # Get the selected option from the dropdown menu
-        option = self.model_3d_option.get()
+        selected_options = [key for key, var in self.model_3d_options.items() if var.get()]  # Get all selected options
+        if selected_options == ["Representative"]:
+            return
+        
+        priority_map = {
+            "Support": self.selected_core,
+            "0.5-cut": self.selected_alpha,
+            "Core": self.selected_support
+        } 
+        selected_option = next((opt for opt in ["Support", "0.5-cut", "Core"] if opt in selected_options), None)
+        selected_volume = priority_map[selected_option]
+        
 
-        # Map of options to access the corresponding volumes
-        option_map = {
-            "Representative": lambda: Visual_tools.plot_all_centroids(self.file_base_name, self.selected_centroids, self.selected_hex_color),
-            "Core": self.selected_core,
-            "Support": self.selected_support,
-            "0.5-cut": self.selected_alpha
-        }
+        # Find PT or AT points
+        self.filtered_points = utils_structure.filter_points_with_threshold(selected_volume, threshold, step=0.5)
 
-        # If the selected option is not "Representative", filter points within the volumes
-        if option != 'Representative':
-            selected_volume = option_map[option]
-            filtered_points = {}  # Dictionary to store filtered points
-
-            # Iterate over each volume and its corresponding prototype
-            for idx, prototype in enumerate(selected_volume):
-                positive = prototype.positive
-
-                # Generate points within the Voronoi volume
-                points_inside = utils_structure.generate_points_within_volume(prototype.voronoi_volume, step=1.0)
-                points_within_threshold = []
-
-                # Filter points based on color difference (deltaE)
-                for point in points_inside:
-                    point_lab = tuple(point)  # Convert to (L, a, b) format
-                    delta_e = utils_structure.delta_e_ciede2000(positive, point_lab)
-
-                    if delta_e < threshold:
-                        points_within_threshold.append(point)
-
-                filtered_points[f'Volume_{idx}'] = points_within_threshold
-
-            # Plot the filtered points and display the 3D model
-            fig = Visual_tools.plot_all_prototypes_filtered_points(selected_volume, self.volume_limits, self.hex_color, filtered_points)
-            self.draw_model_3D(fig)  # Pass the figure to draw it on the Tkinter Canvas
+        # Plot the filtered points and display the 3D model
+        fig = Visual_tools.plot_combined_3D(
+            self.file_base_name,
+            self.selected_centroids,
+            self.selected_core,
+            self.selected_alpha,
+            self.selected_support,
+            self.volume_limits,
+            self.hex_color,
+            selected_options,
+            self.filtered_points
+        )
+        self.draw_model_3D(fig, selected_options)  # Pass each figure to be drawn on the Tkinter Canvas
 
 
 
     def deploy_at(self):
-        self.get_umbral_points(0.8)
+        self.get_umbral_points(1.8)
 
     def deploy_pt(self):
-        self.get_umbral_points(1.8)
+        self.get_umbral_points(0.8)
 
 
 
