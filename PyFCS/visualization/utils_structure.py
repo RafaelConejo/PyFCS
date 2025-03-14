@@ -440,7 +440,6 @@ def is_point_inside_volume(point, volume):
 
 
 
-
 def delta_e_ciede2000(lab1, lab2):
     """
     Implementación de la fórmula CIEDE2000 para calcular la diferencia de color entre dos colores en el espacio Lab.

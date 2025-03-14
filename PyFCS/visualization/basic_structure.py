@@ -15,6 +15,8 @@ from PyQt5.QtCore import QUrl
 from PyQt5.QtWidgets import QVBoxLayout, QWidget, QApplication, QMainWindow
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QEventLoop
+import matplotlib.pyplot as plt
+
 
 
 
@@ -1656,6 +1658,12 @@ class PyFCSApp:
                 state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,
                 command=lambda: self.plot_proto_options(window_id)
             )
+            menu.add_separator()
+            menu.add_command(
+                label="Color Mapping All",
+                state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,
+                command=lambda: self.color_mapping_all(window_id)
+            )
             menu.post(event.x_root, event.y_root)
 
         # Function to make the floating window movable
@@ -2458,6 +2466,168 @@ class PyFCSApp:
         except Exception as e:
             self.custom_warning("Display Error", f"Error displaying the original image: {e}")
             return
+
+
+
+
+    def color_mapping_all(self, window_id):
+        """Aplica el mapeo de color a la imagen y actualiza la ventana flotante con una barra de progreso."""
+
+        # Verificar si la ventana existe
+        items = self.image_canvas.find_withtag(window_id)
+        if not items:
+            self.custom_warning("No Window", f"No floating window found with id {window_id}")
+            return
+
+        # Configurar estados iniciales
+        self.MEMBERDEGREE[window_id] = False
+        self.ORIGINAL_IMG[window_id] = True
+
+        # Inicializar proto_options y eliminar leyenda si existe
+        self.proto_options = getattr(self, "proto_options", {})
+        legend_frame = self.proto_options.pop(window_id, None)
+        if legend_frame and legend_frame.winfo_exists():
+            legend_frame.destroy()
+
+        # Mostrar indicador de carga
+        self.show_loading()
+
+        def update_progress(current_step, total_steps):
+            """Actualizar la barra de progreso."""
+            self.progress["value"] = (current_step / total_steps) * 100
+            self.load_window.update_idletasks()
+
+        def color_mapping_and_legend(fuzzy_color_space, prototypes, image, parent_canvas, progress_callback=None):
+            """
+            Procesa una imagen para mapear sus colores a un espacio de color difuso y devuelve 
+            la imagen recoloreada y una leyenda en un Frame de Tkinter.
+            """
+            img_np = np.array(image)
+
+            if img_np.shape[-1] == 4:
+                img_np = img_np[..., :3]  
+
+            img_np = img_np / 255.0
+            lab_img = color.rgb2lab(img_np)
+
+            color_map = plt.cm.get_cmap('tab20', len(prototypes))
+            prototype_colors = {prototype.label: color_map(i)[:3] for i, prototype in enumerate(prototypes)}
+
+            height, width = image.height, image.width
+            total_pixels = height * width
+            colorized_image = np.zeros((height, width, 3), dtype=np.uint8) 
+            membership_cache = {}
+
+            processed_pixels = 0  
+
+            for y in range(height):
+                for x in range(width):
+                    lab_color = tuple(lab_img[y, x])
+
+                    if lab_color in membership_cache:
+                        membership_degrees = membership_cache[lab_color]
+                    else:
+                        membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
+                        membership_cache[lab_color] = membership_degrees  
+
+                    if not membership_degrees:
+                        colorized_image[y, x] = [0, 0, 0]  
+                    else:
+                        best_prototype = max(membership_degrees, key=membership_degrees.get)
+                        rgb_color = np.array(prototype_colors[best_prototype]) * 255
+                        colorized_image[y, x] = rgb_color.astype(np.uint8)
+
+                    processed_pixels += 1
+                    if progress_callback:
+                        progress_callback(processed_pixels, total_pixels)
+
+            # Crear la leyenda en un Frame de Tkinter
+            legend_frame = tk.Frame(parent_canvas, bg="white", relief="solid", bd=1)
+
+            # Crear Canvas con barras de desplazamiento
+            canvas = tk.Canvas(legend_frame, bg="white")
+            v_scroll = tk.Scrollbar(legend_frame, orient=tk.VERTICAL, command=canvas.yview)
+            h_scroll = tk.Scrollbar(legend_frame, orient=tk.HORIZONTAL, command=canvas.xview)
+
+            canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
+            # Empaquetar la estructura
+            canvas.grid(row=0, column=0, sticky="nsew")
+            v_scroll.grid(row=0, column=1, sticky="ns")
+            h_scroll.grid(row=1, column=0, sticky="ew")
+
+            # Crear un Frame dentro del Canvas para los elementos de la leyenda
+            inner_frame = tk.Frame(canvas, bg="white")
+            canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+
+            # Función para actualizar el área de scroll
+            def on_frame_configure(event):
+                canvas.update_idletasks()  # Asegurar que Tkinter procese los cambios antes de ajustar scrollregion
+                canvas.configure(scrollregion=canvas.bbox("all"))
+
+            inner_frame.bind("<Configure>", on_frame_configure)
+
+            # Permitir desplazamiento con rueda del mouse
+            def _on_mouse_wheel(event):
+                canvas.yview_scroll(-1 * (event.delta // 120), "units")
+
+            canvas.bind_all("<MouseWheel>", _on_mouse_wheel)
+
+            # Agregar etiquetas de colores a la leyenda
+            for i, prototype in enumerate(prototypes):
+                color_rgb = np.array(prototype_colors[prototype.label]) * 255
+                color_hex = "#{:02x}{:02x}{:02x}".format(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
+                label = tk.Label(inner_frame, text=prototype.label, bg=color_hex, 
+                                fg="black" if np.mean(color_rgb) > 128 else "white", padx=5, pady=2)
+                label.pack(fill="x", padx=5, pady=2)
+
+            # **Solución clave**: Asegurar que `canvas.bbox("all")` capture todo el contenido
+            inner_frame.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+
+            return colorized_image, legend_frame
+
+        def run_process():
+            """Ejecutar el procesamiento en un hilo separado."""
+            try:
+                recolored_image, new_legend_frame = color_mapping_and_legend(
+                    self.fuzzy_color_space, self.prototypes, self.images[window_id], 
+                    self.image_canvas, progress_callback=update_progress
+                )
+
+                self.image_canvas.after(0, lambda: update_ui(recolored_image, new_legend_frame))
+            
+            except Exception as e:
+                self.image_canvas.after(0, lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}"))
+            
+            finally:
+                self.image_canvas.after(0, self.hide_loading)  
+
+        def update_ui(recolored_image, new_legend_frame):
+            """Actualizar la UI de forma segura desde el hilo principal."""
+            try:
+                self.modified_image[window_id] = recolored_image
+
+                new_width, new_height = self.image_dimensions[window_id]
+                img_tk = ImageTk.PhotoImage(Image.fromarray(recolored_image).resize((new_width, new_height), Image.Resampling.LANCZOS))
+
+                self.floating_images[window_id] = img_tk
+                image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
+                if image_items:
+                    self.image_canvas.itemconfig(image_items[0], image=img_tk)
+                else:
+                    self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
+
+                x1, y1, x2, _ = self.image_canvas.bbox(items[0])
+                new_legend_frame.place(x=x2 + 10, y=y1, width=100, height=200)
+
+                self.proto_options[window_id] = new_legend_frame
+
+            except Exception as e:
+                self.custom_warning("Display Error", f"Error displaying the image: {e}")
+
+        threading.Thread(target=run_process, daemon=True).start()
 
 
 
