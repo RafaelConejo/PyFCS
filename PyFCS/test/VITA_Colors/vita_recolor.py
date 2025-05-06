@@ -24,7 +24,7 @@ from PyFCS.input_output.utils import Utils
 
 def main():
     var = "VITA_CLASSICAL\\A2"
-    colorspace_name = 'VITA-CLASSICAL-BLACK-2.cns'
+    colorspace_name = 'VITA-CLASSICAL-BLACK.cns'
 
     initial_directory = os.getcwd()
     img_path = os.path.join(initial_directory, "image_test", f"{var}.png")

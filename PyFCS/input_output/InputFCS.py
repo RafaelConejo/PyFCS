@@ -171,9 +171,29 @@ class InputFCS(Input):
             with open(file_path, 'r') as file:
                 lines = iter(file.readlines())
 
-                fcs_name = re.search(r'@name(\w+)', next(lines)).group(1)  # @name
-                cs = re.search(r'@colorSpace(\w+)', next(lines)).group(1) # @colorSpace
-                num_colors = int(re.search(r'@numberOfColors(\w+)', next(lines)).group(1))  # @numberOfColors
+                fcs_name = None
+                cs = None
+                num_colors = None
+
+                for line in lines:
+                    if fcs_name is None:
+                        match = re.search(r'@name(\w+)', line)
+                        if match:
+                            fcs_name = match.group(1)
+
+                    if cs is None:
+                        match = re.search(r'@colorSpace(\w+)', line)
+                        if match:
+                            cs = match.group(1)
+
+                    if num_colors is None:
+                        match = re.search(r'@numberOfColors(\w+)', line)
+                        if match:
+                            num_colors = int(match.group(1))
+
+                    # If find all
+                    if fcs_name and cs and num_colors is not None:
+                        break
 
                 # Read Colors and values
                 colors = []

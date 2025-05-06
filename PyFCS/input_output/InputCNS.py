@@ -42,6 +42,7 @@ class InputCNS(Input):
         try:
             with open(file_path, 'r') as file:
                 lines = file.readlines()
+                lines_2 = lines.copy()
 
                 # Find the line containing '@colorSpace_'
                 start_index = None
@@ -51,9 +52,16 @@ class InputCNS(Input):
                         start_index = i
                         color_space = line.split('_')[1].strip()
                         break
-
-                if start_index is None:
-                    raise ValueError("Line '@colorSpace_' not found in the file.")
+                
+                if color_space is None:
+                    color_space = "RGB"
+                    for i, line in enumerate(lines):
+                        line_stripped = line.strip()
+                        if line_stripped.startswith('#') or not line_stripped:
+                            continue  # skip comments
+                        if '@crispColorSpaceType' in line_stripped:
+                            start_index = i 
+                            break
 
                 # Extract number of components and number of cases
                 num_components = int(lines[start_index + 1].strip())
