@@ -229,7 +229,22 @@ class PyFCSApp:
             lambda e: self.scrollable_canvas.configure(scrollregion=self.scrollable_canvas.bbox("all"))
         )
 
-        self.inner_frame.bind("<MouseWheel>", lambda event: self.on_mouse_wheel(event, self.scrollable_canvas))
+        # Aquí aplicamos el método de scroll para el mouse
+        def bind_scroll_events(canvas):
+            def _on_mousewheel(event):
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+            def _bind_mousewheel(event):
+                canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+            def _unbind_mousewheel(event):
+                canvas.unbind_all("<MouseWheel>")
+
+            canvas.bind("<Enter>", _bind_mousewheel)
+            canvas.bind("<Leave>", _unbind_mousewheel)
+
+        # Llamamos a la función para habilitar el scroll para ese canvas específico
+        bind_scroll_events(self.scrollable_canvas)
 
         # Add the inner_frame to the canvas
         self.canvas_window = self.scrollable_canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
@@ -244,6 +259,8 @@ class PyFCSApp:
         )
         if self.COLOR_SPACE:
             self.select_all_button.pack(pady=5)
+
+
 
 
 
@@ -290,10 +307,10 @@ class PyFCSApp:
         self.data_window.create_window((0, 0), window=self.inner_frame_data, anchor="nw")
 
         # Ensure the canvas scrolls properly with the frame
-        def update_scroll_region(event):
+        def update_scroll_region_2(event):
             self.data_window.configure(scrollregion=self.data_window.bbox("all"))
 
-        self.inner_frame_data.bind("<Configure>", update_scroll_region)
+        self.inner_frame_data.bind("<Configure>", update_scroll_region_2)
 
         # Bottom bar with centered "Add Color" and "Apply" buttons
         bottom_bar = tk.Frame(data_tab, bg="#e0e0e0", pady=5)
@@ -868,7 +885,7 @@ class PyFCSApp:
         Allows the user to select colors through a popup and creates a new fuzzy color space.
         """
         # Load color data from the BASIC.cns file
-        color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces', 'cns', 'BASIC.cns')
+        color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces', 'cns', 'ISCC_NBS_BASIC.cns')
         colors = utils_structure.load_color_data(color_space_path)
 
         # Create a popup window for color selection
@@ -1513,9 +1530,9 @@ class PyFCSApp:
     
     def open_image(self):
         """Allows the user to select an image file and display its colors in columns with a scrollbar."""
-        # Set the initial directory to 'image_test\\VITA_CLASSICAL\\' within the current working directory
+        # Set the initial directory to 'image_test\\' within the current working directory
         initial_directory = os.getcwd()
-        initial_directory = os.path.join(initial_directory, 'image_test\\VITA_CLASSICAL\\')
+        initial_directory = os.path.join(initial_directory, 'image_test\\')
         
         # Define the file types that can be selected (e.g., .jpg, .jpeg, .png, .bmp)
         filetypes = [("All Files", "*.jpg;*.jpeg;*.png;*.bmp")]
@@ -2270,44 +2287,39 @@ class PyFCSApp:
 
 
     def plot_proto_options(self, window_id):
-        """
-        Creates a frame within the image canvas with radio buttons and scrollbars for selecting color options.
-        The frame is positioned next to the floating window associated with the given window_id.
-        """
-        # Find the window associated with the window_id to ensure it exists
+        # if window exist
         items = self.image_canvas.find_withtag(window_id)
         if not items:
             self.custom_warning("No Window", f"No floating window found with id {window_id}")
             return
 
-        # Set initial states for the member degree and original image for the window
         self.MEMBERDEGREE[window_id] = False
         self.ORIGINAL_IMG[window_id] = True
 
-        # Initialize the proto_options dictionary if it does not exist
         if not hasattr(self, "proto_options"):
             self.proto_options = {}
 
-        # If a proto_options window already exists for this window_id, destroy it first
         if window_id in self.proto_options and self.proto_options[window_id].winfo_exists():
             self.proto_options[window_id].destroy()
 
-        # Create a new proto_options frame for the window
         proto_options = tk.Frame(self.image_canvas, bg="white", relief="solid", bd=1)
         self.proto_options[window_id] = proto_options
 
-        # Create the canvas within the proto_options frame and set up its grid
-        canvas = tk.Canvas(proto_options, bg="white")
+        canvas = tk.Canvas(proto_options, bg="white", highlightthickness=0)
+        v_scroll = tk.Scrollbar(proto_options, orient=tk.VERTICAL, command=canvas.yview)
+        h_scroll = tk.Scrollbar(proto_options, orient=tk.HORIZONTAL, command=canvas.xview)
+
+        canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
         canvas.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        h_scroll.grid(row=1, column=0, sticky="ew")
 
-        # Create an inner frame inside the canvas to hold the radio buttons
         inner_frame = tk.Frame(canvas, bg="white")
-        canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+        canvas_window = canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
 
-        # Initialize a variable to hold the selected color (default value is '0')
         self.current_proto = tk.StringVar(value=0)
 
-        # Create radio buttons for each color in the color matrix
         for color in self.color_matrix:
             rb = tk.Radiobutton(
                 inner_frame,
@@ -2318,35 +2330,57 @@ class PyFCSApp:
                 anchor="w",
                 font=("Arial", 10),
                 relief="flat",
-                command=lambda color=color: self.get_proto_percentage(window_id)  # Fetch percentage for selected color
+                command=lambda color=color: self.get_proto_percentage(window_id)
             )
-            rb.pack(fill="x", padx=5, pady=2)  # Pack each radio button with padding
+            rb.pack(fill="x", padx=5, pady=2)
 
-        # Create vertical scrollbar for the canvas
-        v_scroll = tk.Scrollbar(proto_options, orient=tk.VERTICAL, command=canvas.yview)
-        v_scroll.grid(row=0, column=1, sticky="ns", padx=5)
+        def resize_inner(event):
+            canvas.itemconfig("inner", width=event.width)
 
-        # Create horizontal scrollbar for the canvas
-        h_scroll = tk.Scrollbar(proto_options, orient=tk.HORIZONTAL, command=canvas.xview)
-        h_scroll.grid(row=1, column=0, sticky="ew", padx=5)
-        h_scroll.bind("<MouseWheel>", lambda event: self.on_mouse_wheel(event, h_scroll))
+        canvas.bind("<Configure>", resize_inner)
 
-        # Configure the canvas to respond to the scrollbars
-        canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
 
-        # Update the inner frame's layout and set the scrollable region for the canvas
+        inner_frame.bind("<Configure>", lambda e: canvas.after_idle(on_frame_configure, e))
+
+        # Mouse control
+        def _on_mouse_wheel(event):
+            if event.delta:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+
+        # correct scroll
+        def bind_scroll_events(canvas):
+            def _on_mousewheel(event):
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+            def _bind_mousewheel(event):
+                canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+            def _unbind_mousewheel(event):
+                canvas.unbind_all("<MouseWheel>")
+
+            canvas.bind("<Enter>", _bind_mousewheel)
+            canvas.bind("<Leave>", _unbind_mousewheel)
+
+        bind_scroll_events(canvas)
+
         inner_frame.update_idletasks()
-        canvas.config(scrollregion=canvas.bbox("all"))
+        canvas.configure(scrollregion=canvas.bbox("all"))
 
-        # Make sure the proto_options frame resizes properly when its content changes
         proto_options.grid_rowconfigure(0, weight=1)
         proto_options.grid_columnconfigure(0, weight=1)
 
-        # Position the proto_options frame next to the floating window
-        x1, y1, x2, y2 = self.image_canvas.bbox(items[0])  # Get the bounding box of the floating window
-        frame_x = x2 + 10  # Position proto_options slightly to the right of the floating window
-        frame_y = y1  # Align it vertically with the floating window
-        proto_options.place(x=frame_x, y=frame_y, width=100, height=200)  # Place proto_options at calculated position
+        x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
+        frame_x = x2 + 10
+        frame_y = y1
+        proto_options.place(x=frame_x, y=frame_y, width=100, height=200)
+
+
 
 
 
@@ -2471,36 +2505,36 @@ class PyFCSApp:
 
 
     def color_mapping_all(self, window_id):
-        """Aplica el mapeo de color a la imagen y actualiza la ventana flotante con una barra de progreso."""
+        """Applies color mapping to the image and updates the floating window with a progress bar."""
 
-        # Verificar si la ventana existe
+        # Check if the window exists
         items = self.image_canvas.find_withtag(window_id)
         if not items:
             self.custom_warning("No Window", f"No floating window found with id {window_id}")
             return
 
-        # Configurar estados iniciales
+        # Set initial states
         self.MEMBERDEGREE[window_id] = False
         self.ORIGINAL_IMG[window_id] = True
 
-        # Inicializar proto_options y eliminar leyenda si existe
+        # Initialize proto_options and remove legend if it exists
         self.proto_options = getattr(self, "proto_options", {})
         legend_frame = self.proto_options.pop(window_id, None)
         if legend_frame and legend_frame.winfo_exists():
             legend_frame.destroy()
 
-        # Mostrar indicador de carga
+        # Show loading indicator
         self.show_loading()
 
         def update_progress(current_step, total_steps):
-            """Actualizar la barra de progreso."""
+            """Update the progress bar."""
             self.progress["value"] = (current_step / total_steps) * 100
             self.load_window.update_idletasks()
 
         def color_mapping_and_legend(fuzzy_color_space, prototypes, image, parent_canvas, progress_callback=None):
             """
-            Procesa una imagen para mapear sus colores a un espacio de color difuso y devuelve 
-            la imagen recoloreada y una leyenda en un Frame de Tkinter.
+            Processes an image to map its colors to a fuzzy color space and returns 
+            the recolored image and a legend in a Tkinter Frame.
             """
             img_np = np.array(image)
 
@@ -2510,7 +2544,7 @@ class PyFCSApp:
             img_np = img_np / 255.0
             lab_img = color.rgb2lab(img_np)
 
-            color_map = plt.cm.get_cmap('tab20', len(prototypes))
+            color_map = plt.cm.get_cmap('hsv', len(prototypes))
             prototype_colors = {prototype.label: color_map(i)[:3] for i, prototype in enumerate(prototypes)}
 
             height, width = image.height, image.width
@@ -2541,39 +2575,69 @@ class PyFCSApp:
                     if progress_callback:
                         progress_callback(processed_pixels, total_pixels)
 
-            # Crear la leyenda en un Frame de Tkinter
+            # Create the legend in a Tkinter Frame
             legend_frame = tk.Frame(parent_canvas, bg="white", relief="solid", bd=1)
 
-            # Crear Canvas con barras de desplazamiento
-            canvas = tk.Canvas(legend_frame, bg="white")
+            # Configure expansion inside the grid
+            legend_frame.grid_rowconfigure(0, weight=1)
+            legend_frame.grid_columnconfigure(0, weight=1)
+
+            # Create Canvas with scrollbars
+            canvas = tk.Canvas(legend_frame, bg="white", highlightthickness=0)
             v_scroll = tk.Scrollbar(legend_frame, orient=tk.VERTICAL, command=canvas.yview)
             h_scroll = tk.Scrollbar(legend_frame, orient=tk.HORIZONTAL, command=canvas.xview)
 
             canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
 
-            # Empaquetar la estructura
+            # Pack using grid
             canvas.grid(row=0, column=0, sticky="nsew")
             v_scroll.grid(row=0, column=1, sticky="ns")
             h_scroll.grid(row=1, column=0, sticky="ew")
 
-            # Crear un Frame dentro del Canvas para los elementos de la leyenda
+            # Create a Frame inside the Canvas for the legend elements
             inner_frame = tk.Frame(canvas, bg="white")
-            canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+            window_id_in_canvas = canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
 
-            # Función para actualizar el área de scroll
+
+            # Ensure the inner_frame width follows the canvas size
+            def resize_inner(event):
+                canvas.itemconfig("inner", width=event.width)
+
+            canvas.bind("<Configure>", resize_inner)
+
+            # Function to update scrollable area
             def on_frame_configure(event):
-                canvas.update_idletasks()  # Asegurar que Tkinter procese los cambios antes de ajustar scrollregion
                 canvas.configure(scrollregion=canvas.bbox("all"))
 
-            inner_frame.bind("<Configure>", on_frame_configure)
+            inner_frame.bind("<Configure>", lambda e: canvas.after_idle(on_frame_configure, e))
 
-            # Permitir desplazamiento con rueda del mouse
+            # Allow scrolling with mouse wheel
             def _on_mouse_wheel(event):
-                canvas.yview_scroll(-1 * (event.delta // 120), "units")
+                if event.delta:  # Windows / macOS
+                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                else:  # Linux
+                    if event.num == 4:
+                        canvas.yview_scroll(-1, "units")
+                    elif event.num == 5:
+                        canvas.yview_scroll(1, "units")
 
-            canvas.bind_all("<MouseWheel>", _on_mouse_wheel)
+            # Apply scroll functionality for the canvas
+            def bind_scroll_events(canvas):
+                def _on_mousewheel(event):
+                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-            # Agregar etiquetas de colores a la leyenda
+                def _bind_mousewheel(event):
+                    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+                def _unbind_mousewheel(event):
+                    canvas.unbind_all("<MouseWheel>")
+
+                canvas.bind("<Enter>", _bind_mousewheel)
+                canvas.bind("<Leave>", _unbind_mousewheel)
+
+            bind_scroll_events(canvas)
+
+            # Add color labels to the legend
             for i, prototype in enumerate(prototypes):
                 color_rgb = np.array(prototype_colors[prototype.label]) * 255
                 color_hex = "#{:02x}{:02x}{:02x}".format(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
@@ -2581,7 +2645,7 @@ class PyFCSApp:
                                 fg="black" if np.mean(color_rgb) > 128 else "white", padx=5, pady=2)
                 label.pack(fill="x", padx=5, pady=2)
 
-            # **Solución clave**: Asegurar que `canvas.bbox("all")` capture todo el contenido
+            # **Key solution**: Ensure `canvas.bbox("all")` captures all content
             inner_frame.update_idletasks()
             canvas.configure(scrollregion=canvas.bbox("all"))
 
@@ -2589,7 +2653,7 @@ class PyFCSApp:
             return colorized_image, legend_frame
 
         def run_process():
-            """Ejecutar el procesamiento en un hilo separado."""
+            """Run the processing in a separate thread."""
             try:
                 recolored_image, new_legend_frame = color_mapping_and_legend(
                     self.fuzzy_color_space, self.prototypes, self.images[window_id], 
@@ -2605,7 +2669,7 @@ class PyFCSApp:
                 self.image_canvas.after(0, self.hide_loading)  
 
         def update_ui(recolored_image, new_legend_frame):
-            """Actualizar la UI de forma segura desde el hilo principal."""
+            """Update the UI safely from the main thread."""
             try:
                 self.modified_image[window_id] = recolored_image
 
@@ -2628,6 +2692,8 @@ class PyFCSApp:
                 self.custom_warning("Display Error", f"Error displaying the image: {e}")
 
         threading.Thread(target=run_process, daemon=True).start()
+
+
 
 
 
