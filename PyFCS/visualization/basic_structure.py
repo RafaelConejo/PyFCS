@@ -102,6 +102,14 @@ class PyFCSApp:
         load_fcs = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'LoadFCS.png')
         load_fcs = Image.open(load_fcs)
         load_fcs = ImageTk.PhotoImage(load_fcs)
+
+        at_image = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'AT.png')
+        at_image = Image.open(at_image)
+        at_image = ImageTk.PhotoImage(at_image)
+
+        pt_image = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'PT.png')
+        pt_image = Image.open(pt_image)
+        pt_image = ImageTk.PhotoImage(pt_image)
         # Buttons for image operations
         tk.Button(
             image_manager_frame,
@@ -151,14 +159,20 @@ class PyFCSApp:
         color_evaluation_frame.grid(row=0, column=2, padx=5, pady=5)
 
         tk.Button(color_evaluation_frame,
-            text="Deploy AT", 
-            command=self.deploy_at
+            text="Display AT", 
+            image=at_image,
+            command=self.deploy_at,
+            compound="left" 
         ).pack(side="left", padx=5)
+        color_evaluation_frame.at_image = at_image
 
         tk.Button(color_evaluation_frame,
-            text="Deploy PT", 
-            command=self.deploy_pt
+            text="Display PT", 
+            image=pt_image,
+            command=self.deploy_pt,
+            compound="left" 
         ).pack(side="left", padx=5)
+        color_evaluation_frame.pt_image = pt_image
 
 
         # Main content frame for tabs and the right area
@@ -191,7 +205,7 @@ class PyFCSApp:
         # Create radiobuttons for different 3D options
         options = ["Representative", "Core", "0.5-cut", "Support"]
         for option in options:
-            var = tk.BooleanVar(value=False)
+            var = tk.BooleanVar(value=(option == "Representative"))
             self.model_3d_options[option] = var
             tk.Checkbutton(
                 buttons_frame,
@@ -397,6 +411,28 @@ class PyFCSApp:
         warning_win.grab_set()
 
 
+    
+    def show_loading_color_space(self):
+        """
+        Display a simple loading window with the message 'Loading Color Space...'.
+        """
+        self.load_window = tk.Toplevel(self.root)
+        self.load_window.title("Loading")
+        self.load_window.resizable(False, False)
+
+        # Label with large font
+        label = tk.Label(self.load_window, text="Loading Color Space...", font=("Arial", 16, "bold"), padx=20, pady=20)
+        label.pack(pady=(10, 5))
+
+        self.center_popup(self.load_window, 300, 100)
+
+        # Disable interactions with the main window
+        self.load_window.grab_set()
+
+        # Ensure the loading window updates and displays properly
+        self.load_window.update()  
+
+
 
     def show_loading(self):
         """
@@ -458,7 +494,6 @@ class PyFCSApp:
             padx=20, pady=20, font=("Helvetica", 12, "bold"), justify="center",
             bg="#f0f0f0", fg="#333333"  # Background color and text color
         )
-        
         about_label.pack(pady=20)  # Add the label to the popup window with padding
 
         # Create a frame to style the close button
@@ -569,6 +604,8 @@ class PyFCSApp:
             for window_id in self.floating_images:
                 self.show_original_image(window_id)
 
+        self.show_loading_color_space()
+
         # Store file path and base name
         self.file_path = filename
         self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
@@ -600,6 +637,8 @@ class PyFCSApp:
         else:
             # Notify the user if the file format is unsupported
             self.custom_warning("File Error", "Unsupported file format.")
+
+        self.hide_loading()
 
 
 
@@ -991,6 +1030,7 @@ class PyFCSApp:
             selected_options = [key for key, var in self.model_3d_options.items() if var.get()]  # Get all selected options
             
             if not selected_options and self.graph_widget:
+                self.display_color_buttons(self.color_matrix)
                 self.graph_widget.get_tk_widget().destroy() 
             else:
                 fig = Visual_tools.plot_combined_3D(
@@ -1673,7 +1713,7 @@ class PyFCSApp:
             menu.add_command(
                 label="Color Mapping",
                 state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,
-                command=lambda: self.plot_proto_options(window_id)
+                command=lambda: self.color_mapping(window_id)
             )
             menu.add_separator()
             menu.add_command(
@@ -2286,7 +2326,7 @@ class PyFCSApp:
 
 
 
-    def plot_proto_options(self, window_id):
+    def color_mapping(self, window_id):
         # if window exist
         items = self.image_canvas.find_withtag(window_id)
         if not items:
@@ -2318,13 +2358,15 @@ class PyFCSApp:
         inner_frame = tk.Frame(canvas, bg="white")
         canvas_window = canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
 
-        self.current_proto = tk.StringVar(value=0)
+        if not hasattr(self, "current_protos"):
+            self.current_protos = {}
+        self.current_protos[window_id] = tk.StringVar(value=0)
 
         for color in self.color_matrix:
             rb = tk.Radiobutton(
                 inner_frame,
                 text=color,
-                variable=self.current_proto,
+                variable=self.current_protos[window_id],
                 value=color,
                 bg="white",
                 anchor="w",
@@ -2399,7 +2441,7 @@ class PyFCSApp:
             """Processing function that will run in a separate thread."""
             try:
                 # Get the index of the selected prototype color
-                pos = self.color_matrix.index(self.current_proto.get())
+                pos = self.color_matrix.index(self.current_protos[window_id].get())
 
                 # Generate the grayscale image
                 grayscale_image_array = utils_structure.get_proto_percentage(
@@ -2650,6 +2692,31 @@ class PyFCSApp:
             canvas.configure(scrollregion=canvas.bbox("all"))
 
 
+            # Original invented colors
+            original_colors = [np.array(prototype_colors[proto.label]) * 255 for proto in self.prototypes]
+
+            # Colors from self.hex_color
+            hex_colors = list(self.hex_color.keys())
+            alt_colors = [
+                np.array([
+                    int(hex_colors[i][j:j+2], 16)
+                    for j in (1, 3, 5)
+                ]) for i, proto in enumerate(self.prototypes)
+            ]
+
+            # Save both color sets
+            if not hasattr(self, "prototype_color_sets"):
+                self.prototype_color_sets = {}
+            if not hasattr(self, "current_color_scheme"):
+                self.current_color_scheme = {}
+
+            self.prototype_color_sets[window_id] = {
+                "original": original_colors,
+                "alt": alt_colors
+            }
+            self.current_color_scheme[window_id] = "original"
+
+
             return colorized_image, legend_frame
 
         def run_process():
@@ -2668,6 +2735,66 @@ class PyFCSApp:
             finally:
                 self.image_canvas.after(0, self.hide_loading)  
 
+        
+        def recolor(window_id):
+            # Select alternative color set
+            current = self.current_color_scheme[window_id]
+            new = "alt" if current == "original" else "original"
+            self.current_color_scheme[window_id] = new
+
+            original_colors = self.prototype_color_sets[window_id][current]
+            new_colors = self.prototype_color_sets[window_id][new]
+
+            img = self.modified_image[window_id]
+            recolored = img.copy()
+
+            # Reselect colors sets
+            for orig_color, new_color in zip(original_colors, new_colors):
+                mask = np.all(img == orig_color.astype(np.uint8), axis=-1)
+                recolored[mask] = new_color.astype(np.uint8)
+
+            # Update image and legend 
+            new_width, new_height = self.image_dimensions[window_id]
+            img_tk = ImageTk.PhotoImage(Image.fromarray(recolored).resize((new_width, new_height), Image.Resampling.LANCZOS))
+            self.floating_images[window_id] = img_tk
+            self.modified_image[window_id] = recolored
+            image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
+            if image_items:
+                self.image_canvas.itemconfig(image_items[0], image=img_tk)
+            else:
+                self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
+
+            # New frame
+            new_legend_frame = self.proto_options[window_id]
+            canvas = new_legend_frame.winfo_children()[0]
+            inner_frame_id = canvas.find_withtag("inner")
+            if inner_frame_id:
+                inner_frame = canvas.nametowidget(canvas.itemcget(inner_frame_id[0], "window"))
+            else:
+                self.custom_warning("Legend Error", "No inner frame found in legend canvas")
+                return
+
+            # Clean labels in inner_frame 
+            for widget in inner_frame.winfo_children():
+                widget.destroy()
+
+            # Add new colors labels
+            for i, prototype in enumerate(self.prototypes):
+                current_colors = self.prototype_color_sets[window_id][self.current_color_scheme[window_id]]
+                color_rgb = current_colors[i]
+                color_hex = "#{:02x}{:02x}{:02x}".format(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
+
+                label = tk.Label(inner_frame, text=prototype.label, bg=color_hex, 
+                                fg="black" if np.mean(color_rgb) > 128 else "white", padx=5, pady=2)
+                label.pack(fill="x", padx=5, pady=2)
+
+                # Update scroll 
+                inner_frame.update_idletasks()
+                canvas.configure(scrollregion=canvas.bbox("all"))
+
+            self.image_canvas.after(0, lambda: update_ui(recolored, new_legend_frame))
+
+
         def update_ui(recolored_image, new_legend_frame):
             """Update the UI safely from the main thread."""
             try:
@@ -2685,6 +2812,14 @@ class PyFCSApp:
 
                 x1, y1, x2, _ = self.image_canvas.bbox(items[0])
                 new_legend_frame.place(x=x2 + 10, y=y1, width=100, height=200)
+
+                use_original_button = tk.Button(
+                    new_legend_frame, 
+                    text="Alt. Colors", 
+                    command=lambda: recolor(window_id)
+                )
+                use_original_button.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+
 
                 self.proto_options[window_id] = new_legend_frame
 
