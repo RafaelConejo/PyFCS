@@ -1,10 +1,8 @@
 import tkinter as tk
 import os
-from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar
+from tkinter import ttk, filedialog
 import numpy as np
 from skimage import color
-from PIL import Image, ImageTk
-import matplotlib.pyplot as plt
 from sklearn.cluster import DBSCAN
 from scipy.spatial import distance
 

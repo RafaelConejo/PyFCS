@@ -1,13 +1,10 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from matplotlib import cm
 import plotly.graph_objects as go
 
 ### my libraries ###
 from PyFCS.geometry.Point import Point
-from PyFCS import Prototype
 
 class Visual_tools:
     @staticmethod
