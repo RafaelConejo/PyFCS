@@ -2,18 +2,17 @@
 PyFCS is a Python library that introduces fuzzy color spaces for a more realistic and flexible representation of color, overcoming the limitations of traditional methods. It is based on the previous work of the Java library JFCS and utilizes fuzzy logic and conceptual space theory, leveraging Python's strengths for data and image analysis.
 
 ### How to use
-To get started, you can clone the .git repository or download the library as a .zip file using the `Clone or Download` option. 
+If no modifications to the source code are needed, follow these steps for a quick installation:
 
-If you don't need to make any modifications, we suggest following these steps:
-1. Download the library as a .zip file from the "Clone or Download" option or from the releases section.
-2. Unzip the file into a local folder.
-3. In the main directory, install the external libraries using the following command: 
+1. Access the project repository on GitHub and download the library using the \textbf{"Clone or Download"} option, or from the releases section by downloading the \texttt{.zip} file.
+2. Extract the contents of the \texttt{.zip} file to a preferred local folder.
+3. Open a terminal (CMD or PowerShell), navigate to the project’s root directory, and run the following command to install the required dependencies:
 ```
 pip install -r PyFCS\external\requirements.txt
 ```
-4. Now it's possible to use one of the different test programs located in the test directory. Here's an example of usage, _color_percentage_ is just an example of the test programs; it can be run with all the files present in that test directory:
+4. Once the dependencies are installed, the main structure of the interface can be launched by executing:
 ```
-python PyFCS\test\color_percentage.py
+python PyFCS\visualization\basic_structure.py
 ```
 
 

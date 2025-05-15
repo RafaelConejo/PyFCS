@@ -158,21 +158,21 @@ class PyFCSApp:
         color_evaluation_frame = tk.LabelFrame(main_frame, text="Color Evaluation", bg="gray95", padx=10, pady=10)
         color_evaluation_frame.grid(row=0, column=2, padx=5, pady=5)
 
-        tk.Button(color_evaluation_frame,
-            text="Display AT", 
-            image=at_image,
-            command=self.deploy_at,
-            compound="left" 
-        ).pack(side="left", padx=5)
-        color_evaluation_frame.at_image = at_image
+        # tk.Button(color_evaluation_frame,
+        #     text="Display AT", 
+        #     image=at_image,
+        #     command=self.deploy_at,
+        #     compound="left" 
+        # ).pack(side="left", padx=5)
+        # color_evaluation_frame.at_image = at_image
 
-        tk.Button(color_evaluation_frame,
-            text="Display PT", 
-            image=pt_image,
-            command=self.deploy_pt,
-            compound="left" 
-        ).pack(side="left", padx=5)
-        color_evaluation_frame.pt_image = pt_image
+        # tk.Button(color_evaluation_frame,
+        #     text="Display PT", 
+        #     image=pt_image,
+        #     command=self.deploy_pt,
+        #     compound="left" 
+        # ).pack(side="left", padx=5)
+        # color_evaluation_frame.pt_image = pt_image
 
 
         # Main content frame for tabs and the right area
