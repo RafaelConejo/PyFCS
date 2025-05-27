@@ -21,6 +21,8 @@ python PyFCS\test\color_percentage.py
 
 The GUI enhances usability by offering a practical way to apply fuzzy color models, grounded in fuzzy logic and conceptual space theory, building upon previous developments like the JFCS Java library.
 
+A detailed manual explaining all options, functionalities, and usage fundamentals of the interface is available in the **PyFCS_GUI_Manual** directory.
+
 ### 🔧 How to Use
 If no modifications to the source code are needed, follow these steps for a quick installation on **Windows**:
 
