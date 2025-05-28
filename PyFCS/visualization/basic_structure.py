@@ -2420,7 +2420,7 @@ class PyFCSApp:
         x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
         frame_x = x2 + 10
         frame_y = y1
-        proto_options.place(x=frame_x, y=frame_y, width=100, height=200)
+        proto_options.place(x=frame_x, y=frame_y, width=100, height=300)
 
 
 
@@ -2811,7 +2811,7 @@ class PyFCSApp:
                     self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
 
                 x1, y1, x2, _ = self.image_canvas.bbox(items[0])
-                new_legend_frame.place(x=x2 + 10, y=y1, width=100, height=200)
+                new_legend_frame.place(x=x2 + 10, y=y1, width=100, height=300)
 
                 use_original_button = tk.Button(
                     new_legend_frame, 
