@@ -42,7 +42,7 @@ If no modifications to the source code are needed, follow these steps for a quic
     python PyFCS\visualization\basic_structure.py
     ```
 
-###🐧 Additional Notes for Linux Users
+### 🐧 Additional Notes for Linux Users
 If you're using Linux, make sure to install system-level dependencies required by the GUI before running the program. These are not Python packages and must be installed separately:
    ```bash
    sudo apt update
