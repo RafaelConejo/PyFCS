@@ -1,20 +1,6 @@
 # PyFCS: A Python library to create and manipulate Fuzzy Color Spaces
 PyFCS is a Python library that introduces fuzzy color spaces for a more realistic and flexible representation of color, overcoming the limitations of traditional methods. It is based on the previous work of the Java library JFCS and utilizes fuzzy logic and conceptual space theory, leveraging Python's strengths for data and image analysis.
 
-### How to use (CLI Mode)
-If no modifications to the source code are needed, follow these steps for a quick installation:
-
-1. Access the project repository on GitHub and download the library using the \textbf{"Clone or Download"} option, or from the releases section by downloading the \texttt{.zip} file.
-2. Extract the contents of the \texttt{.zip} file to a preferred local folder.
-3. Open a terminal (CMD or PowerShell), navigate to the project’s root directory, and run the following command to install the required dependencies:
-```
-pip install -r PyFCS\external\requirements.txt
-```
-4. Now it's possible to use one of the different test programs located in the test directory. Here's an example of usage, _color_percentage_ is just an example of the test programs; it can be run with all the files present in that test directory:
-```
-python PyFCS\test\color_percentage.py
-```
-
 
 ## PyFCS GUI
 **PyFCS GUI** is a graphical user interface developed as an extension of the open-source PyFCS library. It enables the creation, visualization, and application of fuzzy color spaces derived from either color palettes or image data. This tool combines interactive 3D exploration, advanced color mapping, and reusable export features, making it useful for perceptual analysis, artistic exploration, and scientific research.
