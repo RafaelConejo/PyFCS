@@ -1584,10 +1584,13 @@ class PyFCSApp:
         """Allows the user to select an image file and display its colors in columns with a scrollbar."""
         # Set the initial directory to 'image_test\\' within the current working directory
         initial_directory = os.getcwd()
-        initial_directory = os.path.join(initial_directory, 'image_test\\')
+        initial_directory = os.path.join(os.getcwd(), 'image_test')
         
         # Define the file types that can be selected (e.g., .jpg, .jpeg, .png, .bmp)
-        filetypes = [("All Files", "*.jpg;*.jpeg;*.png;*.bmp")]
+        filetypes = [
+            ("Image Files", "*.jpg *.jpeg *.png *.bmp *.gif *.tiff"),
+            ("All Files", "*.*")
+        ]
         
         # Open a file dialog for the user to select an image
         filename = filedialog.askopenfilename(
