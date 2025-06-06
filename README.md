@@ -42,6 +42,15 @@ If no modifications to the source code are needed, follow these steps for a quic
     python PyFCS\visualization\basic_structure.py
     ```
 
+###🐧 Additional Notes for Linux Users
+If you're using Linux, make sure to install system-level dependencies required by the GUI before running the program. These are not Python packages and must be installed separately:
+   ```bash
+   sudo apt update
+   sudo apt install python3.12-tk
+   pip install PyQtWebEngine
+   ```
+These steps ensure full compatibility with features such as Tkinter-based dialogs and enhanced Qt-based rendering on Linux systems.
+
 ---
 
 ### 📬 Contact & Support
