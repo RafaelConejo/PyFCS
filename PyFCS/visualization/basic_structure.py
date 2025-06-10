@@ -84,7 +84,7 @@ class PyFCSApp:
 
         # "Image Manager" section
         image_manager_frame = tk.LabelFrame(main_frame, text="Image Manager", bg="gray95", padx=10, pady=10)
-        image_manager_frame.grid(row=0, column=0, padx=5, pady=5)
+        image_manager_frame.pack(side="left", fill="both", expand=False, padx=5, pady=5)
 
         # Load Icons 
         load_image = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'LoadImage.png')
@@ -130,7 +130,7 @@ class PyFCSApp:
 
         # "Fuzzy Color Space Manager" section
         fuzzy_manager_frame = tk.LabelFrame(main_frame, text="Fuzzy Color Space Manager", bg="gray95", padx=10, pady=10)
-        fuzzy_manager_frame.grid(row=0, column=1, padx=5, pady=5)
+        fuzzy_manager_frame.pack(side="left", fill="both", expand=False, padx=5, pady=5)
 
         # Buttons for fuzzy color space management
         tk.Button(fuzzy_manager_frame,
@@ -156,7 +156,7 @@ class PyFCSApp:
 
         # "Color Evaluation" section
         color_evaluation_frame = tk.LabelFrame(main_frame, text="Color Evaluation", bg="gray95", padx=10, pady=10)
-        color_evaluation_frame.grid(row=0, column=2, padx=5, pady=5)
+        color_evaluation_frame.pack(side="left", fill="both", expand=False, padx=5, pady=5)
 
         tk.Button(color_evaluation_frame,
             text="Display AT", 
