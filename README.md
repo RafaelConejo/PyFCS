@@ -10,51 +10,65 @@ The GUI enhances usability by offering a practical way to apply fuzzy color mode
 A detailed manual explaining all options, functionalities, and usage fundamentals of the interface is available in the **PyFCS_GUI_Manual** directory.
 
 ### 🔧 How to Use
-If no modifications to the source code are needed, follow these steps for a quick installation on **Windows**:
 
-1. Access the project repository on GitHub and download the library using the **"Clone or Download"** button, or from the **Releases** section by downloading the `.zip` file.
-2. Extract the contents of the `.zip` file to a preferred local folder.
-3. Make sure you have **Python 3.9 or higher** installed, along with **pip** (or use an environment manager like [Anaconda](https://www.anaconda.com/)).
+If no modifications to the source code are needed, follow these steps for a quick installation:
 
-   - To install pip manually (if not already available), you can run:
-     ```bash
-     python -m ensurepip --upgrade
-     ```
+#### 📦 1. Download the Project
+
+Access the project repository on GitHub and download the library using the **"Clone or Download"** button, or from the **Releases** section by downloading the `.zip` file.
+
+Extract the contents of the `.zip` file to a preferred local folder.
+
+#### 🐍 2. Make Sure Python is Installed
+
+Ensure you have **Python 3.9 or higher** installed, along with **pip**. You can also use a virtual environment manager like [Anaconda](https://www.anaconda.com/).
+
+If `pip` is not available, you can install it manually with:
+
+  ```bash
+  python -m ensurepip --upgrade
+  ```
 
 4. Open a terminal, navigate to the root directory of the project, and install the required dependencies:
 
-   - **On Windows:**
-     ```bash
-     pip install -r PyFCS\external\requirements.txt
-     ```
+  - **🪟 Windows**
+    ```bash
+    pip install -r PyFCS\external\requirements.txt
 
-   - **On Linux/macOS:**
-     ```bash
-     pip install -r PyFCS/external/requirements.txt
-     ```
+    # Once the dependencies are installed, launch the main interface structure by executing:
+    python PyFCS\visualization\basic_structure.py
+    ```
 
-5. Once the dependencies are installed, launch the main interface structure by executing:
+  - **🐧 Linux**
+    ```bash
+    python3 -m venv venv_pyfcs
+    source venv_pyfcs/bin/activate
+    python3 -m pip install -r PyFCS/external/requirements.txt
 
-   - **On Windows:**
-     ```bash
-     python PyFCS\visualization\basic_structure.py
-     ```
+    # Install system dependencies (required manually)
+    sudo apt install python3.12-tk
+    python3 -m pip install PyQtWebEngine
 
-   - **On Linux/macOS:**
-     ```bash
-     python PyFCS/visualization/basic_structure.py
-     ```
+    # Launch the interface
+    python3 PyFCS/visualization/basic_structure.py
+    ```
 
----
+    These steps ensure full compatibility with features such as Tkinter-based dialogs and enhanced Qt-based rendering on Linux systems.
 
-### 🐧 Additional Notes for Linux Users
-If you're using Linux, make sure to install system-level dependencies required by the GUI before running the program. These are not Python packages and must be installed separately:
-   ```bash
-   sudo apt update
-   sudo apt install python3.12-tk
-   pip install PyQtWebEngine
-   ```
-These steps ensure full compatibility with features such as Tkinter-based dialogs and enhanced Qt-based rendering on Linux systems.
+  - **🍎 macOS**
+    ```bash
+    python3 -m venv venv_pyfcs
+    source venv_pyfcs/bin/activate
+    python3 -m pip install -r PyFCS/external/requirements.txt
+
+    # (If needed) Install Tkinter via Homebrew
+    brew install python-tk
+
+    # Launch the interface
+    python3 PyFCS/visualization/basic_structure.py
+    ```
+
+
 
 ---
 
