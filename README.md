@@ -29,7 +29,7 @@ If `pip` is not available, you can install it manually with:
   python -m ensurepip --upgrade
   ```
 
-4. Open a terminal, navigate to the root directory of the project, and install the required dependencies:
+#### </> 3. Open a terminal, navigate to the root directory of the project, and install the required dependencies:
 
   - **🪟 Windows**
     ```bash
