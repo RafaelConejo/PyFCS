@@ -19,7 +19,7 @@ echo "🐍 Using Python: $($PYTHON_PATH --version)"
 echo "📍 Python location: $PYTHON_PATH"
 
 # 3. Check that tkinter works
-echo "🔎 Checking tkinter..."
+echo "🔎 Checking tkinter (please close the window by clicking 'Quit' to continue)..."
 $PYTHON_PATH -c "import tkinter; tkinter._test()" || {
     echo "❌ tkinter is not working properly. Aborting."
     exit 1
