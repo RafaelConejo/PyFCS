@@ -20,11 +20,7 @@ If you don't need to modify the source code, follow the steps below for a quick 
 Download the repository from GitHub using the **"Clone or Download"** button or from the **Releases** section as a `.zip` file.  
 Extract the contents to a local folder of your choice.
 
----
-
 ### 💻 Installation by Operating System
-
----
 
 #### 🪟 Windows
 
@@ -41,7 +37,7 @@ Then, install the required Python dependencies and launch the interface:
 ```bash
 pip install -r PyFCS\external\requirements.txt
 
-python PyFCS\visualization\basic_structure.py
+python PyFCS\visualization\main_structure.py
 ```
 
 ---
@@ -52,14 +48,8 @@ python PyFCS\visualization\basic_structure.py
 # Make the setup script executable (only once)
 chmod +x ./PyFCS/external/setup_pyfcs_linux.sh
 
-# Run the setup script
+# Run the setup script and launch the interface with:
 ./PyFCS/external/setup_pyfcs_linux.sh
-```
-
-After the setup completes, launch the interface with:
-
-```bash
-python3 PyFCS/visualization/basic_structure.py
 ```
 
 > 💡 The script creates a virtual environment, installs Python dependencies, and handles system packages like `tkinter`.
@@ -72,14 +62,8 @@ python3 PyFCS/visualization/basic_structure.py
 # Make the setup script executable (only once)
 chmod +x ./PyFCS/external/setup_pyfcs_mac.sh
 
-# Run the setup script
+# Run the setup script and launch the interface with:
 ./PyFCS/external/setup_pyfcs_mac.sh
-```
-
-After the setup completes, launch the interface with:
-
-```bash
-python PyFCS/visualization/basic_structure.py
 ```
 
 > 💡 This script uses Homebrew to install Python (if needed), ensures `tkinter` works, and configures everything automatically.
