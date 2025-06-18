@@ -5,6 +5,23 @@ exec > >(tee "$LOGFILE") 2>&1
 
 echo "🚀 Starting automatic setup for PyFCS environment (clean mode with log)..."
 
+# Check if Homebrew is installed
+if ! command -v brew &>/dev/null; then
+    echo "❌ Homebrew is not installed. Please install it first: https://brew.sh/"
+    exit 1
+fi
+
+ARCH=$(uname -m)
+echo "🧠 Detected architecture: $ARCH"
+
+if [[ "$ARCH" == "arm64" ]]; then
+    BREW_PREFIX="/opt/homebrew"
+else
+    BREW_PREFIX="/usr/local"
+fi
+
+eval "$(${BREW_PREFIX}/bin/brew shellenv)"
+
 # 1. Check if Python is installed via Homebrew
 if ! brew list python &> /dev/null; then
     echo "🔧 Installing the latest version of Python via Homebrew..."
@@ -14,7 +31,7 @@ else
 fi
 
 # 2. Get the path to the latest installed version of Python
-PYTHON_PATH="$(brew --prefix python)/bin/python3"
+PYTHON_PATH="$(${BREW_PREFIX}/bin/brew --prefix python)/bin/python3"
 echo "🐍 Using Python: $($PYTHON_PATH --version)"
 echo "📍 Python location: $PYTHON_PATH"
 
