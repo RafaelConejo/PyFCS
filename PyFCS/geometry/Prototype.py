@@ -1,6 +1,7 @@
 import numpy as np
 from typing import List
 import subprocess
+import os
 
 ### my libraries ###
 from PyFCS.geometry.Plane import Plane
@@ -73,7 +74,7 @@ class Prototype:
                 return None
 
             # Save output to a temporary file
-            temp_output_file = "PyFCS\\external\\temp\\temp_voronoi_output.txt"
+            temp_output_file = os.path.join('PyFCS', 'external', 'temp', 'temp_voronoi_output.txt')
             with open(temp_output_file, 'w') as f:
                 f.write(output)
 
@@ -92,7 +93,7 @@ class Prototype:
             list: List of Voronoi volumes.
         """
         volumes = []
-        file_path = "PyFCS\\external\\temp\\temp_voronoi_output.txt"
+        file_path = os.path.join("PyFCS", "external", "temp", "temp_voronoi_output.txt")
         points = np.vstack((self.positive, self.negatives))
 
         with open(file_path, 'r') as file:
