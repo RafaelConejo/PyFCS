@@ -176,8 +176,35 @@ class PyFCSApp:
 
 
         # Main content frame for tabs and the right area
-        main_content_frame = tk.Frame(root, bg="gray82")
-        main_content_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Canvas wrapper
+        canvas_frame = tk.Frame(root, bg="gray82")
+        canvas_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Main Canvas
+        self.main_canvas = tk.Canvas(canvas_frame, bg="gray82", highlightthickness=0)
+        self.main_canvas.pack(side="left", fill="both", expand=True)
+
+        # Scrollbars
+        self.vertical_scrollbar = tk.Scrollbar(canvas_frame, orient="vertical", command=self.main_canvas.yview)
+        self.vertical_scrollbar.pack(side="right", fill="y")
+
+        self.horizontal_scrollbar = tk.Scrollbar(root, orient="horizontal", command=self.main_canvas.xview)
+        self.horizontal_scrollbar.pack(side="bottom", fill="x")
+
+        # Config scrollbars
+        self.main_canvas.configure(xscrollcommand=self.horizontal_scrollbar.set,
+                                yscrollcommand=self.vertical_scrollbar.set)
+
+        # Intern Frame
+        main_content_frame = tk.Frame(self.main_canvas, bg="gray82")
+        self.canvas_window = self.main_canvas.create_window((0, 0), window=main_content_frame, anchor="nw")
+
+        # Update dinamic scroll region
+        def update_main_scroll(event):
+            self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all"))
+
+        main_content_frame.bind("<Configure>", update_main_scroll)
 
         # Frame for image display
         image_area_frame = tk.LabelFrame(main_content_frame, text="Image Display", bg="gray95", padx=10, pady=10)
@@ -188,14 +215,25 @@ class PyFCSApp:
         self.image_canvas.pack(fill="both", expand=True)
 
         # Notebook for tabs
-        notebook = ttk.Notebook(main_content_frame)
-        notebook.pack(side="right", fill="both", expand=True, padx=5, pady=5)
+        self.notebook = ttk.Notebook(main_content_frame)
+        self.notebook.pack(side="right", fill="both", expand=True, padx=5, pady=5)
+
+
+        # Callback resize 
+        def on_root_resize(event):
+            width = self.root.winfo_width()
+            height = self.root.winfo_height()
+
+            self.image_canvas.config(width=int(width * 0.3), height=height - 150)
+            self.notebook.config(width=int(width * 0.7), height=height - 150)
+
+        self.root.bind("<Configure>", on_root_resize)
 
 
 
         # "Model 3D" tab
-        model_3d_tab = tk.Frame(notebook, bg="gray95")
-        notebook.add(model_3d_tab, text="Model 3D")
+        model_3d_tab = tk.Frame(self.notebook, bg="gray95")
+        self.notebook.add(model_3d_tab, text="Model 3D")
 
         # Dictionary to store the state of each checkbox
         self.model_3d_options = {}
@@ -216,13 +254,16 @@ class PyFCSApp:
                 command=self.on_option_select
             ).pack(side="left", padx=20)
 
+        paned = tk.PanedWindow(model_3d_tab, orient="horizontal", sashrelief="raised", bg="gray95")
+        paned.pack(fill="both", expand=True)
+
         # Canvas for the 3D graph
-        self.Canvas1 = tk.Frame(model_3d_tab, bg="white", borderwidth=2, relief="ridge")
-        self.Canvas1.pack(side="left", fill="both", expand=True)
+        self.Canvas1 = tk.Frame(paned, bg="white", borderwidth=2, relief="ridge", width=500)
+        paned.add(self.Canvas1, stretch="always")
 
         # Frame for color buttons on the right
-        self.colors_frame = tk.Frame(model_3d_tab, bg="gray95", width=50)
-        self.colors_frame.pack(side="right", fill="y", padx=2, pady=10)
+        self.colors_frame = tk.Frame(paned, bg="gray95", width=2)
+        paned.add(self.colors_frame)
 
         # Canvas to enable scrolling
         self.scrollable_canvas = tk.Canvas(self.colors_frame, bg="gray95", highlightthickness=0)
@@ -287,8 +328,8 @@ class PyFCSApp:
 
 
         # "Data" tab
-        data_tab = tk.Frame(notebook, bg="gray95")
-        notebook.add(data_tab, text="Data")
+        data_tab = tk.Frame(self.notebook, bg="gray95")
+        self.notebook.add(data_tab, text="Data")
 
         # Header with centered "Name"
         name_data = tk.Frame(data_tab, bg="#e0e0e0", pady=5)
@@ -1958,6 +1999,186 @@ class PyFCSApp:
         )
 
 
+    def addColor_to_image(self, window, colors, update_ui_callback):
+        """
+        Opens a popup window to add a new color by entering LAB values or selecting a color from a color wheel.
+        Returns the color name and LAB values if the user confirms the input.
+        """
+        popup = tk.Toplevel(window)
+        popup.title("Add New Color")
+        popup.geometry("500x500")
+        popup.resizable(False, False)
+        popup.transient(window)
+        popup.grab_set()
+
+        self.center_popup(popup, 500, 300)  # Center the popup window
+
+        # Variables to store user input
+        color_name_var = tk.StringVar()
+        l_value_var = tk.StringVar()
+        a_value_var = tk.StringVar()
+        b_value_var = tk.StringVar()
+
+        result = {"color_name": None, "lab": None}  # Dictionary to store the result
+
+        # Title and instructions
+        ttk.Label(popup, text="Add New Color", font=("Helvetica", 14, "bold")).pack(pady=10)
+        ttk.Label(popup, text="Enter the LAB values and the color name:").pack(pady=5)
+
+        # Form frame for input fields
+        form_frame = ttk.Frame(popup)
+        form_frame.pack(padx=20, pady=10)
+
+        # Color name field
+        # ttk.Label(form_frame, text="Color Name:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        # ttk.Entry(form_frame, textvariable=color_name_var, width=30).grid(row=0, column=1, padx=5, pady=5)
+
+        # L value field
+        ttk.Label(form_frame, text="L Value (0-100):").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        ttk.Entry(form_frame, textvariable=l_value_var, width=10).grid(row=1, column=1, padx=5, pady=5)
+
+        # A value field
+        ttk.Label(form_frame, text="A Value (-128 to 127):").grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        ttk.Entry(form_frame, textvariable=a_value_var, width=10).grid(row=2, column=1, padx=5, pady=5)
+
+        # B value field
+        ttk.Label(form_frame, text="B Value (-128 to 127):").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        ttk.Entry(form_frame, textvariable=b_value_var, width=10).grid(row=3, column=1, padx=5, pady=5)
+
+        def confirm_color():
+            """
+            Validates the input and adds the new color to the colors dictionary.
+            Closes the popup if the input is valid.
+            """
+            try:
+                color_name = color_name_var.get().strip()
+                l_value = float(l_value_var.get())
+                a_value = float(a_value_var.get())
+                b_value = float(b_value_var.get())
+
+                # Validate inputs
+                # if not color_name:
+                #     raise ValueError("The color name cannot be empty.")
+                if not (0 <= l_value <= 100):
+                    raise ValueError("L value must be between 0 and 100.")
+                if not (-128 <= a_value <= 127):
+                    raise ValueError("A value must be between -128 and 127.")
+                if not (-128 <= b_value <= 127):
+                    raise ValueError("B value must be between -128 and 127.")
+                # if color_name in colors:
+                #     raise ValueError(f"The color name '{color_name}' already exists.")
+
+                # Store the result
+                result["color_name"] = color_name
+                result["lab"] = {"L": l_value, "A": a_value, "B": b_value}
+
+                # Add the new color as a dict
+                colors.append({
+                    "lab": (l_value, a_value, b_value),
+                    "rgb": utils_structure.lab_to_rgb((l_value, a_value, b_value)),  # asumiendo que tienes esta función
+                    "source_image": "added_manually"
+                })
+
+                if update_ui_callback:
+                    update_ui_callback()  # Actualiza la interfaz si es necesario
+
+                popup.destroy()
+
+            except ValueError as e:
+                self.custom_warning("Invalid Input", str(e))  # Show error message for invalid input
+
+        def browse_color():
+            """
+            Opens a color picker window to select a color from a color wheel.
+            Converts the selected color to LAB values and updates the input fields.
+            """
+            color_picker = tk.Toplevel()
+            color_picker.title("Select a Color")
+            color_picker.geometry("350x450")
+            color_picker.transient(popup)
+            color_picker.grab_set()
+
+            # Position the color picker window to the right of the "Add New Color" window
+            x_offset = popup.winfo_x() + popup.winfo_width() + 10
+            y_offset = popup.winfo_y()
+            color_picker.geometry(f"350x450+{x_offset}+{y_offset}")
+
+            canvas_size = 300
+            center = canvas_size // 2
+            radius = center - 5
+
+            def hsv_to_rgb(h, s, v):
+                """Converts HSV to RGB in the range 0-255."""
+                r, g, b = colorsys.hsv_to_rgb(h, s, v)
+                return int(r * 255), int(g * 255), int(b * 255)
+
+            def draw_color_wheel():
+                """Draws the color wheel on the canvas."""
+                for y in range(canvas_size):
+                    for x in range(canvas_size):
+                        dx, dy = x - center, y - center
+                        dist = math.sqrt(dx**2 + dy**2)
+                        if dist <= radius:
+                            angle = math.atan2(dy, dx)
+                            hue = (angle / (2 * math.pi)) % 1
+                            r, g, b = hsv_to_rgb(hue, 1, 1)
+                            color_code = f'#{r:02x}{g:02x}{b:02x}'
+                            canvas.create_line(x, y, x + 1, y, fill=color_code)
+
+            def on_click(event):
+                """Gets the selected color from the color wheel and updates the LAB values."""
+                x, y = event.x, event.y
+                dx, dy = x - center, y - center
+                dist = math.sqrt(dx**2 + dy**2)
+
+                if dist <= radius:
+                    angle = math.atan2(dy, dx)
+                    hue = (angle / (2 * math.pi)) % 1
+                    r, g, b = hsv_to_rgb(hue, 1, 1)
+                    color_hex = f'#{r:02x}{g:02x}{b:02x}'
+
+                    preview_canvas.config(bg=color_hex)  # Update the preview canvas
+
+                    # Convert RGB to LAB
+                    rgb = np.array([[r, g, b]]) / 255
+                    lab = color.rgb2lab(rgb.reshape((1, 1, 3)))[0][0]
+
+                    # Update the LAB values in the main window
+                    l_value_var.set(f"{lab[0]:.2f}")
+                    a_value_var.set(f"{lab[1]:.2f}")
+                    b_value_var.set(f"{lab[2]:.2f}")
+
+            def confirm_selection():
+                """Closes the color picker window."""
+                color_picker.destroy()
+
+            # Create and draw the color wheel
+            canvas = tk.Canvas(color_picker, width=canvas_size, height=canvas_size)
+            canvas.pack()
+            draw_color_wheel()
+            canvas.bind("<Button-1>", on_click)
+
+            # Preview canvas for selected color
+            preview_canvas = tk.Canvas(color_picker, width=100, height=50, bg="white")
+            preview_canvas.pack(pady=10)
+
+            # Confirm button
+            ttk.Button(color_picker, text="Confirm", command=confirm_selection).pack(pady=10)
+
+        # Button frame for "Browse Color" and "Add" buttons
+        button_frame = ttk.Frame(popup)
+        button_frame.pack(pady=20)
+
+        ttk.Button(button_frame, text="Browse Color", command=browse_color, style="Accent.TButton").pack(side="left", padx=10)
+        ttk.Button(button_frame, text="Add Color", command=confirm_color, style="Accent.TButton").pack(side="left", padx=10)
+
+        popup.wait_window()  # Wait for the popup to close
+
+        if result["color_name"] is None or result["lab"] is None:
+            return None, None
+        return result["color_name"], result["lab"]  # Return the result
+
+
 
     def display_detected_colors(self, colors, threshold, min_samples):
         """
@@ -2154,7 +2375,16 @@ class PyFCSApp:
             command=lambda: self.add_new_image_colors(popup, colors, threshold, min_samples),
             style="Accent.TButton"
         )
-        add_colors_button.pack(side="left", padx=20)
+        add_colors_button.pack(side="left", padx=10)
+
+        # --- New "Add New Color" button inserted here ---
+        add_single_color_button = ttk.Button(
+            button_frame,
+            text="Add Color",
+            command=lambda: self.addColor_to_image(popup, colors, update_color_frames),
+            style="Accent.TButton"
+        )
+        add_single_color_button.pack(side="left", padx=10)
 
         save_button = ttk.Button(
             button_frame,
@@ -2162,11 +2392,11 @@ class PyFCSApp:
             command=lambda: [self.process_fcs(colors), popup.destroy()],
             style="Accent.TButton"
         )
-        save_button.pack(side="left", padx=20)
+        save_button.pack(side="left", padx=10)
 
         # Style for buttons
         style = ttk.Style()
-        style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
+        style.configure("Accent.TButton", font=("Helvetica", 8, "bold"), padding=10)
 
 
 
