@@ -405,6 +405,18 @@ class PyFCSApp:
         # Bind the Escape key to toggle fullscreen mode
         self.root.bind("<Escape>", self.toggle_fullscreen)
 
+        # Keyboard shortcuts
+        self.root.bind("<Control-o>", lambda event: self.open_image())       # Ctrl+O to open image
+        self.root.bind("<Control-s>", lambda event: self.save_image())       # Ctrl+S to save image
+        self.root.bind("<Control-w>", lambda event: self.close_all_image())  # Ctrl+W to close all images
+        self.root.bind("<Control-n>", lambda event: self.show_menu_create_fcs())   # Ctrl+N to create new color space
+        self.root.bind("<Control-l>", lambda event: self.load_color_space())       # Ctrl+L to load color space
+        self.root.bind("<Control-a>", lambda event: self.select_all_color())       # Ctrl+A to select all colors
+
+        # Switch between Data and Model 3D
+        self.root.bind("<Control-Tab>", lambda event: self.switch_tab(notebook, forward=True))
+        self.root.bind("<Control-Shift-Tab>", lambda event: self.switch_tab(notebook, forward=False))
+
 
 
 
@@ -437,7 +449,19 @@ class PyFCSApp:
             self.root.geometry(f"{screen_width}x{screen_height}+0+0")
 
 
+
+    def switch_tab(self, notebook, forward=True):
+        """Cambiar entre pestañas del notebook (Ctrl+Tab)."""
+        current_index = notebook.index(notebook.select())
+        total_tabs = len(notebook.tabs())
+        if forward:
+            new_index = (current_index + 1) % total_tabs
+        else:
+            new_index = (current_index - 1) % total_tabs
+        notebook.select(new_index)
+
     
+
     def custom_warning(self, title="Warning", message="Warning"):
         """Creates a custom, aesthetic warning message window with gray tones."""
         warning_win = tk.Toplevel(self.root)
@@ -455,6 +479,13 @@ class PyFCSApp:
                         relief="flat", activebackground="#8c8c8c", 
                         command=warning_win.destroy)
         btn_ok.pack(pady=5)
+
+        # Bind keyboard keys to close the warning (Enter and Escape)
+        warning_win.bind("<Return>", lambda event: warning_win.destroy())
+        warning_win.bind("<Escape>", lambda event: warning_win.destroy())
+
+        # Optionally focus on the button so Enter works immediately
+        btn_ok.focus_set()
         
         # Center the window
         self.center_popup(warning_win, 400, 100)
