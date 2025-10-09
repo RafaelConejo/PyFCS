@@ -37,6 +37,7 @@ class PyFCSApp:
         # Initialize main app variables
         self.root = root
         self.COLOR_SPACE = False  # Flag for managing color spaces
+        self.FIRST_DBSCAN = True  # Flag to the first DBSCAN
         self.ORIGINAL_IMG = {}  # Bool function original image 
         self.MEMBERDEGREE = {}  # Bool function Color Mapping
         self.hex_color = []  # Save points colors for visualization
@@ -310,16 +311,36 @@ class PyFCSApp:
         # Add the inner_frame to the canvas
         self.canvas_window = self.scrollable_canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
 
+        self.color_buttons_frame = tk.Frame(self.inner_frame, bg=self.inner_frame["bg"])
+        self.color_buttons_frame.pack(pady=5)
+        button_style = {
+            "width": 10,
+            "height": 1,
+            "font": ("Sans", 10, "bold"),
+            "relief": "raised",
+            "bd": 2,
+            "cursor": "hand2"
+        }
+
         # "Select All" button for color operations
         self.select_all_button = tk.Button(
-            self.inner_frame,
+            self.color_buttons_frame,
             text="Select All",
-            bg="lightgray",
-            font=("Sans", 10),
-            command=self.select_all_color  
+            command=self.select_all_color,
+            **button_style
         )
         if self.COLOR_SPACE:
             self.select_all_button.pack(pady=5)
+
+        # "Deselect All" button for color operations
+        self.deselect_all_button = tk.Button(
+            self.color_buttons_frame,
+            text="Deselect All",
+            command=self.deselect_all_color,
+            **button_style
+        )
+        if self.COLOR_SPACE:
+            self.deselect_all_button.pack(pady=5)
 
 
 
@@ -660,6 +681,7 @@ class PyFCSApp:
         self.COLOR_SPACE = True
         self.MEMBERDEGREE = {key: True for key in self.MEMBERDEGREE}
         self.select_all_button.pack(pady=5)
+        self.deselect_all_button.pack(pady=5)
 
         self.selected_centroids = self.color_data
         self.selected_hex_color = self.hex_color
@@ -1072,6 +1094,7 @@ class PyFCSApp:
             self.custom_warning(message="No images are currently available to display.")
             return  # Early return if no images are available
 
+        self.FIRST_DBSCAN = True
         # Create a popup window for image selection
         popup, listbox = utils_structure.create_selection_popup(
             parent=self.image_canvas,
@@ -1267,6 +1290,23 @@ class PyFCSApp:
                 var.set(True)
             
             self.on_option_select()  # Redraw the 3D model after selecting all colors
+
+    def deselect_all_color(self):
+        """Handles the 'deselect all' option for colors."""
+        if self.COLOR_SPACE:
+            # Vaciar todas las listas/atributos relacionados con la selección
+            self.selected_centroids = []
+            self.selected_hex_color = []
+            self.selected_alpha = []
+            self.selected_core = []
+            self.selected_support = []
+
+            # Desmarcar todos los botones de selección de color
+            for _, var in self.selected_colors.items():
+                var.set(False)
+
+            self.on_option_select()  # Redibujar el modelo 3D sin colores seleccionados
+
 
 
 
@@ -3126,42 +3166,77 @@ class PyFCSApp:
     def get_umbral_points(self, threshold):
         """
         Filters points within the fuzzy color space volumes based on the given threshold.
-        Displays the filtered points in a 3D model.
+        Displays the filtered points in a 3D model with a loading indicator.
         """
+
         # Check if the fuzzy color space is loaded
         if not hasattr(self, 'COLOR_SPACE') or not self.COLOR_SPACE:
             self.custom_warning("No Color Space", "Please load a fuzzy color space before deploying AT or PT.")
             return
 
-        selected_options = [key for key, var in self.model_3d_options.items() if var.get()]  # Get all selected options
+        selected_options = [key for key, var in self.model_3d_options.items() if var.get()]
         if selected_options == ["Representative"]:
             return
-        
-        priority_map = {
-            "Support": self.selected_core,
-            "0.5-cut": self.selected_alpha,
-            "Core": self.selected_support
-        } 
-        selected_option = next((opt for opt in ["Support", "0.5-cut", "Core"] if opt in selected_options), None)
-        selected_volume = priority_map[selected_option]
-        
 
-        # Find PT or AT points
-        self.filtered_points = utils_structure.filter_points_with_threshold(selected_volume, threshold, step=0.5)
+        self.show_loading()  # 🔹 Mostrar indicador de carga
 
-        # Plot the filtered points and display the 3D model
-        fig = Visual_tools.plot_combined_3D(
-            self.file_base_name,
-            self.selected_centroids,
-            self.selected_core,
-            self.selected_alpha,
-            self.selected_support,
-            self.volume_limits,
-            self.hex_color,
-            selected_options,
-            self.filtered_points
-        )
-        self.draw_model_3D(fig, selected_options)  # Pass each figure to be drawn on the Tkinter Canvas
+        def update_progress(current_step, total_steps):
+            """
+            Updates the progress bar based on the current computation step.
+            """
+            progress_percentage = (current_step / total_steps) * 100
+            self.progress["value"] = progress_percentage
+            self.load_window.update_idletasks()
+
+        def run_threshold_process():
+            """
+            Runs the threshold-based filtering and 3D visualization in a separate thread.
+            """
+            try:
+                # Define prioridad de volumen
+                priority_map = {
+                    "Support": self.selected_core,
+                    "0.5-cut": self.selected_alpha,
+                    "Core": self.selected_support
+                }
+                selected_option = next((opt for opt in ["Support", "0.5-cut", "Core"] if opt in selected_options), None)
+                selected_volume = priority_map[selected_option]
+
+                # 🔸 Simular pasos para el progreso (puedes ajustar según tu cálculo real)
+                total_steps = 3
+
+                # Paso 1: Filtrar puntos
+                update_progress(1, total_steps)
+                self.filtered_points = utils_structure.filter_points_with_threshold(selected_volume, threshold, step=0.25)
+
+                # Paso 2: Crear el gráfico 3D
+                update_progress(2, total_steps)
+                fig = Visual_tools.plot_combined_3D(
+                    self.file_base_name,
+                    self.selected_centroids,
+                    self.selected_core,
+                    self.selected_alpha,
+                    self.selected_support,
+                    self.volume_limits,
+                    self.hex_color,
+                    selected_options,
+                    self.filtered_points
+                )
+
+                # Paso 3: Dibujar el modelo 3D
+                update_progress(3, total_steps)
+                self.load_window.after(0, lambda: self.draw_model_3D(fig, selected_options))
+
+            except Exception as e:
+                self.custom_warning("Error", f"An error occurred while filtering points: {e}")
+
+            finally:
+                # 🔹 Ocultar el loading al terminar
+                self.load_window.after(0, self.hide_loading)
+
+        # Ejecutar en hilo separado para no bloquear la UI
+        threading.Thread(target=run_threshold_process, daemon=True).start()
+
 
 
 

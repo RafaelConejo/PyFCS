@@ -2,100 +2,189 @@ import numpy as np
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import plotly.graph_objects as go
+import plotly.express as px
 
 ### my libraries ###
 from PyFCS.geometry.Point import Point
 
 class Visual_tools:
+    SHOW_LEGENDS = True
+
     @staticmethod
-    def plot_more_combined_3D(filename, color_data, core, alpha, support, volume_limits, hex_color, selected_options, filtered_points=None):
-        """Generates a 3D figure in Plotly by combining centroids and prototypes based on selected options."""
+    def plot_more_combined_3D(filename, color_data, core, alpha, support,
+                            volume_limits, hex_color, selected_options,
+                            filtered_points=None):
+        """Generates a 3D figure in Plotly combining centroids, prototypes, and filtered points."""
         fig = go.Figure()
 
+        # ---------- Helper: triangulate polygonal faces ----------
         def triangulate_face(vertices):
-            """Converts a polygonal face into triangles (fan triangulation)."""
             triangles = []
             for i in range(1, len(vertices) - 1):
                 triangles.append([vertices[0], vertices[i], vertices[i + 1]])
             return triangles
 
+        # ---------- Plot centroids ----------
         def plot_centroids():
-            """Draws RGB points in 3D."""
             if not color_data:
                 return
-            
+
             lab_values = [v['positive_prototype'] for v in color_data.values()]
             lab_array = np.array(lab_values)
             A, B, L = lab_array[:, 1], lab_array[:, 2], lab_array[:, 0]
 
-            colors = [next((k for k, v in hex_color.items() if np.array_equal(v, lab)), "#000000") for lab in lab_values]
+            colors = [next((k for k, v in hex_color.items() if np.array_equal(v, lab)), "#000000")
+                    for lab in lab_values]
 
             fig.add_trace(go.Scatter3d(
                 x=A, y=B, z=L,
                 mode='markers',
-                marker=dict(size=5, color=colors, opacity=0.8, line=dict(color='black', width=1)),
+                marker=dict(size=5, color=colors, opacity=0.8,
+                            line=dict(color='black', width=1)),
                 name="Centroids"
             ))
 
-        def plot_prototypes(prototypes):
-            """Draws volumes as 3D meshes."""
+        # ---------- Plot prototypes ----------
+        def plot_prototypes(prototypes, label):
             if not prototypes:
                 return
             
-            for prototype in prototypes:
-                color = next((k for k, v in hex_color.items() if np.array_equal(prototype.positive, v)), "#000000")
+            global_flag = Visual_tools.SHOW_LEGENDS  # acceso a la bandera
+
+            # Detectar si hay puntos filtrados disponibles (para decidir si mostrar leyendas)
+            has_filtered = (
+                filtered_points and 
+                any(len(pts) > 0 for pts in filtered_points.values())
+            )
+
+            for idx, prototype in enumerate(prototypes):
+                color = next(
+                    (k for k, v in hex_color.items()
+                    if np.array_equal(prototype.positive, v)),
+                    "#000000"
+                )
+
                 vertices, faces = [], []
 
                 for face in prototype.voronoi_volume.faces:
                     if not face.infinity:
                         clipped = Visual_tools.clip_face_to_volume(np.array(face.vertex), volume_limits)
                         if len(clipped) >= 3:
-                            clipped = clipped[:, [1, 2, 0]]  # Reorder to a*, b*, L*
+                            clipped = clipped[:, [1, 2, 0]]  # reorder to a*, b*, L*
                             triangles = triangulate_face(clipped)
                             for tri in triangles:
-                                idx = len(vertices)
+                                idx0 = len(vertices)
                                 vertices.extend(tri)
-                                faces.append([idx, idx + 1, idx + 2])
+                                faces.append([idx0, idx0 + 1, idx0 + 2])
 
                 if vertices:
                     vertices = np.array(vertices)
+
+                    # 🔹 Mostrar en la leyenda solo si NO hay puntos filtrados
+                    show_legend = not has_filtered and global_flag
+
                     fig.add_trace(go.Mesh3d(
-                        x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
-                        i=[f[0] for f in faces], j=[f[1] for f in faces], k=[f[2] for f in faces],
-                        color=color, opacity=0.5, name="Prototype"
+                        x=vertices[:, 0],
+                        y=vertices[:, 1],
+                        z=vertices[:, 2],
+                        i=[f[0] for f in faces],
+                        j=[f[1] for f in faces],
+                        k=[f[2] for f in faces],
+                        color=color,
+                        opacity=0.5,
+                        name=(prototype.label),
+                        showlegend=show_legend,
+                        legendgroup=prototype.label,
                     ))
-        
-        def plot_filtered_points():
-            """Draws filtered points as black markers."""
-            if filtered_points:
-                for proto_name, points in filtered_points.items():
-                    if len(points) > 0:
-                        points_array = np.array(points)
-                        L_points, A_points, B_points = points_array[:, 0], points_array[:, 1], points_array[:, 2]
 
-                        fig.add_trace(go.Scatter3d(
-                            x=A_points, y=B_points, z=L_points,
-                            mode='markers',
-                            marker=dict(size=5, color='black', opacity=0.8, line=dict(color='black', width=1)),
-                            name=f"Filtered Points: {proto_name}"
-                        ))
+            Visual_tools.SHOW_LEGENDS = False
 
-        # Mapping of selected options to their corresponding functions
+        # ---------- Plot filtered points ----------
+        def plot_filtered_points(prototypes, point_color='black'):
+            """Plot filtered points only if they are inside the actual prototype volume."""
+            if not filtered_points or not prototypes:
+                return
+
+            # Paleta de colores de borde para distinguir volúmenes
+            border_colors = px.colors.qualitative.Dark24  # 24 colores distintos bien visibles
+
+            for proto_name, points in filtered_points.items():
+                idx = int(proto_name.split("_")[-1])  # e.g., "Volume_3" -> 3
+                if idx >= len(prototypes):
+                    continue
+
+                prototype = prototypes[idx]
+
+                # Filtrar puntos realmente dentro del volumen
+                points_inside = [
+                    p for p in points if prototype.voronoi_volume.isInside(Point(*p))
+                ]
+                if not points_inside:
+                    continue
+
+                pts = np.array(points_inside)
+                L, A, B = pts[:, 0], pts[:, 1], pts[:, 2]
+
+                # Tamaño adaptativo (más puntos → más pequeños)
+                point_size = max(4, min(10, int(300 / len(points_inside))))
+
+                # Asignar un color de borde único por volumen
+                border_color = border_colors[idx % len(border_colors)]
+
+                # 🔹 1️⃣ Trazado real (puntos en el gráfico)
+                fig.add_trace(go.Scatter3d(
+                    x=A, y=B, z=L,
+                    mode='markers',
+                    marker=dict(
+                        size=point_size,
+                        color=point_color,           # color base (rojo o negro)
+                        opacity=0.7,
+                        line=dict(color=border_color, width=0.8)
+                    ),
+                    name=f"{prototype.label}",
+                    legendgroup=f"{prototype.label}",
+                    showlegend=False,  # ❌ no mostrar esta en la leyenda
+                ))
+
+                # 🔹 2️⃣ Trazado “falso” solo para la leyenda
+                # Valores dummy fuera del rango
+                x_dummy = [volume_limits.comp2[0] - 10]  # un valor fuera del límite
+                y_dummy = [volume_limits.comp3[0] - 10]
+                z_dummy = [volume_limits.comp1[0] - 10]
+                fig.add_trace(go.Scatter3d(
+                    x=x_dummy, y=y_dummy, z=z_dummy,
+                    mode='markers',
+                    marker=dict(
+                        size=8,
+                        color=border_color,          # el color del borde será el color visible en la leyenda
+                        opacity=1.0,
+                        symbol='circle'
+                    ),
+                    name=f"{prototype.label}",
+                    legendgroup=f"{prototype.label}",
+                    showlegend=True,  # ✅ solo esta aparece en la leyenda
+                ))
+
+
+
+
+        # ---------- Mapping of user-selected options ----------
         options_map = {
-            "Representative": plot_centroids,
-            "0.5-cut": lambda: plot_prototypes(alpha),
-            "Core": lambda: plot_prototypes(core),
-            "Support": lambda: plot_prototypes(support),
+            "Representative": lambda: plot_centroids(),
+            "0.5-cut": lambda: plot_prototypes(alpha, "0.5-cut"),
+            "Core": lambda: plot_prototypes(core, "Core"),
+            "Support": lambda: plot_prototypes(support, "Support"),
         }
 
+        # Ejecutar trazados principales
         for option in selected_options:
             if option in options_map:
                 options_map[option]()
 
-        # Plot the filtered points if they exist
-        plot_filtered_points()
+        # 🔹 Llamar solo una vez a los puntos filtrados (siempre los mismos)
+        plot_filtered_points(core or alpha or support)
 
-        # Axis settings and limits
+        # ---------- Configure axes and layout ----------
         axis_limits = {}
         if volume_limits:
             axis_limits = dict(
@@ -115,7 +204,10 @@ class Visual_tools:
             title=dict(text=f"{filename}", font=dict(size=10), x=0.5, y=0.95)
         )
 
+        # Reiniciar la bandera global para futuras ejecuciones
+        Visual_tools.SHOW_LEGENDS = True
         return fig
+
 
 
 
@@ -172,24 +264,28 @@ class Visual_tools:
                             ax.add_collection3d(Poly3DCollection(valid_faces, facecolors=color, edgecolors='black', linewidths=1, alpha=0.5))
 
 
+                        if filtered_points is not None:
+                            # Represent filtered points as a zone of intensity (scatter or density)
+                            for idx, proto_name in enumerate(filtered_points):
+                                # Get the points for the current volume
+                                points = filtered_points[proto_name]
 
-                if filtered_points is not None:
-                    # Represent filtered points as a zone of intensity (scatter or density)
-                    for idx, proto_name in enumerate(filtered_points):
-                        # Get the points for the current volume
-                        points = filtered_points[proto_name]
+                                points_filter = [
+                                    p for p in points
+                                    if prototype.voronoi_volume.isInside(Point(*p))
+                                ]
 
-                        # Calculate the density of points within each volume (e.g., using a voxel grid)
-                        if len(points) > 0:
-                            # Split the points into A*, B*, and L* coordinates
-                            points_array = np.array(points)
-                            L_points, A_points, B_points = points_array[:, 0], points_array[:, 1], points_array[:, 2]
+                                # Calculate the density of points within each volume (e.g., using a voxel grid)
+                                if len(points_filter) > 0:
+                                    # Split the points into A*, B*, and L* coordinates
+                                    points_array = np.array(points_filter)
+                                    L_points, A_points, B_points = points_array[:, 0], points_array[:, 1], points_array[:, 2]
 
-                            # Use a scatter plot to represent the intensity of points
-                            # positive_color = np.array(prototype.positive)
-                            # opposite_color = np.array([positive_color[0], -positive_color[1], -positive_color[2]])
+                                    ax.scatter(A_points, B_points, L_points, c='red', marker='o', s=10, alpha=0.8)
 
-                            ax.scatter(A_points, B_points, L_points, c='k', marker='o', s=10, alpha=0.8)
+
+
+
 
         # Configure the axes
         ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)

@@ -25,6 +25,9 @@ class Volume:
         return False
     
     def isInside(self, xyz: Point):
+        # x, y, z = map(lambda v: round(v, 9), (xyz.get_x(), xyz.get_y(), xyz.get_z()))
+        # xyz_rounded = Point(x, y, z)
+
         for face in self.faces:
             eval_value = face.evaluatePoint(self.representative) * face.evaluatePoint(xyz)
             if eval_value < -1.0 * GeometryTools.SMALL_NUM:

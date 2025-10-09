@@ -5,9 +5,10 @@ import numpy as np
 from skimage import color
 from sklearn.cluster import DBSCAN
 from scipy.spatial import distance
+import heapq
 
 ### my libraries ###
-from PyFCS import Input, Visual_tools, ReferenceDomain, Prototype, FuzzyColorSpace
+from PyFCS import Input, Prototype, Point, ReferenceDomain
 
 def prompt_file_selection(initial_subdir):
     """
@@ -334,107 +335,48 @@ def get_fuzzy_color_space(image, threshold=0.5, min_samples=160):
 
 
 
-import numpy as np
-import heapq
-from scipy.spatial import distance
 
+# ---------------------------------------------------------------------------------- Functions Search AT and PT ----------------------------------------------------------------------------------
 def filter_points_with_threshold(selected_volume, threshold, step):
-    """
-    Filtra los puntos dentro de un volumen de Voronoi priorizando los más cercanos al prototipo positivo.
-    Se detiene temprano en direcciones con muchos puntos fuera del umbral.
-    """
     filtered_points = {}
 
     for idx, prototype in enumerate(selected_volume):
         positive = np.array(prototype.positive)
-
-        # Obtener los límites del volumen
-        limits = get_volume_limits(prototype.voronoi_volume)
-
-        # Inicializar lista de puntos dentro del umbral
         points_within_threshold = []
-
-        # Usar un heap (cola de prioridad) para evaluar primero los puntos más cercanos
-        heap = [(0, tuple(positive))]  # (distancia, punto)
+        heap = [(0, tuple(np.round(positive, 2)))]
         visited = set()
         consecutive_failures = 0
-        max_failures = 10  # Número máximo de fallos antes de detener una dirección
+        max_failures = 10
 
         while heap:
-            _, point = heapq.heappop(heap)  # Extraer el punto más cercano
+            _, point = heapq.heappop(heap)
             if point in visited:
                 continue
             visited.add(point)
 
-            # Calcular deltaE
             delta_e = delta_e_ciede2000(positive, point)
-            if delta_e < threshold:
+            if 0 < delta_e < threshold and prototype.voronoi_volume.isInside(Point(*point)):
                 points_within_threshold.append(point)
                 consecutive_failures = 0
             else:
                 consecutive_failures += 1
 
             if consecutive_failures > max_failures:
-                break  # Detener búsqueda en esta dirección
+                break
 
-            # Expandir en 6 direcciones (vecinos ortogonales)
-            neighbors = [
-                (point[0] + step, point[1], point[2]),
-                (point[0] - step, point[1], point[2]),
-                (point[0], point[1] + step, point[2]),
-                (point[0], point[1] - step, point[2]),
-                (point[0], point[1], point[2] + step),
-                (point[0], point[1], point[2] - step),
-            ]
-
-            for neighbor in neighbors:
-                if is_within_limits(neighbor, limits) and is_point_inside_volume(neighbor, prototype.voronoi_volume):
-                    heapq.heappush(heap, (distance.euclidean(neighbor, positive), neighbor))
+            for axis in range(3):
+                for sign in (-1, 1):
+                    neighbor = list(point)
+                    neighbor[axis] = np.round(neighbor[axis] + sign * step, 2)
+                    neighbor = tuple(neighbor)
+                    if prototype.voronoi_volume.isInside(Point(*neighbor)):
+                        heapq.heappush(heap, (distance.euclidean(neighbor, positive), neighbor))
 
         filtered_points[f'Volume_{idx}'] = points_within_threshold
 
+
     return filtered_points
 
-def get_volume_limits(volume):
-    """
-    Obtiene los límites de un volumen de Voronoi a partir de sus caras.
-    """
-    all_vertices = np.array([
-        [vertex.x, vertex.y, vertex.z] if hasattr(vertex, "x") else vertex
-        for face in volume.faces if not face.infinity
-        for vertex in face.vertex
-    ])
-
-    return {
-        "L": (np.min(all_vertices[:, 0]), np.max(all_vertices[:, 0])),
-        "a": (np.min(all_vertices[:, 1]), np.max(all_vertices[:, 1])),
-        "b": (np.min(all_vertices[:, 2]), np.max(all_vertices[:, 2])),
-    }
-
-def is_within_limits(point, limits):
-    """
-    Verifica si un punto está dentro de los límites del volumen.
-    """
-    L, a, b = point
-    return limits["L"][0] <= L <= limits["L"][1] and limits["a"][0] <= a <= limits["a"][1] and limits["b"][0] <= b <= limits["b"][1]
-
-
-
-def is_point_inside_volume(point, volume):
-    """
-    Verifica si un punto está dentro de un volumen de Voronoi, evaluando su relación con los planos de las caras.
-    """
-    for face in volume.faces:
-        if face.infinity:
-            continue  # Ignorar caras infinitas
-        
-        plane = face.p
-        if plane:
-            # Evaluar la ecuación del plano: Ax + By + Cz + D
-            A, B, C, D = plane.A, plane.B, plane.C, plane.D
-            if (A * point[0] + B * point[1] + C * point[2] + D) > 0:
-                return False  # Está fuera si no cumple la desigualdad
-    return True  # Si cumple todas, está dentro
 
 
 
