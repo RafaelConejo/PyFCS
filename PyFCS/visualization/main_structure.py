@@ -3,6 +3,7 @@ from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORM
 import tkinter.font as tkFont
 import sys
 import os
+import pandas as pd
 from skimage import color
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -2559,6 +2560,7 @@ class PyFCSApp:
         Adds the source image identifier to each color if it doesn't already exist.
         """
         image = self.images[window_id]
+        self.last_window_id = window_id
         colors = utils_structure.get_fuzzy_color_space(image, threshold, min_samples)
 
         # Add the source image identifier to each color if it doesn't exist
@@ -2635,9 +2637,19 @@ class PyFCSApp:
                 )
             )
 
+        elif len(unique_ids) == 0:
+            self.custom_warning(
+                title="Warning",
+                message=f"No colors were detected under this configuration. The last version will be reloaded"
+            )
+            self.get_fuzzy_color_space(self.last_window_id, threshold, min_samples)
+
+
         else:
             # If there is only one image, recalculate its colors directly
-            self.get_fuzzy_color_space(unique_ids.pop(), threshold, min_samples)
+            window_id = unique_ids.pop() if unique_ids else None
+
+            self.get_fuzzy_color_space(window_id, threshold, min_samples)
             popup.destroy()
 
 
@@ -3163,7 +3175,7 @@ class PyFCSApp:
 
 
     ########################################################################################### Color Evaluation Functions ###########################################################################################
-    def get_umbral_points(self, threshold):
+    def get_umbral_points(self, threshold, mode=None):
         """
         Filters points within the fuzzy color space volumes based on the given threshold.
         Displays the filtered points in a 3D model with a loading indicator.
@@ -3207,7 +3219,46 @@ class PyFCSApp:
 
                 # Paso 1: Filtrar puntos
                 update_progress(1, total_steps)
-                self.filtered_points = utils_structure.filter_points_with_threshold(selected_volume, threshold, step=0.25)
+                self.filtered_points, volume_limits = utils_structure.filter_points_with_threshold(selected_volume, threshold, step=0.25)
+
+                # 🔸 Crear DataFrame con formato "min - max"
+                csv_data = []
+                for vol_name, limits in volume_limits.items():
+                    def fmt(vmin, vmax):
+                        if vmin is None or vmax is None:
+                            return "-"
+                        # 🔹 Encerrar en comillas para evitar fórmulas en Excel
+                        return f'"{vmin:.2f} - {vmax:.2f}"'
+
+                    csv_data.append({
+                        "Volume": vol_name,
+                        "L*": fmt(limits["L"][0], limits["L"][1]),
+                        "a*": fmt(limits["a"][0], limits["a"][1]),
+                        "b*": fmt(limits["b"][0], limits["b"][1]),
+                    })
+
+                df = pd.DataFrame(csv_data)
+
+                # Crear carpeta de salida si no existe
+                output_dir = os.path.join(os.getcwd(), "test_results/Color_Evaluation")
+                os.makedirs(output_dir, exist_ok=True)
+
+                # Determinar tipo de despliegue (AT o PT)
+                suffix = ""
+                if mode == "AT":
+                    suffix = "_AT"
+                elif mode == "PT":
+                    suffix = "_PT"
+
+                # Construir nombre del archivo
+                base_name = os.path.basename(self.file_base_name)
+                csv_name = f"{base_name}_limits{suffix}.csv"
+                csv_path = os.path.join(output_dir, csv_name)
+
+                # Guardar CSV con separador ;
+                df.to_csv(csv_path, index=False, encoding="utf-8-sig", sep=";")
+
+                print(f"✅ CSV saved in test_results/: {csv_name}")
 
                 # Paso 2: Crear el gráfico 3D
                 update_progress(2, total_steps)
@@ -3241,10 +3292,10 @@ class PyFCSApp:
 
 
     def deploy_at(self):
-        self.get_umbral_points(1.8)
+        self.get_umbral_points(1.8, mode="AT")
 
     def deploy_pt(self):
-        self.get_umbral_points(0.8)
+        self.get_umbral_points(1.8, mode="PT")
 
 
 

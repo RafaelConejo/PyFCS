@@ -338,7 +338,13 @@ def get_fuzzy_color_space(image, threshold=0.5, min_samples=160):
 
 # ---------------------------------------------------------------------------------- Functions Search AT and PT ----------------------------------------------------------------------------------
 def filter_points_with_threshold(selected_volume, threshold, step):
+    """
+    Filtra los puntos dentro de los volúmenes de Voronoi priorizando los más cercanos
+    al prototipo positivo. Devuelve los puntos filtrados y los límites (min y max)
+    de cada volumen.
+    """
     filtered_points = {}
+    volume_limits = {}
 
     for idx, prototype in enumerate(selected_volume):
         positive = np.array(prototype.positive)
@@ -364,6 +370,7 @@ def filter_points_with_threshold(selected_volume, threshold, step):
             if consecutive_failures > max_failures:
                 break
 
+            # Expandir en las 6 direcciones ortogonales
             for axis in range(3):
                 for sign in (-1, 1):
                     neighbor = list(point)
@@ -374,9 +381,22 @@ def filter_points_with_threshold(selected_volume, threshold, step):
 
         filtered_points[f'Volume_{idx}'] = points_within_threshold
 
+        # Calcular límites si hay puntos
+        if points_within_threshold:
+            pts = np.array(points_within_threshold)
+            volume_limits[prototype.label] = {
+                'L': (np.min(pts[:, 0]), np.max(pts[:, 0])),
+                'a': (np.min(pts[:, 1]), np.max(pts[:, 1])),
+                'b': (np.min(pts[:, 2]), np.max(pts[:, 2])),
+            }
+        else:
+            volume_limits[prototype.label] = {
+                'L': (None, None),
+                'a': (None, None),
+                'b': (None, None),
+            }
 
-    return filtered_points
-
+    return filtered_points, volume_limits
 
 
 
