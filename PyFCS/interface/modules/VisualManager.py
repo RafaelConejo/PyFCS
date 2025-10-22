@@ -7,7 +7,7 @@ import plotly.express as px
 ### my libraries ###
 from PyFCS.geometry.Point import Point
 
-class Visual_tools:
+class VisualManager:
     SHOW_LEGENDS = True
 
     @staticmethod
@@ -49,7 +49,7 @@ class Visual_tools:
             if not prototypes:
                 return
             
-            global_flag = Visual_tools.SHOW_LEGENDS  # acceso a la bandera
+            global_flag = VisualManager.SHOW_LEGENDS  # acceso a la bandera
 
             # Detectar si hay puntos filtrados disponibles (para decidir si mostrar leyendas)
             has_filtered = (
@@ -68,7 +68,7 @@ class Visual_tools:
 
                 for face in prototype.voronoi_volume.faces:
                     if not face.infinity:
-                        clipped = Visual_tools.clip_face_to_volume(np.array(face.vertex), volume_limits)
+                        clipped = VisualManager.clip_face_to_volume(np.array(face.vertex), volume_limits)
                         if len(clipped) >= 3:
                             clipped = clipped[:, [1, 2, 0]]  # reorder to a*, b*, L*
                             triangles = triangulate_face(clipped)
@@ -97,7 +97,7 @@ class Visual_tools:
                         legendgroup=prototype.label,
                     ))
 
-            Visual_tools.SHOW_LEGENDS = False
+            VisualManager.SHOW_LEGENDS = False
 
         # ---------- Plot filtered points ----------
         def plot_filtered_points(prototypes, point_color='black'):
@@ -205,7 +205,7 @@ class Visual_tools:
         )
 
         # Reiniciar la bandera global para futuras ejecuciones
-        Visual_tools.SHOW_LEGENDS = True
+        VisualManager.SHOW_LEGENDS = True
         return fig
 
 
@@ -254,7 +254,7 @@ class Visual_tools:
 
                         # Clip the Voronoi faces to the volume limits and plot them
                         valid_faces = [
-                            Visual_tools.clip_face_to_volume(np.array(face.vertex), volume_limits)
+                            VisualManager.clip_face_to_volume(np.array(face.vertex), volume_limits)
                             for face in prototype.voronoi_volume.faces if not face.infinity
                         ]
                         valid_faces = [f[:, [1, 2, 0]] for f in valid_faces if len(f) >= 3]
@@ -444,13 +444,13 @@ class Visual_tools:
     #             D = face.p.getD()
 
     #             # Calcular intersecciones de la cara infinita con el cubo
-    #             intersection_points = Visual_tools.get_intersection_with_cube(A, B, C, D, volume_limits)
+    #             intersection_points = VisualManager.get_intersection_with_cube(A, B, C, D, volume_limits)
 
     #             all_vertices = np.vstack((vertices, intersection_points))
     #             unique_intersections = np.unique(all_vertices, axis=0)
 
     #             # Ordenar los puntos
-    #             ordered_intersections = Visual_tools.order_points_by_angle(unique_intersections)
+    #             ordered_intersections = VisualManager.order_points_by_angle(unique_intersections)
 
     #             if len(all_vertices) > 3:  # Asegurarse de que hay suficientes puntos
     #                 poly3d = Poly3DCollection([ordered_intersections], facecolors='red', edgecolors='yellow', linewidths=1, alpha=0.5)
@@ -458,7 +458,7 @@ class Visual_tools:
 
     #         else:
     #             # Caras finitas normales
-    #             vertices_clipped_ordered = Visual_tools.clip_face_to_volume(vertices, volume_limits)
+    #             vertices_clipped_ordered = VisualManager.clip_face_to_volume(vertices, volume_limits)
     #             poly3d = Poly3DCollection([vertices_clipped_ordered], facecolors='cyan', edgecolors='blue', linewidths=1, alpha=0.5)
     #             ax.add_collection3d(poly3d)
 

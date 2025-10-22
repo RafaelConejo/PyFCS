@@ -1,27 +1,24 @@
-import tkinter as tk
-from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORMAL
-import tkinter.font as tkFont
-import sys
 import os
-import pandas as pd
-from skimage import color
-import numpy as np
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from PIL import Image, ImageTk
-import threading
-import colorsys
+import sys
 import math
 import random
+import platform
+import threading
+import numpy as np
+import tkinter as tk
+from skimage import color
+import tkinter.font as tkFont
+from PIL import Image, ImageTk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORMAL
+
 from PyQt5.QtCore import QUrl
 from PyQt5.QtWidgets import QVBoxLayout, QWidget, QApplication, QMainWindow
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QEventLoop
 import matplotlib.pyplot as plt
-import platform
 
-
-
-
+### current path ###
 current_dir = os.path.dirname(__file__)
 pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
 
@@ -29,14 +26,25 @@ pyfcs_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
 sys.path.append(pyfcs_dir)
 
 ### my libraries ###
-from PyFCS import Input, Visual_tools, ReferenceDomain, Prototype, FuzzyColorSpace
-import PyFCS.visualization.utils_structure as utils_structure
-
+from PyFCS import Input, VisualManager, ReferenceDomain, FuzzyColorSpace, ImageManager, FuzzyColorSpaceManager, ColorEvaluationManager
+import PyFCS.interface.modules.UtilsTools as UtilsTools
 
 class PyFCSApp:
     def __init__(self, root):
         # Initialize main app variables
         self.root = root
+
+        # Import and ini Modules Managers
+        self.image_manager = ImageManager(
+            root=self.root,
+            custom_warning=self.custom_warning if hasattr(self, 'custom_warning') else None,
+            center_popup=self.center_popup if hasattr(self, 'center_popup') else None
+        )
+        self.fuzzy_manager = FuzzyColorSpaceManager(root=self.root)
+        self.color_manager = ColorEvaluationManager(output_dir="test_results/Color_Evaluation")
+        self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
+
+        # Utils vars and flags
         self.COLOR_SPACE = False  # Flag for managing color spaces
         self.FIRST_DBSCAN = True  # Flag to the first DBSCAN
         self.ORIGINAL_IMG = {}  # Bool function original image 
@@ -45,7 +53,6 @@ class PyFCSApp:
         self.images = {}
         self.color_entry_detect = {}
 
-        self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
 
         # General configuration for the main window
         root.title("PyFCS Interface")  # Set the window title
@@ -89,27 +96,27 @@ class PyFCSApp:
         image_manager_frame.pack(side="left", fill="both", expand=False, padx=5, pady=5)
 
         # Load Icons 
-        load_image = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'LoadImage.png')
+        load_image = os.path.join(os.getcwd(), 'PyFCS', 'interface', 'icons', 'LoadImage.png')
         load_image = Image.open(load_image)
         load_image = ImageTk.PhotoImage(load_image)
 
-        save_image = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'SaveImage.png')
+        save_image = os.path.join(os.getcwd(), 'PyFCS', 'interface', 'icons', 'SaveImage.png')
         save_image = Image.open(save_image)
         save_image = ImageTk.PhotoImage(save_image)
 
-        new_fcs = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'NewFCS1.png')
+        new_fcs = os.path.join(os.getcwd(), 'PyFCS', 'interface', 'icons', 'NewFCS1.png')
         new_fcs = Image.open(new_fcs)
         new_fcs = ImageTk.PhotoImage(new_fcs)
 
-        load_fcs = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'LoadFCS.png')
+        load_fcs = os.path.join(os.getcwd(), 'PyFCS', 'interface', 'icons', 'LoadFCS.png')
         load_fcs = Image.open(load_fcs)
         load_fcs = ImageTk.PhotoImage(load_fcs)
 
-        at_image = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'AT.png')
+        at_image = os.path.join(os.getcwd(), 'PyFCS', 'interface', 'icons', 'AT.png')
         at_image = Image.open(at_image)
         at_image = ImageTk.PhotoImage(at_image)
 
-        pt_image = os.path.join(os.getcwd(), 'PyFCS', 'visualization', 'icons', 'PT.png')
+        pt_image = os.path.join(os.getcwd(), 'PyFCS', 'interface', 'icons', 'PT.png')
         pt_image = Image.open(pt_image)
         pt_image = ImageTk.PhotoImage(pt_image)
         # Buttons for image operations
@@ -218,7 +225,7 @@ class PyFCSApp:
 
         # Notebook for tabs
         self.notebook = ttk.Notebook(main_content_frame)
-        self.notebook.pack(side="right", fill="both", expand=True, padx=5, pady=5)
+        self.notebook.pack(side="right", fill="both", expand=True, padx=5, pady=1)
 
 
         # Callback resize 
@@ -226,8 +233,8 @@ class PyFCSApp:
             width = self.root.winfo_width()
             height = self.root.winfo_height()
 
-            self.image_canvas.config(width=int(width * 0.3), height=height - 150)
-            self.notebook.config(width=int(width * 0.7), height=height - 150)
+            self.image_canvas.config(width=int(width * 0.3), height=int(height * 0.8))
+            self.notebook.config(width=int(width * 0.7), height=int(height * 0.8))
 
         self.root.bind("<Configure>", on_root_resize)
 
@@ -436,8 +443,8 @@ class PyFCSApp:
         self.root.bind("<Control-a>", lambda event: self.select_all_color())       # Ctrl+A to select all colors
 
         # Switch between Data and Model 3D
-        self.root.bind("<Control-Tab>", lambda event: self.switch_tab(notebook, forward=True))
-        self.root.bind("<Control-Shift-Tab>", lambda event: self.switch_tab(notebook, forward=False))
+        # self.root.bind("<Control-Tab>", lambda event: self.switch_tab(notebook, forward=True))
+        # self.root.bind("<Control-Shift-Tab>", lambda event: self.switch_tab(notebook, forward=False))
 
 
 
@@ -666,7 +673,7 @@ class PyFCSApp:
 
     ########################################################################################### Main Functions ###########################################################################################
     def update_volumes(self):
-        self.prototypes = utils_structure.process_prototypes(self.color_data)
+        self.prototypes = UtilsTools.process_prototypes(self.color_data)
 
         # Create and save the fuzzy color space
         self.fuzzy_color_space = FuzzyColorSpace(space_name=" ", prototypes=self.prototypes)
@@ -699,7 +706,7 @@ class PyFCSApp:
         This includes loading the file, extracting the data, and displaying it visually on a canvas.
         """
         # Prompt the user to select a file
-        filename = utils_structure.prompt_file_selection('fuzzy_color_spaces/')
+        filename = UtilsTools.prompt_file_selection('fuzzy_color_spaces/')
 
         if not filename:
             # Notify the user if no file was selected
@@ -713,39 +720,32 @@ class PyFCSApp:
 
         self.show_loading_color_space()
 
-        # Store file path and base name
-        self.file_path = filename
-        self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
+        try:
+            data = self.fuzzy_manager.load_color_file(filename)
 
-        # Determine file extension
-        extension = os.path.splitext(filename)[1].lower()  # Use lower() for case-insensitive comparison
+            self.file_path = filename
+            self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
 
-        # Initialize input class based on file extension
-        input_class = Input.instance(extension)
+            if data['type'] == 'cns':
+                self.color_data = data['color_data']
+                self.display_data_window()
+                self.update_volumes()
 
-        if extension == '.cns':
-            # Read the file and prepare color data
-            self.color_data = input_class.read_file(filename)
-            self.display_data_window()
-            self.update_volumes()
+            elif data['type'] == 'fcs':
+                self.color_data = data['color_data']
+                self.fuzzy_color_space = data['fuzzy_color_space']
+                self.cores = self.fuzzy_color_space.cores
+                self.supports = self.fuzzy_color_space.supports
+                self.prototypes = self.fuzzy_color_space.prototypes
 
-        elif extension == '.fcs':
-            # Read the file and prepare color data along with fuzzy color space
-            self.color_data, self.fuzzy_color_space = input_class.read_file(filename)
+                self.display_data_window()
+                self.update_prototypes_info()
 
-            # Cache frequently accessed data to avoid multiple method calls
-            self.cores = self.fuzzy_color_space.cores  
-            self.supports = self.fuzzy_color_space.supports
-            self.prototypes = self.fuzzy_color_space.prototypes
+        except ValueError as e:
+            self.custom_warning("File Error", str(e))
 
-            self.display_data_window()
-            self.update_prototypes_info()
-
-        else:
-            # Notify the user if the file format is unsupported
-            self.custom_warning("File Error", "Unsupported file format.")
-
-        self.hide_loading()
+        finally:
+            self.hide_loading()
 
 
 
@@ -938,11 +938,6 @@ class PyFCSApp:
             center = canvas_size // 2
             radius = center - 5
 
-            def hsv_to_rgb(h, s, v):
-                """Converts HSV to RGB in the range 0-255."""
-                r, g, b = colorsys.hsv_to_rgb(h, s, v)
-                return int(r * 255), int(g * 255), int(b * 255)
-
             def draw_color_wheel():
                 """Draws the color wheel on the canvas."""
                 for y in range(canvas_size):
@@ -952,7 +947,7 @@ class PyFCSApp:
                         if dist <= radius:
                             angle = math.atan2(dy, dx)
                             hue = (angle / (2 * math.pi)) % 1
-                            r, g, b = hsv_to_rgb(hue, 1, 1)
+                            r, g, b = UtilsTools.hsv_to_rgb(hue, 1, 1)
                             color_code = f'#{r:02x}{g:02x}{b:02x}'
                             canvas.create_line(x, y, x + 1, y, fill=color_code)
 
@@ -965,7 +960,7 @@ class PyFCSApp:
                 if dist <= radius:
                     angle = math.atan2(dy, dx)
                     hue = (angle / (2 * math.pi)) % 1
-                    r, g, b = hsv_to_rgb(hue, 1, 1)
+                    r, g, b = UtilsTools.hsv_to_rgb(hue, 1, 1)
                     color_hex = f'#{r:02x}{g:02x}{b:02x}'
 
                     preview_canvas.config(bg=color_hex)  # Update the preview canvas
@@ -1016,7 +1011,7 @@ class PyFCSApp:
 
         # update interface
         if color_name is not None:
-            utils_structure.create_color_display_frame_add(
+            self.fuzzy_manager.create_color_display_frame_add(
                 parent=self.scroll_palette_create_fcs,
                 color_name=color_name,
                 lab=new_color,
@@ -1032,10 +1027,10 @@ class PyFCSApp:
         """
         # Load color data from the BASIC.cns file
         color_space_path = os.path.join(os.getcwd(), 'fuzzy_color_spaces', 'cns', 'ISCC_NBS_BASIC.cns')
-        colors = utils_structure.load_color_data(color_space_path)
+        colors = UtilsTools.load_color_data(color_space_path)
 
         # Create a popup window for color selection
-        popup, self.scroll_palette_create_fcs = utils_structure.create_popup_window(
+        popup, self.scroll_palette_create_fcs = UtilsTools.create_popup_window(
             parent=self.root,
             title="Select colors for your Color Space",
             width=400,
@@ -1051,7 +1046,7 @@ class PyFCSApp:
 
         # Populate the scrollable frame with color data
         for color_name, data in colors.items():
-            utils_structure.create_color_display_frame(
+            self.fuzzy_manager.create_color_display_frame(
                 parent=self.scroll_palette_create_fcs,
                 color_name=color_name,
                 rgb=data["rgb"],
@@ -1097,7 +1092,7 @@ class PyFCSApp:
 
         self.FIRST_DBSCAN = True
         # Create a popup window for image selection
-        popup, listbox = utils_structure.create_selection_popup(
+        popup, listbox = UtilsTools.create_selection_popup(
             parent=self.image_canvas,
             title="Select an Image",
             width=200,
@@ -1111,7 +1106,7 @@ class PyFCSApp:
         # Bind the listbox selection event to handle image selection
         listbox.bind(
             "<<ListboxSelect>>",
-            lambda event: utils_structure.handle_image_selection(
+            lambda event: UtilsTools.handle_image_selection(
                 event=event,
                 listbox=listbox,
                 popup=popup,
@@ -1141,7 +1136,7 @@ class PyFCSApp:
                 self.display_color_buttons(self.color_matrix)
                 self.graph_widget.get_tk_widget().destroy() 
             else:
-                fig = Visual_tools.plot_combined_3D(
+                fig = VisualManager.plot_combined_3D(
                     self.file_base_name,
                     self.selected_centroids,
                     self.selected_core,
@@ -1152,6 +1147,8 @@ class PyFCSApp:
                     selected_options
                 )
                 self.draw_model_3D(fig, selected_options)  # Pass each figure to be drawn on the Tkinter Canvas
+                if hasattr(self, "lab_value_frame"):
+                    self.lab_value_frame.lift()
 
 
 
@@ -1217,7 +1214,7 @@ class PyFCSApp:
             rebuild_menu() 
             event.accept()  # Accepts the close event
 
-        fig = Visual_tools.plot_more_combined_3D(
+        fig = VisualManager.plot_more_combined_3D(
                     self.file_base_name,
                     self.selected_centroids,
                     self.selected_core,
@@ -1228,6 +1225,8 @@ class PyFCSApp:
                     selected_options,
                     self.filtered_points
                 )
+        if hasattr(self, "lab_value_frame"):
+                    self.lab_value_frame.lift()
 
         file_path = os.path.abspath(os.path.join(os.getcwd(), 'PyFCS', 'external', 'temp_plot.html'))
         fig.write_html(file_path)
@@ -1625,7 +1624,7 @@ class PyFCSApp:
             return  # Early return if no images are available
 
         # Create a popup window for image selection
-        popup, listbox = utils_structure.create_selection_popup(
+        popup, listbox = UtilsTools.create_selection_popup(
             parent=self.image_canvas,
             title="Select an Image to Save",
             width=200,
@@ -1951,8 +1950,8 @@ class PyFCSApp:
         """
         # Create the frame and labels only once if they don't exist
         if not hasattr(self, "lab_value_frame"):
-            self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray", height=40)
-            self.lab_value_frame.pack(side="bottom", fill="x", padx=10, pady=5)
+            self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray")
+            self.lab_value_frame.place(relx=0.5, rely=0.97, anchor="s")
 
             # Frame for left-aligned text
             text_frame = tk.Frame(self.lab_value_frame, bg="lightgray")
@@ -1997,7 +1996,7 @@ class PyFCSApp:
 
         
         positive = self.color_data[max_proto]["positive_prototype"]
-        delta_e = utils_structure.delta_e_ciede2000(positive, pixel_lab)
+        delta_e = self.color_manager.delta_e_ciede2000(positive, pixel_lab)
         if delta_e <= 0.8:
             c = "green"
         elif delta_e <= 1.8:
@@ -2044,7 +2043,7 @@ class PyFCSApp:
         ]
 
         # Create a popup window for selecting another image
-        select_popup, listbox = utils_structure.create_selection_popup(
+        select_popup, listbox = UtilsTools.create_selection_popup(
             parent=popup,
             title="Select Another Image",
             width=200,
@@ -2058,7 +2057,7 @@ class PyFCSApp:
         # Bind the listbox selection event to handle image selection
         listbox.bind(
             "<<ListboxSelect>>",
-            lambda event: utils_structure.handle_image_selection(
+            lambda event: UtilsTools.handle_image_selection(
                 event=event,
                 listbox=listbox,
                 popup=select_popup,
@@ -2076,179 +2075,7 @@ class PyFCSApp:
         Opens a popup window to add a new color by entering LAB values or selecting a color from a color wheel.
         Returns the color name and LAB values if the user confirms the input.
         """
-        popup = tk.Toplevel(window)
-        popup.title("Add New Color")
-        popup.geometry("500x500")
-        popup.resizable(False, False)
-        popup.transient(window)
-        popup.grab_set()
-
-        self.center_popup(popup, 500, 300)  # Center the popup window
-
-        # Variables to store user input
-        color_name_var = tk.StringVar()
-        l_value_var = tk.StringVar()
-        a_value_var = tk.StringVar()
-        b_value_var = tk.StringVar()
-
-        result = {"color_name": None, "lab": None}  # Dictionary to store the result
-
-        # Title and instructions
-        ttk.Label(popup, text="Add New Color", font=("Helvetica", 14, "bold")).pack(pady=10)
-        ttk.Label(popup, text="Enter the LAB values and the color name:").pack(pady=5)
-
-        # Form frame for input fields
-        form_frame = ttk.Frame(popup)
-        form_frame.pack(padx=20, pady=10)
-
-        # Color name field
-        # ttk.Label(form_frame, text="Color Name:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
-        # ttk.Entry(form_frame, textvariable=color_name_var, width=30).grid(row=0, column=1, padx=5, pady=5)
-
-        # L value field
-        ttk.Label(form_frame, text="L Value (0-100):").grid(row=1, column=0, sticky="w", padx=5, pady=5)
-        ttk.Entry(form_frame, textvariable=l_value_var, width=10).grid(row=1, column=1, padx=5, pady=5)
-
-        # A value field
-        ttk.Label(form_frame, text="A Value (-128 to 127):").grid(row=2, column=0, sticky="w", padx=5, pady=5)
-        ttk.Entry(form_frame, textvariable=a_value_var, width=10).grid(row=2, column=1, padx=5, pady=5)
-
-        # B value field
-        ttk.Label(form_frame, text="B Value (-128 to 127):").grid(row=3, column=0, sticky="w", padx=5, pady=5)
-        ttk.Entry(form_frame, textvariable=b_value_var, width=10).grid(row=3, column=1, padx=5, pady=5)
-
-        def confirm_color():
-            """
-            Validates the input and adds the new color to the colors dictionary.
-            Closes the popup if the input is valid.
-            """
-            try:
-                color_name = color_name_var.get().strip()
-                l_value = float(l_value_var.get())
-                a_value = float(a_value_var.get())
-                b_value = float(b_value_var.get())
-
-                # Validate inputs
-                # if not color_name:
-                #     raise ValueError("The color name cannot be empty.")
-                if not (0 <= l_value <= 100):
-                    raise ValueError("L value must be between 0 and 100.")
-                if not (-128 <= a_value <= 127):
-                    raise ValueError("A value must be between -128 and 127.")
-                if not (-128 <= b_value <= 127):
-                    raise ValueError("B value must be between -128 and 127.")
-                # if color_name in colors:
-                #     raise ValueError(f"The color name '{color_name}' already exists.")
-
-                # Store the result
-                result["color_name"] = color_name
-                result["lab"] = {"L": l_value, "A": a_value, "B": b_value}
-
-                # Add the new color as a dict
-                colors.append({
-                    "lab": (l_value, a_value, b_value),
-                    "rgb": utils_structure.lab_to_rgb((l_value, a_value, b_value)),  # asumiendo que tienes esta función
-                    "source_image": "added_manually"
-                })
-
-                if update_ui_callback:
-                    update_ui_callback()  # Actualiza la interfaz si es necesario
-
-                popup.destroy()
-
-            except ValueError as e:
-                self.custom_warning("Invalid Input", str(e))  # Show error message for invalid input
-
-        def browse_color():
-            """
-            Opens a color picker window to select a color from a color wheel.
-            Converts the selected color to LAB values and updates the input fields.
-            """
-            color_picker = tk.Toplevel()
-            color_picker.title("Select a Color")
-            color_picker.geometry("350x450")
-            color_picker.transient(popup)
-            color_picker.grab_set()
-
-            # Position the color picker window to the right of the "Add New Color" window
-            x_offset = popup.winfo_x() + popup.winfo_width() + 10
-            y_offset = popup.winfo_y()
-            color_picker.geometry(f"350x450+{x_offset}+{y_offset}")
-
-            canvas_size = 300
-            center = canvas_size // 2
-            radius = center - 5
-
-            def hsv_to_rgb(h, s, v):
-                """Converts HSV to RGB in the range 0-255."""
-                r, g, b = colorsys.hsv_to_rgb(h, s, v)
-                return int(r * 255), int(g * 255), int(b * 255)
-
-            def draw_color_wheel():
-                """Draws the color wheel on the canvas."""
-                for y in range(canvas_size):
-                    for x in range(canvas_size):
-                        dx, dy = x - center, y - center
-                        dist = math.sqrt(dx**2 + dy**2)
-                        if dist <= radius:
-                            angle = math.atan2(dy, dx)
-                            hue = (angle / (2 * math.pi)) % 1
-                            r, g, b = hsv_to_rgb(hue, 1, 1)
-                            color_code = f'#{r:02x}{g:02x}{b:02x}'
-                            canvas.create_line(x, y, x + 1, y, fill=color_code)
-
-            def on_click(event):
-                """Gets the selected color from the color wheel and updates the LAB values."""
-                x, y = event.x, event.y
-                dx, dy = x - center, y - center
-                dist = math.sqrt(dx**2 + dy**2)
-
-                if dist <= radius:
-                    angle = math.atan2(dy, dx)
-                    hue = (angle / (2 * math.pi)) % 1
-                    r, g, b = hsv_to_rgb(hue, 1, 1)
-                    color_hex = f'#{r:02x}{g:02x}{b:02x}'
-
-                    preview_canvas.config(bg=color_hex)  # Update the preview canvas
-
-                    # Convert RGB to LAB
-                    rgb = np.array([[r, g, b]]) / 255
-                    lab = color.rgb2lab(rgb.reshape((1, 1, 3)))[0][0]
-
-                    # Update the LAB values in the main window
-                    l_value_var.set(f"{lab[0]:.2f}")
-                    a_value_var.set(f"{lab[1]:.2f}")
-                    b_value_var.set(f"{lab[2]:.2f}")
-
-            def confirm_selection():
-                """Closes the color picker window."""
-                color_picker.destroy()
-
-            # Create and draw the color wheel
-            canvas = tk.Canvas(color_picker, width=canvas_size, height=canvas_size)
-            canvas.pack()
-            draw_color_wheel()
-            canvas.bind("<Button-1>", on_click)
-
-            # Preview canvas for selected color
-            preview_canvas = tk.Canvas(color_picker, width=100, height=50, bg="white")
-            preview_canvas.pack(pady=10)
-
-            # Confirm button
-            ttk.Button(color_picker, text="Confirm", command=confirm_selection).pack(pady=10)
-
-        # Button frame for "Browse Color" and "Add" buttons
-        button_frame = ttk.Frame(popup)
-        button_frame.pack(pady=20)
-
-        ttk.Button(button_frame, text="Browse Color", command=browse_color, style="Accent.TButton").pack(side="left", padx=10)
-        ttk.Button(button_frame, text="Add Color", command=confirm_color, style="Accent.TButton").pack(side="left", padx=10)
-
-        popup.wait_window()  # Wait for the popup to close
-
-        if result["color_name"] is None or result["lab"] is None:
-            return None, None
-        return result["color_name"], result["lab"]  # Return the result
+        self.image_manager.addColor_to_image(window, colors, update_ui_callback)
 
 
 
@@ -2400,7 +2227,7 @@ class PyFCSApp:
                 frame.pack(fill="x", pady=8, padx=10)
 
                 # Color preview
-                color_box = tk.Label(frame, bg=utils_structure.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
+                color_box = tk.Label(frame, bg=UtilsTools.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
                 color_box.pack(side="left", padx=10)
 
                 # Retrieve the saved name or use the default
@@ -2561,7 +2388,7 @@ class PyFCSApp:
         """
         image = self.images[window_id]
         self.last_window_id = window_id
-        colors = utils_structure.get_fuzzy_color_space(image, threshold, min_samples)
+        colors = self.image_manager.get_fuzzy_color_space(image, threshold, min_samples)
 
         # Add the source image identifier to each color if it doesn't exist
         for id in colors:
@@ -2579,7 +2406,7 @@ class PyFCSApp:
         Adds the source image identifier to each new color if it doesn't already exist.
         """
         if new_window_id and not any(id.get("source_image") == new_window_id for id in colors):
-            new_colors = utils_structure.get_fuzzy_color_space(self.images[new_window_id], threshold, min_samples)
+            new_colors = self.image_manager.get_fuzzy_color_space(self.images[new_window_id], threshold, min_samples)
 
             # Add the source image identifier to each new color if it doesn't exist
             for id in new_colors:  
@@ -2615,7 +2442,7 @@ class PyFCSApp:
 
         if len(unique_ids) > 1:
             # If there are multiple images, prompt the user to select one
-            popup, listbox = utils_structure.create_selection_popup(
+            popup, listbox = UtilsTools.create_selection_popup(
                 parent=self.image_canvas,
                 title="Select an Image",
                 width=200,
@@ -2628,7 +2455,7 @@ class PyFCSApp:
             # Bind the listbox selection event to handle image selection
             listbox.bind(
                 "<<ListboxSelect>>",
-                lambda event: utils_structure.handle_image_selection(
+                lambda event: UtilsTools.handle_image_selection(
                     event=event,
                     listbox=listbox,
                     popup=popup,
@@ -2772,7 +2599,7 @@ class PyFCSApp:
                 pos = self.color_matrix.index(self.current_protos[window_id].get())
 
                 # Generate the grayscale image
-                grayscale_image_array = utils_structure.get_proto_percentage(
+                grayscale_image_array = self.image_manager.get_proto_percentage(
                     prototypes=self.prototypes,          # Prototypes used for the transformation
                     image=self.images[window_id],        # The current image for the given window_id
                     fuzzy_color_space=self.fuzzy_color_space,  # Fuzzy color space
@@ -3180,7 +3007,6 @@ class PyFCSApp:
         Filters points within the fuzzy color space volumes based on the given threshold.
         Displays the filtered points in a 3D model with a loading indicator.
         """
-
         # Check if the fuzzy color space is loaded
         if not hasattr(self, 'COLOR_SPACE') or not self.COLOR_SPACE:
             self.custom_warning("No Color Space", "Please load a fuzzy color space before deploying AT or PT.")
@@ -3188,22 +3014,19 @@ class PyFCSApp:
 
         selected_options = [key for key, var in self.model_3d_options.items() if var.get()]
         if selected_options == ["Representative"]:
-            return
+            return 
+        else:   
+            self.show_loading()
 
-        self.show_loading()  # 🔹 Mostrar indicador de carga
-
+        # 🔹 Mostrar indicador de carga
         def update_progress(current_step, total_steps):
-            """
-            Updates the progress bar based on the current computation step.
-            """
+            """Updates the progress bar based on the current computation step."""
             progress_percentage = (current_step / total_steps) * 100
             self.progress["value"] = progress_percentage
             self.load_window.update_idletasks()
 
         def run_threshold_process():
-            """
-            Runs the threshold-based filtering and 3D visualization in a separate thread.
-            """
+            """Runs the threshold-based filtering and 3D visualization in a separate thread."""
             try:
                 # Define prioridad de volumen
                 priority_map = {
@@ -3211,58 +3034,23 @@ class PyFCSApp:
                     "0.5-cut": self.selected_alpha,
                     "Core": self.selected_support
                 }
+
                 selected_option = next((opt for opt in ["Support", "0.5-cut", "Core"] if opt in selected_options), None)
                 selected_volume = priority_map[selected_option]
 
-                # 🔸 Simular pasos para el progreso (puedes ajustar según tu cálculo real)
-                total_steps = 3
-
                 # Paso 1: Filtrar puntos
-                update_progress(1, total_steps)
-                self.filtered_points, volume_limits = utils_structure.filter_points_with_threshold(selected_volume, threshold, step=0.25)
+                update_progress(1, 3)
+                self.filtered_points, volume_limits = self.color_manager.filter_points_with_threshold(
+                    selected_volume, threshold, step=0.25
+                )
 
                 # 🔸 Crear DataFrame con formato "min - max"
-                csv_data = []
-                for vol_name, limits in volume_limits.items():
-                    def fmt(vmin, vmax):
-                        if vmin is None or vmax is None:
-                            return "-"
-                        # 🔹 Encerrar en comillas para evitar fórmulas en Excel
-                        return f'"{vmin:.2f} - {vmax:.2f}"'
-
-                    csv_data.append({
-                        "Volume": vol_name,
-                        "L*": fmt(limits["L"][0], limits["L"][1]),
-                        "a*": fmt(limits["a"][0], limits["a"][1]),
-                        "b*": fmt(limits["b"][0], limits["b"][1]),
-                    })
-
-                df = pd.DataFrame(csv_data)
-
-                # Crear carpeta de salida si no existe
-                output_dir = os.path.join(os.getcwd(), "test_results/Color_Evaluation")
-                os.makedirs(output_dir, exist_ok=True)
-
-                # Determinar tipo de despliegue (AT o PT)
-                suffix = ""
-                if mode == "AT":
-                    suffix = "_AT"
-                elif mode == "PT":
-                    suffix = "_PT"
-
-                # Construir nombre del archivo
-                base_name = os.path.basename(self.file_base_name)
-                csv_name = f"{base_name}_limits{suffix}.csv"
-                csv_path = os.path.join(output_dir, csv_name)
-
-                # Guardar CSV con separador ;
-                df.to_csv(csv_path, index=False, encoding="utf-8-sig", sep=";")
-
-                print(f"✅ CSV saved in test_results/: {csv_name}")
+                csv_path = self.color_manager.create_csv(self.file_base_name, volume_limits, mode)
+                print(f"✅ CSV saved in test_results/: {csv_path}")
 
                 # Paso 2: Crear el gráfico 3D
-                update_progress(2, total_steps)
-                fig = Visual_tools.plot_combined_3D(
+                update_progress(2, 3)
+                fig = VisualManager.plot_combined_3D(
                     self.file_base_name,
                     self.selected_centroids,
                     self.selected_core,
@@ -3273,14 +3061,15 @@ class PyFCSApp:
                     selected_options,
                     self.filtered_points
                 )
+                if hasattr(self, "lab_value_frame"):
+                    self.lab_value_frame.lift()
 
                 # Paso 3: Dibujar el modelo 3D
-                update_progress(3, total_steps)
+                update_progress(3, 3)
                 self.load_window.after(0, lambda: self.draw_model_3D(fig, selected_options))
 
             except Exception as e:
                 self.custom_warning("Error", f"An error occurred while filtering points: {e}")
-
             finally:
                 # 🔹 Ocultar el loading al terminar
                 self.load_window.after(0, self.hide_loading)
@@ -3290,12 +3079,11 @@ class PyFCSApp:
 
 
 
-
     def deploy_at(self):
         self.get_umbral_points(1.8, mode="AT")
 
     def deploy_pt(self):
-        self.get_umbral_points(1.8, mode="PT")
+        self.get_umbral_points(0.8, mode="PT")
 
 
 
