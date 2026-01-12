@@ -8,6 +8,7 @@ import numpy as np
 import tkinter as tk
 from skimage import color
 import tkinter.font as tkFont
+from functools import partial
 from PIL import Image, ImageTk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORMAL
@@ -31,10 +32,12 @@ import PyFCS.interface.modules.UtilsTools as UtilsTools
 
 class PyFCSApp:
     def __init__(self, root):
-        # Initialize main app variables
-        self.root = root
+        # ---------------------------------------------------------------------
+        # Core references / managers
+        # ---------------------------------------------------------------------
+        self.root = root  # Keep a reference to the main Tk window
 
-        # Import and ini Modules Managers
+        # Initialize application managers (image I/O, fuzzy spaces, evaluation, etc.)
         self.image_manager = ImageManager(
             root=self.root,
             custom_warning=self.custom_warning if hasattr(self, 'custom_warning') else None,
@@ -44,58 +47,67 @@ class PyFCSApp:
         self.color_manager = ColorEvaluationManager(output_dir="test_results/Color_Evaluation")
         self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
 
-        # Utils vars and flags
-        self.COLOR_SPACE = False  # Flag for managing color spaces
-        self.FIRST_DBSCAN = True  # Flag to the first DBSCAN
-        self.ORIGINAL_IMG = {}  # Bool function original image 
-        self.MEMBERDEGREE = {}  # Bool function Color Mapping
-        self.hex_color = []  # Save points colors for visualization
-        self.images = {}
-        self.color_entry_detect = {}
+        # ---------------------------------------------------------------------
+        # Utility flags / shared state
+        # ---------------------------------------------------------------------
+        self.COLOR_SPACE = False       # True if a color space is currently loaded/active
+        self.FIRST_DBSCAN = True       # Used to treat the first DBSCAN run differently
+        self.ORIGINAL_IMG = {}         # Stores original image data/state
+        self.MEMBERDEGREE = {}         # Stores membership degree / color mapping results
+        self.hex_color = []            # Stores point colors (hex) used for visualization
+        self.images = {}               # Cache for images loaded/processed in the app
+        self.color_entry_detect = {}   # Keeps track of UI entries used for color detection/edition
 
+        # ---------------------------------------------------------------------
+        # Main window configuration
+        # ---------------------------------------------------------------------
+        root.title("PyFCS Interface")          # Window title
+        root.geometry("1000x500")             # Default window size
+        # self.root.attributes("-fullscreen", True)  # Optional fullscreen startup
+        root.configure(bg="gray82")           # Window background
 
-        # General configuration for the main window
-        root.title("PyFCS Interface")  # Set the window title
-        root.geometry("1000x500")  # Set default window size
-        # self.root.attributes("-fullscreen", True)
-        root.configure(bg="gray82")  # Set background color for the window
-
-        # Menu bar configuration
+        # ---------------------------------------------------------------------
+        # Menu bar (top-level)
+        # ---------------------------------------------------------------------
         self.menubar = Menu(root)
-        root.config(menu=self.menubar)  # Attach menu bar to the root window
+        root.config(menu=self.menubar)
 
-        # File menu with options
+        # File menu
         file_menu = Menu(self.menubar, tearoff=0)
-        file_menu.add_command(label="Exit", command=self.exit_app)  # Add "Exit" option
-        self.menubar.add_cascade(label="File", menu=file_menu)  # Add "File" menu to the menu bar
+        file_menu.add_command(label="Exit", command=self.exit_app)
+        self.menubar.add_cascade(label="File", menu=file_menu)
 
         # Image Manager menu
         img_menu = Menu(self.menubar, tearoff=0)
-        img_menu.add_command(label="Open Image", command=self.open_image)  # Placeholder for opening images
-        img_menu.add_command(label="Save Image", command=self.save_image)  # Placeholder for saving images
-        img_menu.add_command(label="Close All", command=self.close_all_image)  # Placeholder for closing all images
+        img_menu.add_command(label="Open Image", command=self.open_image)
+        img_menu.add_command(label="Save Image", command=self.save_image)
+        img_menu.add_command(label="Close All", command=self.close_all_image)
         self.menubar.add_cascade(label="Image Manager", menu=img_menu)
 
         # Fuzzy Color Space Manager menu
         fuzzy_menu = Menu(self.menubar, tearoff=0)
-        fuzzy_menu.add_command(label="New Color Space", command=self.show_menu_create_fcs)  # Create new color space
-        fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space)  # Load existing color space
+        fuzzy_menu.add_command(label="New Color Space", command=self.show_menu_create_fcs)
+        fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space)
         self.menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
 
         # Help menu
         help_menu = Menu(self.menubar, tearoff=0)
-        help_menu.add_command(label="About", command=self.about_info)  # Show "About" information
+        help_menu.add_command(label="About", command=self.about_info)
         self.menubar.add_cascade(label="Help", menu=help_menu)
 
-        # Main frame for organizing sections
+        # ---------------------------------------------------------------------
+        # Top toolbar area (buttons grouped in sections)
+        # ---------------------------------------------------------------------
         main_frame = tk.Frame(root, bg="gray82")
         main_frame.pack(padx=10, pady=10, fill="x")
 
-        # "Image Manager" section
-        image_manager_frame = tk.LabelFrame(main_frame, text="Image Manager", bg="gray95", padx=10, pady=10)
+        # --- "Image Manager" group
+        image_manager_frame = tk.LabelFrame(
+            main_frame, text="Image Manager", bg="gray95", padx=10, pady=10
+        )
         image_manager_frame.pack(side="left", fill="both", expand=False, padx=5, pady=5)
 
-        # Load Icons 
+        # Load toolbar icons
         load_image = os.path.join(os.getcwd(), 'PyFCS', 'interface', 'icons', 'LoadImage.png')
         load_image = Image.open(load_image)
         load_image = ImageTk.PhotoImage(load_image)
@@ -119,137 +131,129 @@ class PyFCSApp:
         pt_image = os.path.join(os.getcwd(), 'PyFCS', 'interface', 'icons', 'PT.png')
         pt_image = Image.open(pt_image)
         pt_image = ImageTk.PhotoImage(pt_image)
+
         # Buttons for image operations
         tk.Button(
             image_manager_frame,
             image=load_image,
             text="Open Image",
             command=self.open_image,
-            compound="left"  
+            compound="left"
         ).pack(side="left", padx=5)
-        image_manager_frame.load_image = load_image
+        image_manager_frame.load_image = load_image  # Keep reference to avoid garbage collection
 
-        tk.Button(image_manager_frame, 
-            image=save_image, 
-            text=" Save Image", 
+        tk.Button(
+            image_manager_frame,
+            image=save_image,
+            text=" Save Image",
             command=self.save_image,
             compound="left"
         ).pack(side="left", padx=5)
-        image_manager_frame.save_image = save_image
+        image_manager_frame.save_image = save_image  # Keep reference to avoid garbage collection
 
-        # "Fuzzy Color Space Manager" section
-        fuzzy_manager_frame = tk.LabelFrame(main_frame, text="Fuzzy Color Space Manager", bg="gray95", padx=10, pady=10)
+        # --- "Fuzzy Color Space Manager" group
+        fuzzy_manager_frame = tk.LabelFrame(
+            main_frame, text="Fuzzy Color Space Manager", bg="gray95", padx=10, pady=10
+        )
         fuzzy_manager_frame.pack(side="left", fill="both", expand=False, padx=5, pady=5)
 
-        # Buttons for fuzzy color space management
-        tk.Button(fuzzy_manager_frame,
-            text="New Color Space", 
+        tk.Button(
+            fuzzy_manager_frame,
+            text="New Color Space",
             image=new_fcs,
             command=self.show_menu_create_fcs,
-            compound="left" 
+            compound="left"
         ).pack(side="left", padx=5)
-        fuzzy_manager_frame.new_fcs = new_fcs
+        fuzzy_manager_frame.new_fcs = new_fcs  # Keep reference
 
+        # Submenu for creating a new color space (two creation modes)
         self.menu_create_fcs = Menu(root, tearoff=0)
         self.menu_create_fcs.add_command(label="Palette-Based Creation", command=self.palette_based_creation)
         self.menu_create_fcs.add_command(label="Image-Based Creation", command=self.image_based_creation)
 
-        tk.Button(fuzzy_manager_frame,
-            text="Load Color Space", 
+        tk.Button(
+            fuzzy_manager_frame,
+            text="Load Color Space",
             image=load_fcs,
             command=self.load_color_space,
-            compound="left" 
+            compound="left"
         ).pack(side="left", padx=5)
-        fuzzy_manager_frame.load_fcs = load_fcs
+        fuzzy_manager_frame.load_fcs = load_fcs  # Keep reference
 
-
-        # "Color Evaluation" section
-        color_evaluation_frame = tk.LabelFrame(main_frame, text="Color Evaluation", bg="gray95", padx=10, pady=10)
+        # --- "Color Evaluation" group
+        color_evaluation_frame = tk.LabelFrame(
+            main_frame, text="Color Evaluation", bg="gray95", padx=10, pady=10
+        )
         color_evaluation_frame.pack(side="left", fill="both", expand=False, padx=5, pady=5)
 
-        tk.Button(color_evaluation_frame,
-            text="Display AT", 
+        tk.Button(
+            color_evaluation_frame,
+            text="Display AT",
             image=at_image,
             command=self.deploy_at,
-            compound="left" 
+            compound="left"
         ).pack(side="left", padx=5)
-        color_evaluation_frame.at_image = at_image
+        color_evaluation_frame.at_image = at_image  # Keep reference
 
-        tk.Button(color_evaluation_frame,
-            text="Display PT", 
+        tk.Button(
+            color_evaluation_frame,
+            text="Display PT",
             image=pt_image,
             command=self.deploy_pt,
-            compound="left" 
+            compound="left"
         ).pack(side="left", padx=5)
-        color_evaluation_frame.pt_image = pt_image
+        color_evaluation_frame.pt_image = pt_image  # Keep reference
 
+        # ---------------------------------------------------------------------
+        # Main working area: split view (Image Display | Notebook tabs)
+        # ---------------------------------------------------------------------
+        main_content_frame = tk.Frame(root, bg="gray82")
+        main_content_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Main content frame for tabs and the right area
+        # User-resizable horizontal split: Image Display (left) and Notebook (right)
+        main_paned = ttk.Panedwindow(main_content_frame, orient="horizontal")
+        main_paned.pack(fill="both", expand=True)
 
-        # Canvas wrapper
-        canvas_frame = tk.Frame(root, bg="gray82")
-        canvas_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # Main Canvas
-        self.main_canvas = tk.Canvas(canvas_frame, bg="gray82", highlightthickness=0)
-        self.main_canvas.pack(side="left", fill="both", expand=True)
-
-        # Scrollbars
-        self.vertical_scrollbar = tk.Scrollbar(canvas_frame, orient="vertical", command=self.main_canvas.yview)
-        self.vertical_scrollbar.pack(side="right", fill="y")
-
-        self.horizontal_scrollbar = tk.Scrollbar(root, orient="horizontal", command=self.main_canvas.xview)
-        self.horizontal_scrollbar.pack(side="bottom", fill="x")
-
-        # Config scrollbars
-        self.main_canvas.configure(xscrollcommand=self.horizontal_scrollbar.set,
-                                yscrollcommand=self.vertical_scrollbar.set)
-
-        # Intern Frame
-        main_content_frame = tk.Frame(self.main_canvas, bg="gray82")
-        self.canvas_window = self.main_canvas.create_window((0, 0), window=main_content_frame, anchor="nw")
-
-        # Update dinamic scroll region
-        def update_main_scroll(event):
-            self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all"))
-
-        main_content_frame.bind("<Configure>", update_main_scroll)
-
-        # Frame for image display
-        image_area_frame = tk.LabelFrame(main_content_frame, text="Image Display", bg="gray95", padx=10, pady=10)
-        image_area_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-
-        # Canvas for displaying images
-        self.image_canvas = tk.Canvas(image_area_frame, bg="white", borderwidth=2, relief="ridge")
+        # Left pane: image display area
+        image_area_frame = tk.LabelFrame(
+            main_paned, text="Image Display", bg="gray95", padx=10, pady=10
+        )
+        self.image_canvas = tk.Canvas(
+            image_area_frame, bg="white", borderwidth=2, relief="ridge"
+        )
         self.image_canvas.pack(fill="both", expand=True)
 
-        # Notebook for tabs
-        self.notebook = ttk.Notebook(main_content_frame)
-        self.notebook.pack(side="right", fill="both", expand=True, padx=5, pady=1)
+        # Right pane: notebook with different tabs (Model 3D, Data, ...)
+        notebook_container = tk.Frame(main_paned, bg="gray82")
+        self.notebook = ttk.Notebook(notebook_container)
+        self.notebook.pack(fill="both", expand=True)
 
+        # Add panes (weights control how extra space is distributed)
+        main_paned.add(image_area_frame, weight=1)
+        main_paned.add(notebook_container, weight=2)
 
-        # Callback resize 
-        def on_root_resize(event):
-            width = self.root.winfo_width()
-            height = self.root.winfo_height()
+        # Set an initial split ratio (30% left / 70% right) after the UI is laid out
+        def set_initial_sash():
+            total = main_paned.winfo_width()
+            if total > 1:
+                main_paned.sashpos(0, int(total * 0.30))
 
-            self.image_canvas.config(width=int(width * 0.3), height=int(height * 0.8))
-            self.notebook.config(width=int(width * 0.7), height=int(height * 0.8))
+        self.root.after(100, set_initial_sash)
 
-        self.root.bind("<Configure>", on_root_resize)
-
-
-
-        # "Model 3D" tab
+        # ---------------------------------------------------------------------
+        # Tab: "Model 3D"
+        # ---------------------------------------------------------------------
         model_3d_tab = tk.Frame(self.notebook, bg="gray95")
         self.notebook.add(model_3d_tab, text="Model 3D")
 
-        # Dictionary to store the state of each checkbox
+        # State container for 3D display options checkboxes
         self.model_3d_options = {}
+
+        # Top bar with checkboxes for 3D visualization modes
         buttons_frame = tk.Frame(model_3d_tab, bg="gray95")
         buttons_frame.pack(side="top", fill="x", pady=5)
 
-        # Create radiobuttons for different 3D options
+        # Available visualization options (default: Representative = True)
         options = ["Representative", "Core", "0.5-cut", "Support"]
         for option in options:
             var = tk.BooleanVar(value=(option == "Representative"))
@@ -263,37 +267,38 @@ class PyFCSApp:
                 command=self.on_option_select
             ).pack(side="left", padx=20)
 
+        # Split inside Model 3D tab: left (3D canvas) | right (color button list)
         paned = tk.PanedWindow(model_3d_tab, orient="horizontal", sashrelief="raised", bg="gray95")
         paned.pack(fill="both", expand=True)
 
-        # Canvas for the 3D graph
+        # Left side: container where the 3D graph/widget will be embedded
         self.Canvas1 = tk.Frame(paned, bg="white", borderwidth=2, relief="ridge", width=500)
         paned.add(self.Canvas1, stretch="always")
 
-        # Frame for color buttons on the right
+        # Right side: container for color buttons (scrollable)
         self.colors_frame = tk.Frame(paned, bg="gray95", width=2)
         paned.add(self.colors_frame)
 
-        # Canvas to enable scrolling
+        # Scrollable canvas to host many color buttons
         self.scrollable_canvas = tk.Canvas(self.colors_frame, bg="gray95", highlightthickness=0)
         self.scrollable_canvas.pack(side="left", fill="both", expand=True)
 
-        # Scrollbar for the canvas
+        # Vertical scrollbar for the color-button canvas
         self.scrollbar = tk.Scrollbar(self.colors_frame, orient="vertical", command=self.scrollable_canvas.yview)
         self.scrollbar.pack(side="right", fill="y")
 
-        # Configure the canvas and scrollbar
+        # Connect canvas scrolling to scrollbar and set a fixed width for the color panel
         self.scrollable_canvas.configure(yscrollcommand=self.scrollbar.set)
         self.scrollable_canvas.configure(width=150)
 
-        # Frame inside the canvas to hold the buttons
+        # Inner frame placed inside the scrollable canvas (holds the button widgets)
         self.inner_frame = tk.Frame(self.scrollable_canvas, bg="gray95")
         self.inner_frame.bind(
             "<Configure>",
             lambda e: self.scrollable_canvas.configure(scrollregion=self.scrollable_canvas.bbox("all"))
         )
 
-        # Aquí aplicamos el método de scroll para el mouse
+        # Enable mouse wheel scrolling only when the cursor is over this specific canvas
         def bind_scroll_events(canvas):
             def _on_mousewheel(event):
                 canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -313,14 +318,18 @@ class PyFCSApp:
             canvas.bind("<Enter>", _bind_mousewheel)
             canvas.bind("<Leave>", _unbind_mousewheel)
 
-        # Llamamos a la función para habilitar el scroll para ese canvas específico
         bind_scroll_events(self.scrollable_canvas)
 
-        # Add the inner_frame to the canvas
-        self.canvas_window = self.scrollable_canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
+        # Insert inner_frame into the scrollable canvas
+        self.colors_canvas_window_id = self.scrollable_canvas.create_window(
+            (0, 0), window=self.inner_frame, anchor="nw"
+        )
 
+        # Container for action buttons and generated color buttons
         self.color_buttons_frame = tk.Frame(self.inner_frame, bg=self.inner_frame["bg"])
         self.color_buttons_frame.pack(pady=5)
+
+        # Shared style for color-related buttons
         button_style = {
             "width": 10,
             "height": 1,
@@ -330,7 +339,7 @@ class PyFCSApp:
             "cursor": "hand2"
         }
 
-        # "Select All" button for color operations
+        # Select/Deselect all buttons (shown only when a color space is active)
         self.select_all_button = tk.Button(
             self.color_buttons_frame,
             text="Select All",
@@ -340,7 +349,6 @@ class PyFCSApp:
         if self.COLOR_SPACE:
             self.select_all_button.pack(pady=5)
 
-        # "Deselect All" button for color operations
         self.deselect_all_button = tk.Button(
             self.color_buttons_frame,
             text="Deselect All",
@@ -350,99 +358,106 @@ class PyFCSApp:
         if self.COLOR_SPACE:
             self.deselect_all_button.pack(pady=5)
 
-
-
-
-
-
-
-        # "Data" tab
+        # ---------------------------------------------------------------------
+        # Tab: "Data"
+        # ---------------------------------------------------------------------
         data_tab = tk.Frame(self.notebook, bg="gray95")
         self.notebook.add(data_tab, text="Data")
 
-        # Header with centered "Name"
+        # Header area: dataset/name field
         name_data = tk.Frame(data_tab, bg="#e0e0e0", pady=5)
         name_data.pack(fill="x")
-        tk.Label(name_data, text="Name:", font=("Helvetica", 12, "bold"), bg="#e0e0e0").pack(side="top", pady=5)
+        tk.Label(
+            name_data, text="Name:", font=("Helvetica", 12, "bold"), bg="#e0e0e0"
+        ).pack(side="top", pady=5)
+
         self.file_name_entry = tk.Entry(name_data, font=("Helvetica", 12), width=30, justify="center")
         self.file_name_entry.pack(side="top", pady=5)
-        self.file_name_entry.insert(0, "")  # Initial file name
+        self.file_name_entry.insert(0, "")  # Default/initial name
 
-        # Main area with canvas and scrollbars
+        # Main area: table canvas + scrollbars
         canvas_frame = tk.Frame(data_tab, bg="white")
         canvas_frame.pack(fill="both", expand=True)
 
-        # Canvas for color table
+        # Canvas used to render the editable color table/grid
         self.data_window = tk.Canvas(canvas_frame, bg="white", borderwidth=2, relief="ridge")
-        self.data_window.grid(row=0, column=0, sticky="nsew")  # Expandir en todas las direcciones
+        self.data_window.grid(row=0, column=0, sticky="nsew")
 
-        # Configure canvas_frame for dinamic restructure
-        canvas_frame.rowconfigure(0, weight=1)  
-        canvas_frame.columnconfigure(0, weight=1)  
+        # Let the canvas expand in both directions
+        canvas_frame.rowconfigure(0, weight=1)
+        canvas_frame.columnconfigure(0, weight=1)
 
-        # Vertical scrollbar
+        # Vertical scrollbar for the data canvas
         self.data_scrollbar_v = Scrollbar(canvas_frame, orient="vertical", command=self.data_window.yview)
-        self.data_scrollbar_v.grid(row=0, column=1, sticky="ns")  
+        self.data_scrollbar_v.grid(row=0, column=1, sticky="ns")
 
-        # Horizontal scrollbar
+        # Horizontal scrollbar for the data canvas
         self.data_scrollbar_h = Scrollbar(canvas_frame, orient="horizontal", command=self.data_window.xview)
-        self.data_scrollbar_h.grid(row=1, column=0, sticky="ew")  
+        self.data_scrollbar_h.grid(row=1, column=0, sticky="ew")
         self.data_scrollbar_h.bind("<MouseWheel>", lambda event: self.on_mouse_wheel(event, self.data_scrollbar_h))
 
-        self.data_window.configure(yscrollcommand=self.data_scrollbar_v.set, xscrollcommand=self.data_scrollbar_h.set)
+        # Attach scrollbars to canvas
+        self.data_window.configure(
+            yscrollcommand=self.data_scrollbar_v.set,
+            xscrollcommand=self.data_scrollbar_h.set
+        )
 
-
-        # Frame for the content inside the canvas
+        # Inner frame placed inside the data canvas (holds the table widgets)
         self.inner_frame_data = tk.Frame(self.data_window, bg="white")
         self.data_window.create_window((0, 0), window=self.inner_frame_data, anchor="nw")
 
-        # Ensure the canvas scrolls properly with the frame
+        # Keep the canvas scrollable region updated when the inner frame changes size
         def update_scroll_region_2(event):
             self.data_window.configure(scrollregion=self.data_window.bbox("all"))
 
         self.inner_frame_data.bind("<Configure>", update_scroll_region_2)
 
-        # Bottom bar with centered "Add Color" and "Apply" buttons
+        # Bottom bar: action buttons ("Add New Color", "Apply Changes")
         bottom_bar = tk.Frame(data_tab, bg="#e0e0e0", pady=5)
         bottom_bar.pack(fill="x", side="bottom")
 
-        button_container = tk.Frame(bottom_bar, bg="#e0e0e0")  # Center container for buttons
+        button_container = tk.Frame(bottom_bar, bg="#e0e0e0")
         button_container.pack(pady=5)
 
         add_button = tk.Button(
-            button_container, text="Add New Color", font=("Helvetica", 12, "bold"),
-            bg="#E0F2E9", command=lambda: self.addColor_data_window()
+            button_container,
+            text="Add New Color",
+            font=("Helvetica", 12, "bold"),
+            bg="#E0F2E9",
+            command=lambda: self.addColor_data_window()
         )
         add_button.pack(side="left", padx=20)
 
         apply_button = tk.Button(
-            button_container, text="Apply Changes", font=("Helvetica", 12, "bold"),
-            bg="#E0F2E9", command=lambda: self.apply_changes()
+            button_container,
+            text="Apply Changes",
+            font=("Helvetica", 12, "bold"),
+            bg="#E0F2E9",
+            command=lambda: self.apply_changes()
         )
         apply_button.pack(side="left", padx=20)
 
-
-
-
-
-        # Additional variables
-        self.rgb_data = []  # RGB data for 3D visualization
-        self.graph_widget = None  # Track 3D graph widget state
-        self.app_qt = None
+        # ---------------------------------------------------------------------
+        # Additional runtime state
+        # ---------------------------------------------------------------------
+        self.rgb_data = []          # RGB points for 3D visualization
+        self.graph_widget = None    # Tracks the current 3D graph widget instance
+        self.app_qt = None          # Reference to any Qt bridge/app (if used)
         self.more_graph_window = None
 
-        # Bind the Escape key to toggle fullscreen mode
+        # ---------------------------------------------------------------------
+        # Global keyboard shortcuts
+        # ---------------------------------------------------------------------
         self.root.bind("<Escape>", self.toggle_fullscreen)
 
-        # Keyboard shortcuts
-        self.root.bind("<Control-o>", lambda event: self.open_image())       # Ctrl+O to open image
-        self.root.bind("<Control-s>", lambda event: self.save_image())       # Ctrl+S to save image
-        self.root.bind("<Control-w>", lambda event: self.close_all_image())  # Ctrl+W to close all images
-        self.root.bind("<Control-n>", lambda event: self.show_menu_create_fcs())   # Ctrl+N to create new color space
-        self.root.bind("<Control-l>", lambda event: self.load_color_space())       # Ctrl+L to load color space
-        self.root.bind("<Control-a>", lambda event: self.select_all_color())       # Ctrl+A to select all colors
+        self.root.bind("<Control-o>", lambda event: self.open_image())         # Open image
+        self.root.bind("<Control-s>", lambda event: self.save_image())         # Save image
+        self.root.bind("<Control-w>", lambda event: self.close_all_image())    # Close all images
+        self.root.bind("<Control-n>", lambda event: self.show_menu_create_fcs())  # New color space
+        self.root.bind("<Control-l>", lambda event: self.load_color_space())      # Load color space
+        self.root.bind("<Control-a>", lambda event: self.select_all_color())      # Select all colors
 
-        # Switch between Data and Model 3D
+        # Optional: tab switching shortcuts (currently disabled)
         # self.root.bind("<Control-Tab>", lambda event: self.switch_tab(notebook, forward=True))
         # self.root.bind("<Control-Shift-Tab>", lambda event: self.switch_tab(notebook, forward=False))
 
@@ -709,8 +724,8 @@ class PyFCSApp:
         filename = UtilsTools.prompt_file_selection('fuzzy_color_spaces/')
 
         if not filename:
-            # Notify the user if no file was selected
-            self.custom_warning(message="No file was selected.")
+        #     # Notify the user if no file was selected
+        #     self.custom_warning(message="No file was selected.")
             return  # Early return to avoid unnecessary processing
 
         # Activate the 'Original Image' option for all open windows
@@ -1033,13 +1048,13 @@ class PyFCSApp:
         popup, self.scroll_palette_create_fcs = UtilsTools.create_popup_window(
             parent=self.root,
             title="Select colors for your Color Space",
-            width=400,
+            width=450,
             height=500,
             header_text="Select colors for your Color Space"
         )
 
         # Center the popup window
-        self.center_popup(popup, 400, 500)
+        self.center_popup(popup, 450, 500)
 
         # Dictionary to store the Checkbuttons for selected colors
         self.color_checks = {}
@@ -1082,16 +1097,78 @@ class PyFCSApp:
 
     def image_based_creation(self):
         """
-        Displays a popup window to select an image by filename and creates a floating window for the selected image.
-        If no images are available, it shows an informational message.
+        Now shows a mode selector:
+        - Manual color selection from Image
+        - Automatic Color detection (existing flow -> get_fcs_image)
         """
         # Verify if there are available images to display
         if not hasattr(self, "load_images_names") or not self.load_images_names:
             self.custom_warning(message="No images are currently available to display.")
-            return  # Early return if no images are available
+            return
 
         self.FIRST_DBSCAN = True
-        # Create a popup window for image selection
+
+        # Ask for creation mode first
+        self._popup_choose_image_creation_mode()
+
+
+    def _popup_choose_image_creation_mode(self):
+        """Popup with two buttons: Manual / Automatic."""
+        popup = tk.Toplevel(self.root)
+        popup.title("Image-Based Creation Mode")
+        popup.resizable(False, False)
+
+        frame = tk.Frame(popup, padx=20, pady=12)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(
+            frame,
+            text="Choose creation mode:",
+            anchor="w",
+            justify="left"
+        ).pack(fill="x", pady=(0, 10))
+
+        btn_manual = tk.Button(
+            frame,
+            text="Manual Color Selection from Image",
+            width=30,
+            command=lambda: self._start_image_based_mode(popup, mode="manual")
+        )
+        btn_manual.pack(fill="x", pady=4)
+
+        btn_auto = tk.Button(
+            frame,
+            text="Automatic Color Detection from Image",
+            width=30,
+            command=lambda: self._start_image_based_mode(popup, mode="auto")
+        )
+        btn_auto.pack(fill="x", pady=4)
+
+        # Center popup
+        self.center_popup(popup, 360, 140)
+
+
+    def _start_image_based_mode(self, mode_popup, mode: str):
+        """Closes mode popup and continues with the selected flow."""
+        try:
+            mode_popup.destroy()
+        except Exception:
+            pass
+
+        if mode == "auto":
+            # Existing behavior: select image -> get_fcs_image
+            self._popup_select_image(callback=self.get_fcs_image)
+
+        elif mode == "manual":
+            # Manual flow: select image -> YOUR manual handler
+            self.get_fcs_image_manual()
+
+
+    def _popup_select_image(self, callback):
+        """
+        Reusable image selection popup.
+        Uses your existing UtilsTools.create_selection_popup + handle_image_selection.
+        """
         popup, listbox = UtilsTools.create_selection_popup(
             parent=self.image_canvas,
             title="Select an Image",
@@ -1100,10 +1177,8 @@ class PyFCSApp:
             items=[os.path.basename(filename) for filename in self.load_images_names.values()]
         )
 
-        # Center the popup window
         self.center_popup(popup, 200, 200)
 
-        # Bind the listbox selection event to handle image selection
         listbox.bind(
             "<<ListboxSelect>>",
             lambda event: UtilsTools.handle_image_selection(
@@ -1111,9 +1186,355 @@ class PyFCSApp:
                 listbox=listbox,
                 popup=popup,
                 images_names=self.load_images_names,
-                callback=self.get_fuzzy_color_space
+                callback=callback
             )
         )
+
+
+
+
+
+    # ============================================================================
+    # Manual Image-Based Fuzzy Color Space Creation
+    # ----------------------------------------------------------------------------
+    # This section implements the manual workflow for creating a fuzzy color space
+    # from images. It allows the user to:
+    #
+    #   - Open a palette-like popup to collect colors for a new color space.
+    #   - Open a secondary image picker window docked to the right of the main popup.
+    #   - Select an image from the currently loaded images.
+    #   - Click on any pixel in the image to sample its color.
+    #   - Inspect the sampled color in RGB and LAB color spaces.
+    #   - Assign a custom name to the sampled color.
+    #   - Add the color to the palette list in the main popup.
+    #
+    # All colors collected in this workflow are stored locally and are discarded
+    # when the manual creation popup is closed. The implementation carefully
+    # manages window lifecycles to avoid stale references and ensures that UI
+    # updates are only performed on valid widgets.
+    # ============================================================================
+
+    def get_fcs_image_manual(self, *args, **kwargs):
+        """Open the manual FCS creation popup (palette-like) and manage its local color state."""
+        colors = {}  # Local storage for user-added colors (resets when the popup is closed)
+
+        # Create the main popup window and the scrollable area where colors will be displayed
+        popup, self.scroll_palette_create_fcs = UtilsTools.create_popup_window(
+            parent=self.root,
+            title="Select colors for your Color Space",
+            width=480,
+            height=520,
+            header_text="Select colors for your Color Space"
+        )
+        self.center_popup(popup, 480, 520)
+
+        # Keep references to the active manual popup and selection checkbuttons
+        self._manual_popup = popup
+        self.color_checks = {}
+
+        # Cleanup on close (also closes the picker window if it is open)
+        def on_close():
+            """Destroy associated picker window and clear references when closing the manual popup."""
+            if hasattr(self, "_manual_picker_win") and self._manual_picker_win and self._manual_picker_win.winfo_exists():
+                self._manual_picker_win.destroy()
+            self._manual_picker_win = None
+            self._manual_popup = None
+            popup.destroy()
+
+        popup.protocol("WM_DELETE_WINDOW", on_close)
+
+        # Buttons container (2 columns + a full-width Create button)
+        button_frame = ttk.Frame(popup)
+        button_frame.pack(fill="x", padx=20, pady=15)
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+
+        # Open image picker (pass local colors dict + the target frame where rows will be added)
+        btn_add_img = ttk.Button(
+            button_frame,
+            text="Add Color from Image",
+            command=partial(self._open_manual_image_picker_window, colors, self.scroll_palette_create_fcs),
+            style="Accent.TButton"
+        )
+
+        # Add a new color via the generic "addColor" flow (uses local colors dict)
+        btn_add_new = ttk.Button(
+            button_frame,
+            text="Add New Color",
+            command=lambda: self.addColor_create_fcs(popup, colors),
+            style="Accent.TButton"
+        )
+
+        # Create the fuzzy color space using the currently selected colors
+        btn_create = ttk.Button(
+            button_frame,
+            text="Create Color Space",
+            command=self.create_color_space,
+            style="Accent.TButton"
+        )
+
+        # Row 0: two buttons
+        btn_add_img.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 8))
+        btn_add_new.grid(row=0, column=1, sticky="ew", padx=5, pady=(0, 8))
+
+        # Row 1: create button spans both columns
+        btn_create.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5)
+
+
+    def _open_manual_image_picker_window(self, colors, target_frame):
+        """Open a separate image picker window (docked to the right) to sample colors from images."""
+        # Ensure there are loaded images available
+        if not hasattr(self, "load_images_names") or not self.load_images_names:
+            self.custom_warning(message="No images are currently available to display.")
+            return
+
+        # If the picker is already open, bring it to front
+        if hasattr(self, "_manual_picker_win") and self._manual_picker_win and self._manual_picker_win.winfo_exists():
+            self._manual_picker_win.lift()
+            self._manual_picker_win.focus_force()
+            return
+
+        # Create the picker window
+        win = tk.Toplevel(self.root)
+        win.title("Pick Color from Image")
+        win.resizable(False, False)
+        self._manual_picker_win = win
+
+        # Dock the picker to the right of the main manual popup
+        self._dock_window_to_right(parent=self._manual_popup, child=win, gap=12)
+
+        # Layout containers
+        container = ttk.Frame(win, padding=10)
+        container.pack(fill="both", expand=True)
+
+        left = ttk.Frame(container)
+        left.pack(side="left", fill="y")
+
+        right = ttk.Frame(container)
+        right.pack(side="left", fill="both", expand=True, padx=(10, 0))
+
+        ttk.Label(left, text="Loaded Images").pack(anchor="w")
+
+        # Listbox shows real filenames, while we keep an index -> window_id mapping
+        listbox = tk.Listbox(left, width=22, height=18)
+        listbox.pack(pady=6)
+
+        self._manual_listbox_map = []  # Listbox index -> window_id
+
+        window_ids = list(self.load_images_names.keys())
+        for wid in window_ids:
+            path = self.load_images_names.get(wid, wid)
+            display = os.path.basename(path)  # Display the real filename
+            listbox.insert("end", display)
+            self._manual_listbox_map.append(wid)
+
+        # When a list item is selected, load that image in the canvas
+        listbox.bind("<<ListboxSelect>>", lambda e: self._manual_on_select_image(listbox))
+
+        # Image canvas (click to sample a pixel)
+        ttk.Label(right, text="Click on the image to pick a color").pack(anchor="w")
+        self._manual_img_canvas = tk.Canvas(right, width=420, height=320, bg="black", highlightthickness=1)
+        self._manual_img_canvas.pack(pady=6)
+
+        # Picked color info (RGB/LAB + name + preview)
+        info = ttk.Frame(right)
+        info.pack(fill="x", pady=6)
+
+        self._picked_rgb_var = tk.StringVar(value="RGB: -")
+        self._picked_lab_var = tk.StringVar(value="LAB: -")
+        ttk.Label(info, textvariable=self._picked_rgb_var).pack(anchor="w")
+        ttk.Label(info, textvariable=self._picked_lab_var).pack(anchor="w")
+
+        ttk.Label(info, text="Color name:").pack(anchor="w", pady=(8, 0))
+
+        name_row = ttk.Frame(info)
+        name_row.pack(fill="x", pady=2)
+
+        # Smaller name entry
+        self._picked_name_entry = ttk.Entry(name_row, width=18)
+        self._picked_name_entry.pack(side="left")
+
+        # Preview box placed to the right of the name entry
+        self._picked_preview = tk.Canvas(name_row, width=60, height=20, highlightthickness=1)
+        self._picked_preview.pack(side="left", padx=10)
+        self._picked_preview_rect = self._picked_preview.create_rectangle(
+            0, 0, 60, 20, fill="#000000", outline=""
+        )
+
+        # Add the currently picked color into the main popup list
+        ttk.Button(
+            info,
+            text="Add Selected Color",
+            command=lambda: self._manual_add_picked_color(colors, target_frame),
+            style="Accent.TButton"
+        ).pack(fill="x", pady=6)
+
+        # Button style
+        style = ttk.Style()
+        style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
+
+        # Bind canvas click for picking colors
+        self._manual_img_canvas.bind("<Button-1>", self._manual_on_image_click)
+
+
+    def _dock_window_to_right(self, parent, child, gap=10):
+        """Position a child window to the right of a parent window with a small gap."""
+        parent.update_idletasks()
+        child.update_idletasks()
+
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        pw = parent.winfo_width()
+
+        x = px + pw + gap
+        y = py
+
+        child.geometry(f"+{x}+{y}")
+
+
+    def _manual_on_select_image(self, listbox):
+        """Resolve the selected listbox item to a window_id and load that image in the picker."""
+        sel = listbox.curselection()
+        if not sel:
+            return
+
+        idx = sel[0]
+        window_id = self._manual_listbox_map[idx]
+        self._manual_load_image_from_window_id(window_id)
+
+
+    def _manual_load_image_from_window_id(self, window_id: str):
+        """Load an image from the internal images dict and render it in the picker canvas."""
+        if window_id not in self.images:
+            self.custom_warning(message="Selected image is not available.")
+            return
+
+        self._manual_image_id = window_id
+        image = self.images[window_id]
+
+        # Normalize to PIL.Image
+        if isinstance(image, Image.Image):
+            pil = image.convert("RGB")
+        else:
+            # Assume numpy array-like
+            pil = Image.fromarray(image).convert("RGB")
+
+        self._manual_pil_full = pil
+
+        # Fit the image into the canvas while preserving aspect ratio
+        cw = int(self._manual_img_canvas["width"])
+        ch = int(self._manual_img_canvas["height"])
+
+        img_w, img_h = pil.size
+        scale = min(cw / img_w, ch / img_h)
+        new_w = max(1, int(img_w * scale))
+        new_h = max(1, int(img_h * scale))
+
+        resized = pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        # Store geometry for mapping click coordinates back to the full-resolution image
+        self._manual_scale = scale
+        self._manual_draw_w = new_w
+        self._manual_draw_h = new_h
+        self._manual_offset_x = (cw - new_w) // 2
+        self._manual_offset_y = (ch - new_h) // 2
+
+        # Keep a reference to avoid garbage collection
+        self._manual_tk_img = ImageTk.PhotoImage(resized)
+
+        self._manual_img_canvas.delete("all")
+        self._manual_img_canvas.create_image(
+            self._manual_offset_x,
+            self._manual_offset_y,
+            anchor="nw",
+            image=self._manual_tk_img
+        )
+
+
+    def _manual_on_image_click(self, event):
+        """Pick the pixel under the cursor, compute LAB, and update the UI preview."""
+        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
+            return
+
+        # Map click to the drawn image area inside the canvas
+        x = event.x - self._manual_offset_x
+        y = event.y - self._manual_offset_y
+        if x < 0 or y < 0 or x >= self._manual_draw_w or y >= self._manual_draw_h:
+            return
+
+        # Map back to full-resolution coordinates
+        full_x = int(x / self._manual_scale)
+        full_y = int(y / self._manual_scale)
+
+        full_w, full_h = self._manual_pil_full.size
+        full_x = max(0, min(full_w - 1, full_x))
+        full_y = max(0, min(full_h - 1, full_y))
+
+        r, g, b = self._manual_pil_full.getpixel((full_x, full_y))
+        lab = UtilsTools.srgb_to_lab(r, g, b)
+
+        # Store picked values for later "Add Selected Color"
+        self._picked_rgb = (r, g, b)
+        self._picked_lab = lab
+
+        # Update UI
+        self._picked_rgb_var.set(f"RGB: ({r}, {g}, {b})")
+        self._picked_lab_var.set(f"LAB: ({lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f})")
+
+        hex_color = f"#{r:02x}{g:02x}{b:02x}"
+        self._picked_preview.itemconfig(self._picked_preview_rect, fill=hex_color)
+
+
+    def _manual_add_picked_color(self, colors, target_frame):
+        """Add the currently picked color to the main manual popup list and local colors dict."""
+        # If the main popup has been closed, the target frame is no longer valid
+        if target_frame is None or not target_frame.winfo_exists():
+            self.custom_warning(message="The color list window is closed. Open it again to add colors.")
+            return
+
+        if not hasattr(self, "_picked_rgb") or not hasattr(self, "_picked_lab"):
+            self.custom_warning(message="Pick a color by clicking on the image first.")
+            return
+
+        # Read and validate the requested color name
+        name = self._picked_name_entry.get().strip()
+        if not name:
+            self.custom_warning(message="Please enter a name for the selected color.")
+            return
+
+        # Avoid name collisions
+        base = name
+        i = 2
+        while name in colors:
+            name = f"{base}_{i}"
+            i += 1
+
+        # Convert picked LAB (tuple/list) into the dict format required by create_color_display_frame_add
+        lab = {
+            "L": float(self._picked_lab[0]),
+            "A": float(self._picked_lab[1]),
+            "B": float(self._picked_lab[2]),
+        }
+
+        # Persist in local dict (resets on popup close)
+        colors[name] = {"lab": lab, "source_image": getattr(self, "_manual_image_id", None)}
+
+        # Render the new row into the target scrollable frame
+        self.fuzzy_manager.create_color_display_frame_add(
+            parent=target_frame,
+            color_name=name,
+            lab=lab,
+            color_checks=self.color_checks
+        )
+
+        # Clear the input for the next color
+        self._picked_name_entry.delete(0, "end")
+
+
+
+
+
+
 
 
 
@@ -2063,7 +2484,7 @@ class PyFCSApp:
                 popup=select_popup,
                 images_names=self.load_images_names,
                 callback=lambda window_id: [
-                    self.get_fuzzy_color_space_merge(window_id, colors, threshold, min_samples),
+                    self.get_fcs_image_merge(window_id, colors, threshold, min_samples),
                     popup.destroy()
                 ]
             )
@@ -2169,7 +2590,7 @@ class PyFCSApp:
         tk.Button(
             controls_frame,
             text="Recalculate",
-            command=lambda: [self.get_fuzzy_color_space_recalculate(colors, threshold, min_samples, popup), popup.destroy()],
+            command=lambda: [self.get_fcs_image_recalculate(colors, threshold, min_samples, popup), popup.destroy()],
             bg="#d2dff0",
             font=("Helvetica", 10, "bold"),
             padx=10
@@ -2381,14 +2802,14 @@ class PyFCSApp:
         threading.Thread(target=run_save_process, daemon=True).start()
 
 
-    def get_fuzzy_color_space(self, window_id, threshold=0.5, min_samples=160):
+    def get_fcs_image(self, window_id, threshold=0.5, min_samples=160):
         """
         Retrieves the fuzzy color space for the specified image and displays the detected colors.
         Adds the source image identifier to each color if it doesn't already exist.
         """
         image = self.images[window_id]
         self.last_window_id = window_id
-        colors = self.image_manager.get_fuzzy_color_space(image, threshold, min_samples)
+        colors = self.image_manager.get_fcs_image(image, threshold, min_samples)
 
         # Add the source image identifier to each color if it doesn't exist
         for id in colors:
@@ -2400,13 +2821,13 @@ class PyFCSApp:
 
 
 
-    def get_fuzzy_color_space_merge(self, new_window_id, colors, threshold, min_samples):
+    def get_fcs_image_merge(self, new_window_id, colors, threshold, min_samples):
         """
         Retrieves the fuzzy color space for a new image and merges it with the existing colors.
         Adds the source image identifier to each new color if it doesn't already exist.
         """
         if new_window_id and not any(id.get("source_image") == new_window_id for id in colors):
-            new_colors = self.image_manager.get_fuzzy_color_space(self.images[new_window_id], threshold, min_samples)
+            new_colors = self.image_manager.get_fcs_image(self.images[new_window_id], threshold, min_samples)
 
             # Add the source image identifier to each new color if it doesn't exist
             for id in new_colors:  
@@ -2428,11 +2849,11 @@ class PyFCSApp:
 
         # Filter out colors that do not belong to the current image
         filtered_colors = [id for id in colors if id.get("source_image") != window_id]
-        self.get_fuzzy_color_space_merge(window_id, filtered_colors, threshold, min_samples)
+        self.get_fcs_image_merge(window_id, filtered_colors, threshold, min_samples)
 
 
 
-    def get_fuzzy_color_space_recalculate(self, colors, threshold=0.5, min_samples=160, popup = None):
+    def get_fcs_image_recalculate(self, colors, threshold=0.5, min_samples=160, popup = None):
         """
         Recalculates the fuzzy color space for the selected image.
         If multiple images are available, prompts the user to select one.
@@ -2469,14 +2890,14 @@ class PyFCSApp:
                 title="Warning",
                 message=f"No colors were detected under this configuration. The last version will be reloaded"
             )
-            self.get_fuzzy_color_space(self.last_window_id, threshold, min_samples)
+            self.get_fcs_image(self.last_window_id, threshold, min_samples)
 
 
         else:
             # If there is only one image, recalculate its colors directly
             window_id = unique_ids.pop() if unique_ids else None
 
-            self.get_fuzzy_color_space(window_id, threshold, min_samples)
+            self.get_fcs_image(window_id, threshold, min_samples)
             popup.destroy()
 
 
@@ -2743,6 +3164,10 @@ class PyFCSApp:
 
             color_map = plt.cm.get_cmap('hsv', len(prototypes))
             prototype_colors = {prototype.label: color_map(i)[:3] for i, prototype in enumerate(prototypes)}
+            for label in prototype_colors:
+                if label.lower() == "black":
+                    prototype_colors[label] = (0, 0, 0)
+
 
             height, width = image.height, image.width
             total_pixels = height * width
@@ -2987,8 +3412,6 @@ class PyFCSApp:
 
 
 
-
-    
 
 
 

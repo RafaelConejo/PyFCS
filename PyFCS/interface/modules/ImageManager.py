@@ -258,7 +258,7 @@ class ImageManager:
       
 
 
-    def get_fuzzy_color_space(self, image, threshold=0.5, min_samples=160):
+    def get_fcs_image(self, image, threshold=0.5, min_samples=160):
         """
         Detects the main colors in an image using DBSCAN clustering and triggers a callback with the detected colors.
 

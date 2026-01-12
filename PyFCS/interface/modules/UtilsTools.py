@@ -34,6 +34,36 @@ def lab_to_rgb(lab):
     return tuple(np.clip(rgb_scaled, 0, 255))
 
 
+@staticmethod
+def srgb_to_lab(r, g, b):
+    def inv_gamma(u):
+        u = u / 255.0
+        return u / 12.92 if u <= 0.04045 else ((u + 0.055) / 1.055) ** 2.4
+
+    R = inv_gamma(r)
+    G = inv_gamma(g)
+    B = inv_gamma(b)
+
+    X = R * 0.4124564 + G * 0.3575761 + B * 0.1804375
+    Y = R * 0.2126729 + G * 0.7151522 + B * 0.0721750
+    Z = R * 0.0193339 + G * 0.1191920 + B * 0.9503041
+
+    Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
+    x = X / Xn
+    y = Y / Yn
+    z = Z / Zn
+
+    def f(t):
+        return t ** (1/3) if t > 0.008856 else (7.787 * t + 16/116)
+
+    fx, fy, fz = f(x), f(y), f(z)
+
+    L = 116 * fy - 16
+    a = 500 * (fx - fy)
+    bb = 200 * (fy - fz)
+    return (L, a, bb)
+
+
 
 def prompt_file_selection(initial_subdir):
     """
