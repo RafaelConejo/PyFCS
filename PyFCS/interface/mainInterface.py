@@ -4,6 +4,7 @@ import math
 import random
 import platform
 import threading
+import time
 import numpy as np
 import tkinter as tk
 from skimage import color
@@ -3154,48 +3155,54 @@ class PyFCSApp:
             Processes an image to map its colors to a fuzzy color space and returns 
             the recolored image and a legend in a Tkinter Frame.
             """
+            fuzzy_color_space.precompute_pack()
+
             img_np = np.array(image)
-
             if img_np.shape[-1] == 4:
-                img_np = img_np[..., :3]  
-
+                img_np = img_np[..., :3]
             img_np = img_np / 255.0
-            lab_img = color.rgb2lab(img_np)
 
-            color_map = plt.cm.get_cmap('hsv', len(prototypes))
-            prototype_colors = {prototype.label: color_map(i)[:3] for i, prototype in enumerate(prototypes)}
+            lab_img = color.rgb2lab(img_np)
+            lab_q = np.round(lab_img, 2)              # <-- 0.01 precision
+            height, width = lab_q.shape[0], lab_q.shape[1]
+            total_pixels = height * width
+
+            color_map = plt.get_cmap('hsv', len(prototypes))
+            prototype_colors = {p.label: color_map(i)[:3] for i, p in enumerate(prototypes)}
             for label in prototype_colors:
                 if label.lower() == "black":
                     prototype_colors[label] = (0, 0, 0)
 
+            proto_rgb_uint8 = {
+                p.label: (np.array(prototype_colors[p.label]) * 255).astype(np.uint8)
+                for p in prototypes
+            }
 
-            height, width = image.height, image.width
-            total_pixels = height * width
-            colorized_image = np.zeros((height, width, 3), dtype=np.uint8) 
+            colorized_image = np.zeros((height, width, 3), dtype=np.uint8)
             membership_cache = {}
 
-            processed_pixels = 0  
+            processed_pixels = 0
+            last_update = time.perf_counter()
 
             for y in range(height):
                 for x in range(width):
-                    lab_color = tuple(lab_img[y, x])
+                    lab_color = lab_q[y, x]
+                    key = (int(lab_color[0] * 100), int(lab_color[1] * 100), int(lab_color[2] * 100))
 
-                    if lab_color in membership_cache:
-                        membership_degrees = membership_cache[lab_color]
-                    else:
+                    best_label = membership_cache.get(key)
+                    if best_label is None and key not in membership_cache:
                         membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
-                        membership_cache[lab_color] = membership_degrees  
+                        best_label = max(membership_degrees, key=membership_degrees.get) if membership_degrees else None
+                        membership_cache[key] = best_label
 
-                    if not membership_degrees:
-                        colorized_image[y, x] = [0, 0, 0]  
-                    else:
-                        best_prototype = max(membership_degrees, key=membership_degrees.get)
-                        rgb_color = np.array(prototype_colors[best_prototype]) * 255
-                        colorized_image[y, x] = rgb_color.astype(np.uint8)
+                    colorized_image[y, x] = (0, 0, 0) if best_label is None else proto_rgb_uint8[best_label]
 
                     processed_pixels += 1
                     if progress_callback:
-                        progress_callback(processed_pixels, total_pixels)
+                        now = time.perf_counter()
+                        if now - last_update > 0.03 or processed_pixels == total_pixels:
+                            progress_callback(processed_pixels, total_pixels)
+                            last_update = now
 
             # Create the legend in a Tkinter Frame
             legend_frame = tk.Frame(parent_canvas, bg="white", relief="solid", bd=1)

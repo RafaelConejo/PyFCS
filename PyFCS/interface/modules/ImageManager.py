@@ -206,56 +206,45 @@ class ImageManager:
 
 
     def get_proto_percentage(self, prototypes, image, fuzzy_color_space, selected_option, progress_callback=None):
-        """Generates a grayscale image without using a matplotlib figure."""
-        # Convert the image to a NumPy array
+        """Generates a grayscale membership map for a selected prototype."""
         img_np = np.array(image)
 
-        # Check if the image has an alpha channel (RGBA)
-        if img_np.shape[-1] == 4:  # If it has 4 channels (RGBA)
-            img_np = img_np[..., :3]  # Remove the alpha channel and keep only RGB
+        # Remove alpha channel if present
+        if img_np.shape[-1] == 4:
+            img_np = img_np[..., :3]
 
-        # Normalize the image values to the range [0, 1]
+        # Normalize to [0,1]
         img_np = img_np / 255.0
 
-        # Convert the image from RGB to LAB color space
+        # RGB -> LAB
         lab_image = color.rgb2lab(img_np)
 
-        # Retrieve the selected prototype
+        # Quantize LAB to 0.01 to improve cache hits
+        lab_q = np.round(lab_image, 2)
+        lab_flat = lab_q.reshape(-1, 3)
+
         selected_prototype = prototypes[selected_option]
         print(f"Selected Prototype: {selected_prototype.label}")
 
-        # Create an empty grayscale image (same dimensions as the input image)
-        grayscale_image = np.zeros((lab_image.shape[0], lab_image.shape[1]), dtype=np.uint8)
-        
-        # Dictionary to store computed membership values for each lab_color
         membership_cache = {}
+        flattened_memberships = np.empty(lab_flat.shape[0], dtype=np.float32)
 
-        # Vectorize: Flatten the lab_image for processing
-        lab_image_flat = lab_image.reshape(-1, 3)
+        total = lab_flat.shape[0]
+        for i, lab_color in enumerate(lab_flat):
+            key = (lab_color[0], lab_color[1], lab_color[2])
 
-        # Precompute membership for all unique colors
-        unique_lab_colors = np.unique(lab_image_flat, axis=0)
+            if key not in membership_cache:
+                membership_cache[key] = fuzzy_color_space.calculate_membership_for_prototype(lab_color, selected_option)
 
-        # Calculate membership for all unique lab colors
-        for index, lab_color in enumerate(unique_lab_colors):
-            lab_color_tuple = tuple(lab_color)
-            if lab_color_tuple not in membership_cache:
-                membership_degree = fuzzy_color_space.calculate_membership_for_prototype(lab_color, selected_option)
-                membership_cache[lab_color_tuple] = membership_degree
+            flattened_memberships[i] = membership_cache[key]
 
-            if progress_callback:
-                progress_callback(index + 1, len(unique_lab_colors))
+            if progress_callback and (i % 5000 == 0 or i == total - 1):
+                progress_callback(i + 1, total)
 
-        # Map the computed membership values to the flattened image
-        flattened_memberships = np.array([membership_cache[tuple(color)] for color in lab_image_flat])
-
-        # Reshape back to the original image dimensions and scale to grayscale
-        grayscale_image = (flattened_memberships * 255).reshape(lab_image.shape[0], lab_image.shape[1]).astype(np.uint8)
-
-        # Return the generated grayscale image as a NumPy array
+        grayscale_image = (flattened_memberships * 255.0).reshape(lab_image.shape[0], lab_image.shape[1]).astype(np.uint8)
         return grayscale_image
+
         
-      
 
 
     def get_fcs_image(self, image, threshold=0.5, min_samples=160):

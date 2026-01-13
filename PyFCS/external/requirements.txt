@@ -8,6 +8,7 @@ scikit-learn
 scipy
 plotly
 PyQtWebEngine
+pandas
 
 # numpy==1.26.1
 # matplotlib==3.8.0
@@ -19,3 +20,4 @@ PyQtWebEngine
 # scipy==1.11.3
 # plotly==5.22.0
 # PyQtWebEngine==5.15.7
+# pandas==2.3.3
