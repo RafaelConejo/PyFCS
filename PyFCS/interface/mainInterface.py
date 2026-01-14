@@ -693,6 +693,7 @@ class PyFCSApp:
 
         # Create and save the fuzzy color space
         self.fuzzy_color_space = FuzzyColorSpace(space_name=" ", prototypes=self.prototypes)
+        self.fuzzy_color_space.precompute_pack()
         self.cores = self.fuzzy_color_space.get_cores()
         self.supports = self.fuzzy_color_space.get_supports()
 
@@ -753,6 +754,7 @@ class PyFCSApp:
                 self.cores = self.fuzzy_color_space.cores
                 self.supports = self.fuzzy_color_space.supports
                 self.prototypes = self.fuzzy_color_space.prototypes
+                self.fuzzy_color_space.precompute_pack()
 
                 self.display_data_window()
                 self.update_prototypes_info()
