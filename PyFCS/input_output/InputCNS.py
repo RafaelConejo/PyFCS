@@ -88,7 +88,10 @@ class InputCNS(Input):
                                     'negative_prototypes': []
                                 })
                             else:
-                                color_data['color_names'].append(line_content)
+                                name = line_content
+                                if (name.startswith('"') and name.endswith('"')) or (name.startswith("'") and name.endswith("'")):
+                                    name = name[1:-1]
+                                color_data['color_names'].append(name)
 
                     except (ValueError, IndexError):
                         raise ValueError(f"Error processing line {i + 1} in the .cns file.")
