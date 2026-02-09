@@ -58,6 +58,8 @@ class PyFCSApp:
         self.hex_color = []            # Stores point colors (hex) used for visualization
         self.images = {}               # Cache for images loaded/processed in the app
         self.color_entry_detect = {}   # Keeps track of UI entries used for color detection/edition
+        self.cm_cache = {}             # Cache for the color mappings all
+        self.proto_percentage_cache = {} # Cache for prototype-percentage grayscale maps
 
         # ---------------------------------------------------------------------
         # Main window configuration
@@ -722,17 +724,13 @@ class PyFCSApp:
         Allows the user to select a fuzzy color space file and displays its color data in a scrollable table.
         This includes loading the file, extracting the data, and displaying it visually on a canvas.
         """
-        # Prompt the user to select a file
         filename = UtilsTools.prompt_file_selection('fuzzy_color_spaces/')
-
         if not filename:
-        #     # Notify the user if no file was selected
-        #     self.custom_warning(message="No file was selected.")
-            return  # Early return to avoid unnecessary processing
+            return
 
         # Activate the 'Original Image' option for all open windows
         if hasattr(self, 'floating_images') and self.floating_images:
-            for window_id in self.floating_images:
+            for window_id in list(self.floating_images.keys()):
                 self.show_original_image(window_id)
 
         self.show_loading_color_space()
@@ -742,6 +740,19 @@ class PyFCSApp:
 
             self.file_path = filename
             self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
+
+            # Clear color-mapping cache when loading a new FCS/CNS
+            if hasattr(self, "cm_cache"):
+                self.cm_cache.clear()
+            else:
+                self.cm_cache = {}
+
+            # Clear caches when loading a new color space (FCS/CNS)
+            if hasattr(self, "proto_percentage_cache"):
+                self.proto_percentage_cache.clear()
+            else:
+                self.proto_percentage_cache = {}
+
 
             if data['type'] == 'cns':
                 self.color_data = data['color_data']
@@ -2144,13 +2155,36 @@ class PyFCSApp:
     def create_floating_window(self, x, y, filename):
         """
         Creates a floating window with the selected image, a title bar, and a dropdown menu.
-        The window is movable, resizable, and includes options for displaying the original image and color mapping.
+        The window is movable (from title bar only), resizable (bottom-right handle),
+        and includes options for displaying the original image and color mapping.
         """
-        # Initialize the load_images_names dictionary if it doesn't exist
+
+        # ---------------------------
+        # Lazy-init dictionaries
+        # ---------------------------
         if not hasattr(self, "load_images_names"):
             self.load_images_names = {}
+        if not hasattr(self, "images"):
+            self.images = {}
+        if not hasattr(self, "floating_images"):
+            self.floating_images = {}
+            self.original_images = {}
+            self.modified_image = {}
 
-        # Generate a unique window ID based on the number of existing images
+        # Store original PIL images for correct pixel mapping after resize
+        if not hasattr(self, "pil_images_original"):
+            self.pil_images_original = {}
+
+        if not hasattr(self, "image_dimensions"):
+            self.image_dimensions = {}
+        if not hasattr(self, "original_image_dimensions"):
+            self.original_image_dimensions = {}
+
+        # Store window top-left and current size for move/resize consistency
+        if not hasattr(self, "floating_window_state"):
+            self.floating_window_state = {}  # window_id -> dict(x,y,w,h)
+
+        # Generate unique ID
         while True:
             window_id = f"floating_{random.randint(1000, 9999)}"
             if window_id not in self.load_images_names:
@@ -2158,90 +2192,210 @@ class PyFCSApp:
 
         self.load_images_names[window_id] = filename
 
-        # Set initial values for whether the window should display color space and original image
+        # State flags
         self.MEMBERDEGREE[window_id] = bool(self.COLOR_SPACE)
         self.ORIGINAL_IMG[window_id] = False
 
-        # Load the image from the selected file
-        img = Image.open(filename)
-        original_width, original_height = img.size  # Get the original dimensions of the image
-
-        # Set the desired size for the rectangle (window) where the image will be displayed
-        rect_width = 250
-        rect_height = 250
-
-        # Calculate the maximum scale factor to fit the image within the defined rectangle size without distortion
-        scale = min(rect_width / original_width, rect_height / original_height)
-
-        # Calculate the new dimensions of the image after scaling
-        new_width = int(original_width * scale)
-        new_height = int(original_height * scale)
-
-        # Resize the image using the new dimensions
-        img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-        # Store the resized image dimensions in a dictionary for later reference
-        if not hasattr(self, "image_dimensions"):
-            self.image_dimensions = {}
-            self.original_image_dimensions = {}
+        # ---------------------------
+        # Load images
+        # ---------------------------
+        pil_original = Image.open(filename).convert("RGB")
+        original_width, original_height = pil_original.size
+        self.pil_images_original[window_id] = pil_original
         self.original_image_dimensions[window_id] = (original_width, original_height)
+
+        # Initial target size (image area)
+        target_w, target_h = 250, 250
+        scale = min(target_w / original_width, target_h / original_height)
+        new_width = max(1, int(original_width * scale))
+        new_height = max(1, int(original_height * scale))
+
+        pil_resized = pil_original.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        # Store resized display image and dimensions
+        self.images[window_id] = pil_resized
         self.image_dimensions[window_id] = (new_width, new_height)
 
-        # Update the rectangle dimensions to match the resized image
-        rect_width, rect_height = new_width, new_height
-
-        # Create a dictionary to store the image
-        self.images[window_id] = img_resized
-        img_tk = ImageTk.PhotoImage(img_resized)
-
-        # Initialize the dictionaries to store floating images and frames if they don't exist
-        if not hasattr(self, "floating_images"):
-            self.floating_images = {}
-            self.original_images = {}
-            self.modified_image = {}
-
-        # Store the image reference in the floating images dictionary
+        img_tk = ImageTk.PhotoImage(pil_resized)
         self.floating_images[window_id] = img_tk
         self.original_images[window_id] = img_tk
 
-        # Create a background rectangle for the floating window
+        # Window paddings (same as your layout)
+        PAD_X = 30
+        PAD_Y = 50
+        TITLE_H = 30
+        IMG_TOP_PAD = 40
+        HANDLE_SIZE = 12
+
+        # Save initial window state
+        self.floating_window_state[window_id] = {"x": x, "y": y, "w": new_width, "h": new_height}
+
+        # ---------------------------
+        # Create canvas items
+        # ---------------------------
+        # Background
         self.image_canvas.create_rectangle(
-            x, y, x + rect_width + 30, y + rect_height + 50, outline="black", fill="white", width=2, tags=(window_id, "floating")
+            x, y, x + new_width + PAD_X, y + new_height + PAD_Y,
+            outline="black", fill="white", width=2,
+            tags=(window_id, "floating", f"{window_id}_bg")
         )
 
-        # Create the title bar at the top of the window
+        # Title bar
         self.image_canvas.create_rectangle(
-            x, y, x + rect_width + 30, y + 30, outline="black", fill="gray", tags=(window_id, "floating")
+            x, y, x + new_width + PAD_X, y + TITLE_H,
+            outline="black", fill="gray",
+            tags=(window_id, "floating", f"{window_id}_title")
         )
 
-        # Display the image filename in the title bar
+        # Title text
         self.image_canvas.create_text(
-            x + 50, y + 15, anchor="w", text=os.path.basename(filename), fill="white", font=("Sans", 10), tags=(window_id, "floating")
+            x + 50, y + 15, anchor="w",
+            text=os.path.basename(filename),
+            fill="white", font=("Sans", 10),
+            tags=(window_id, "floating", f"{window_id}_title_text")
         )
 
-        # Create a close button in the title bar
+        # Close button
         self.image_canvas.create_rectangle(
-            x + rect_width + 25, y + 5, x + rect_width + 5, y + 25, outline="black", fill="red", tags=(window_id, "floating", f"{window_id}_close_button")
+            x + new_width + PAD_X - 5, y + 5,
+            x + new_width + PAD_X - 25, y + 25,
+            outline="black", fill="red",
+            tags=(window_id, "floating", f"{window_id}_close_button", f"{window_id}_close_rect")
         )
         self.image_canvas.create_text(
-            x + rect_width + 15, y + 15, text="X", fill="white", font=("Sans", 10, "bold"), tags=(window_id, "floating", f"{window_id}_close_button")
+            x + new_width + PAD_X - 15, y + 15,
+            text="X", fill="white", font=("Sans", 10, "bold"),
+            tags=(window_id, "floating", f"{window_id}_close_button", f"{window_id}_close_text")
         )
 
-        # Add an arrow button to the left side of the title bar
+        # Arrow button
         self.image_canvas.create_text(
-            x + 15, y + 15, text="▼", fill="white", font=("Sans", 12), tags=(window_id, "floating", f"{window_id}_arrow_button")
+            x + 15, y + 15, text="▼",
+            fill="white", font=("Sans", 12),
+            tags=(window_id, "floating", f"{window_id}_arrow_button", f"{window_id}_arrow_text")
         )
 
-        # Display the image inside the frame using a Label widget
+        # Image item (IMPORTANT: anchor="nw" to avoid offset weirdness)
         self.image_canvas.create_image(
-            x + 15 + rect_width // 2, y + 40 + rect_height // 2, image=self.floating_images[window_id], tags=(window_id, "floating", f"{window_id}_click_image")
+            x + 15, y + IMG_TOP_PAD,
+            anchor="nw",
+            image=self.floating_images[window_id],
+            tags=(window_id, "floating", f"{window_id}_click_image", f"{window_id}_img_item")
         )
 
-        # Function to close the floating window when the close button is clicked
+        # Resize handle (bottom-right)
+        hx1 = x + new_width + PAD_X - HANDLE_SIZE - 2
+        hy1 = y + new_height + PAD_Y - HANDLE_SIZE - 2
+        hx2 = x + new_width + PAD_X - 2
+        hy2 = y + new_height + PAD_Y - 2
+        self.image_canvas.create_rectangle(
+            hx1, hy1, hx2, hy2,
+            outline="black", fill="lightgray",
+            tags=(window_id, "floating", f"{window_id}_resize_handle")
+        )
+
+        # ---------------------------
+        # Helpers to relayout + resize
+        # ---------------------------
+        def _relayout(window_id):
+            """Updates all canvas items positions based on stored window state."""
+            st = self.floating_window_state[window_id]
+            wx, wy, ww, wh = st["x"], st["y"], st["w"], st["h"]
+
+            # Background & title
+            self.image_canvas.coords(f"{window_id}_bg", wx, wy, wx + ww + PAD_X, wy + wh + PAD_Y)
+            self.image_canvas.coords(f"{window_id}_title", wx, wy, wx + ww + PAD_X, wy + TITLE_H)
+
+            # Title text & arrow
+            self.image_canvas.coords(f"{window_id}_title_text", wx + 50, wy + 15)
+            self.image_canvas.coords(f"{window_id}_arrow_text", wx + 15, wy + 15)
+
+            # Close button
+            self.image_canvas.coords(
+                f"{window_id}_close_rect",
+                wx + ww + PAD_X - 5, wy + 5,
+                wx + ww + PAD_X - 25, wy + 25
+            )
+            self.image_canvas.coords(f"{window_id}_close_text", wx + ww + PAD_X - 15, wy + 15)
+
+            # Image top-left (anchor nw)
+            self.image_canvas.coords(
+                f"{window_id}_img_item",
+                wx + 15, wy + IMG_TOP_PAD
+            )
+
+            # Resize handle
+            hx1 = wx + ww + PAD_X - HANDLE_SIZE - 2
+            hy1 = wy + wh + PAD_Y - HANDLE_SIZE - 2
+            hx2 = wx + ww + PAD_X - 2
+            hy2 = wy + wh + PAD_Y - 2
+            self.image_canvas.coords(f"{window_id}_resize_handle", hx1, hy1, hx2, hy2)
+
+            # Keep on top
+            self.image_canvas.tag_raise(window_id)
+            self.image_canvas.tag_raise(f"{window_id}_close_button")
+            self.image_canvas.tag_raise(f"{window_id}_arrow_button")
+            self.image_canvas.tag_raise(f"{window_id}_resize_handle")
+
+            # Reposition proto_options frame if exists
+            if hasattr(self, "proto_options") and window_id in self.proto_options:
+                proto_option_frame = self.proto_options[window_id]
+                if proto_option_frame.winfo_exists():
+                    frame_x = wx + ww + PAD_X + 10
+                    frame_y = wy
+
+                    canvas_width = self.image_canvas.winfo_width()
+                    canvas_height = self.image_canvas.winfo_height()
+
+                    if frame_x + 120 > canvas_width:
+                        frame_x = max(0, canvas_width - 120)
+                    if frame_y + 150 > canvas_height:
+                        frame_y = max(0, canvas_height - 150)
+
+                    proto_option_frame.place(x=frame_x, y=frame_y)
+                    proto_option_frame.lift()
+
+        def _update_image_to_size(window_id, target_w, target_h):
+            """
+            Resizes the displayed image to fit within target_w/target_h keeping aspect ratio,
+            updates PhotoImage reference, and refreshes layout.
+            """
+            pil_original = self.pil_images_original[window_id]
+            ow, oh = pil_original.size
+
+            # Keep aspect ratio (fit)
+            scale = min(target_w / ow, target_h / oh)
+            new_w = max(30, int(ow * scale))  # Min size to avoid collapsing
+            new_h = max(30, int(oh * scale))
+
+            pil_resized = pil_original.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            self.images[window_id] = pil_resized
+            self.image_dimensions[window_id] = (new_w, new_h)
+
+            img_tk = ImageTk.PhotoImage(pil_resized)
+            self.floating_images[window_id] = img_tk
+
+            # Update canvas image item
+            self.image_canvas.itemconfig(f"{window_id}_img_item", image=self.floating_images[window_id])
+
+            # Update state size and relayout
+            self.floating_window_state[window_id]["w"] = new_w
+            self.floating_window_state[window_id]["h"] = new_h
+            _relayout(window_id)
+
+        # ---------------------------
+        # Close window
+        # ---------------------------
         def close_window(event):
             """Closes the floating window and removes all associated elements."""
             self.image_canvas.delete(window_id)
-            del self.floating_images[window_id]
+
+            if window_id in self.floating_images:
+                del self.floating_images[window_id]
+            if hasattr(self, "pil_images_original") and window_id in self.pil_images_original:
+                del self.pil_images_original[window_id]
+            if hasattr(self, "floating_window_state") and window_id in self.floating_window_state:
+                del self.floating_window_state[window_id]
 
             if hasattr(self, "proto_options") and window_id in self.proto_options:
                 if self.proto_options[window_id].winfo_exists():
@@ -2251,7 +2405,9 @@ class PyFCSApp:
             if hasattr(self, "load_images_names") and window_id in self.load_images_names:
                 del self.load_images_names[window_id]
 
-        # Function to show the dropdown menu when the arrow button is clicked
+        # ---------------------------
+        # Dropdown menu
+        # ---------------------------
         def show_menu_image(event):
             """Displays a context menu with options for the floating window."""
             menu = Menu(self.root, tearoff=0)
@@ -2274,97 +2430,141 @@ class PyFCSApp:
             )
             menu.post(event.x_root, event.y_root)
 
-        # Function to make the floating window movable
+        # ---------------------------
+        # Move window (TITLE BAR ONLY)
+        # ---------------------------
         def start_move(event):
-            """Stores the initial position when the mouse is pressed on the window."""
+            """Stores the initial position when the mouse is pressed on the title bar."""
             self.last_x, self.last_y = event.x, event.y
 
         def move_window(event):
-            """Moves the floating window based on the mouse drag."""
+            """Moves the floating window based on the mouse drag (title bar only)."""
             dx, dy = event.x - self.last_x, event.y - self.last_y
-            self.image_canvas.move(window_id, dx, dy)
-            self.image_canvas.tag_raise(window_id)
-            self.image_canvas.tag_raise(f"{window_id}_close_button")
-            self.image_canvas.tag_raise(f"{window_id}_arrow_button")
-            self.image_canvas.tag_raise(f"{window_id}_image")
 
-            if hasattr(self, "proto_options") and window_id in self.proto_options:
-                proto_option_frame = self.proto_options[window_id]
-                if proto_option_frame.winfo_exists():
-                    items = self.image_canvas.find_withtag(window_id)
-                    if items:
-                        x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
-                        frame_x = x2 + 10
-                        frame_y = y1
+            # Update stored position
+            st = self.floating_window_state[window_id]
+            st["x"] += dx
+            st["y"] += dy
 
-                        canvas_width = self.image_canvas.winfo_width()
-                        canvas_height = self.image_canvas.winfo_height()
-
-                        if frame_x + 120 > canvas_width:
-                            frame_x = canvas_width - 120
-                        if frame_y + 150 > canvas_height:
-                            frame_y = canvas_height - 150
-
-                        proto_option_frame.place(x=frame_x, y=frame_y)
-                        proto_option_frame.lift()
-
+            _relayout(window_id)
             self.last_x, self.last_y = event.x, event.y
 
+        # ---------------------------
+        # Resize window
+        # ---------------------------
+        def start_resize(event):
+            """Stores initial state for resizing using the bottom-right handle."""
+            st = self.floating_window_state[window_id]
+            self._resize_start = {
+                "w": st["w"], "h": st["h"],
+                "mx": self.image_canvas.canvasx(event.x),
+                "my": self.image_canvas.canvasy(event.y)
+            }
+
+        def do_resize(event):
+            """Resizes window while dragging the bottom-right handle."""
+            if not hasattr(self, "_resize_start") or self._resize_start is None:
+                return "break"
+
+            mx = self.image_canvas.canvasx(event.x)
+            my = self.image_canvas.canvasy(event.y)
+
+            start = self._resize_start
+            dw = mx - start["mx"]
+            dh = my - start["my"]
+
+            # Desired size (image area), before aspect correction
+            desired_w = max(30, int(start["w"] + dw))
+            desired_h = max(30, int(start["h"] + dh))
+
+            _update_image_to_size(window_id, desired_w, desired_h)
+            return "break"
+
+        def end_resize(event):
+            """Ends resizing operation."""
+            self._resize_start = None
+
+        # Store resize callbacks so they can be re-bound later (e.g., after color mapping)
+        if not hasattr(self, "_resize_callbacks"):
+            self._resize_callbacks = {}
+        self._resize_callbacks[window_id] = (start_resize, do_resize, end_resize)
+
+        # ---------------------------
+        # Pixel picking (ANCHOR NW)
+        # ---------------------------
         def get_pixel_value(event, window_id=window_id):
-            """Gets the pixel value where the image is clicked, considering window movement."""
-            img = self.images[window_id]
-            resized_width, resized_height = self.image_dimensions[window_id]
-            original_width, original_height = img.size
+            """Gets the pixel value where the image is clicked, considering window movement and resizing."""
+            pil_original = self.pil_images_original[window_id]
+            ow, oh = pil_original.size
+
+            resized_w, resized_h = self.image_dimensions[window_id]
+            if resized_w <= 0 or resized_h <= 0:
+                return "break"
 
             abs_x = self.image_canvas.canvasx(event.x)
             abs_y = self.image_canvas.canvasy(event.y)
 
-            image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
-            if not image_items:
-                self.custom_warning("No window", f"No floating window found with id {window_id}")
-                return
+            # Top-left corner of the displayed image (anchor="nw")
+            st = self.floating_window_state[window_id]
+            img_left = st["x"] + 15
+            img_top = st["y"] + IMG_TOP_PAD
 
-            x1, y1, _, _ = self.image_canvas.bbox(image_items[0])
-            relative_x = abs_x - x1
-            relative_y = abs_y - y1
+            relative_x = abs_x - img_left
+            relative_y = abs_y - img_top
 
-            scale_x = original_width / resized_width
-            scale_y = original_height / resized_height
+            # Ignore clicks outside the displayed image area
+            if not (0 <= relative_x < resized_w and 0 <= relative_y < resized_h):
+                return "break"
+
+            scale_x = ow / resized_w
+            scale_y = oh / resized_h
 
             x_original = int(relative_x * scale_x)
             y_original = int(relative_y * scale_y)
 
-            if 0 <= x_original < original_width and 0 <= y_original < original_height:
-                pixel_value = img.getpixel((x_original, y_original))
-                if len(pixel_value) == 4:
-                    pixel_value = pixel_value[:3]
+            pixel_value = pil_original.getpixel((x_original, y_original))
+            pixel_rgb_np = np.array([[pixel_value]], dtype=np.uint8)
+            pixel_lab = color.rgb2lab(pixel_rgb_np)[0][0]
 
-                pixel_rgb_np = np.array([[pixel_value]], dtype=np.uint8)
-                pixel_lab = color.rgb2lab(pixel_rgb_np)[0][0]
-
-                if self.COLOR_SPACE:
-                    self.display_pixel_value(x_original, y_original, pixel_lab)
+            if self.COLOR_SPACE:
+                self.display_pixel_value(x_original, y_original, pixel_lab)
 
             return "break"
 
-        # Bind events for moving the window
-        self.image_canvas.tag_bind(window_id, "<Button-1>", start_move)
-        self.image_canvas.tag_bind(window_id, "<B1-Motion>", move_window)
+        # ---------------------------
+        # Bindings
+        # ---------------------------
+        # Move only from title bar (NOT from whole window)
+        self.image_canvas.tag_bind(f"{window_id}_title", "<Button-1>", start_move)
+        self.image_canvas.tag_bind(f"{window_id}_title", "<B1-Motion>", move_window)
+        self.image_canvas.tag_bind(f"{window_id}_title_text", "<Button-1>", start_move)
+        self.image_canvas.tag_bind(f"{window_id}_title_text", "<B1-Motion>", move_window)
 
-        # Bind events for the close button
+        # Close / menu / click
         self.image_canvas.tag_bind(f"{window_id}_close_button", "<Button-1>", close_window)
-
-        # Bind events for click
         self.image_canvas.tag_bind(f"{window_id}_click_image", "<Button-1>", get_pixel_value)
-
-        # Bind events for the arrow button (to show the context menu)
         self.image_canvas.tag_bind(f"{window_id}_arrow_button", "<Button-1>", show_menu_image)
+
+        # Resize handle bindings
+        self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<Button-1>", start_resize)
+        self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<B1-Motion>", do_resize)
+        self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<ButtonRelease-1>", end_resize)
+
+        # Initial relayout to ensure everything consistent
+        _relayout(window_id)
+
+
 
 
     
+
+
     # ADD THIS
     def show_more_info(self):
         messagebox.showinfo("More Info", "No prototype found or additional information about the pixel.")
+
+
+
 
 
     def display_pixel_value(self, x_original, y_original, pixel_lab):
@@ -2904,6 +3104,82 @@ class PyFCSApp:
             popup.destroy()
 
 
+    def _get_or_compute_label_map(self, window_id, source_img, progress_callback=None):
+        """
+        Returns a cached label_map for this window_id if available and valid for current prototypes.
+        Otherwise computes it once, caches it, and returns it.
+
+        label_map contains the winning prototype index per pixel (uint16) for the ORIGINAL image size.
+        """
+        if not hasattr(self, "cm_cache"):
+            self.cm_cache = {}
+
+        # Cache validity check: must match current prototypes set/order and image size
+        proto_labels = tuple([p.label for p in self.prototypes])
+
+        cached = self.cm_cache.get(window_id)
+        if cached is not None:
+            if cached.get("proto_labels") == proto_labels and cached.get("shape") == source_img.size[::-1]:
+                return cached["label_map"]
+
+        # Compute new label_map
+        self.fuzzy_color_space.precompute_pack()
+
+        img_np = np.array(source_img)
+        if img_np.ndim == 3 and img_np.shape[-1] == 4:
+            img_np = img_np[..., :3]
+        img_np = img_np / 255.0
+
+        lab_img = color.rgb2lab(img_np)
+        lab_q = np.round(lab_img, 2)  # 0.01 precision
+
+        height, width = lab_q.shape[0], lab_q.shape[1]
+        total_pixels = height * width
+
+        # Map prototype label -> index
+        proto_index = {p.label: i for i, p in enumerate(self.prototypes)}
+
+        # Output: winning prototype index per pixel
+        label_map = np.zeros((height, width), dtype=np.uint16)
+
+        membership_cache = {}  # key (L,a,b int*100) -> best_index
+        processed_pixels = 0
+        last_update = time.perf_counter()
+
+        for y in range(height):
+            for x in range(width):
+                lab_color = lab_q[y, x]
+                key = (int(lab_color[0] * 100), int(lab_color[1] * 100), int(lab_color[2] * 100))
+
+                best_idx = membership_cache.get(key)
+                if best_idx is None and key not in membership_cache:
+                    degrees = self.fuzzy_color_space.calculate_membership(lab_color)
+                    if degrees:
+                        best_label = max(degrees, key=degrees.get)
+                        best_idx = proto_index.get(best_label, 0)
+                    else:
+                        best_idx = 0
+                    membership_cache[key] = best_idx
+
+                label_map[y, x] = best_idx
+
+                processed_pixels += 1
+                if progress_callback:
+                    now = time.perf_counter()
+                    if now - last_update > 0.03 or processed_pixels == total_pixels:
+                        progress_callback(processed_pixels, total_pixels)
+                        last_update = now
+
+        # Cache it
+        self.cm_cache[window_id] = {
+            "label_map": label_map,
+            "shape": (height, width),
+            "proto_labels": proto_labels
+        }
+
+        return label_map
+
+
 
     def color_mapping(self, window_id):
         # if window exist
@@ -2911,6 +3187,19 @@ class PyFCSApp:
         if not items:
             self.custom_warning("No Window", f"No floating window found with id {window_id}")
             return
+        
+        # Disable resizing: remove the resize handle and its bindings
+        try:
+            # Delete handle shape from canvas
+            self.image_canvas.delete(f"{window_id}_resize_handle")
+
+            # Unbind resize events (safe even if not bound)
+            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<Button-1>")
+            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<B1-Motion>")
+            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<ButtonRelease-1>")
+        except Exception:
+            # If something goes wrong, do not break the mapping process
+            pass
 
         self.MEMBERDEGREE[window_id] = False
         self.ORIGINAL_IMG[window_id] = True
@@ -3006,8 +3295,7 @@ class PyFCSApp:
 
 
     def get_proto_percentage(self, window_id):
-        """Action triggered when a color button is clicked; generates and displays the grayscale image."""
-        # Show a loading indicator while processing
+        """Action triggered when a color button is clicked; generates and displays the grayscale image (cached, no recompute on resize)."""
         self.show_loading()
 
         def update_progress(current_step, total_steps):
@@ -3019,57 +3307,84 @@ class PyFCSApp:
         def run_process():
             """Processing function that will run in a separate thread."""
             try:
-                # Get the index of the selected prototype color
+                # Selected prototype index
                 pos = self.color_matrix.index(self.current_protos[window_id].get())
 
-                # Generate the grayscale image
-                grayscale_image_array = self.image_manager.get_proto_percentage(
-                    prototypes=self.prototypes,          # Prototypes used for the transformation
-                    image=self.images[window_id],        # The current image for the given window_id
-                    fuzzy_color_space=self.fuzzy_color_space,  # Fuzzy color space
-                    selected_option=pos,                 # Index of the selected option
-                    progress_callback=update_progress    # Progress callback function
-                )
+                # Ensure cache dict exists
+                if not hasattr(self, "proto_percentage_cache"):
+                    self.proto_percentage_cache = {}
+                if window_id not in self.proto_percentage_cache:
+                    self.proto_percentage_cache[window_id] = {}
 
-                # Send the result back to the main thread for further processing
-                self.display_color_mapping(grayscale_image_array, window_id)
+                # IMPORTANT: compute on ORIGINAL image to avoid recomputation when window is resized
+                if not hasattr(self, "pil_images_original") or window_id not in self.pil_images_original:
+                    self.image_canvas.after(0, lambda: self.custom_warning("Error", "Original image not found for this window."))
+                    return
+
+                source_img = self.pil_images_original[window_id]
+
+                # Use cached result if available (do NOT key by display size)
+                cached_entry = self.proto_percentage_cache[window_id].get(pos)
+                if cached_entry is not None:
+                    grayscale_image_array = cached_entry["array"]
+                else:
+                    # Compute once (heavy)
+                    grayscale_image_array = self.image_manager.get_proto_percentage(
+                        prototypes=self.prototypes,
+                        image=source_img,                    # <-- ORIGINAL IMAGE
+                        fuzzy_color_space=self.fuzzy_color_space,
+                        selected_option=pos,
+                        progress_callback=update_progress
+                    )
+
+                    # Store in cache (original resolution)
+                    self.proto_percentage_cache[window_id][pos] = {
+                        "array": grayscale_image_array,
+                        "shape": (source_img.size[1], source_img.size[0])  # (H, W), optional
+                    }
+
+                # Display: your display_color_mapping should resize to current window size
+                self.image_canvas.after(0, lambda: self.display_color_mapping(grayscale_image_array, window_id))
+
             except Exception as e:
-                self.custom_warning("Error", f"Error in run_process: {e}")
-                return
-
+                self.image_canvas.after(0, lambda: self.custom_warning("Error", f"Error in run_process: {e}"))
             finally:
-                # Hide the loading indicator once processing is complete
-                self.hide_loading()
+                self.image_canvas.after(0, self.hide_loading)
 
-        # Execute the processing function in a separate thread
-        threading.Thread(target=run_process).start()
+        threading.Thread(target=run_process, daemon=True).start()
+
+
 
 
 
     def display_color_mapping(self, grayscale_image_array, window_id):
-        """Displays the generated grayscale image in the graphical interface."""
+        """Displays the generated grayscale image in the graphical interface (resized only for display)."""
         try:
+            # Store the ORIGINAL result (do not store the resized display version)
             self.modified_image[window_id] = grayscale_image_array
 
-            # Convert the array into an image that Tkinter can use
-            grayscale_image = Image.fromarray(grayscale_image_array)
+            # Convert numpy array to PIL image with the correct mode
+            if grayscale_image_array.ndim == 2:
+                # 2D array -> grayscale image
+                grayscale_image = Image.fromarray(grayscale_image_array.astype(np.uint8), mode="L")
+            else:
+                # 3D array (e.g., RGB) -> let PIL infer
+                grayscale_image = Image.fromarray(grayscale_image_array.astype(np.uint8))
 
-            # Resize the image to match the original dimensions
+            # Resize ONLY for display to match the current window dimensions
             new_width, new_height = self.image_dimensions[window_id]
-            grayscale_image = grayscale_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            grayscale_image_display = grayscale_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-            # Convert the image to a PhotoImage format
-            img_tk = ImageTk.PhotoImage(grayscale_image)
+            # Convert to PhotoImage for Tkinter
+            img_tk = ImageTk.PhotoImage(grayscale_image_display)
 
-            # Update the PhotoImage reference to prevent garbage collection
+            # Keep a reference to prevent garbage collection
             self.floating_images[window_id] = img_tk
 
-            # Find the image item ID in the canvas using the window_id tag
+            # Update canvas image item
             image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
-
             if image_items:
-                image_id = image_items[0]  # Assuming there's only one image per window_id
-                self.image_canvas.itemconfig(image_id, image=img_tk)
+                self.image_canvas.itemconfig(image_items[0], image=img_tk)
             else:
                 self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
 
@@ -3079,44 +3394,126 @@ class PyFCSApp:
 
 
     def show_original_image(self, window_id):
-        """Displays the original image stored in floating_images."""
+        """Displays the original image, preserving the current resized dimensions of the floating window."""
         try:
-            # Retrieve the original image stored in floating_images
-            img_tk = self.original_images.get(window_id)
-
-            if img_tk is not None:
-                # Check if there is a proto_options window for this window_id
-                if hasattr(self, "proto_options") and window_id in self.proto_options:
-                    try:
-                        # If the proto_options window exists, destroy it
-                        if self.proto_options[window_id].winfo_exists():
-                            self.proto_options[window_id].destroy()
-
-                        # Remove the reference to the proto_options window
-                        del self.proto_options[window_id]
-                    except Exception as e:
-                        self.custom_warning("Window Error", f"Error trying to destroy the proto_options window: {e}")
-                        return
-
-                # Find the image item in the canvas using the window_id tag
-                image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
-
-                if image_items:
-                    image_id = image_items[0]  # Assuming there's only one image per window_id
-                    # Update the image to the original
-                    self.image_canvas.itemconfig(image_id, image=img_tk)
-                else:
-                    self.custom_warning("Image Error", f"No canvas image found for window_id: {window_id}")
+            # Destroy proto_options if it exists (keeps UI consistent)
+            if hasattr(self, "proto_options") and window_id in self.proto_options:
+                try:
+                    if self.proto_options[window_id].winfo_exists():
+                        self.proto_options[window_id].destroy()
+                    del self.proto_options[window_id]
+                except Exception as e:
+                    self.custom_warning("Window Error", f"Error trying to destroy the proto_options window: {e}")
                     return
 
-                # Reset flags
-                self.ORIGINAL_IMG[window_id] = False
-                if self.COLOR_SPACE:
-                    self.MEMBERDEGREE[window_id] = True
-
-            else:
-                self.custom_warning("Not Original Image", f"Original image not found for window_id: {window_id}")
+            # Ensure we have the original PIL image stored
+            if not hasattr(self, "pil_images_original") or window_id not in self.pil_images_original:
+                self.custom_warning("Not Original Image", f"Original PIL image not found for window_id: {window_id}")
                 return
+
+            pil_original = self.pil_images_original[window_id]
+
+            # Preserve the current displayed size (if resized)
+            if hasattr(self, "image_dimensions") and window_id in self.image_dimensions:
+                target_w, target_h = self.image_dimensions[window_id]
+            else:
+                # Fallback: use original size if something went wrong
+                target_w, target_h = pil_original.size
+
+            target_w = max(1, int(target_w))
+            target_h = max(1, int(target_h))
+
+            # Resize the original PIL image to the current window size
+            pil_resized = pil_original.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+            # Update the "current displayed" PIL image too (important for pixel mapping logic)
+            if hasattr(self, "images"):
+                self.images[window_id] = pil_resized
+
+            # Create a new PhotoImage with the preserved size
+            img_tk = ImageTk.PhotoImage(pil_resized)
+
+            # Keep a reference to avoid garbage collection
+            if not hasattr(self, "floating_images"):
+                self.floating_images = {}
+            self.floating_images[window_id] = img_tk
+
+            # Refresh original_images cache to the "current size"
+            if not hasattr(self, "original_images"):
+                self.original_images = {}
+            self.original_images[window_id] = img_tk
+
+            # Find the image item in the canvas
+            image_items = self.image_canvas.find_withtag(f"{window_id}_img_item")
+            if not image_items:
+                image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
+
+            if image_items:
+                image_id = image_items[0]
+                self.image_canvas.itemconfig(image_id, image=img_tk)
+            else:
+                self.custom_warning("Image Error", f"No canvas image found for window_id: {window_id}")
+                return
+
+            # Reset flags
+            self.ORIGINAL_IMG[window_id] = False
+            if self.COLOR_SPACE:
+                self.MEMBERDEGREE[window_id] = True
+
+            # ---------------------------
+            # Re-enable resize handle
+            # ---------------------------
+            try:
+                # If we don't have window state, we can't place the handle reliably
+                if not hasattr(self, "floating_window_state") or window_id not in self.floating_window_state:
+                    return
+
+                st = self.floating_window_state[window_id]
+                wx, wy = st["x"], st["y"]
+                ww, wh = st["w"], st["h"]
+
+                # Same constants used in create_floating_window()
+                PAD_X = 30
+                PAD_Y = 50
+                HANDLE_SIZE = 12
+
+                # If handle already exists, just move it; otherwise create it
+                existing = self.image_canvas.find_withtag(f"{window_id}_resize_handle")
+
+                hx1 = wx + ww + PAD_X - HANDLE_SIZE - 2
+                hy1 = wy + wh + PAD_Y - HANDLE_SIZE - 2
+                hx2 = wx + ww + PAD_X - 2
+                hy2 = wy + wh + PAD_Y - 2
+
+                if existing:
+                    # Update coords in case window was resized/moved
+                    self.image_canvas.coords(f"{window_id}_resize_handle", hx1, hy1, hx2, hy2)
+                else:
+                    # Recreate the handle
+                    self.image_canvas.create_rectangle(
+                        hx1, hy1, hx2, hy2,
+                        outline="black", fill="lightgray",
+                        tags=(window_id, "floating", f"{window_id}_resize_handle")
+                    )
+
+                # Rebind resize events (requires callbacks stored from create_floating_window)
+                if hasattr(self, "_resize_callbacks") and window_id in self._resize_callbacks:
+                    start_resize, do_resize, end_resize = self._resize_callbacks[window_id]
+
+                    self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<Button-1>", start_resize)
+                    self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<B1-Motion>", do_resize)
+                    self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<ButtonRelease-1>", end_resize)
+
+                    # Ensure handle is visible on top
+                    self.image_canvas.tag_raise(f"{window_id}_resize_handle")
+                else:
+                    # If callbacks are not available, warn once (optional) or silently ignore
+                    # self.custom_warning("Resize Error", "Resize callbacks not found. Add _resize_callbacks storage in create_floating_window.")
+                    pass
+
+            except Exception:
+                # Do not break showing original image if handle recreation fails
+                pass
 
         except Exception as e:
             self.custom_warning("Display Error", f"Error displaying the original image: {e}")
@@ -3125,26 +3522,33 @@ class PyFCSApp:
 
 
 
+
+
     def color_mapping_all(self, window_id):
         """Applies color mapping to the image and updates the floating window with a progress bar."""
 
-        # Check if the window exists
         items = self.image_canvas.find_withtag(window_id)
         if not items:
             self.custom_warning("No Window", f"No floating window found with id {window_id}")
             return
 
-        # Set initial states
+        # Disable resizing: remove the resize handle and its bindings
+        try:
+            self.image_canvas.delete(f"{window_id}_resize_handle")
+            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<Button-1>")
+            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<B1-Motion>")
+            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<ButtonRelease-1>")
+        except Exception:
+            pass
+
         self.MEMBERDEGREE[window_id] = False
         self.ORIGINAL_IMG[window_id] = True
 
-        # Initialize proto_options and remove legend if it exists
         self.proto_options = getattr(self, "proto_options", {})
         legend_frame = self.proto_options.pop(window_id, None)
         if legend_frame and legend_frame.winfo_exists():
             legend_frame.destroy()
 
-        # Show loading indicator
         self.show_loading()
 
         def update_progress(current_step, total_steps):
@@ -3152,181 +3556,123 @@ class PyFCSApp:
             self.progress["value"] = (current_step / total_steps) * 100
             self.load_window.update_idletasks()
 
-        def color_mapping_and_legend(fuzzy_color_space, prototypes, image, parent_canvas, progress_callback=None):
-            """
-            Processes an image to map its colors to a fuzzy color space and returns 
-            the recolored image and a legend in a Tkinter Frame.
-            """
-            fuzzy_color_space.precompute_pack()
-
-            img_np = np.array(image)
-            if img_np.shape[-1] == 4:
-                img_np = img_np[..., :3]
-            img_np = img_np / 255.0
-
-            lab_img = color.rgb2lab(img_np)
-            lab_q = np.round(lab_img, 2)              # <-- 0.01 precision
-            height, width = lab_q.shape[0], lab_q.shape[1]
-            total_pixels = height * width
-
-            color_map = plt.get_cmap('hsv', len(prototypes))
-            prototype_colors = {p.label: color_map(i)[:3] for i, p in enumerate(prototypes)}
-            for label in prototype_colors:
-                if label.lower() == "black":
-                    prototype_colors[label] = (0, 0, 0)
-
-            proto_rgb_uint8 = {
-                p.label: (np.array(prototype_colors[p.label]) * 255).astype(np.uint8)
-                for p in prototypes
-            }
-
-            colorized_image = np.zeros((height, width, 3), dtype=np.uint8)
-            membership_cache = {}
-
-            processed_pixels = 0
-            last_update = time.perf_counter()
-
-            for y in range(height):
-                for x in range(width):
-                    lab_color = lab_q[y, x]
-                    key = (int(lab_color[0] * 100), int(lab_color[1] * 100), int(lab_color[2] * 100))
-
-                    best_label = membership_cache.get(key)
-                    if best_label is None and key not in membership_cache:
-                        membership_degrees = fuzzy_color_space.calculate_membership(lab_color)
-                        best_label = max(membership_degrees, key=membership_degrees.get) if membership_degrees else None
-                        membership_cache[key] = best_label
-
-                    colorized_image[y, x] = (0, 0, 0) if best_label is None else proto_rgb_uint8[best_label]
-
-                    processed_pixels += 1
-                    if progress_callback:
-                        now = time.perf_counter()
-                        if now - last_update > 0.03 or processed_pixels == total_pixels:
-                            progress_callback(processed_pixels, total_pixels)
-                            last_update = now
-
-            # Create the legend in a Tkinter Frame
+        def build_legend_frame(prototypes, parent_canvas):
+            """Creates and returns the legend frame (no heavy computation)."""
             legend_frame = tk.Frame(parent_canvas, bg="white", relief="solid", bd=1)
 
-            # Configure expansion inside the grid
             legend_frame.grid_rowconfigure(0, weight=1)
             legend_frame.grid_columnconfigure(0, weight=1)
 
-            # Create Canvas with scrollbars
             canvas = tk.Canvas(legend_frame, bg="white", highlightthickness=0)
             v_scroll = tk.Scrollbar(legend_frame, orient=tk.VERTICAL, command=canvas.yview)
             h_scroll = tk.Scrollbar(legend_frame, orient=tk.HORIZONTAL, command=canvas.xview)
 
             canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
 
-            # Pack using grid
             canvas.grid(row=0, column=0, sticky="nsew")
             v_scroll.grid(row=0, column=1, sticky="ns")
             h_scroll.grid(row=1, column=0, sticky="ew")
 
-            # Create a Frame inside the Canvas for the legend elements
             inner_frame = tk.Frame(canvas, bg="white")
-            window_id_in_canvas = canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
+            canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
 
-
-            # Ensure the inner_frame width follows the canvas size
             def resize_inner(event):
                 canvas.itemconfig("inner", width=event.width)
 
             canvas.bind("<Configure>", resize_inner)
 
-            # Function to update scrollable area
             def on_frame_configure(event):
                 canvas.configure(scrollregion=canvas.bbox("all"))
 
             inner_frame.bind("<Configure>", lambda e: canvas.after_idle(on_frame_configure, e))
 
-            # Allow scrolling with mouse wheel
-            def _on_mouse_wheel(event):
-                if event.delta:  # Windows / macOS
-                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-                else:  # Linux
-                    if event.num == 4:
-                        canvas.yview_scroll(-1, "units")
-                    elif event.num == 5:
-                        canvas.yview_scroll(1, "units")
-
-            # Apply scroll functionality for the canvas
-            def bind_scroll_events(canvas):
+            # Scroll wheel handling
+            def bind_scroll_events(c):
                 def _on_mousewheel(event):
-                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
+                    c.yview_scroll(int(-1 * (event.delta / 120)), "units")
                 def _bind_mousewheel(event):
-                    canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
+                    c.bind_all("<MouseWheel>", _on_mousewheel)
                 def _unbind_mousewheel(event):
-                    canvas.unbind_all("<MouseWheel>")
-
-                canvas.bind("<Enter>", _bind_mousewheel)
-                canvas.bind("<Leave>", _unbind_mousewheel)
+                    c.unbind_all("<MouseWheel>")
+                c.bind("<Enter>", _bind_mousewheel)
+                c.bind("<Leave>", _unbind_mousewheel)
 
             bind_scroll_events(canvas)
 
-            # Add color labels to the legend
-            for i, prototype in enumerate(prototypes):
+            # Same palette logic you had
+            color_map = plt.get_cmap('hsv', len(prototypes))
+            prototype_colors = {p.label: color_map(i)[:3] for i, p in enumerate(prototypes)}
+            for label in prototype_colors:
+                if label.lower() == "black":
+                    prototype_colors[label] = (0, 0, 0)
+
+            # Labels
+            for prototype in prototypes:
                 color_rgb = np.array(prototype_colors[prototype.label]) * 255
                 color_hex = "#{:02x}{:02x}{:02x}".format(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
-                label = tk.Label(inner_frame, text=prototype.label, bg=color_hex, 
-                                fg="black" if np.mean(color_rgb) > 128 else "white", padx=5, pady=2)
+                label = tk.Label(
+                    inner_frame, text=prototype.label, bg=color_hex,
+                    fg="black" if np.mean(color_rgb) > 128 else "white",
+                    padx=5, pady=2
+                )
                 label.pack(fill="x", padx=5, pady=2)
 
-            # **Key solution**: Ensure `canvas.bbox("all")` captures all content
             inner_frame.update_idletasks()
             canvas.configure(scrollregion=canvas.bbox("all"))
 
-
-            # Original invented colors
+            # Save both color sets (keep your current logic)
             original_colors = [np.array(prototype_colors[proto.label]) * 255 for proto in self.prototypes]
-
-            # Colors from self.hex_color
             hex_colors = list(self.hex_color.keys())
             alt_colors = [
-                np.array([
-                    int(hex_colors[i][j:j+2], 16)
-                    for j in (1, 3, 5)
-                ]) for i, proto in enumerate(self.prototypes)
+                np.array([int(hex_colors[i][j:j+2], 16) for j in (1, 3, 5)])
+                for i, _ in enumerate(self.prototypes)
             ]
 
-            # Save both color sets
             if not hasattr(self, "prototype_color_sets"):
                 self.prototype_color_sets = {}
             if not hasattr(self, "current_color_scheme"):
                 self.current_color_scheme = {}
 
-            self.prototype_color_sets[window_id] = {
-                "original": original_colors,
-                "alt": alt_colors
-            }
+            self.prototype_color_sets[window_id] = {"original": original_colors, "alt": alt_colors}
             self.current_color_scheme[window_id] = "original"
 
-
-            return colorized_image, legend_frame
+            return legend_frame, prototype_colors
 
         def run_process():
             """Run the processing in a separate thread."""
             try:
-                recolored_image, new_legend_frame = color_mapping_and_legend(
-                    self.fuzzy_color_space, self.prototypes, self.images[window_id], 
-                    self.image_canvas, progress_callback=update_progress
-                )
+                # Always use original PIL image for cache consistency
+                source_img = self.pil_images_original.get(window_id, self.images[window_id])
+
+                # 1) Get or compute label_map (heavy part, cached)
+                label_map = self._get_or_compute_label_map(window_id, source_img, progress_callback=update_progress)
+
+                # 2) Build colors and create recolored image cheaply
+                color_map = plt.get_cmap('hsv', len(self.prototypes))
+                prototype_colors = {p.label: color_map(i)[:3] for i, p in enumerate(self.prototypes)}
+                for label in prototype_colors:
+                    if label.lower() == "black":
+                        prototype_colors[label] = (0, 0, 0)
+
+                proto_rgb_uint8 = np.array(
+                    [(np.array(prototype_colors[p.label]) * 255).astype(np.uint8) for p in self.prototypes],
+                    dtype=np.uint8
+                )  # shape (N,3)
+
+                recolored_image = proto_rgb_uint8[label_map]  # shape (H,W,3)
+
+                # 3) Legend frame (UI build)
+                new_legend_frame, _ = build_legend_frame(self.prototypes, self.image_canvas)
 
                 self.image_canvas.after(0, lambda: update_ui(recolored_image, new_legend_frame))
-            
+
             except Exception as e:
                 self.image_canvas.after(0, lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}"))
-            
             finally:
-                self.image_canvas.after(0, self.hide_loading)  
+                self.image_canvas.after(0, self.hide_loading)
 
-        
         def recolor(window_id):
-            # Select alternative color set
+            # Your recolor() stays almost the same; it already uses resized display size.
             current = self.current_color_scheme[window_id]
             new = "alt" if current == "original" else "original"
             self.current_color_scheme[window_id] = new
@@ -3337,23 +3683,21 @@ class PyFCSApp:
             img = self.modified_image[window_id]
             recolored = img.copy()
 
-            # Reselect colors sets
             for orig_color, new_color in zip(original_colors, new_colors):
                 mask = np.all(img == orig_color.astype(np.uint8), axis=-1)
                 recolored[mask] = new_color.astype(np.uint8)
 
-            # Update image and legend 
             new_width, new_height = self.image_dimensions[window_id]
             img_tk = ImageTk.PhotoImage(Image.fromarray(recolored).resize((new_width, new_height), Image.Resampling.LANCZOS))
             self.floating_images[window_id] = img_tk
             self.modified_image[window_id] = recolored
+
             image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
             if image_items:
                 self.image_canvas.itemconfig(image_items[0], image=img_tk)
             else:
                 self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
 
-            # New frame
             new_legend_frame = self.proto_options[window_id]
             canvas = new_legend_frame.winfo_children()[0]
             inner_frame_id = canvas.find_withtag("inner")
@@ -3363,26 +3707,21 @@ class PyFCSApp:
                 self.custom_warning("Legend Error", "No inner frame found in legend canvas")
                 return
 
-            # Clean labels in inner_frame 
             for widget in inner_frame.winfo_children():
                 widget.destroy()
 
-            # Add new colors labels
             for i, prototype in enumerate(self.prototypes):
                 current_colors = self.prototype_color_sets[window_id][self.current_color_scheme[window_id]]
                 color_rgb = current_colors[i]
                 color_hex = "#{:02x}{:02x}{:02x}".format(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
-
-                label = tk.Label(inner_frame, text=prototype.label, bg=color_hex, 
+                label = tk.Label(inner_frame, text=prototype.label, bg=color_hex,
                                 fg="black" if np.mean(color_rgb) > 128 else "white", padx=5, pady=2)
                 label.pack(fill="x", padx=5, pady=2)
 
-                # Update scroll 
-                inner_frame.update_idletasks()
-                canvas.configure(scrollregion=canvas.bbox("all"))
+            inner_frame.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
 
             self.image_canvas.after(0, lambda: update_ui(recolored, new_legend_frame))
-
 
         def update_ui(recolored_image, new_legend_frame):
             """Update the UI safely from the main thread."""
@@ -3403,12 +3742,11 @@ class PyFCSApp:
                 new_legend_frame.place(x=x2 + 10, y=y1, width=100, height=300)
 
                 use_original_button = tk.Button(
-                    new_legend_frame, 
-                    text="Alt. Colors", 
+                    new_legend_frame,
+                    text="Alt. Colors",
                     command=lambda: recolor(window_id)
                 )
                 use_original_button.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
-
 
                 self.proto_options[window_id] = new_legend_frame
 
@@ -3416,6 +3754,7 @@ class PyFCSApp:
                 self.custom_warning("Display Error", f"Error displaying the image: {e}")
 
         threading.Thread(target=run_process, daemon=True).start()
+
 
 
 
