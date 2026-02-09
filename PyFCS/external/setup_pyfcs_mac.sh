@@ -68,4 +68,4 @@ fi
 
 # 8. Launch application
 echo "🚀 Launching PyFCS..."
-python PyFCS/visualization/main_structure.py
+python PyFCS/interface/mainInterface.py

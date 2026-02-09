@@ -37,7 +37,7 @@ Then, install the required Python dependencies and launch the interface:
 ```bash
 pip install -r PyFCS\external\requirements.txt
 
-python PyFCS\visualization\main_structure.py
+python PyFCS\interface\mainInterface.py
 ```
 
 ---
