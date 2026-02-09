@@ -2283,6 +2283,17 @@ class PyFCSApp:
             tags=(window_id, "floating", f"{window_id}_click_image", f"{window_id}_img_item")
         )
 
+        # Percentage text below the image (hidden by default: empty text)
+        self.image_canvas.create_text(
+            x + 15,
+            y + IMG_TOP_PAD + new_height + 10,
+            anchor="nw",
+            text="",
+            fill="black",
+            font=("Sans", 10),
+            tags=(window_id, "floating", f"{window_id}_pct_text")
+        )
+
         # Resize handle (bottom-right)
         hx1 = x + new_width + PAD_X - HANDLE_SIZE - 2
         hy1 = y + new_height + PAD_Y - HANDLE_SIZE - 2
@@ -2354,6 +2365,15 @@ class PyFCSApp:
 
                     proto_option_frame.place(x=frame_x, y=frame_y)
                     proto_option_frame.lift()
+            
+            # Percentage text below the image
+            self.image_canvas.coords(
+                f"{window_id}_pct_text",
+                wx + 15,
+                wy + IMG_TOP_PAD + wh + 10
+            )
+            self.image_canvas.tag_raise(f"{window_id}_pct_text")
+
 
         def _update_image_to_size(window_id, target_w, target_h):
             """
@@ -3292,59 +3312,82 @@ class PyFCSApp:
 
 
 
-
-
     def get_proto_percentage(self, window_id):
-        """Action triggered when a color button is clicked; generates and displays the grayscale image (cached, no recompute on resize)."""
+        """Generates and displays the grayscale mask and shows coverage % under the image (cached)."""
         self.show_loading()
 
         def update_progress(current_step, total_steps):
-            """Callback to update the progress bar."""
             progress_percentage = (current_step / total_steps) * 100
             self.progress["value"] = progress_percentage
             self.load_window.update_idletasks()
 
         def run_process():
-            """Processing function that will run in a separate thread."""
             try:
-                # Selected prototype index
                 pos = self.color_matrix.index(self.current_protos[window_id].get())
 
-                # Ensure cache dict exists
                 if not hasattr(self, "proto_percentage_cache"):
                     self.proto_percentage_cache = {}
                 if window_id not in self.proto_percentage_cache:
                     self.proto_percentage_cache[window_id] = {}
 
-                # IMPORTANT: compute on ORIGINAL image to avoid recomputation when window is resized
                 if not hasattr(self, "pil_images_original") or window_id not in self.pil_images_original:
                     self.image_canvas.after(0, lambda: self.custom_warning("Error", "Original image not found for this window."))
                     return
 
                 source_img = self.pil_images_original[window_id]
 
-                # Use cached result if available (do NOT key by display size)
                 cached_entry = self.proto_percentage_cache[window_id].get(pos)
                 if cached_entry is not None:
                     grayscale_image_array = cached_entry["array"]
+                    pct = cached_entry["pct"]
+                    thresh_used = cached_entry.get("thresh_used", None)
                 else:
-                    # Compute once (heavy)
                     grayscale_image_array = self.image_manager.get_proto_percentage(
                         prototypes=self.prototypes,
-                        image=source_img,                    # <-- ORIGINAL IMAGE
+                        image=source_img,
                         fuzzy_color_space=self.fuzzy_color_space,
                         selected_option=pos,
                         progress_callback=update_progress
                     )
 
-                    # Store in cache (original resolution)
+                    # Auto-threshold decision (see explanation below)
+                    unique_vals = np.unique(grayscale_image_array) if grayscale_image_array.ndim == 2 else None
+                    if grayscale_image_array.ndim == 2 and unique_vals is not None and unique_vals.size <= 3 and 255 in unique_vals:
+                        # Looks like a binary mask (0/255 or similar)
+                        thresh = 255
+                    else:
+                        # Continuous grayscale (0..255), use mid threshold
+                        thresh = 128
+
+                    if grayscale_image_array.ndim == 2:
+                        colored = np.count_nonzero(grayscale_image_array >= thresh)
+                        total = grayscale_image_array.size
+                    else:
+                        colored = np.count_nonzero(np.any(grayscale_image_array != 0, axis=-1))
+                        total = grayscale_image_array.shape[0] * grayscale_image_array.shape[1]
+
+                    pct = 100.0 * (colored / total) if total else 0.0
+
+                    self.image_canvas.itemconfig(f"{window_id}_pct_text", text=f"{self.current_protos[window_id].get()}: {pct:.2f}%")
+                    self.image_canvas.tag_raise(f"{window_id}_pct_text")
+
                     self.proto_percentage_cache[window_id][pos] = {
                         "array": grayscale_image_array,
-                        "shape": (source_img.size[1], source_img.size[0])  # (H, W), optional
+                        "pct": pct,
+                        "thresh_used": thresh
                     }
+                    thresh_used = thresh
 
-                # Display: your display_color_mapping should resize to current window size
-                self.image_canvas.after(0, lambda: self.display_color_mapping(grayscale_image_array, window_id))
+                def _ui():
+                    self.display_color_mapping(grayscale_image_array, window_id)
+
+                    # Show % under the image
+                    proto_name = self.current_protos[window_id].get()
+                    txt = f"{proto_name}: {pct:.2f}%"
+                    self.image_canvas.itemconfig(f"{window_id}_pct_text", text=txt)
+                    self.image_canvas.tag_raise(f"{window_id}_pct_text")
+
+                self.image_canvas.after(0, _ui)
 
             except Exception as e:
                 self.image_canvas.after(0, lambda: self.custom_warning("Error", f"Error in run_process: {e}"))
@@ -3352,6 +3395,8 @@ class PyFCSApp:
                 self.image_canvas.after(0, self.hide_loading)
 
         threading.Thread(target=run_process, daemon=True).start()
+
+
 
 
 
@@ -3402,6 +3447,13 @@ class PyFCSApp:
                     if self.proto_options[window_id].winfo_exists():
                         self.proto_options[window_id].destroy()
                     del self.proto_options[window_id]
+
+                    # Hide percentage text when showing original image
+                    try:
+                        self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
+                    except Exception:
+                        pass
+
                 except Exception as e:
                     self.custom_warning("Window Error", f"Error trying to destroy the proto_options window: {e}")
                     return
