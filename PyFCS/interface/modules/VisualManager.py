@@ -195,7 +195,7 @@ class VisualManager:
 
         fig.update_layout(
             scene=dict(
-                xaxis_title='a* (Green-Red)',
+                xaxis_title='a* (Red-Green)',
                 yaxis_title='b* (Blue-Yellow)',
                 zaxis_title='L* (Luminosity)',
                 **axis_limits
@@ -288,7 +288,7 @@ class VisualManager:
 
 
         # Configure the axes
-        ax.set_xlabel('a* (Green-Red)', fontsize=10, labelpad=10)
+        ax.set_xlabel('a* (Red-Green)', fontsize=10, labelpad=10)
         ax.set_ylabel('b* (Blue-Yellow)', fontsize=10, labelpad=10)
         ax.set_zlabel('L* (Luminosity)', fontsize=10, labelpad=10)
 
