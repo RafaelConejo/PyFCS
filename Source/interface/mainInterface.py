@@ -207,6 +207,15 @@ class PyFCSApp:
 
         tk.Button(
             color_evaluation_frame,
+            text="Display PT",
+            image=pt_image,
+            command=self.deploy_pt,
+            compound="left"
+        ).pack(side="left", padx=5)
+        color_evaluation_frame.pt_image = pt_image  # Keep reference
+
+        tk.Button(
+            color_evaluation_frame,
             text="Display AT",
             image=at_image,
             command=self.deploy_at,
@@ -214,14 +223,6 @@ class PyFCSApp:
         ).pack(side="left", padx=5)
         color_evaluation_frame.at_image = at_image  # Keep reference
 
-        tk.Button(
-            color_evaluation_frame,
-            text="Display PT",
-            image=pt_image,
-            command=self.deploy_pt,
-            compound="left"
-        ).pack(side="left", padx=5)
-        color_evaluation_frame.pt_image = pt_image  # Keep reference
 
         # ---------------------------------------------------------------------
         # Main working area: split view (Image Display | Notebook tabs)
@@ -514,16 +515,27 @@ class PyFCSApp:
 
 
     def switch_tab(self, notebook, forward=True):
-        """Cambiar entre pestañas del notebook (Ctrl+Tab)."""
+        """
+        Switch between notebook tabs (Ctrl+Tab behavior).
+        """
+        # Get the index of the currently selected tab
         current_index = notebook.index(notebook.select())
+
+        # Get the total number of tabs in the notebook
         total_tabs = len(notebook.tabs())
+
         if forward:
+            # Move to the next tab (wrap around to the first tab if needed)
             new_index = (current_index + 1) % total_tabs
         else:
+            # Move to the previous tab (wrap around to the last tab if needed)
             new_index = (current_index - 1) % total_tabs
+
+        # Select the new tab
         notebook.select(new_index)
 
-    
+
+
 
     def custom_warning(self, title="Warning", message="Warning"):
         """Creates a custom, aesthetic warning message window with gray tones."""
@@ -667,7 +679,6 @@ class PyFCSApp:
         self.menu_create_fcs.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
 
 
-
     def on_mouse_wheel(self, event, scrollbar):
         scrollbar.yview_scroll(-1 * (event.delta // 120), "units")
 
@@ -705,32 +716,46 @@ class PyFCSApp:
 
 
 
-    ########################################################################################### Main Functions ###########################################################################################
+    # ============================================================================================================================================================
+    #  MAIN FUNCTIONS
+    # ============================================================================================================================================================
+
     def update_volumes(self):
+        # Process color prototypes from the input color data
         self.prototypes = UtilsTools.process_prototypes(self.color_data)
 
-        # Create and save the fuzzy color space
+        # Create and store the fuzzy color space using the generated prototypes
         self.fuzzy_color_space = FuzzyColorSpace(space_name=" ", prototypes=self.prototypes)
+
+        # Precompute internal fuzzy structures for efficiency
         self.fuzzy_color_space.precompute_pack()
+
+        # Retrieve core and support regions from the fuzzy color space
         self.cores = self.fuzzy_color_space.get_cores()
         self.supports = self.fuzzy_color_space.get_supports()
 
+        # Update application state and UI with the new prototype information
         self.update_prototypes_info()
-    
+
 
 
     def update_prototypes_info(self):
-        # Update 3D graph and app state vars
+        # Update 3D graph flags and application state variables
         self.COLOR_SPACE = True
         self.MEMBERDEGREE = {key: True for key in self.MEMBERDEGREE}
+
+        # Display selection control buttons
         self.select_all_button.pack(pady=5)
         self.deselect_all_button.pack(pady=5)
 
+        # Store current selections for visualization and processing
         self.selected_centroids = self.color_data
         self.selected_hex_color = self.hex_color
         self.selected_alpha = self.prototypes
         self.selected_core = self.cores
         self.selected_support = self.supports
+
+        # Trigger update based on the selected options
         self.on_option_select()
 
 
@@ -873,6 +898,52 @@ class PyFCSApp:
                 self.custom_warning("Error", f"An error occurred while saving: {e}")
             finally:
                 # Ensure the loading indicator is hidden and show a success message
+                self.load_window.after(0, self.hide_loading)
+                self.load_window.after(0, lambda: messagebox.showinfo(
+                    "Color Space Created", f"Color Space '{name}' created successfully."
+                ))
+
+        # Start the save process in a separate thread
+        threading.Thread(target=run_save_process, daemon=True).start()
+
+
+    
+    def save_fcs(self, name, colors, color_dict=None):
+        """
+        Saves the fuzzy color space to a file with the given name and color data.
+        Displays a loading indicator and updates the progress bar during the save process.
+        """
+        # If no color_dict is provided, create one from the detected colors
+        if color_dict is None:
+            color_dict = {key: np.array(colors[idx]['lab']) for idx, key in enumerate(self.color_entry_detect)}
+            self.color_entry_detect.clear()
+
+        # Show loading indicator
+        self.show_loading()
+
+        def update_progress(current_line, total_lines):
+            """
+            Updates the progress bar based on the number of lines written.
+            """
+            progress_percentage = (current_line / total_lines) * 100
+            self.progress["value"] = progress_percentage
+            self.load_window.update_idletasks()  # Refresh the UI
+
+        def run_save_process():
+            """
+            Saves the file in a separate thread to avoid blocking the main UI.
+            Handles exceptions and ensures the loading indicator is hidden afterward.
+            """
+            try:
+                # Initialize the input class for .fcs files
+                input_class = Input.instance('.fcs')
+                # Write the file with the provided name, color data, and progress callback
+                input_class.write_file(name, color_dict, progress_callback=update_progress)
+            except Exception as e:
+                # Show an error message if something goes wrong
+                self.custom_warning("Error", f"An error occurred while saving: {e}")
+            finally:
+                # Hide the loading indicator and show a success message
                 self.load_window.after(0, self.hide_loading)
                 self.load_window.after(0, lambda: messagebox.showinfo(
                     "Color Space Created", f"Color Space '{name}' created successfully."
@@ -1065,6 +1136,24 @@ class PyFCSApp:
     
 
 
+    # ============================================================================
+    # Palette-Based Fuzzy Color Space Creation
+    # ----------------------------------------------------------------------------
+    # This section implements the workflow for creating a fuzzy color space
+    # using a predefined color palette. It allows the user to:
+    #
+    #   - Load a predefined color palette from a .cns file.
+    #   - Open a popup window displaying all available palette colors.
+    #   - Visually inspect each color in RGB and LAB color spaces.
+    #   - Select multiple colors using checkboxes.
+    #   - Add new custom colors to the palette.
+    #   - Create a new fuzzy color space from the selected colors.
+    #
+    # The popup interface provides a scrollable layout to handle large palettes
+    # and includes action buttons for extending the palette or finalizing the
+    # color space creation. UI components are styled consistently to ensure
+    # clarity and usability.
+    # ============================================================================
     def palette_based_creation(self):
         """
         Logic for creating a new fuzzy color space using a predefined palette.
@@ -1577,7 +1666,9 @@ class PyFCSApp:
 
 
 
-    ########################################################################################### Funtions Model 3D ###########################################################################################
+    # ============================================================================================================================================================
+    #  FUNCTIONS MODEL 3D 
+    # ============================================================================================================================================================
     def on_option_select(self):
         if self.COLOR_SPACE:  # Check if a color space is loaded
             self.filtered_points = {}
@@ -1854,7 +1945,10 @@ class PyFCSApp:
 
 
 
-    ########################################################################################### Funtions Data ###########################################################################################
+    # ============================================================================================================================================================
+    #  FUNCTIONS DATA
+    # ============================================================================================================================================================
+    
     def display_data_window(self):
         """
         Displays the color data in a scrollable table within the canvas.
@@ -2067,7 +2161,9 @@ class PyFCSApp:
 
 
 
-    ########################################################################################### Functions Image Display ###########################################################################################
+    # ============================================================================================================================================================
+    #  FUNCTIONS IMAGE DISPLAY
+    # ============================================================================================================================================================
     def save_image(self):
         """Save the currently displayed image for a selected window. If it is a Color Mapping All view, also save a legend image."""
         # Verify we have at least one window to save from
@@ -2688,310 +2784,6 @@ class PyFCSApp:
 
 
 
-
-
-
-
-
-    def show_more_info(self):
-        """Shows detailed information about the last clicked pixel in a 2-column popup (membership vs ΔE00)."""
-        info = getattr(self, "_last_pixel_info", None)
-        if not info:
-            messagebox.showinfo("More Info", "Click on an image pixel first.")
-            return
-
-        win = tk.Toplevel(self.root)
-        win.title("More Info")
-
-        # Fixed initial size (prevents the right column from collapsing)
-        WIN_W, WIN_H = 640, 320
-        win.geometry(f"{WIN_W}x{WIN_H}")
-        win.resizable(False, False)
-
-        # Grid: left | separator | right
-        win.grid_rowconfigure(0, weight=1)
-        win.grid_columnconfigure(0, weight=1, minsize=380)  # left min width
-        win.grid_columnconfigure(1, weight=0)               # separator
-        win.grid_columnconfigure(2, weight=1, minsize=240)  # right min width
-
-        left = tk.Frame(win, padx=12, pady=10)
-        left.grid(row=0, column=0, sticky="nsew")
-
-        separator = tk.Frame(win, width=1, bg="#b0b0b0")
-        separator.grid(row=0, column=1, sticky="ns", padx=6)
-
-        right = tk.Frame(win, padx=12, pady=10)
-        right.grid(row=0, column=2, sticky="nsew")
-
-        # Header (bottom)
-        header = tk.Frame(win, padx=12, pady=8)
-        header.grid(row=1, column=0, columnspan=3, sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
-
-        lab = info["lab"]
-        header_label = tk.Label(
-            header,
-            text=f"Coordinates: ({info['x']}, {info['y']})    |    LAB: {lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
-            anchor="w"
-        )
-        header_label.grid(row=0, column=0, sticky="ew")
-
-        # ---------------------------
-        # Left: Membership
-        # ---------------------------
-        tk.Label(left, text="Membership Degree (μ)", font=("Sans", 11, "bold"), anchor="w").pack(fill="x")
-
-        winner_label = info.get("winner_label", "None")
-        winner_mu = float(info.get("winner_mu", 0.0))
-        tk.Label(left, text=f"Winner: {winner_label}  |  μ = {winner_mu:.4f}", anchor="w").pack(fill="x", pady=(6, 0))
-
-        tk.Label(left, text="Legend (μ thresholds):", font=("Sans", 10, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
-        tk.Label(
-            left,
-            text="Green   :        μ ≥ 0.80\nOrange :   0.50 ≤ μ < 0.80\nRed       :        μ < 0.50",
-            justify="left",
-            anchor="w"
-        ).pack(fill="x")
-
-        top_memberships = info.get("top_memberships", [])
-        tk.Label(left, text="Top memberships:", font=("Sans", 10, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
-
-        # Use wrap="word" so it doesn't force horizontal expansion/cropping
-        txt = tk.Text(left, height=6, wrap="word")
-        txt.pack(fill="x", expand=False, pady=(4, 0))
-
-        if top_memberships:
-            for lbl, mu in top_memberships:
-                txt.insert("end", f"- {lbl}: {float(mu):.4f}\n")
-        else:
-            txt.insert("end", "No memberships available.\n")
-        txt.config(state="disabled")
-
-        # ---------------------------
-        # Right: CIEDE2000
-        # ---------------------------
-        tk.Label(right, text="CIEDE2000 (ΔE00)", font=("Sans", 11, "bold"), anchor="w").pack(fill="x")
-
-        delta_e = info.get("delta_e", None)
-        if delta_e is None:
-            tk.Label(
-                right,
-                text="ΔE00: not available for this pixel/prototype.",
-                anchor="w",
-                justify="left",
-                wraplength=220  # force wrapping inside the right panel
-            ).pack(fill="x", pady=(6, 0))
-        else:
-            tk.Label(
-                right,
-                text=f"ΔE00 (vs positive prototype): {float(delta_e):.3f}",
-                anchor="w",
-                wraplength=220
-            ).pack(fill="x", pady=(6, 0))
-
-            tk.Label(right, text="Legend (ΔE00 thresholds):", font=("Sans", 10, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
-            tk.Label(
-                right,
-                text="PT  :      ΔE ≤ 0.8\nAT  :   0.8 < ΔE ≤ 1.8\n∅    :      ΔE > 1.8",
-                justify="left",
-                anchor="w",
-                wraplength=220
-            ).pack(fill="x")
-
-        # Buttons
-        btns = tk.Frame(win, padx=12, pady=10)
-        btns.grid(row=2, column=0, columnspan=3, sticky="e")
-        tk.Button(btns, text="Close", command=win.destroy).pack()
-
-        # Modal-ish behavior
-        win.transient(self.root)
-        win.grab_set()
-        win.focus_set()
-
-        # Center over root (same screen)
-        win.update_idletasks()
-        root_x = self.root.winfo_rootx()
-        root_y = self.root.winfo_rooty()
-        root_w = self.root.winfo_width()
-        root_h = self.root.winfo_height()
-
-        x = root_x + (root_w - WIN_W) // 2
-        y = root_y + (root_h - WIN_H) // 2
-        win.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
-
-
-
-
-
-    def display_pixel_value(self, x_original, y_original, pixel_lab):
-        """
-        Displays the pixel value in LAB format and its coordinates within a frame at the bottom of the canvas.
-        Shows the closest prototype, its membership degree, and colors the text using membership (μ) thresholds.
-        Also computes ΔE00 (CIEDE2000) and includes it in the text + stores detailed info for "More Info".
-        """
-        # Create the frame and labels only once if they don't exist
-        if not hasattr(self, "lab_value_frame"):
-            self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray")
-            self.lab_value_frame.place(relx=0.5, rely=0.97, anchor="s")
-
-            # Frame for left-aligned text
-            text_frame = tk.Frame(self.lab_value_frame, bg="lightgray")
-            text_frame.pack(side="left", padx=10, pady=5, fill="x")
-
-            # Define fonts for labels
-            bold_font = ("Sans", 12, "bold")
-            normal_font = ("Sans", 12)
-
-            # Coordinates label and value
-            coord_label = tk.Label(text_frame, text="Coordinates: ", font=bold_font, bg="lightgray")
-            coord_label.pack(side="left")
-            self.coord_value = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
-            self.coord_value.pack(side="left")
-
-            # LAB values label and value
-            lab_label = tk.Label(text_frame, text="LAB: ", font=bold_font, bg="lightgray")
-            lab_label.pack(side="left")
-            self.lab_value_print = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
-            self.lab_value_print.pack(side="left")
-
-            # FC label and value
-            proto_label = tk.Label(text_frame, text="Fuzzy Color: ", font=bold_font, bg="lightgray")
-            proto_label.pack(side="left")
-
-            self.proto_value_text = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
-            self.proto_value_text.pack(side="left")
-
-            self.proto_value_symbol = tk.Label(
-                text_frame,
-                text="",
-                font=("Sans", 20, "bold"),  # BIG symbol
-                bg="lightgray"
-            )
-            self.proto_value_symbol.pack(side="left", padx=(2, 0))
-
-            # "More Info" button
-            more_info_button = tk.Button(
-                self.lab_value_frame, text="🔍", font=("Sans", 9),
-                bg="white", command=self.show_more_info, relief="flat", borderwidth=0
-            )
-            more_info_button.pack(side="right", padx=5, pady=2)
-
-        # ---------------------------
-        # Membership computation
-        # ---------------------------
-        membership_degrees = self.fuzzy_color_space.calculate_membership(pixel_lab)
-
-        if membership_degrees:
-            max_proto = max(membership_degrees, key=membership_degrees.get)
-            winner_mu = float(membership_degrees[max_proto])
-
-            # Top-k memberships for the "More Info" popup
-            top_memberships = sorted(membership_degrees.items(), key=lambda kv: kv[1], reverse=True)[:5]
-        else:
-            max_proto = None
-            winner_mu = 0.0
-            top_memberships = []
-
-        # ---------------------------
-        # ΔE00 computation (CIEDE2000)
-        # ---------------------------
-        delta_e = None
-        if max_proto is not None:
-            try:
-                positive = self.color_data[max_proto]["positive_prototype"]
-                delta_e = float(self.color_manager.delta_e_ciede2000(positive, pixel_lab))
-            except Exception:
-                delta_e = None
-
-        # ---------------------------
-        # Color by membership (μ) confidence (recommended)
-        # ---------------------------
-        if max_proto is None:
-            c = "black"
-            mu_class = "none"
-        else:
-            if winner_mu >= 0.80:
-                c = "green"
-                mu_class = "high"
-            elif winner_mu >= 0.50:
-                c = "orange"
-                mu_class = "medium"
-            else:
-                c = "red"
-                mu_class = "low"
-
-        # ---------------------------
-        # Store last click info for "More Info"
-        # ---------------------------
-        self._last_pixel_info = {
-            "x": x_original,
-            "y": y_original,
-            "lab": pixel_lab,
-
-            # Membership info
-            "winner_label": max_proto if max_proto is not None else "None",
-            "winner_mu": winner_mu,
-            "mu_class": mu_class,
-            "top_memberships": top_memberships,
-            "mu_thresholds": {"green": 0.80, "orange": 0.50},  # green>=0.80, orange>=0.50, else red
-
-            # CIEDE2000 info
-            "delta_e": delta_e,
-            "delta_e_thresholds": {"green": 0.8, "orange": 1.8},
-        }
-
-        # Classify ΔE00 into short categories (for compact UI)
-        if delta_e is None:
-            de_class = "—"   # no value / not available
-        elif delta_e <= 0.8:
-            de_class = "PT"  # perceptually tolerable / very close
-        elif delta_e <= 1.8:
-            de_class = "AT"  # acceptable tolerance / close
-        else:
-            de_class = "∅" # far
-
-
-        # ---------------------------
-        # Build text (μ + ΔE00)
-        # ---------------------------
-        if max_proto is None:
-            proto_text = "—"
-        else:
-            proto_text = f"{max_proto} | {de_class}"
-
-        # ---------------------------
-        # Update UI
-        # ---------------------------
-        self.coord_value.config(text=f"({x_original}, {y_original})    |    ")
-        self.lab_value_print.config(text=f"{pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}    |    ")
-        
-        if max_proto is None:
-            self.proto_value_text.config(text="—", fg=c)
-            self.proto_value_symbol.config(text="")
-        else:
-            self.proto_value_text.config(text=f"{max_proto}  |", fg=c)
-
-            # Bigger symbol only
-            if de_class == "∅":
-                self.proto_value_symbol.config(text=de_class, fg=c)
-            else:
-                # PT / AT / Far → normal size, keep it in text
-                self.proto_value_text.config(text=f"{max_proto}  |  {de_class}", fg=c)
-                self.proto_value_symbol.config(text="")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def add_new_image_colors(self, popup, colors, threshold, min_samples):
         """
         Allows the user to select another image and adds the detected colors to the current list.
@@ -3059,6 +2851,25 @@ class PyFCSApp:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # ============================================================================================================================================================
+    #  FUNCTIONS IMAGE UTILS (COLOR MAPPING)
+    # ============================================================================================================================================================
     def display_detected_colors(self, colors, threshold, min_samples):
         """
         Displays a popup window showing the detected colors with options to adjust the threshold,
@@ -3315,50 +3126,6 @@ class PyFCSApp:
         # Display the popup window
         popup.deiconify()
 
-
-    def save_fcs(self, name, colors, color_dict=None):
-        """
-        Saves the fuzzy color space to a file with the given name and color data.
-        Displays a loading indicator and updates the progress bar during the save process.
-        """
-        # If no color_dict is provided, create one from the detected colors
-        if color_dict is None:
-            color_dict = {key: np.array(colors[idx]['lab']) for idx, key in enumerate(self.color_entry_detect)}
-            self.color_entry_detect.clear()
-
-        # Show loading indicator
-        self.show_loading()
-
-        def update_progress(current_line, total_lines):
-            """
-            Updates the progress bar based on the number of lines written.
-            """
-            progress_percentage = (current_line / total_lines) * 100
-            self.progress["value"] = progress_percentage
-            self.load_window.update_idletasks()  # Refresh the UI
-
-        def run_save_process():
-            """
-            Saves the file in a separate thread to avoid blocking the main UI.
-            Handles exceptions and ensures the loading indicator is hidden afterward.
-            """
-            try:
-                # Initialize the input class for .fcs files
-                input_class = Input.instance('.fcs')
-                # Write the file with the provided name, color data, and progress callback
-                input_class.write_file(name, color_dict, progress_callback=update_progress)
-            except Exception as e:
-                # Show an error message if something goes wrong
-                self.custom_warning("Error", f"An error occurred while saving: {e}")
-            finally:
-                # Hide the loading indicator and show a success message
-                self.load_window.after(0, self.hide_loading)
-                self.load_window.after(0, lambda: messagebox.showinfo(
-                    "Color Space Created", f"Color Space '{name}' created successfully."
-                ))
-
-        # Start the save process in a separate thread
-        threading.Thread(target=run_save_process, daemon=True).start()
 
 
     def get_fcs_image(self, window_id, threshold=0.5, min_samples=160):
@@ -3730,10 +3497,6 @@ class PyFCSApp:
 
 
 
-
-
-
-
     def display_color_mapping(self, grayscale_image_array, window_id):
         """Displays the generated grayscale image in the graphical interface (resized only for display)."""
         try:
@@ -3771,6 +3534,7 @@ class PyFCSApp:
 
         except Exception as e:
             self.custom_warning("Display Error", f"Error displaying the image: {e}")
+
 
 
 
@@ -3899,7 +3663,6 @@ class PyFCSApp:
         except Exception as e:
             self.custom_warning("Display Error", f"Error displaying the original image: {e}")
             return
-
 
 
 
@@ -4232,9 +3995,322 @@ class PyFCSApp:
 
 
 
+    # ============================================================================================================================================================
+    #  FUNCTIONS DISPLAY PIXEL INFO 
+    # ============================================================================================================================================================
+
+    def show_more_info(self):
+        """Shows detailed information about the last clicked pixel in a 2-column popup (membership vs ΔE00)."""
+        info = getattr(self, "_last_pixel_info", None)
+        if not info:
+            messagebox.showinfo("More Info", "Click on an image pixel first.")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("More Info")
+
+        # Fixed initial size (prevents the right column from collapsing)
+        WIN_W, WIN_H = 640, 320
+        win.geometry(f"{WIN_W}x{WIN_H}")
+        win.resizable(False, False)
+
+        # Grid: left | separator | right
+        win.grid_rowconfigure(0, weight=1)
+        win.grid_columnconfigure(0, weight=1, minsize=380)  # left min width
+        win.grid_columnconfigure(1, weight=0)               # separator
+        win.grid_columnconfigure(2, weight=1, minsize=240)  # right min width
+
+        left = tk.Frame(win, padx=12, pady=10)
+        left.grid(row=0, column=0, sticky="nsew")
+
+        separator = tk.Frame(win, width=1, bg="#b0b0b0")
+        separator.grid(row=0, column=1, sticky="ns", padx=6)
+
+        right = tk.Frame(win, padx=12, pady=10)
+        right.grid(row=0, column=2, sticky="nsew")
+
+        # Header (bottom)
+        header = tk.Frame(win, padx=12, pady=8)
+        header.grid(row=1, column=0, columnspan=3, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+
+        lab = info["lab"]
+        header_label = tk.Label(
+            header,
+            text=f"Coordinates: ({info['x']}, {info['y']})    |    LAB: {lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
+            anchor="w"
+        )
+        header_label.grid(row=0, column=0, sticky="ew")
+
+        # ---------------------------
+        # Left: Membership
+        # ---------------------------
+        tk.Label(left, text="Membership Degree (μ)", font=("Sans", 11, "bold"), anchor="w").pack(fill="x")
+
+        winner_label = info.get("winner_label", "None")
+        winner_mu = float(info.get("winner_mu", 0.0))
+        tk.Label(left, text=f"Winner: {winner_label}  |  μ = {winner_mu:.4f}", anchor="w").pack(fill="x", pady=(6, 0))
+
+        tk.Label(left, text="Legend (μ thresholds):", font=("Sans", 10, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
+        tk.Label(
+            left,
+            text="Green   :        μ ≥ 0.80\nOrange :   0.50 ≤ μ < 0.80\nRed       :        μ < 0.50",
+            justify="left",
+            anchor="w"
+        ).pack(fill="x")
+
+        top_memberships = info.get("top_memberships", [])
+        tk.Label(left, text="Top memberships:", font=("Sans", 10, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
+
+        # Use wrap="word" so it doesn't force horizontal expansion/cropping
+        txt = tk.Text(left, height=6, wrap="word")
+        txt.pack(fill="x", expand=False, pady=(4, 0))
+
+        if top_memberships:
+            for lbl, mu in top_memberships:
+                txt.insert("end", f"- {lbl}: {float(mu):.4f}\n")
+        else:
+            txt.insert("end", "No memberships available.\n")
+        txt.config(state="disabled")
+
+        # ---------------------------
+        # Right: CIEDE2000
+        # ---------------------------
+        tk.Label(right, text="CIEDE2000 (ΔE00)", font=("Sans", 11, "bold"), anchor="w").pack(fill="x")
+
+        delta_e = info.get("delta_e", None)
+        if delta_e is None:
+            tk.Label(
+                right,
+                text="ΔE00: not available for this pixel/prototype.",
+                anchor="w",
+                justify="left",
+                wraplength=220  # force wrapping inside the right panel
+            ).pack(fill="x", pady=(6, 0))
+        else:
+            tk.Label(
+                right,
+                text=f"ΔE00 (vs positive prototype): {float(delta_e):.3f}",
+                anchor="w",
+                wraplength=220
+            ).pack(fill="x", pady=(6, 0))
+
+            tk.Label(right, text="Legend (ΔE00 thresholds):", font=("Sans", 10, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
+            tk.Label(
+                right,
+                text="PT  :      ΔE ≤ 0.8\nAT  :   0.8 < ΔE ≤ 1.8\n∅    :      ΔE > 1.8",
+                justify="left",
+                anchor="w",
+                wraplength=220
+            ).pack(fill="x")
+
+        # Buttons
+        btns = tk.Frame(win, padx=12, pady=10)
+        btns.grid(row=2, column=0, columnspan=3, sticky="e")
+        tk.Button(btns, text="Close", command=win.destroy).pack()
+
+        # Modal-ish behavior
+        win.transient(self.root)
+        win.grab_set()
+        win.focus_set()
+
+        # Center over root (same screen)
+        win.update_idletasks()
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_w = self.root.winfo_width()
+        root_h = self.root.winfo_height()
+
+        x = root_x + (root_w - WIN_W) // 2
+        y = root_y + (root_h - WIN_H) // 2
+        win.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
 
 
-    ########################################################################################### Color Evaluation Functions ###########################################################################################
+
+
+
+    def display_pixel_value(self, x_original, y_original, pixel_lab):
+        """
+        Displays the pixel value in LAB format and its coordinates within a frame at the bottom of the canvas.
+        Shows the closest prototype, its membership degree, and colors the text using membership (μ) thresholds.
+        Also computes ΔE00 (CIEDE2000) and includes it in the text + stores detailed info for "More Info".
+        """
+        # Create the frame and labels only once if they don't exist
+        if not hasattr(self, "lab_value_frame"):
+            self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray")
+            self.lab_value_frame.place(relx=0.5, rely=0.97, anchor="s")
+
+            # Frame for left-aligned text
+            text_frame = tk.Frame(self.lab_value_frame, bg="lightgray")
+            text_frame.pack(side="left", padx=10, pady=5, fill="x")
+
+            # Define fonts for labels
+            bold_font = ("Sans", 12, "bold")
+            normal_font = ("Sans", 12)
+
+            # Coordinates label and value
+            coord_label = tk.Label(text_frame, text="Coordinates: ", font=bold_font, bg="lightgray")
+            coord_label.pack(side="left")
+            self.coord_value = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
+            self.coord_value.pack(side="left")
+
+            # LAB values label and value
+            lab_label = tk.Label(text_frame, text="LAB: ", font=bold_font, bg="lightgray")
+            lab_label.pack(side="left")
+            self.lab_value_print = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
+            self.lab_value_print.pack(side="left")
+
+            # FC label and value
+            proto_label = tk.Label(text_frame, text="Fuzzy Color: ", font=bold_font, bg="lightgray")
+            proto_label.pack(side="left")
+
+            self.proto_value_text = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
+            self.proto_value_text.pack(side="left")
+
+            self.proto_value_symbol = tk.Label(
+                text_frame,
+                text="",
+                font=("Sans", 20, "bold"),  # BIG symbol
+                bg="lightgray"
+            )
+            self.proto_value_symbol.pack(side="left", padx=(2, 0))
+
+            # "More Info" button
+            more_info_button = tk.Button(
+                self.lab_value_frame, text="🔍", font=("Sans", 9),
+                bg="white", command=self.show_more_info, relief="flat", borderwidth=0
+            )
+            more_info_button.pack(side="right", padx=5, pady=2)
+
+        # ---------------------------
+        # Membership computation
+        # ---------------------------
+        membership_degrees = self.fuzzy_color_space.calculate_membership(pixel_lab)
+
+        if membership_degrees:
+            max_proto = max(membership_degrees, key=membership_degrees.get)
+            winner_mu = float(membership_degrees[max_proto])
+
+            # Top-k memberships for the "More Info" popup
+            top_memberships = sorted(membership_degrees.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        else:
+            max_proto = None
+            winner_mu = 0.0
+            top_memberships = []
+
+        # ---------------------------
+        # ΔE00 computation (CIEDE2000)
+        # ---------------------------
+        delta_e = None
+        if max_proto is not None:
+            try:
+                positive = self.color_data[max_proto]["positive_prototype"]
+                delta_e = float(self.color_manager.delta_e_ciede2000(positive, pixel_lab))
+            except Exception:
+                delta_e = None
+
+        # ---------------------------
+        # Color by membership (μ) confidence (recommended)
+        # ---------------------------
+        if max_proto is None:
+            c = "black"
+            mu_class = "none"
+        else:
+            if winner_mu >= 0.80:
+                c = "green"
+                mu_class = "high"
+            elif winner_mu >= 0.50:
+                c = "orange"
+                mu_class = "medium"
+            else:
+                c = "red"
+                mu_class = "low"
+
+        # ---------------------------
+        # Store last click info for "More Info"
+        # ---------------------------
+        self._last_pixel_info = {
+            "x": x_original,
+            "y": y_original,
+            "lab": pixel_lab,
+
+            # Membership info
+            "winner_label": max_proto if max_proto is not None else "None",
+            "winner_mu": winner_mu,
+            "mu_class": mu_class,
+            "top_memberships": top_memberships,
+            "mu_thresholds": {"green": 0.80, "orange": 0.50},  # green>=0.80, orange>=0.50, else red
+
+            # CIEDE2000 info
+            "delta_e": delta_e,
+            "delta_e_thresholds": {"green": 0.8, "orange": 1.8},
+        }
+
+        # Classify ΔE00 into short categories (for compact UI)
+        if delta_e is None:
+            de_class = "—"   # no value / not available
+        elif delta_e <= 0.8:
+            de_class = "PT"  # perceptually tolerable / very close
+        elif delta_e <= 1.8:
+            de_class = "AT"  # acceptable tolerance / close
+        else:
+            de_class = "∅" # far
+
+
+        # ---------------------------
+        # Build text (μ + ΔE00)
+        # ---------------------------
+        if max_proto is None:
+            proto_text = "—"
+        else:
+            proto_text = f"{max_proto} | {de_class}"
+
+        # ---------------------------
+        # Update UI
+        # ---------------------------
+        self.coord_value.config(text=f"({x_original}, {y_original})    |    ")
+        self.lab_value_print.config(text=f"{pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}    |    ")
+        
+        if max_proto is None:
+            self.proto_value_text.config(text="—", fg=c)
+            self.proto_value_symbol.config(text="")
+        else:
+            self.proto_value_text.config(text=f"{max_proto}  |", fg=c)
+
+            # Bigger symbol only
+            if de_class == "∅":
+                self.proto_value_symbol.config(text=de_class, fg=c)
+            else:
+                # PT / AT / Far → normal size, keep it in text
+                self.proto_value_text.config(text=f"{max_proto}  |  {de_class}", fg=c)
+                self.proto_value_symbol.config(text="")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # ============================================================================================================================================================
+    #  COLOR EVALUATION FUNCTIONS
+    # ============================================================================================================================================================
     def get_umbral_points(self, threshold, mode=None):
         """
         Filters points within the fuzzy color space volumes based on the given threshold.
