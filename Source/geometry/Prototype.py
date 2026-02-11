@@ -1,5 +1,4 @@
 import numpy as np
-from typing import List
 import subprocess
 import os
 
@@ -8,20 +7,13 @@ from Source.geometry.Plane import Plane
 from Source.geometry.Point import Point
 from Source.geometry.Face import Face
 from Source.geometry.Volume import Volume
-from Source.colorspace.ReferenceDomain import ReferenceDomain
 
 
 class Prototype:
     false_negatives = [
-            (0, -128, -128), (0, -128, 127), (0, 127, -128), (0, 127, 127), 
-            (100, -128, -128), (100, -128, 127), (100, 127, -128), (100, 127, 127),
-            (0, -128, -0.5), (0, 127, -0.5), (100, -128, -0.5), (100, 127, -0.5),
-            (0, -0.5, -128), (0, -0.5, 127), (100, -0.5, -128), (100, -0.5, 127),
-            (50, -128, -128), (50, -128, 127), (50, 127, -128), (50, 127, 127),
-            (50, -128, -0.5), (50, 127, -0.5), (50, -0.5, -128), (50, -0.5, 127),
-            (0, -0.5, -0.5), (100, -0.5, -0.5)
-        ]
-    
+    (-5,  -140, -140), (-5,  -140,  140), (-5,   140, -140), (-5,   140,  140),
+    (105, -140, -140), (105, -140,  140), (105,  140, -140), (105,  140,  140),
+]
 
     def __init__(self, label, positive, negatives, voronoi_volume=None, add_false=False):
         self.label = label

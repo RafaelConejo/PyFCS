@@ -76,6 +76,77 @@ class FuzzyColor():
 
         return core_volumes, support_volumes
     
+    
+
+    @staticmethod
+    def get_best_prototype_index(new_color, prototypes, function, pack) -> int:
+        """
+        Fast winner-take-all membership.
+        Returns the index of the best prototype,
+        or -1 if no prototype has positive membership.
+        """
+
+        xyz = Point(new_color[0], new_color[1], new_color[2])
+
+        domain_volume = pack["domain_volume"]
+        v_protos = pack["v_protos"]
+        v_cores  = pack["v_cores"]
+        v_supps  = pack["v_supps"]
+        rep_ps   = pack["rep_ps"]
+        rep_cs   = pack["rep_cs"]
+        rep_ss   = pack["rep_ss"]
+
+        best_idx = -1      # ✅ IMPORTANT
+        best_val = 0.0
+
+        for i, proto in enumerate(prototypes):
+            v_supp = v_supps[i]
+            v_core = v_cores[i]
+            v_proto = v_protos[i]
+
+            rep_p = rep_ps[i]
+            rep_c = rep_cs[i]
+            rep_s = rep_ss[i]
+
+            # Outside support
+            if not v_supp.isInside(xyz):
+                continue
+
+            # Inside core -> 1 (cannot be beaten)
+            if v_core.isInside(xyz):
+                return i
+
+            p_cube = GeometryTools.intersection_with_volume(domain_volume, rep_p, xyz)
+            dist_cube = GeometryTools.euclidean_distance(rep_p, p_cube) if p_cube is not None else float('inf')
+
+            p_face = GeometryTools.intersection_with_volume(v_core, rep_c, xyz)
+            param_a = GeometryTools.euclidean_distance(rep_c, p_face) if p_face is not None else dist_cube
+
+            p_face = GeometryTools.intersection_with_volume(v_proto, rep_p, xyz)
+            param_b = GeometryTools.euclidean_distance(rep_p, p_face) if p_face is not None else dist_cube
+
+            p_face = GeometryTools.intersection_with_volume(v_supp, rep_s, xyz)
+            param_c = GeometryTools.euclidean_distance(rep_s, p_face) if p_face is not None else dist_cube
+
+            function.setParam([param_a, param_b, param_c])
+            d = GeometryTools.euclidean_distance(rep_p, xyz)
+            value = function.getValue(d)
+
+            # Clamp
+            if value < 0.0:
+                value = 0.0
+            elif value > 1.0:
+                value = 1.0
+
+            if value > best_val:
+                best_val = value
+                best_idx = i
+
+        # ✅ If no prototype had membership > 0 → return -1
+        if best_val == 0.0:
+            return -1
+
+        return best_idx
 
 
 
@@ -108,7 +179,7 @@ class FuzzyColor():
             rep_c = rep_cs[i]
             rep_s = rep_ss[i]
 
-            if (not v_supp.isInside(xyz)) or v_supp.isInFace(xyz):
+            if not v_supp.isInside(xyz):
                 result[label] = 0.0
                 continue
 

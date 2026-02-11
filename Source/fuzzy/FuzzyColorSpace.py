@@ -46,6 +46,17 @@ class FuzzyColorSpace(FuzzyColor):
         }
 
         return self._precomputed
+    
+
+    def best_prototype_index_from_lab(self, lab_triplet):
+        """
+        Fast argmax membership for one LAB color.
+        Returns the prototype index (int), WITHOUT building a dict.
+        """
+        if self._precomputed is None:
+            self.precompute_pack()
+        return FuzzyColor.get_best_prototype_index(lab_triplet, self.prototypes, self.function, self._precomputed)
+
 
     def clear_precompute(self):
         self._precomputed = None

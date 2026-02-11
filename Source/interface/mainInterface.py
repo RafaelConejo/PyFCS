@@ -23,7 +23,7 @@ import tkinter as tk
 from skimage import color
 import tkinter.font as tkFont
 from functools import partial
-from PIL import Image, ImageTk, ImageDraw, ImageFont
+from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageEnhance
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORMAL
 
@@ -1419,6 +1419,11 @@ class PyFCSApp:
         win.resizable(False, False)
         self._manual_picker_win = win
 
+        # Rectangle selection state
+        self._manual_dragging = False
+        self._manual_drag_start = None      # (x_canvas, y_canvas)
+        self._manual_rect_id = None         # canvas item id for selection rect
+
         # Dock the picker to the right of the main manual popup
         self._dock_window_to_right(parent=self._manual_popup, child=win, gap=12)
 
@@ -1451,8 +1456,13 @@ class PyFCSApp:
         listbox.bind("<<ListboxSelect>>", lambda e: self._manual_on_select_image(listbox))
 
         # Image canvas (click to sample a pixel)
-        ttk.Label(right, text="Click on the image to pick a color").pack(anchor="w")
-        self._manual_img_canvas = tk.Canvas(right, width=420, height=320, bg="black", highlightthickness=1)
+        ttk.Label(
+            right,
+            text="Tip: Click to sample a single pixel.\nClick and drag to select a rectangle and sample the average color.",
+            wraplength=420,
+            justify="left"
+        ).pack(anchor="w")
+        self._manual_img_canvas = tk.Canvas(right, width=350, height=300, bg="black", highlightthickness=1)
         self._manual_img_canvas.pack(pady=6)
 
         # Picked color info (RGB/LAB + name + preview)
@@ -1492,8 +1502,10 @@ class PyFCSApp:
         style = ttk.Style()
         style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
 
-        # Bind canvas click for picking colors
-        self._manual_img_canvas.bind("<Button-1>", self._manual_on_image_click)
+        # Drag-to-select rectangle (press / drag / release)
+        self._manual_img_canvas.bind("<ButtonPress-1>", self._manual_on_mouse_down)
+        self._manual_img_canvas.bind("<B1-Motion>", self._manual_on_mouse_drag)
+        self._manual_img_canvas.bind("<ButtonRelease-1>", self._manual_on_mouse_up)
 
 
     def _dock_window_to_right(self, parent, child, gap=10):
@@ -1550,6 +1562,10 @@ class PyFCSApp:
         new_h = max(1, int(img_h * scale))
 
         resized = pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        try:
+            resized = ImageEnhance.Sharpness(resized).enhance(1.2)  # 1.0 = original
+        except Exception:
+            pass
 
         # Store geometry for mapping click coordinates back to the full-resolution image
         self._manual_scale = scale
@@ -1602,6 +1618,134 @@ class PyFCSApp:
 
         hex_color = f"#{r:02x}{g:02x}{b:02x}"
         self._picked_preview.itemconfig(self._picked_preview_rect, fill=hex_color)
+
+
+    def _manual_on_mouse_down(self, event):
+        """Start rectangle selection on the preview canvas."""
+        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
+            return
+
+        # Start point in canvas coordinates
+        self._manual_dragging = True
+        self._manual_drag_start = (event.x, event.y)
+
+        # Remove previous rectangle
+        if self._manual_rect_id is not None:
+            try:
+                self._manual_img_canvas.delete(self._manual_rect_id)
+            except Exception:
+                pass
+            self._manual_rect_id = None
+
+        # Create a new rubber-band rectangle
+        self._manual_rect_id = self._manual_img_canvas.create_rectangle(
+            event.x, event.y, event.x, event.y,
+            outline="#ff0000", width=2
+        )
+
+
+    def _manual_on_mouse_drag(self, event):
+        """Update rectangle while dragging."""
+        if not getattr(self, "_manual_dragging", False):
+            return
+        if self._manual_rect_id is None:
+            return
+
+        x0, y0 = self._manual_drag_start
+        x1, y1 = event.x, event.y
+
+        # Update rectangle coordinates
+        self._manual_img_canvas.coords(self._manual_rect_id, x0, y0, x1, y1)
+
+
+    def _manual_on_mouse_up(self, event):
+        """Finish selection, compute average color in the selected rectangle (or single pixel)."""
+        if not getattr(self, "_manual_dragging", False):
+            return
+        self._manual_dragging = False
+
+        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
+            return
+        if self._manual_drag_start is None:
+            return
+
+        x0, y0 = self._manual_drag_start
+        x1, y1 = event.x, event.y
+
+        # Normalize rect in canvas coordinates
+        left = min(x0, x1)
+        right = max(x0, x1)
+        top = min(y0, y1)
+        bottom = max(y0, y1)
+
+        # If selection is tiny -> treat as click
+        if (right - left) < 3 and (bottom - top) < 3:
+            # Reuse your existing single-pixel logic
+            fake = type("E", (), {"x": event.x, "y": event.y})
+            self._manual_on_image_click(fake)
+            # Remove rectangle
+            if self._manual_rect_id is not None:
+                self._manual_img_canvas.delete(self._manual_rect_id)
+                self._manual_rect_id = None
+            return
+
+        # Map canvas rectangle to drawn image coords
+        left_d = left - self._manual_offset_x
+        right_d = right - self._manual_offset_x
+        top_d = top - self._manual_offset_y
+        bottom_d = bottom - self._manual_offset_y
+
+        # Clip to drawn image bounds
+        left_d = max(0, min(self._manual_draw_w, left_d))
+        right_d = max(0, min(self._manual_draw_w, right_d))
+        top_d = max(0, min(self._manual_draw_h, top_d))
+        bottom_d = max(0, min(self._manual_draw_h, bottom_d))
+
+        if right_d <= left_d or bottom_d <= top_d:
+            return
+
+        # Map to full-resolution coords
+        full_left = int(left_d / self._manual_scale)
+        full_right = int(right_d / self._manual_scale)
+        full_top = int(top_d / self._manual_scale)
+        full_bottom = int(bottom_d / self._manual_scale)
+
+        full_w, full_h = self._manual_pil_full.size
+        full_left = max(0, min(full_w - 1, full_left))
+        full_right = max(0, min(full_w, full_right))
+        full_top = max(0, min(full_h - 1, full_top))
+        full_bottom = max(0, min(full_h, full_bottom))
+
+        if full_right <= full_left or full_bottom <= full_top:
+            return
+
+        # Crop and compute mean RGB
+        crop = self._manual_pil_full.crop((full_left, full_top, full_right, full_bottom))
+        arr = np.asarray(crop, dtype=np.float32)  # (h,w,3)
+        mean_rgb = arr.reshape(-1, 3).mean(axis=0)
+
+        r = int(round(mean_rgb[0]))
+        g = int(round(mean_rgb[1]))
+        b = int(round(mean_rgb[2]))
+
+        lab = UtilsTools.srgb_to_lab(r, g, b)
+
+        # Store picked values for "Add Selected Color"
+        self._picked_rgb = (r, g, b)
+        self._picked_lab = lab
+
+        # Update UI
+        self._picked_rgb_var.set(f"RGB (avg): ({r}, {g}, {b})")
+        self._picked_lab_var.set(f"LAB (avg): ({lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f})")
+
+        hex_color = f"#{r:02x}{g:02x}{b:02x}"
+        self._picked_preview.itemconfig(self._picked_preview_rect, fill=hex_color)
+
+        # Optional: keep rectangle visible or remove it
+        # If you prefer to remove it after selection:
+        # self._manual_img_canvas.delete(self._manual_rect_id)
+        # self._manual_rect_id = None
+
 
 
     def _manual_add_picked_color(self, colors, target_frame):
@@ -3670,7 +3814,28 @@ class PyFCSApp:
 
 
     def color_mapping_all(self, window_id):
-        """Applies color mapping to the CURRENT (resized) image and updates the floating window with a progress bar."""
+        """
+        Improved / faster version of your Tkinter "Color Mapping All".
+
+        Key optimizations (same output / same behavior):
+        1) Compute winner label_map by processing ONLY UNIQUE quantized LAB values:
+        - Quantize LAB to 0.01
+        - Convert to integer keys (L,a,b)*100
+        - np.unique() -> compute best prototype index only once per unique key
+        - Rebuild label_map using inverse indices
+
+        2) Avoid creating dict(label->membership) per pixel:
+        - Uses a new fast method: fuzzy_color_space.best_prototype_index_from_lab()
+            which returns only the argmax prototype index (no dict allocations).
+
+        3) Alt-colors recolor is O(H*W) via label_map:
+        - recolored = palette_uint8[label_map]
+        - No per-prototype boolean masks over the full image.
+
+        Extra safety:
+        - If mapping does NOT find any prototype for a pixel (best_idx == -1),
+        that pixel is rendered as BLACK instead of defaulting to prototype 0.
+        """
 
         items = self.image_canvas.find_withtag(window_id)
         if not items:
@@ -3686,7 +3851,7 @@ class PyFCSApp:
         except Exception:
             pass
 
-        # Hide proto-percentage text for "all" (optional; remove if you want to show something else)
+        # Hide proto-percentage text for "all"
         try:
             self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
         except Exception:
@@ -3702,13 +3867,34 @@ class PyFCSApp:
 
         self.show_loading()
 
+        # -----------------------------
+        # UI-safe progress update helper
+        # -----------------------------
         def update_progress(current_step, total_steps):
-            """Update the progress bar."""
-            self.progress["value"] = (current_step / total_steps) * 100
-            self.load_window.update_idletasks()
+            """Thread-safe progress update (marshals UI update through after())."""
+            if total_steps <= 0:
+                return
 
-        def build_legend_frame(prototypes, parent_canvas):
-            """Creates and returns the legend frame (no heavy computation)."""
+            pct = (current_step / total_steps) * 100.0
+
+            def _ui():
+                try:
+                    self.progress["value"] = pct
+                    self.load_window.update_idletasks()
+                except Exception:
+                    pass
+
+            self.image_canvas.after(0, _ui)
+
+        # ----------------------------------------
+        # Build legend frame (no heavy computation)
+        # ----------------------------------------
+        def build_legend_frame(prototypes, parent_canvas, palette_uint8):
+            """
+            Creates and returns the legend frame.
+
+            palette_uint8: (N,3) uint8, where palette_uint8[i] is the color for prototypes[i].
+            """
             legend_frame = tk.Frame(parent_canvas, bg="white", relief="solid", bd=1)
 
             legend_frame.grid_rowconfigure(0, weight=1)
@@ -3732,151 +3918,209 @@ class PyFCSApp:
 
             canvas.bind("<Configure>", resize_inner)
 
-            def on_frame_configure(event):
+            def on_frame_configure(_event=None):
                 canvas.configure(scrollregion=canvas.bbox("all"))
 
-            inner_frame.bind("<Configure>", lambda e: canvas.after_idle(on_frame_configure, e))
+            inner_frame.bind("<Configure>", lambda e: canvas.after_idle(on_frame_configure))
 
             # Scroll wheel handling
             def bind_scroll_events(c):
                 def _on_mousewheel(event):
                     c.yview_scroll(int(-1 * (event.delta / 120)), "units")
-                def _bind_mousewheel(event):
+
+                def _bind_mousewheel(_event):
                     c.bind_all("<MouseWheel>", _on_mousewheel)
-                def _unbind_mousewheel(event):
+
+                def _unbind_mousewheel(_event):
                     c.unbind_all("<MouseWheel>")
+
                 c.bind("<Enter>", _bind_mousewheel)
                 c.bind("<Leave>", _unbind_mousewheel)
 
             bind_scroll_events(canvas)
 
-            # Palette logic
-            color_map = plt.get_cmap('hsv', len(prototypes))
-            prototype_colors = {p.label: color_map(i)[:3] for i, p in enumerate(prototypes)}
-            for label in prototype_colors:
-                if label.lower() == "black":
-                    prototype_colors[label] = (0, 0, 0)
-
-            # Labels
-            for prototype in prototypes:
-                color_rgb = np.array(prototype_colors[prototype.label]) * 255
-                color_hex = "#{:02x}{:02x}{:02x}".format(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
+            # Labels (prototype order)
+            for i, prototype in enumerate(prototypes):
+                rgb = palette_uint8[i].astype(int)
+                color_hex = "#{:02x}{:02x}{:02x}".format(rgb[0], rgb[1], rgb[2])
                 label = tk.Label(
-                    inner_frame, text=prototype.label, bg=color_hex,
-                    fg="black" if np.mean(color_rgb) > 128 else "white",
-                    padx=5, pady=2
+                    inner_frame,
+                    text=prototype.label,
+                    bg=color_hex,
+                    fg="black" if np.mean(rgb) > 128 else "white",
+                    padx=5,
+                    pady=2
                 )
                 label.pack(fill="x", padx=5, pady=2)
 
             inner_frame.update_idletasks()
             canvas.configure(scrollregion=canvas.bbox("all"))
 
-            # Save both color sets
-            original_colors = [np.array(prototype_colors[proto.label]) * 255 for proto in self.prototypes]
+            return legend_frame
+
+        # -----------------------------
+        # Palette builders (same logic)
+        # -----------------------------
+        def build_original_palette_uint8():
+            """HSV palette (same as before), returned as (N,3) uint8 in prototypes order."""
+            cmap = plt.get_cmap('hsv', len(self.prototypes))
+            palette = []
+            for i, p in enumerate(self.prototypes):
+                rgb01 = np.array(cmap(i)[:3], dtype=float)
+                rgb255 = (np.clip(rgb01, 0, 1) * 255).astype(np.uint8)
+                if p.label.lower() == "black":
+                    rgb255 = np.array([0, 0, 0], dtype=np.uint8)
+                palette.append(rgb255)
+            return np.stack(palette, axis=0).astype(np.uint8)
+
+        def build_alt_palette_uint8():
+            """
+            Alternate palette using self.hex_color keys (same as your original alt_colors logic),
+            returned as (N,3) uint8 in prototypes order.
+            """
             hex_colors = list(self.hex_color.keys())
-            alt_colors = [
-                np.array([int(hex_colors[i][j:j+2], 16) for j in (1, 3, 5)])
-                for i, _ in enumerate(self.prototypes)
-            ]
+            alt = []
+            for i, _p in enumerate(self.prototypes):
+                if i < len(hex_colors):
+                    hx = hex_colors[i]
+                    rgb = np.array([int(hx[j:j+2], 16) for j in (1, 3, 5)], dtype=np.uint8)
+                else:
+                    rgb = np.array([0, 0, 0], dtype=np.uint8)
+                alt.append(rgb)
+            return np.stack(alt, axis=0).astype(np.uint8)
 
-            if not hasattr(self, "prototype_color_sets"):
-                self.prototype_color_sets = {}
-            if not hasattr(self, "current_color_scheme"):
-                self.current_color_scheme = {}
+        # -------------------------------------------------------
+        # Fast recolor: uses label_map indices, no boolean masks
+        # -------------------------------------------------------
+        def recolor(window_id):
+            """Switch palette without recomputing memberships (recolor via cached label_map)."""
+            if not hasattr(self, "cm_cache") or window_id not in self.cm_cache:
+                return
 
-            self.prototype_color_sets[window_id] = {"original": original_colors, "alt": alt_colors}
-            self.current_color_scheme[window_id] = "original"
+            cache_pack = self.cm_cache[window_id].get("last_pack")
+            if not cache_pack:
+                return
 
-            return legend_frame, prototype_colors
+            label_map = cache_pack["label_map"]          # (H,W) int32 (may include -1)
+            palettes = cache_pack["palettes"]            # dict: {"original": (N,3), "alt": (N,3)}
+            current = cache_pack["scheme"]               # "original" or "alt"
+            new = "alt" if current == "original" else "original"
+            cache_pack["scheme"] = new
 
+            palette = palettes[new]                      # (N,3) uint8
+
+            # ✅ Render BLACK where label_map == -1 (no prototype found)
+            recolored_image = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
+            valid_mask = (label_map >= 0)
+            if np.any(valid_mask):
+                recolored_image[valid_mask] = palette[label_map[valid_mask].astype(np.int32)]
+
+            # Update UI using existing update_ui
+            new_legend_frame = cache_pack.get("legend_frame")
+            if new_legend_frame and new_legend_frame.winfo_exists():
+                new_legend_frame.destroy()
+
+            new_legend_frame = build_legend_frame(self.prototypes, self.image_canvas, palette)
+            cache_pack["legend_frame"] = new_legend_frame
+
+            self.image_canvas.after(0, lambda: update_ui(recolored_image, new_legend_frame))
+
+        # -----------------------------
+        # Main worker thread
+        # -----------------------------
         def run_process():
-            """Run the processing in a separate thread (CURRENT resized image)."""
             try:
-                # IMPORTANT: use the current resized image so resizing requires recomputation
+                # Ensure current resized image exists
                 if not hasattr(self, "images") or window_id not in self.images:
                     self.image_canvas.after(0, lambda: self.custom_warning("Processing Error", "Current image not found for this window."))
                     return
 
-                source_img = self.images[window_id]  # <-- CURRENT size
+                source_img = self.images[window_id]  # CURRENT size
                 w, h = source_img.size
 
-                # Ensure cm_cache exists
+                # Ensure cache structure exists
                 if not hasattr(self, "cm_cache"):
                     self.cm_cache = {}
                 if window_id not in self.cm_cache:
                     self.cm_cache[window_id] = {}
 
-                # Cache key depends on image size + prototypes (so resize forces recompute)
+                # Cache key depends on image size + prototype labels (resize forces recompute)
                 proto_labels = tuple([p.label for p in self.prototypes])
                 cache_key = (w, h, proto_labels)
 
-                # Get or compute label_map
+                # If we already computed label_map for this exact setup, reuse it
                 label_map = self.cm_cache[window_id].get(cache_key)
-                if label_map is None:
-                    # Compute label_map (winner prototype index per pixel) for CURRENT image
-                    self.fuzzy_color_space.precompute_pack()
 
+                # Always ensure precomputed pack exists before membership calls
+                self.fuzzy_color_space.precompute_pack()
+
+                if label_map is None:
+                    # Convert PIL -> RGB float -> LAB
                     img_np = np.array(source_img)
                     if img_np.ndim == 3 and img_np.shape[-1] == 4:
                         img_np = img_np[..., :3]
-                    img_np = img_np / 255.0
 
-                    lab_img = color.rgb2lab(img_np)
-                    lab_q = np.round(lab_img, 2)
+                    img01 = img_np.astype(np.float32) / 255.0
+                    lab_img = color.rgb2lab(img01)
+
+                    # Quantize to 0.01
+                    lab_q = np.round(lab_img, 2)  # (H,W,3)
 
                     height, width = lab_q.shape[0], lab_q.shape[1]
-                    total_pixels = height * width
 
-                    proto_index = {p.label: i for i, p in enumerate(self.prototypes)}
-                    label_map = np.zeros((height, width), dtype=np.uint16)
+                    # ---- UNIQUE-BASED ACCELERATION ----
+                    lab_int = np.round(lab_q.reshape(-1, 3) * 100.0).astype(np.int32)  # (N,3)
+                    uniq, inv = np.unique(lab_int, axis=0, return_inverse=True)
 
-                    membership_cache = {}  # (L,a,b int*100) -> best_idx
-                    processed_pixels = 0
+                    # IMPORTANT: must allow -1, so use int32 (NOT uint16)
+                    best_for_uniq = np.empty((uniq.shape[0],), dtype=np.int32)
+
+                    total_uniqs = int(uniq.shape[0])
                     last_update = time.perf_counter()
 
-                    for yy in range(height):
-                        for xx in range(width):
-                            lab_color = lab_q[yy, xx]
-                            key = (int(lab_color[0] * 100), int(lab_color[1] * 100), int(lab_color[2] * 100))
+                    for i in range(total_uniqs):
+                        L_i, A_i, B_i = uniq[i].astype(np.float32) / 100.0
 
-                            best_idx = membership_cache.get(key)
-                            if best_idx is None and key not in membership_cache:
-                                degrees = self.fuzzy_color_space.calculate_membership(lab_color)
-                                if degrees:
-                                    best_label = max(degrees, key=degrees.get)
-                                    best_idx = proto_index.get(best_label, 0)
-                                else:
-                                    best_idx = 0
-                                membership_cache[key] = best_idx
+                        # Fast argmax (no dict allocations)
+                        # Must return -1 when no prototype matches => black
+                        best_idx = self.fuzzy_color_space.best_prototype_index_from_lab((L_i, A_i, B_i))
+                        best_for_uniq[i] = int(best_idx)
 
-                            label_map[yy, xx] = best_idx
+                        now = time.perf_counter()
+                        if now - last_update > 0.03 or i == total_uniqs - 1:
+                            update_progress(i + 1, total_uniqs)
+                            last_update = now
 
-                            processed_pixels += 1
-                            if update_progress:
-                                now = time.perf_counter()
-                                if now - last_update > 0.03 or processed_pixels == total_pixels:
-                                    update_progress(processed_pixels, total_pixels)
-                                    last_update = now
+                    # Reconstruct label_map via inverse mapping (int32 so it can hold -1)
+                    label_map = best_for_uniq[inv].reshape(height, width).astype(np.int32)
 
-                    # Cache it
+                    # Cache the computed label_map
                     self.cm_cache[window_id][cache_key] = label_map
 
-                # Build colors and create recolored image (same size as current image)
-                color_map = plt.get_cmap('hsv', len(self.prototypes))
-                prototype_colors = {p.label: color_map(i)[:3] for i, p in enumerate(self.prototypes)}
-                for label in prototype_colors:
-                    if label.lower() == "black":
-                        prototype_colors[label] = (0, 0, 0)
+                # Build palettes
+                original_palette = build_original_palette_uint8()
+                alt_palette = build_alt_palette_uint8()
 
-                proto_rgb_uint8 = np.array(
-                    [(np.array(prototype_colors[p.label]) * 255).astype(np.uint8) for p in self.prototypes],
-                    dtype=np.uint8
-                )  # (N,3)
+                scheme = "original"
+                palette = original_palette
 
-                recolored_image = proto_rgb_uint8[label_map]  # (H,W,3)
+                # ✅ Render BLACK where label_map == -1
+                recolored_image = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
+                valid_mask = (label_map >= 0)
+                if np.any(valid_mask):
+                    recolored_image[valid_mask] = palette[label_map[valid_mask].astype(np.int32)]
 
-                # Legend frame
-                new_legend_frame, _ = build_legend_frame(self.prototypes, self.image_canvas)
+                # Build legend for current scheme
+                new_legend_frame = build_legend_frame(self.prototypes, self.image_canvas, palette)
+
+                # Store last_pack so recolor() can reuse label_map instantly
+                self.cm_cache[window_id]["last_pack"] = {
+                    "label_map": label_map,
+                    "palettes": {"original": original_palette, "alt": alt_palette},
+                    "scheme": scheme,
+                    "legend_frame": new_legend_frame,
+                    "cache_key": cache_key,
+                }
 
                 self.image_canvas.after(0, lambda: update_ui(recolored_image, new_legend_frame))
 
@@ -3885,74 +4129,18 @@ class PyFCSApp:
             finally:
                 self.image_canvas.after(0, self.hide_loading)
 
-        def recolor(window_id):
-            """Switch palette without recomputing memberships (only recolor current modified_image)."""
-            current = self.current_color_scheme[window_id]
-            new = "alt" if current == "original" else "original"
-            self.current_color_scheme[window_id] = new
-
-            original_colors = self.prototype_color_sets[window_id][current]
-            new_colors = self.prototype_color_sets[window_id][new]
-
-            img = self.modified_image[window_id]
-            recolored = img.copy()
-
-            for orig_color, new_color in zip(original_colors, new_colors):
-                mask = np.all(img == orig_color.astype(np.uint8), axis=-1)
-                recolored[mask] = new_color.astype(np.uint8)
-
-            img_tk = ImageTk.PhotoImage(Image.fromarray(recolored))  # already current size
-            self.floating_images[window_id] = img_tk
-            self.modified_image[window_id] = recolored
-
-            image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
-            if image_items:
-                self.image_canvas.itemconfig(image_items[0], image=img_tk)
-            else:
-                self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
-
-            # Update legend labels (same as your code)
-            new_legend_frame = self.proto_options[window_id]
-            canvas = new_legend_frame.winfo_children()[0]
-            inner_frame_id = canvas.find_withtag("inner")
-            if inner_frame_id:
-                inner_frame = canvas.nametowidget(canvas.itemcget(inner_frame_id[0], "window"))
-            else:
-                self.custom_warning("Legend Error", "No inner frame found in legend canvas")
-                return
-
-            for widget in inner_frame.winfo_children():
-                widget.destroy()
-
-            for i, prototype in enumerate(self.prototypes):
-                current_colors = self.prototype_color_sets[window_id][self.current_color_scheme[window_id]]
-                color_rgb = current_colors[i]
-                color_hex = "#{:02x}{:02x}{:02x}".format(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
-                label = tk.Label(
-                    inner_frame,
-                    text=prototype.label,
-                    bg=color_hex,
-                    fg="black" if np.mean(color_rgb) > 128 else "white",
-                    padx=5, pady=2
-                )
-                label.pack(fill="x", padx=5, pady=2)
-
-            inner_frame.update_idletasks()
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-            self.image_canvas.after(0, lambda: update_ui(recolored, new_legend_frame))
-
+        # -----------------------------
+        # UI update
+        # -----------------------------
         def update_ui(recolored_image, new_legend_frame):
             """Update the UI safely from the main thread."""
             try:
                 self.modified_image[window_id] = recolored_image
 
-                # IMPORTANT: recolored_image is already at current size (no resize needed)
-                pil_to_show = Image.fromarray(recolored_image.astype(np.uint8))
+                pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGB")
                 img_tk = ImageTk.PhotoImage(pil_to_show)
                 self.floating_images[window_id] = img_tk
 
-                # Store displayed PIL image (for saving)
                 if hasattr(self, "display_pil"):
                     self.display_pil[window_id] = pil_to_show
 
@@ -3965,12 +4153,12 @@ class PyFCSApp:
                 x1, y1, x2, _ = self.image_canvas.bbox(items[0])
                 new_legend_frame.place(x=x2 + 10, y=y1, width=100, height=300)
 
-                use_original_button = tk.Button(
+                btn = tk.Button(
                     new_legend_frame,
                     text="Alt. Colors",
                     command=lambda: recolor(window_id)
                 )
-                use_original_button.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+                btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
 
                 self.proto_options[window_id] = new_legend_frame
 
@@ -3978,6 +4166,7 @@ class PyFCSApp:
                 self.custom_warning("Display Error", f"Error displaying the image: {e}")
 
         threading.Thread(target=run_process, daemon=True).start()
+
 
 
 
