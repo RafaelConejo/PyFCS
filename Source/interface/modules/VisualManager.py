@@ -275,7 +275,7 @@ class VisualManager:
             scene=dict(
                 xaxis_title="a* (Red-Green)",
                 yaxis_title="b* (Blue-Yellow)",
-                zaxis_title="L* (Luminosity)",
+                zaxis_title="L* (Lightness)",
                 **axis_limits,
             ),
             margin=dict(l=0, r=0, b=0, t=30),
@@ -419,7 +419,7 @@ class VisualManager:
         # ---------- Configure axes ----------
         ax.set_xlabel("a* (Red-Green)", fontsize=10, labelpad=10)
         ax.set_ylabel("b* (Blue-Yellow)", fontsize=10, labelpad=10)
-        ax.set_zlabel("L* (Luminosity)", fontsize=10, labelpad=10)
+        ax.set_zlabel("L* (Lightness)", fontsize=10, labelpad=10)
 
         # Apply volume limits if provided
         if volume_limits:

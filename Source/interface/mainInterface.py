@@ -53,6 +53,10 @@ class PyFCSApp:
         # ---------------------------------------------------------------------
         self.root = root  # Keep a reference to the main Tk window
 
+        logo_path = os.path.join(BASE_PATH, 'Source', 'external', 'icons', 'logo.png')
+        self.logo = tk.PhotoImage(file=logo_path)
+        self.root.iconphoto(True, self.logo)
+
         # Initialize application managers (image I/O, fuzzy spaces, evaluation, etc.)
         self.image_manager = ImageManager(
             root=self.root,
@@ -3012,7 +3016,7 @@ class PyFCSApp:
 
 
     # ============================================================================================================================================================
-    #  FUNCTIONS IMAGE UTILS (COLOR MAPPING)
+    #  FUNCTIONS IMAGE UTILS 
     # ============================================================================================================================================================
     def display_detected_colors(self, colors, threshold, min_samples):
         """
@@ -3555,7 +3559,10 @@ class PyFCSApp:
         x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
         frame_x = x2 + 10
         frame_y = y1
-        proto_options.place(x=frame_x, y=frame_y, width=100, height=300)
+        img_h = (y2 - y1)
+        desired_w = 150            
+        desired_h = min(300, img_h) # no bigger than image
+        proto_options.place(x=frame_x, y=frame_y, width=desired_w, height=desired_h)
 
 
 
@@ -4150,8 +4157,13 @@ class PyFCSApp:
                 else:
                     self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
 
-                x1, y1, x2, _ = self.image_canvas.bbox(items[0])
-                new_legend_frame.place(x=x2 + 10, y=y1, width=100, height=300)
+                x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
+                frame_x = x2 + 10
+                frame_y = y1
+                img_h = (y2 - y1)
+                desired_w = 150
+                desired_h = min(300, img_h)  # no bigger than image
+                new_legend_frame.place(x=frame_x, y=frame_y, width=desired_w, height=desired_h)
 
                 btn = tk.Button(
                     new_legend_frame,
