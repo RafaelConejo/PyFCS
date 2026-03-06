@@ -417,7 +417,7 @@ class VisualManager:
                                     )
 
         # ---------- Configure axes ----------
-        ax.set_xlabel("a* (Red-Green)", fontsize=10, labelpad=10)
+        ax.set_xlabel("a* (Green-Red)", fontsize=10, labelpad=10)
         ax.set_ylabel("b* (Blue-Yellow)", fontsize=10, labelpad=10)
         ax.set_zlabel("L* (Lightness)", fontsize=10, labelpad=10)
 

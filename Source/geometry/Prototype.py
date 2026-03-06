@@ -2,6 +2,8 @@ import numpy as np
 import subprocess
 import os
 
+from pyhull import qvoronoi
+
 ### my libraries ###
 from Source.geometry.Plane import Plane
 from Source.geometry.Point import Point
@@ -69,6 +71,15 @@ class Prototype:
             temp_output_file = os.path.join('Source', 'external', 'temp', 'temp_voronoi_output.txt')
             with open(temp_output_file, 'w') as f:
                 f.write(output)
+
+
+
+            # VERSION PYHULL -> Problem needs Microsoft C++ Build Tools
+            # output = qvoronoi("Fi Fo p Fv", points)
+            # # Save output to a temporary file
+            # temp_output_file = os.path.join('Source', 'external', 'temp', 'temp_voronoi_output.txt')
+            # with open(temp_output_file, 'w') as f:
+            #     f.write("\n".join(output))
 
 
         except Exception as e:
