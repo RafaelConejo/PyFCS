@@ -269,6 +269,8 @@ class ImageManager:
 
         return result["color_name"], result["lab"]
 
+
+
     def get_proto_percentage(
         self,
         prototypes,
@@ -276,19 +278,20 @@ class ImageManager:
         fuzzy_color_space,
         selected_option,
         progress_callback=None,
+        cancel_callback=None,
     ):
         """
         Generate a grayscale membership map for the selected prototype.
 
         Workflow:
-          - Convert input PIL image to a NumPy RGB array (discard alpha channel if present)
-          - Normalize RGB to [0, 1] and convert to LAB
-          - Quantize LAB values to 2 decimals to increase cache hits
-          - For each pixel (LAB), compute membership for the selected prototype using
+        - Convert input PIL image to a NumPy RGB array (discard alpha channel if present)
+        - Normalize RGB to [0, 1] and convert to LAB
+        - Quantize LAB values to 2 decimals to increase cache hits
+        - For each pixel (LAB), compute membership for the selected prototype using
             fuzzy_color_space.calculate_membership_for_prototype(...)
-          - Cache membership values per unique LAB triple to avoid repeated computation
-          - Optionally report progress through `progress_callback(current, total)`
-          - Convert membership [0..1] into a grayscale uint8 image [0..255]
+        - Cache membership values per unique LAB triple to avoid repeated computation
+        - Optionally report progress through `progress_callback(current, total)`
+        - Convert membership [0..1] into a grayscale uint8 image [0..255]
 
         Returns:
             np.ndarray (H, W) uint8 grayscale image.
@@ -317,6 +320,10 @@ class ImageManager:
 
         total = lab_flat.shape[0]
         for i, lab_color in enumerate(lab_flat):
+            # Cooperative cancellation check
+            if cancel_callback and cancel_callback():
+                return None
+
             key = (lab_color[0], lab_color[1], lab_color[2])
 
             # Compute membership once per unique LAB triple
@@ -329,6 +336,8 @@ class ImageManager:
 
             # Progress reporting (every 5000 pixels, and also at the end)
             if progress_callback and (i % 5000 == 0 or i == total - 1):
+                if cancel_callback and cancel_callback():
+                    return None
                 progress_callback(i + 1, total)
 
         grayscale_image = (
@@ -337,6 +346,8 @@ class ImageManager:
             .astype(np.uint8)
         )
         return grayscale_image
+
+
 
     def get_fcs_image(self, image, threshold=0.5, min_samples=160):
         """

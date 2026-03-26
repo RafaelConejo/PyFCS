@@ -17,6 +17,7 @@ import math
 import time
 import random
 import platform
+import itertools
 import threading
 import numpy as np
 import tkinter as tk
@@ -70,16 +71,19 @@ class PyFCSApp:
         # ---------------------------------------------------------------------
         # Utility flags / shared state
         # ---------------------------------------------------------------------
-        self.COLOR_SPACE = False       # True if a color space is currently loaded/active
-        self.FIRST_DBSCAN = True       # Used to treat the first DBSCAN run differently
-        self.ORIGINAL_IMG = {}         # Stores original image data/state
-        self.MEMBERDEGREE = {}         # Stores membership degree / color mapping results
-        self.hex_color = []            # Stores point colors (hex) used for visualization
-        self.images = {}               # Cache for images loaded/processed in the app
-        self.color_entry_detect = {}   # Keeps track of UI entries used for color detection/edition
-        self.cm_cache = {}             # Cache for the color mappings all
-        self.proto_percentage_cache = {} # Cache for prototype-percentage grayscale maps
-        self.display_pil = {}          # window_id -> PIL.Image currently displayed
+        self.COLOR_SPACE = False            # True if a color space is currently loaded/active
+        self.FIRST_DBSCAN = True            # Used to treat the first DBSCAN run differently
+        self.SHOW_ORIGINAL = {}             # window_id -> True if a processed image is displayed and the original can be restored
+        self.CAN_APPLY_MAPPING = {}         # window_id -> True if color mapping operations are allowed on the current image
+        self.hex_color = []                 # Stores point colors (hex) used for visualization
+        self.images = {}                    # Cache for images loaded/processed in the app
+        self.color_entry_detect = {}        # Keeps track of UI entries used for color detection/edition
+        self.cm_cache = {}                  # Cache for the color mappings all
+        self.proto_percentage_cache = {}    # Cache for prototype-percentage grayscale maps
+        self.display_pil = {}               # window_id -> PIL.Image currently displayed
+
+        # Struct to control image functions
+        self.image_jobs = {}   # {window_id: {...}}
 
         # ---------------------------------------------------------------------
         # Main window configuration
@@ -746,7 +750,7 @@ class PyFCSApp:
     def update_prototypes_info(self):
         # Update 3D graph flags and application state variables
         self.COLOR_SPACE = True
-        self.MEMBERDEGREE = {key: True for key in self.MEMBERDEGREE}
+        self.CAN_APPLY_MAPPING = {key: True for key in self.CAN_APPLY_MAPPING}
 
         # Display selection control buttons
         self.select_all_button.pack(pady=5)
@@ -769,6 +773,13 @@ class PyFCSApp:
         Allows the user to select a fuzzy color space file and displays its color data in a scrollable table.
         This includes loading the file, extracting the data, and displaying it visually on a canvas.
         """
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
+            )
+            return
+    
         filename = UtilsTools.prompt_file_selection('fuzzy_color_spaces/')
         if not filename:
             return
@@ -2447,9 +2458,24 @@ class PyFCSApp:
                 del self.floating_images[window_id]
 
                 if hasattr(self, "proto_options") and window_id in self.proto_options:
-                    if self.proto_options[window_id].winfo_exists():
-                        self.proto_options[window_id].destroy()
-                    del self.proto_options[window_id]
+                    info = self.proto_options.get(window_id)
+                    if info:
+                        frame = info.get("frame")
+                        canvas_item = info.get("canvas_item")
+
+                        try:
+                            if canvas_item:
+                                self.image_canvas.delete(canvas_item)
+                        except Exception:
+                            pass
+
+                        try:
+                            if frame and frame.winfo_exists():
+                                frame.destroy()
+                        except Exception:
+                            pass
+
+                        del self.proto_options[window_id]
 
                 if hasattr(self, "load_images_names") and window_id in self.load_images_names:
                     del self.load_images_names[window_id]
@@ -2528,8 +2554,8 @@ class PyFCSApp:
         self.load_images_names[window_id] = filename
 
         # State flags
-        self.MEMBERDEGREE[window_id] = bool(self.COLOR_SPACE)
-        self.ORIGINAL_IMG[window_id] = False
+        self.CAN_APPLY_MAPPING[window_id] = bool(self.COLOR_SPACE)
+        self.SHOW_ORIGINAL[window_id] = False
 
         # ---------------------------
         # Load images
@@ -2680,29 +2706,8 @@ class PyFCSApp:
             hy2 = wy + wh + PAD_Y - 2
             self.image_canvas.coords(f"{window_id}_resize_handle", hx1, hy1, hx2, hy2)
 
-            # Keep on top
-            self.image_canvas.tag_raise(window_id)
-            self.image_canvas.tag_raise(f"{window_id}_close_button")
-            self.image_canvas.tag_raise(f"{window_id}_arrow_button")
-            self.image_canvas.tag_raise(f"{window_id}_resize_handle")
-
             # Reposition proto_options frame if exists
-            if hasattr(self, "proto_options") and window_id in self.proto_options:
-                proto_option_frame = self.proto_options[window_id]
-                if proto_option_frame.winfo_exists():
-                    frame_x = wx + ww + PAD_X + 10
-                    frame_y = wy
-
-                    canvas_width = self.image_canvas.winfo_width()
-                    canvas_height = self.image_canvas.winfo_height()
-
-                    if frame_x + 120 > canvas_width:
-                        frame_x = max(0, canvas_width - 120)
-                    if frame_y + 150 > canvas_height:
-                        frame_y = max(0, canvas_height - 150)
-
-                    proto_option_frame.place(x=frame_x, y=frame_y)
-                    proto_option_frame.lift()
+            self._reposition_proto_options(window_id)
             
             # Percentage text below the image
             self.image_canvas.coords(
@@ -2710,8 +2715,12 @@ class PyFCSApp:
                 wx + 15,
                 wy + IMG_TOP_PAD + wh + 10
             )
-            self.image_canvas.tag_raise(f"{window_id}_pct_text")
 
+            # Reposition loading panel if exists
+            self._reposition_window_loading(window_id)
+
+            # Keep this floating window focused without affecting other loadings globally
+            self._focus_floating_window(window_id)
 
         def _update_image_to_size(window_id, target_w, target_h):
             """
@@ -2749,6 +2758,9 @@ class PyFCSApp:
         # ---------------------------
         def close_window(event):
             """Closes the floating window and removes all associated elements."""
+            # Cancel any running process linked to this image
+            self._cancel_window_job(window_id)
+
             self.image_canvas.delete(window_id)
 
             if window_id in self.floating_images:
@@ -2757,11 +2769,44 @@ class PyFCSApp:
                 del self.pil_images_original[window_id]
             if hasattr(self, "floating_window_state") and window_id in self.floating_window_state:
                 del self.floating_window_state[window_id]
+            if hasattr(self, "images") and window_id in self.images:
+                del self.images[window_id]
+            if hasattr(self, "display_pil") and window_id in self.display_pil:
+                del self.display_pil[window_id]
+            if hasattr(self, "original_images") and window_id in self.original_images:
+                del self.original_images[window_id]
+            if hasattr(self, "image_dimensions") and window_id in self.image_dimensions:
+                del self.image_dimensions[window_id]
+            if hasattr(self, "original_image_dimensions") and window_id in self.original_image_dimensions:
+                del self.original_image_dimensions[window_id]
+            if hasattr(self, "proto_percentage_cache") and window_id in self.proto_percentage_cache:
+                del self.proto_percentage_cache[window_id]
+            if hasattr(self, "cm_cache") and window_id in self.cm_cache:
+                del self.cm_cache[window_id]
+            if hasattr(self, "_resize_callbacks") and window_id in self._resize_callbacks:
+                del self._resize_callbacks[window_id]
+            if hasattr(self, "current_protos") and window_id in self.current_protos:
+                del self.current_protos[window_id]
 
             if hasattr(self, "proto_options") and window_id in self.proto_options:
-                if self.proto_options[window_id].winfo_exists():
-                    self.proto_options[window_id].destroy()
-                del self.proto_options[window_id]
+                info = self.proto_options.get(window_id)
+                if info:
+                    frame = info.get("frame")
+                    canvas_item = info.get("canvas_item")
+
+                    try:
+                        if canvas_item:
+                            self.image_canvas.delete(canvas_item)
+                    except Exception:
+                        pass
+
+                    try:
+                        if frame and frame.winfo_exists():
+                            frame.destroy()
+                    except Exception:
+                        pass
+
+                    del self.proto_options[window_id]
 
             if hasattr(self, "load_images_names") and window_id in self.load_images_names:
                 del self.load_images_names[window_id]
@@ -2771,35 +2816,45 @@ class PyFCSApp:
         # ---------------------------
         def show_menu_image(event):
             """Displays a context menu with options for the floating window."""
+            if self._has_active_job(window_id):
+                return "break"
+
             menu = Menu(self.root, tearoff=0)
             menu.add_command(
                 label="Original Image",
-                state=NORMAL if self.ORIGINAL_IMG[window_id] else DISABLED,
+                state=NORMAL if self.SHOW_ORIGINAL[window_id] else DISABLED,
                 command=lambda: self.show_original_image(window_id)
             )
             menu.add_separator()
             menu.add_command(
                 label="Color Mapping",
-                state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,
+                state=NORMAL if self.CAN_APPLY_MAPPING[window_id] else DISABLED,
                 command=lambda: self.color_mapping(window_id)
             )
             menu.add_separator()
             menu.add_command(
                 label="Color Mapping All",
-                state=NORMAL if self.MEMBERDEGREE[window_id] else DISABLED,
+                state=NORMAL if self.CAN_APPLY_MAPPING[window_id] else DISABLED,
                 command=lambda: self.color_mapping_all(window_id)
             )
             menu.post(event.x_root, event.y_root)
+            return "break"
 
         # ---------------------------
         # Move window (TITLE BAR ONLY)
         # ---------------------------
         def start_move(event):
             """Stores the initial position when the mouse is pressed on the title bar."""
+            if self._has_active_job(window_id):
+                return "break"
+
             self.last_x, self.last_y = event.x, event.y
 
         def move_window(event):
             """Moves the floating window based on the mouse drag (title bar only)."""
+            if self._has_active_job(window_id):
+                return "break"
+
             dx, dy = event.x - self.last_x, event.y - self.last_y
 
             # Update stored position
@@ -2808,13 +2863,18 @@ class PyFCSApp:
             st["y"] += dy
 
             _relayout(window_id)
+
             self.last_x, self.last_y = event.x, event.y
+            return "break"
 
         # ---------------------------
         # Resize window
         # ---------------------------
         def start_resize(event):
             """Stores initial state for resizing using the bottom-right handle."""
+            if self._has_active_job(window_id):
+                return "break"
+
             st = self.floating_window_state[window_id]
             self._resize_start = {
                 "w": st["w"], "h": st["h"],
@@ -2824,6 +2884,9 @@ class PyFCSApp:
 
         def do_resize(event):
             """Resizes window while dragging the bottom-right handle."""
+            if self._has_active_job(window_id):
+                return "break"
+
             if not hasattr(self, "_resize_start") or self._resize_start is None:
                 return "break"
 
@@ -2843,6 +2906,12 @@ class PyFCSApp:
 
         def end_resize(event):
             """Ends resizing operation."""
+            if self._has_active_job(window_id):
+                return "break"
+
+            # Cancel any running process because the displayed image size has changed
+            self._cancel_window_job(window_id)
+
             self._resize_start = None
 
             # Clear cached results for this window when resizing ends (avoid cache growth)
@@ -2870,6 +2939,9 @@ class PyFCSApp:
         # ---------------------------
         def get_pixel_value(event, window_id=window_id):
             """Gets the pixel value where the image is clicked, considering window movement and resizing."""
+            if self._has_active_job(window_id):
+                return "break"
+
             pil_original = self.pil_images_original[window_id]
             ow, oh = pil_original.size
 
@@ -2928,6 +3000,9 @@ class PyFCSApp:
 
         # Initial relayout to ensure everything consistent
         _relayout(window_id)
+
+        # Focus the newly created window
+        self._focus_floating_window(window_id)
 
 
 
@@ -2996,6 +3071,427 @@ class PyFCSApp:
         Returns the color name and LAB values if the user confirms the input.
         """
         self.image_manager.addColor_to_image(window, colors, update_ui_callback)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _ensure_image_jobs(self):
+        """Lazy-init job registry used to bind one running process per image/window."""
+        if not hasattr(self, "image_jobs"):
+            self.image_jobs = {}
+        if not hasattr(self, "_image_job_counter"):
+            self._image_job_counter = itertools.count(1)
+
+
+
+    def _window_exists(self, window_id):
+        """Returns True if the floating window still exists on the canvas."""
+        try:
+            items = self.image_canvas.find_withtag(window_id)
+            return bool(items)
+        except Exception:
+            return False
+
+
+
+    def _has_active_job(self, window_id):
+        """Returns True if there is an active job for this image."""
+        self._ensure_image_jobs()
+        info = self.image_jobs.get(window_id)
+        if not info:
+            return False
+
+        th = info.get("thread")
+        cancel_event = info.get("cancel_event")
+        return th is not None and th.is_alive() and cancel_event is not None and not cancel_event.is_set()
+
+
+
+    def _is_current_job(self, window_id, job_id):
+        """Checks whether job_id is still the active job for window_id."""
+        self._ensure_image_jobs()
+        info = self.image_jobs.get(window_id)
+        return bool(info and info.get("job_id") == job_id)
+
+
+
+    def _cancel_window_job(self, window_id, cleanup_ui=True):
+        """Cancels the active job associated with a floating image/window."""
+        self._ensure_image_jobs()
+        info = self.image_jobs.get(window_id)
+        if not info:
+            return
+
+        try:
+            info["cancel_event"].set()
+        except Exception:
+            pass
+
+        # Restore menu state because the image remains in its previous/original state
+        try:
+            self.CAN_APPLY_MAPPING[window_id] = True
+            self.SHOW_ORIGINAL[window_id] = False
+        except Exception:
+            pass
+
+        if cleanup_ui:
+            self._hide_window_loading(window_id)
+
+
+
+    def _is_job_cancelled(self, window_id, cancel_event, job_id):
+        """Returns True if the window/job is no longer valid."""
+        if cancel_event.is_set():
+            return True
+        if not self._window_exists(window_id):
+            return True
+        if not self._is_current_job(window_id, job_id):
+            return True
+        return False
+
+
+
+    def _start_window_job(self, window_id, kind, target):
+        """
+        Starts a thread-bound job associated with one image/window.
+        Only one job can run at a time per window_id.
+        """
+        self._ensure_image_jobs()
+
+        if self._has_active_job(window_id):
+            self.custom_warning(
+                "Process Running",
+                f"A '{self.image_jobs[window_id]['kind']}' process is already running for this image."
+            )
+            return None
+
+        cancel_event = threading.Event()
+        job_id = next(self._image_job_counter)
+
+        self.image_jobs[window_id] = {
+            "thread": None,
+            "cancel_event": cancel_event,
+            "job_id": job_id,
+            "kind": kind,
+            "loading_widgets": {}
+        }
+
+        def runner():
+            try:
+                target(cancel_event, job_id)
+            except Exception as e:
+                def _ui_error():
+                    self.custom_warning("Process Error", f"Unexpected error: {e}")
+                try:
+                    self.image_canvas.after(0, _ui_error)
+                except Exception:
+                    pass
+            finally:
+                def _cleanup():
+                    info = self.image_jobs.get(window_id)
+                    if info and info.get("job_id") == job_id:
+                        self._hide_window_loading(window_id)
+                        self.image_jobs.pop(window_id, None)
+
+                try:
+                    self.image_canvas.after(0, _cleanup)
+                except Exception:
+                    pass
+
+        th = threading.Thread(target=runner, daemon=True)
+        self.image_jobs[window_id]["thread"] = th
+        th.start()
+
+        return job_id
+
+
+
+    def _show_window_loading(self, window_id, text="Processing..."):
+        """Creates a canvas-only loading panel linked to a specific floating image/window."""
+        self._ensure_image_jobs()
+
+        self._hide_window_loading(window_id)
+
+        if not hasattr(self, "floating_window_state") or window_id not in self.floating_window_state:
+            return
+
+        st = self.floating_window_state[window_id]
+        wx, wy, ww, wh = st["x"], st["y"], st["w"], st["h"]
+
+        # Place the loading panel on top of the image area
+        IMG_LEFT_PAD = 15
+        IMG_TOP_PAD = 40
+
+        panel_w = min(170, max(140, ww - 20))
+        panel_h = 95
+
+        panel_x = wx + IMG_LEFT_PAD + max(0, (ww - panel_w) // 2)
+        panel_y = wy + IMG_TOP_PAD + max(0, (wh - panel_h) // 2)
+
+        tags = (f"{window_id}_loading", "loading")
+
+        # Background panel
+        bg = self.image_canvas.create_rectangle(
+            panel_x, panel_y, panel_x + panel_w, panel_y + panel_h,
+            fill="white", outline="black", width=1,
+            tags=tags
+        )
+
+        # Title
+        title = self.image_canvas.create_text(
+            panel_x + panel_w / 2,
+            panel_y + 20,
+            text=text,
+            fill="black",
+            font=("Sans", 12, "bold"),
+            tags=tags
+        )
+
+        # Progress text
+        progress = self.image_canvas.create_text(
+            panel_x + panel_w / 2,
+            panel_y + 50,
+            text="0.0%",
+            fill="black",
+            font=("Sans", 10),
+            tags=(f"{window_id}_loading", "loading", f"{window_id}_loading_progress")
+        )
+
+        # Cancel button background
+        btn_w = panel_w - 20
+        btn_h = 18
+        btn_x1 = panel_x + 10
+        btn_y1 = panel_y + panel_h - 28
+        btn_x2 = btn_x1 + btn_w
+        btn_y2 = btn_y1 + btn_h
+
+        cancel_bg = self.image_canvas.create_rectangle(
+            btn_x1, btn_y1, btn_x2, btn_y2,
+            fill="#e6e6e6", outline="gray",
+            tags=(f"{window_id}_loading", "loading", f"{window_id}_loading_cancel")
+        )
+
+        cancel_txt = self.image_canvas.create_text(
+            (btn_x1 + btn_x2) / 2,
+            (btn_y1 + btn_y2) / 2,
+            text="Cancel",
+            fill="black",
+            font=("Sans", 10),
+            tags=(f"{window_id}_loading", "loading", f"{window_id}_loading_cancel")
+        )
+
+        # Bind cancel click
+        self.image_canvas.tag_bind(
+            f"{window_id}_loading_cancel",
+            "<Button-1>",
+            lambda event: self._cancel_window_job(window_id)
+        )
+
+        if window_id in self.image_jobs:
+            self.image_jobs[window_id]["loading_widgets"] = {
+                "bg": bg,
+                "title": title,
+                "progress": progress,
+                "cancel_bg": cancel_bg,
+                "cancel_txt": cancel_txt,
+                "panel_w": panel_w,
+                "panel_h": panel_h,
+            }
+
+
+
+    def _hide_window_loading(self, window_id):
+        """Destroys the loading panel associated with one floating image/window."""
+        self._ensure_image_jobs()
+
+        info = self.image_jobs.get(window_id)
+        if not info:
+            return
+
+        try:
+            self.image_canvas.delete(f"{window_id}_loading")
+        except Exception:
+            pass
+
+        info["loading_widgets"] = {}
+
+
+
+    def _update_window_progress(self, window_id, job_id, current_step, total_steps):
+        """Updates the per-window loading progress safely from background threads."""
+        if total_steps <= 0:
+            return
+
+        pct = (current_step / total_steps) * 100.0
+
+        def _ui():
+            if not self._is_current_job(window_id, job_id):
+                return
+
+            try:
+                self.image_canvas.itemconfig(f"{window_id}_loading_progress", text=f"{pct:.1f}%")
+            except Exception:
+                pass
+
+        try:
+            self.image_canvas.after(0, _ui)
+        except Exception:
+            pass
+
+
+
+    def _reposition_window_loading(self, window_id):
+        """Repositions the loading panel so it stays centered over the image."""
+        self._ensure_image_jobs()
+
+        info = self.image_jobs.get(window_id)
+        if not info:
+            return
+
+        widgets = info.get("loading_widgets", {})
+        if not widgets:
+            return
+
+        if not hasattr(self, "floating_window_state") or window_id not in self.floating_window_state:
+            return
+
+        st = self.floating_window_state[window_id]
+        wx, wy, ww, wh = st["x"], st["y"], st["w"], st["h"]
+
+        IMG_LEFT_PAD = 15
+        IMG_TOP_PAD = 40
+
+        panel_w = min(170, max(140, ww - 20))
+        panel_h = 95
+
+        panel_x = wx + IMG_LEFT_PAD + max(0, (ww - panel_w) // 2)
+        panel_y = wy + IMG_TOP_PAD + max(0, (wh - panel_h) // 2)
+
+        btn_w = panel_w - 20
+        btn_h = 18
+        btn_x1 = panel_x + 10
+        btn_y1 = panel_y + panel_h - 28
+        btn_x2 = btn_x1 + btn_w
+        btn_y2 = btn_y1 + btn_h
+
+        try:
+            self.image_canvas.coords(
+                widgets["bg"],
+                panel_x, panel_y, panel_x + panel_w, panel_y + panel_h
+            )
+            self.image_canvas.coords(
+                widgets["title"],
+                panel_x + panel_w / 2, panel_y + 20
+            )
+            self.image_canvas.coords(
+                widgets["progress"],
+                panel_x + panel_w / 2, panel_y + 50
+            )
+            self.image_canvas.coords(
+                widgets["cancel_bg"],
+                btn_x1, btn_y1, btn_x2, btn_y2
+            )
+            self.image_canvas.coords(
+                widgets["cancel_txt"],
+                (btn_x1 + btn_x2) / 2, (btn_y1 + btn_y2) / 2
+            )
+        except Exception:
+            pass
+
+
+    def _has_any_active_job(self):
+        """Returns True if there is any running job in any image/window."""
+        self._ensure_image_jobs()
+
+        for info in self.image_jobs.values():
+            th = info.get("thread")
+            cancel_event = info.get("cancel_event")
+            if th is not None and th.is_alive() and cancel_event is not None and not cancel_event.is_set():
+                return True
+        return False
+
+
+
+    def _reposition_proto_options(self, window_id):
+        """Repositions the legend/prototype options panel associated with a floating window."""
+        if not hasattr(self, "proto_options") or window_id not in self.proto_options:
+            return
+
+        info = self.proto_options[window_id]
+        if not isinstance(info, dict):
+            return
+
+        frame = info.get("frame")
+        canvas_item = info.get("canvas_item")
+
+        if not frame or not canvas_item:
+            return
+
+        if not frame.winfo_exists():
+            return
+
+        if not hasattr(self, "floating_window_state") or window_id not in self.floating_window_state:
+            return
+
+        st = self.floating_window_state[window_id]
+        wx, wy, ww, wh = st["x"], st["y"], st["w"], st["h"]
+
+        PAD_X = 30
+
+        frame_x = wx + ww + PAD_X + 10
+        frame_y = wy
+
+        canvas_width = self.image_canvas.winfo_width()
+        canvas_height = self.image_canvas.winfo_height()
+
+        desired_w = frame.winfo_width() if frame.winfo_width() > 1 else 150
+        desired_h = frame.winfo_height() if frame.winfo_height() > 1 else min(300, wh)
+
+        if frame_x + desired_w > canvas_width:
+            frame_x = max(0, canvas_width - desired_w)
+        if frame_y + desired_h > canvas_height:
+            frame_y = max(0, canvas_height - desired_h)
+
+        try:
+            self.image_canvas.coords(canvas_item, frame_x, frame_y)
+            self.image_canvas.itemconfigure(canvas_item, width=desired_w, height=desired_h)
+        except Exception:
+            pass
+
+
+    def _focus_floating_window(self, window_id):
+        """Brings one floating image window to front without sending all loadings behind."""
+        self.image_canvas.tag_raise(f"{window_id}_bg")
+        self.image_canvas.tag_raise(f"{window_id}_title")
+        self.image_canvas.tag_raise(f"{window_id}_title_text")
+        self.image_canvas.tag_raise(f"{window_id}_img_item")
+        self.image_canvas.tag_raise(f"{window_id}_pct_text")
+        self.image_canvas.tag_raise(f"{window_id}_close_button")
+        self.image_canvas.tag_raise(f"{window_id}_arrow_button")
+        self.image_canvas.tag_raise(f"{window_id}_resize_handle")
+
 
 
 
@@ -3469,20 +3965,39 @@ class PyFCSApp:
             self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<B1-Motion>")
             self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<ButtonRelease-1>")
         except Exception:
-            # If something goes wrong, do not break the mapping process
             pass
 
-        self.MEMBERDEGREE[window_id] = False
-        self.ORIGINAL_IMG[window_id] = True
+        self.CAN_APPLY_MAPPING[window_id] = False
+        self.SHOW_ORIGINAL[window_id] = True
 
         if not hasattr(self, "proto_options"):
             self.proto_options = {}
 
-        if window_id in self.proto_options and self.proto_options[window_id].winfo_exists():
-            self.proto_options[window_id].destroy()
+        # --- NEW SAFE DELETE ---
+        if window_id in self.proto_options:
+            info = self.proto_options.get(window_id)
+            if isinstance(info, dict):
+                frame = info.get("frame")
+                canvas_item = info.get("canvas_item")
 
+                try:
+                    if canvas_item:
+                        self.image_canvas.delete(canvas_item)
+                except Exception:
+                    pass
+
+                try:
+                    if frame and frame.winfo_exists():
+                        frame.destroy()
+                except Exception:
+                    pass
+
+            del self.proto_options[window_id]
+
+        # -----------------------------
+        # Create legend frame
+        # -----------------------------
         proto_options = tk.Frame(self.image_canvas, bg="white", relief="solid", bd=1)
-        self.proto_options[window_id] = proto_options
 
         canvas = tk.Canvas(proto_options, bg="white", highlightthickness=0)
         v_scroll = tk.Scrollbar(proto_options, orient=tk.VERTICAL, command=canvas.yview)
@@ -3495,7 +4010,7 @@ class PyFCSApp:
         h_scroll.grid(row=1, column=0, sticky="ew")
 
         inner_frame = tk.Frame(canvas, bg="white")
-        canvas_window = canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
+        canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
 
         if not hasattr(self, "current_protos"):
             self.current_protos = {}
@@ -3525,16 +4040,7 @@ class PyFCSApp:
 
         inner_frame.bind("<Configure>", lambda e: canvas.after_idle(on_frame_configure, e))
 
-        # Mouse control
-        def _on_mouse_wheel(event):
-            if event.delta:
-                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            elif event.num == 4:
-                canvas.yview_scroll(-1, "units")
-            elif event.num == 5:
-                canvas.yview_scroll(1, "units")
-
-        # correct scroll
+        # Scroll
         def bind_scroll_events(canvas):
             def _on_mousewheel(event):
                 canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -3556,27 +4062,45 @@ class PyFCSApp:
         proto_options.grid_rowconfigure(0, weight=1)
         proto_options.grid_columnconfigure(0, weight=1)
 
+        # -----------------------------
+        # POSITION USING create_window
+        # -----------------------------
         x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
         frame_x = x2 + 10
         frame_y = y1
         img_h = (y2 - y1)
-        desired_w = 150            
-        desired_h = min(300, img_h) # no bigger than image
-        proto_options.place(x=frame_x, y=frame_y, width=desired_w, height=desired_h)
+
+        desired_w = 150
+        desired_h = min(300, img_h)
+
+        legend_item = self.image_canvas.create_window(
+            frame_x, frame_y,
+            window=proto_options,
+            anchor="nw",
+            width=desired_w,
+            height=desired_h,
+            tags=(f"{window_id}_legend", "legend")
+        )
+
+        # Store structured
+        self.proto_options[window_id] = {
+            "frame": proto_options,
+            "canvas_item": legend_item
+        }
 
 
 
     def get_proto_percentage(self, window_id):
         """Generates and displays the grayscale mask and shows coverage % under the image (cached by size)."""
-        self.show_loading()
+        if not hasattr(self, "current_protos") or window_id not in self.current_protos:
+            self.custom_warning("Error", "No prototype selected for this window.")
+            return
 
-        def update_progress(current_step, total_steps):
-            progress_percentage = (current_step / total_steps) * 100
-            self.progress["value"] = progress_percentage
-            self.load_window.update_idletasks()
-
-        def run_process():
+        def run_process(cancel_event, job_id):
             try:
+                if self._is_job_cancelled(window_id, cancel_event, job_id):
+                    return
+
                 pos = self.color_matrix.index(self.current_protos[window_id].get())
 
                 if not hasattr(self, "proto_percentage_cache"):
@@ -3595,16 +4119,27 @@ class PyFCSApp:
 
                 cached_entry = self.proto_percentage_cache[window_id].get(cache_key)
                 if cached_entry is not None:
+                    if self._is_job_cancelled(window_id, cancel_event, job_id):
+                        return
                     grayscale_image_array = cached_entry["array"]
                     pct = cached_entry["pct"]
                 else:
+                    def update_progress(current_step, total_steps):
+                        if cancel_event.is_set():
+                            raise RuntimeError("__JOB_CANCELLED__")
+                        self._update_window_progress(window_id, job_id, current_step, total_steps)
+
                     grayscale_image_array = self.image_manager.get_proto_percentage(
                         prototypes=self.prototypes,
                         image=source_img,  # <-- CURRENT size
                         fuzzy_color_space=self.fuzzy_color_space,
                         selected_option=pos,
-                        progress_callback=update_progress
+                        progress_callback=update_progress,
+                        cancel_callback=lambda: cancel_event.is_set()
                     )
+
+                    if self._is_job_cancelled(window_id, cancel_event, job_id):
+                        return
 
                     # Auto-threshold decision
                     unique_vals = np.unique(grayscale_image_array) if grayscale_image_array.ndim == 2 else None
@@ -3629,6 +4164,11 @@ class PyFCSApp:
                     }
 
                 def _ui():
+                    if not self._is_current_job(window_id, job_id):
+                        return
+                    if not self._window_exists(window_id):
+                        return
+
                     self.display_color_mapping(grayscale_image_array, window_id)
 
                     proto_name = self.current_protos[window_id].get()
@@ -3638,12 +4178,15 @@ class PyFCSApp:
 
                 self.image_canvas.after(0, _ui)
 
+            except RuntimeError as e:
+                if str(e) != "__JOB_CANCELLED__":
+                    self.image_canvas.after(0, lambda: self.custom_warning("Error", f"Error in run_process: {e}"))
             except Exception as e:
                 self.image_canvas.after(0, lambda: self.custom_warning("Error", f"Error in run_process: {e}"))
-            finally:
-                self.image_canvas.after(0, self.hide_loading)
 
-        threading.Thread(target=run_process, daemon=True).start()
+        job_id = self._start_window_job(window_id, "proto_percentage", run_process)
+        if job_id is not None:
+            self._show_window_loading(window_id, "Color Mapping...")
 
 
 
@@ -3692,6 +4235,9 @@ class PyFCSApp:
     def show_original_image(self, window_id):
         """Displays the original image, preserving the current resized dimensions of the floating window."""
         try:
+            # Cancel any running process linked to this image before restoring the original
+            self._cancel_window_job(window_id)
+
             # Hide percentage text when showing original image (always)
             try:
                 self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
@@ -3701,9 +4247,24 @@ class PyFCSApp:
             # Destroy proto_options if it exists (keeps UI consistent)
             if hasattr(self, "proto_options") and window_id in self.proto_options:
                 try:
-                    if self.proto_options[window_id].winfo_exists():
-                        self.proto_options[window_id].destroy()
-                    del self.proto_options[window_id]
+                    info = self.proto_options.get(window_id)
+                    if info:
+                        frame = info.get("frame")
+                        canvas_item = info.get("canvas_item")
+
+                        try:
+                            if canvas_item:
+                                self.image_canvas.delete(canvas_item)
+                        except Exception:
+                            pass
+
+                        try:
+                            if frame and frame.winfo_exists():
+                                frame.destroy()
+                        except Exception:
+                            pass
+
+                        del self.proto_options[window_id]
                 except Exception as e:
                     self.custom_warning("Window Error", f"Error trying to destroy the proto_options window: {e}")
                     return
@@ -3762,9 +4323,9 @@ class PyFCSApp:
                 return
 
             # Reset flags
-            self.ORIGINAL_IMG[window_id] = False
+            self.SHOW_ORIGINAL[window_id] = False
             if self.COLOR_SPACE:
-                self.MEMBERDEGREE[window_id] = True
+                self.CAN_APPLY_MAPPING[window_id] = True
 
             # ---------------------------
             # Re-enable resize handle
@@ -3819,7 +4380,6 @@ class PyFCSApp:
 
 
 
-
     def color_mapping_all(self, window_id):
         """
         Improved / faster version of your Tkinter "Color Mapping All".
@@ -3864,34 +4424,36 @@ class PyFCSApp:
         except Exception:
             pass
 
-        self.MEMBERDEGREE[window_id] = False
-        self.ORIGINAL_IMG[window_id] = True
+        self.CAN_APPLY_MAPPING[window_id] = False
+        self.SHOW_ORIGINAL[window_id] = True
 
         self.proto_options = getattr(self, "proto_options", {})
-        legend_frame = self.proto_options.pop(window_id, None)
-        if legend_frame and legend_frame.winfo_exists():
-            legend_frame.destroy()
+        info = self.proto_options.pop(window_id, None)
+        if isinstance(info, dict):
+            frame = info.get("frame")
+            canvas_item = info.get("canvas_item")
 
-        self.show_loading()
+            try:
+                if canvas_item:
+                    self.image_canvas.delete(canvas_item)
+            except Exception:
+                pass
+
+            try:
+                if frame and frame.winfo_exists():
+                    frame.destroy()
+            except Exception:
+                pass
 
         # -----------------------------
         # UI-safe progress update helper
         # -----------------------------
-        def update_progress(current_step, total_steps):
+        def update_progress(job_id, current_step, total_steps):
             """Thread-safe progress update (marshals UI update through after())."""
             if total_steps <= 0:
                 return
 
-            pct = (current_step / total_steps) * 100.0
-
-            def _ui():
-                try:
-                    self.progress["value"] = pct
-                    self.load_window.update_idletasks()
-                except Exception:
-                    pass
-
-            self.image_canvas.after(0, _ui)
+            self._update_window_progress(window_id, job_id, current_step, total_steps)
 
         # ----------------------------------------
         # Build legend frame (no heavy computation)
@@ -4001,6 +4563,9 @@ class PyFCSApp:
         # -------------------------------------------------------
         def recolor(window_id):
             """Switch palette without recomputing memberships (recolor via cached label_map)."""
+            if not self._window_exists(window_id):
+                return
+
             if not hasattr(self, "cm_cache") or window_id not in self.cm_cache:
                 return
 
@@ -4016,7 +4581,7 @@ class PyFCSApp:
 
             palette = palettes[new]                      # (N,3) uint8
 
-            # ✅ Render BLACK where label_map == -1 (no prototype found)
+            # Render BLACK where label_map == -1 (no prototype found)
             recolored_image = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
             valid_mask = (label_map >= 0)
             if np.any(valid_mask):
@@ -4024,8 +4589,12 @@ class PyFCSApp:
 
             # Update UI using existing update_ui
             new_legend_frame = cache_pack.get("legend_frame")
-            if new_legend_frame and new_legend_frame.winfo_exists():
-                new_legend_frame.destroy()
+            if new_legend_frame:
+                try:
+                    if new_legend_frame.winfo_exists():
+                        new_legend_frame.destroy()
+                except Exception:
+                    pass
 
             new_legend_frame = build_legend_frame(self.prototypes, self.image_canvas, palette)
             cache_pack["legend_frame"] = new_legend_frame
@@ -4035,8 +4604,11 @@ class PyFCSApp:
         # -----------------------------
         # Main worker thread
         # -----------------------------
-        def run_process():
+        def run_process(cancel_event, job_id):
             try:
+                if self._is_job_cancelled(window_id, cancel_event, job_id):
+                    return
+
                 # Ensure current resized image exists
                 if not hasattr(self, "images") or window_id not in self.images:
                     self.image_canvas.after(0, lambda: self.custom_warning("Processing Error", "Current image not found for this window."))
@@ -4060,6 +4632,9 @@ class PyFCSApp:
 
                 # Always ensure precomputed pack exists before membership calls
                 self.fuzzy_color_space.precompute_pack()
+
+                if self._is_job_cancelled(window_id, cancel_event, job_id):
+                    return
 
                 if label_map is None:
                     # Convert PIL -> RGB float -> LAB
@@ -4086,6 +4661,9 @@ class PyFCSApp:
                     last_update = time.perf_counter()
 
                     for i in range(total_uniqs):
+                        if self._is_job_cancelled(window_id, cancel_event, job_id):
+                            return
+
                         L_i, A_i, B_i = uniq[i].astype(np.float32) / 100.0
 
                         # Fast argmax (no dict allocations)
@@ -4095,7 +4673,7 @@ class PyFCSApp:
 
                         now = time.perf_counter()
                         if now - last_update > 0.03 or i == total_uniqs - 1:
-                            update_progress(i + 1, total_uniqs)
+                            update_progress(job_id, i + 1, total_uniqs)
                             last_update = now
 
                     # Reconstruct label_map via inverse mapping (int32 so it can hold -1)
@@ -4104,6 +4682,9 @@ class PyFCSApp:
                     # Cache the computed label_map
                     self.cm_cache[window_id][cache_key] = label_map
 
+                if self._is_job_cancelled(window_id, cancel_event, job_id):
+                    return
+
                 # Build palettes
                 original_palette = build_original_palette_uint8()
                 alt_palette = build_alt_palette_uint8()
@@ -4111,7 +4692,7 @@ class PyFCSApp:
                 scheme = "original"
                 palette = original_palette
 
-                # ✅ Render BLACK where label_map == -1
+                # Render BLACK where label_map == -1
                 recolored_image = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
                 valid_mask = (label_map >= 0)
                 if np.any(valid_mask):
@@ -4129,12 +4710,20 @@ class PyFCSApp:
                     "cache_key": cache_key,
                 }
 
-                self.image_canvas.after(0, lambda: update_ui(recolored_image, new_legend_frame))
+                def _ui():
+                    if not self._is_current_job(window_id, job_id):
+                        return
+                    if not self._window_exists(window_id):
+                        return
+                    update_ui(recolored_image, new_legend_frame)
 
+                self.image_canvas.after(0, _ui)
+
+            except RuntimeError as e:
+                if str(e) != "__JOB_CANCELLED__":
+                    self.image_canvas.after(0, lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}"))
             except Exception as e:
                 self.image_canvas.after(0, lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}"))
-            finally:
-                self.image_canvas.after(0, self.hide_loading)
 
         # -----------------------------
         # UI update
@@ -4163,7 +4752,14 @@ class PyFCSApp:
                 img_h = (y2 - y1)
                 desired_w = 150
                 desired_h = min(300, img_h)  # no bigger than image
-                new_legend_frame.place(x=frame_x, y=frame_y, width=desired_w, height=desired_h)
+                legend_item = self.image_canvas.create_window(
+                    frame_x, frame_y,
+                    window=new_legend_frame,
+                    anchor="nw",
+                    width=desired_w,
+                    height=desired_h,
+                    tags=(f"{window_id}_legend", "legend")
+                )
 
                 btn = tk.Button(
                     new_legend_frame,
@@ -4172,12 +4768,17 @@ class PyFCSApp:
                 )
                 btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
 
-                self.proto_options[window_id] = new_legend_frame
+                self.proto_options[window_id] = {
+                    "frame": new_legend_frame,
+                    "canvas_item": legend_item
+                }
 
             except Exception as e:
                 self.custom_warning("Display Error", f"Error displaying the image: {e}")
 
-        threading.Thread(target=run_process, daemon=True).start()
+        job_id = self._start_window_job(window_id, "color_mapping_all", run_process)
+        if job_id is not None:
+            self._show_window_loading(window_id, "Color Mapping All...")
 
 
 
@@ -4554,7 +5155,7 @@ class PyFCSApp:
                     selected_volume, threshold, step=0.25
                 )
 
-                # 🔸 Crear DataFrame con formato "min - max"
+                # Crear DataFrame con formato "min - max"
                 csv_path = self.color_manager.create_csv(self.file_base_name, volume_limits, mode)
                 print(f"✅ CSV saved in test_results/: {csv_path}")
 
@@ -4590,9 +5191,21 @@ class PyFCSApp:
 
 
     def deploy_at(self):
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
+            )
+            return
         self.get_umbral_points(1.8, mode="AT")
 
     def deploy_pt(self):
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
+            )
+            return
         self.get_umbral_points(0.8, mode="PT")
 
 
