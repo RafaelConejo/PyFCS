@@ -1,15 +1,18 @@
 from Source.geometry.Point import Point
-import numpy as np
 
 class Vector:
-    def __init__(self, a=0, b=0, c=0):
+    def __init__(self, a=0.0, b=0.0, c=0.0):
         self.a = a
         self.b = b
         self.c = c
 
     @classmethod
-    def from_points(cls, p1:Point, p2:Point):
-        return cls(p2.get_x() - p1.get_x(), p2.get_y() - p1.get_y(), p2.get_z() - p1.get_z())
+    def from_points(cls, p1: Point, p2: Point):
+        return cls(
+            p2.get_x() - p1.get_x(),
+            p2.get_y() - p1.get_y(),
+            p2.get_z() - p1.get_z()
+        )
 
     @classmethod
     def from_array(cls, p):
@@ -28,7 +31,8 @@ class Vector:
         return [self.a, self.b, self.c]
 
     def is_equal(self, other_vector):
-        return self.a == other_vector.get_a() and self.b == other_vector.get_b() and self.c == other_vector.get_c()
-
-    def to_array(self):
-            return np.array([self.a, self.b, self.c])
+        return (
+            self.a == other_vector.get_a() and
+            self.b == other_vector.get_b() and
+            self.c == other_vector.get_c()
+        )

@@ -1,5 +1,6 @@
 ### my libraries ###
 from Source.geometry.Point import Point
+from Source.geometry.Plane import Plane
 from Source.geometry.Face import Face
 from Source.geometry.Volume import Volume
 from Source.geometry.GeometryTools import GeometryTools
@@ -33,8 +34,8 @@ class FuzzyColor():
         if face.getArrayVertex() is not None:
             # Create new vertices for each face of the core and support
             for v in face.getArrayVertex():
-                vertex_f1 = GeometryTools.intersection_plane_rect(f1.p, representative, Point(v[0], v[1], v[2]))
-                vertex_f2 = GeometryTools.intersection_plane_rect(f2.p, representative, Point(v[0], v[1], v[2]))
+                vertex_f1 = GeometryTools.intersection_plane_rect(f1.p, representative, v)
+                vertex_f2 = GeometryTools.intersection_plane_rect(f2.p, representative, v)
                 f1.addVertex(vertex_f1)
                 f2.addVertex(vertex_f2)
 
@@ -78,152 +79,204 @@ class FuzzyColor():
     
     
 
-    @staticmethod
-    def get_best_prototype_index(new_color, prototypes, function, pack) -> int:
-        """
-        Fast winner-take-all membership.
-        Returns the index of the best prototype,
-        or -1 if no prototype has positive membership.
-        """
 
+
+    @staticmethod
+    def update_geometry(prototypes, cores, supports):
+        """
+        Ajuste tipo Java (updateVoronoiFuzzyColors):
+        - Si un vértice de support de c1 cae dentro del core de c2, se retrae esa cara.
+        - Si un vértice de core de c2 cae dentro del support de c1, se mueve la cara más cercana.
+        """
+        n = len(prototypes)
+
+        for i in range(n):
+            c1 = prototypes[i]
+            s1 = supports[i].voronoi_volume
+            rep1 = c1.voronoi_volume.getRepresentative()
+
+            for j in range(n):
+                if i == j:
+                    continue
+
+                core2 = cores[j].voronoi_volume
+
+                # --- Regla 1: vértice de support(i) dentro de core(j)
+                for fs in s1.getFaces():
+                    vi = fs.getArrayVertex()
+                    if not vi:
+                        continue
+
+                    for v in vi:
+                        if core2.isInside(v) and not core2.isInFace(v):
+                            p_face = GeometryTools.intersection_with_volume(core2, v, rep1)
+                            if p_face is not None:
+                                new_plane = Plane.from_normal_point(fs.getPlane().getNormal(), p_face)
+                                fs.setPlane(new_plane)
+
+                                # Recalcular vértices
+                                if fs.getArrayVertex():
+                                    new_vs = []
+                                    for vv in fs.getArrayVertex():
+                                        nv = GeometryTools.intersection_plane_rect(new_plane, rep1, vv)
+                                        if nv is not None:
+                                            new_vs.append(nv)
+                                    fs.setArrayVertex(new_vs)
+                            break  # mover una vez es suficiente
+
+                # --- Regla 2: vértice de core(j) dentro de support(i)
+                for fk in core2.getFaces():
+                    vi = fk.getArrayVertex()
+                    if not vi:
+                        continue
+
+                    for vk in vi:
+                        if s1.isInside(vk) and not s1.isInFace(vk):
+                            # encontrar cara de support(i) más cercana a vk
+                            nearest = None
+                            min_d = float("inf")
+                            for fs in s1.getFaces():
+                                d = GeometryTools.distance_point_plane(fs.getPlane(), vk)
+                                if d < min_d:
+                                    min_d = d
+                                    nearest = fs
+
+                            if nearest is not None:
+                                new_plane = Plane.from_normal_point(nearest.getPlane().getNormal(), vk)
+                                nearest.setPlane(new_plane)
+
+                                if nearest.getArrayVertex():
+                                    new_vs = []
+                                    for vv in nearest.getArrayVertex():
+                                        nv = GeometryTools.intersection_plane_rect(new_plane, rep1, vv)
+                                        if nv is not None:
+                                            new_vs.append(nv)
+                                    nearest.setArrayVertex(new_vs)
+                            break
+
+
+
+
+
+    @staticmethod
+    def _raw_membership_for_index(new_color, i, function, pack):
         xyz = Point(new_color[0], new_color[1], new_color[2])
 
         domain_volume = pack["domain_volume"]
         v_protos = pack["v_protos"]
         v_cores  = pack["v_cores"]
         v_supps  = pack["v_supps"]
-        rep_ps   = pack["rep_ps"]
-        rep_cs   = pack["rep_cs"]
-        rep_ss   = pack["rep_ss"]
+        rep   = pack["rep"]
 
-        best_idx = -1      # ✅ IMPORTANT
-        best_val = 0.0
+        v_supp = v_supps[i]
+        v_core = v_cores[i]
+        v_proto = v_protos[i]
 
-        for i, proto in enumerate(prototypes):
-            v_supp = v_supps[i]
-            v_core = v_cores[i]
-            v_proto = v_protos[i]
+        rep = rep[i]
 
-            rep_p = rep_ps[i]
-            rep_c = rep_cs[i]
-            rep_s = rep_ss[i]
+        if (not v_supp.isInside(xyz)) or v_supp.isInFace(xyz):
+            return 0.0
 
-            # Outside support
-            if not v_supp.isInside(xyz):
+        if v_core.isInside(xyz) and not v_core.isInFace(xyz):
+            return 1.0
+
+        p_cube = GeometryTools.intersection_with_volume(domain_volume, rep, xyz)
+        dist_cube = GeometryTools.euclidean_distance(rep, p_cube) if p_cube is not None else float('inf')
+
+        p_face = GeometryTools.intersection_with_volume(v_core, rep, xyz)
+        param_a = GeometryTools.euclidean_distance(rep, p_face) if p_face is not None else dist_cube
+
+        p_face = GeometryTools.intersection_with_volume(v_proto, rep, xyz)
+        param_b = GeometryTools.euclidean_distance(rep, p_face) if p_face is not None else dist_cube
+
+        p_face = GeometryTools.intersection_with_volume(v_supp, rep, xyz)
+        param_c = GeometryTools.euclidean_distance(rep, p_face) if p_face is not None else dist_cube
+
+        function.setParam([param_a, param_b, param_c])
+        d = GeometryTools.euclidean_distance(rep, xyz)
+        value = function.getValue(d)
+
+        if value < 0.0:
+            return 0.0
+        if value > 1.0:
+            return 1.0
+        return value
+
+
+
+    @staticmethod
+    def get_best_prototype_index(new_color, prototypes, function, pack) -> int:
+        xyz = Point(new_color[0], new_color[1], new_color[2])
+
+        v_cores = pack["v_cores"]
+        v_supps = pack["v_supps"]
+
+        # Early stop: core
+        for i in range(len(prototypes)):
+            if (not v_supps[i].isInside(xyz)) or v_supps[i].isInFace(xyz):
                 continue
-
-            # Inside core -> 1 (cannot be beaten)
-            if v_core.isInside(xyz):
+            if v_cores[i].isInside(xyz) and not v_cores[i].isInFace(xyz):
+                print(f"[DEBUG CORE] idx={i} label={prototypes[i].label} -> 1.0")
                 return i
 
-            p_cube = GeometryTools.intersection_with_volume(domain_volume, rep_p, xyz)
-            dist_cube = GeometryTools.euclidean_distance(rep_p, p_cube) if p_cube is not None else float('inf')
+        best_idx = -1
+        best_val = 0.0
 
-            p_face = GeometryTools.intersection_with_volume(v_core, rep_c, xyz)
-            param_a = GeometryTools.euclidean_distance(rep_c, p_face) if p_face is not None else dist_cube
+        total = 0.0
+        count = 0
 
-            p_face = GeometryTools.intersection_with_volume(v_proto, rep_p, xyz)
-            param_b = GeometryTools.euclidean_distance(rep_p, p_face) if p_face is not None else dist_cube
+        # Para debug detallado
+        debug_vals = []
 
-            p_face = GeometryTools.intersection_with_volume(v_supp, rep_s, xyz)
-            param_c = GeometryTools.euclidean_distance(rep_s, p_face) if p_face is not None else dist_cube
+        for i in range(len(prototypes)):
+            v = FuzzyColor._raw_membership_for_index(new_color, i, function, pack)
 
-            function.setParam([param_a, param_b, param_c])
-            d = GeometryTools.euclidean_distance(rep_p, xyz)
-            value = function.getValue(d)
+            if v > 0.0:
+                total += v
+                count += 1
+                debug_vals.append((prototypes[i].label, v))
 
-            # Clamp
-            if value < 0.0:
-                value = 0.0
-            elif value > 1.0:
-                value = 1.0
-
-            if value > best_val:
-                best_val = value
+            if v > best_val:
+                best_val = v
                 best_idx = i
 
-        # ✅ If no prototype had membership > 0 → return -1
-        if best_val == 0.0:
-            return -1
+        # DEBUG compacto
+        print(f"[DEBUG] sum_raw={total:.4f} | best={best_val:.4f} ({prototypes[best_idx].label if best_idx!=-1 else 'None'}) | count={count}")
 
-        return best_idx
+        # DEBUG detallado (opcional, puedes comentar si molesta)
+        if count > 1:
+            print("   ->", ", ".join([f"{lbl}:{val:.3f}" for lbl, val in debug_vals]))
+
+        return best_idx if best_val > 0.0 else -1
 
 
 
     @staticmethod
     def get_membership_degree(new_color, prototypes, function, pack):
-        """
-        Faster membership computation for all prototypes for one LAB color.
-        Returns normalized non-zero memberships.
-        """
-        xyz = Point(new_color[0], new_color[1], new_color[2])
-
-        domain_volume = pack["domain_volume"]
-        v_protos = pack["v_protos"]
-        v_cores  = pack["v_cores"]
-        v_supps  = pack["v_supps"]
-        rep_ps   = pack["rep_ps"]
-        rep_cs   = pack["rep_cs"]
-        rep_ss   = pack["rep_ss"]
-
-        result = {}
-        total_membership = 0.0
-
-        for i, proto in enumerate(prototypes):
-            label = proto.label
-            v_supp = v_supps[i]
-            v_core = v_cores[i]
-            v_proto = v_protos[i]
-
-            rep_p = rep_ps[i]
-            rep_c = rep_cs[i]
-            rep_s = rep_ss[i]
-
-            if not v_supp.isInside(xyz):
-                result[label] = 0.0
-                continue
-
-            if v_core.isInside(xyz):
-                value = 1.0
-                result[label] = value
-                total_membership += value
-                continue
-
-            p_cube = GeometryTools.intersection_with_volume(domain_volume, rep_p, xyz)
-            dist_cube = GeometryTools.euclidean_distance(rep_p, p_cube) if p_cube is not None else float('inf')
-
-            p_face = GeometryTools.intersection_with_volume(v_core, rep_c, xyz)
-            param_a = GeometryTools.euclidean_distance(rep_c, p_face) if p_face is not None else dist_cube
-
-            p_face = GeometryTools.intersection_with_volume(v_proto, rep_p, xyz)
-            param_b = GeometryTools.euclidean_distance(rep_p, p_face) if p_face is not None else dist_cube
-
-            p_face = GeometryTools.intersection_with_volume(v_supp, rep_s, xyz)
-            param_c = GeometryTools.euclidean_distance(rep_s, p_face) if p_face is not None else dist_cube
-
-            function.setParam([param_a, param_b, param_c])
-            d = GeometryTools.euclidean_distance(rep_p, xyz)
-            value = function.getValue(d)
-
-            if value < 0.0:
-                value = 0.0
-            elif value > 1.0:
-                value = 1.0
-
-            result[label] = value
-            total_membership += value
-
-        if total_membership == 0.0:
+        best_idx = FuzzyColor.get_best_prototype_index(new_color, prototypes, function, pack)
+        if best_idx == -1:
             return {}
 
-        for k in list(result.keys()):
-            v = result[k] / total_membership
-            if v == 0.0:
-                del result[k]
-            else:
-                result[k] = v
+        raw = {}
+        total = 0.0
 
-        return result
+        for i in range(len(prototypes)):
+            v = FuzzyColor._raw_membership_for_index(new_color, i, function, pack)
+            if v > 0.0:
+                raw[prototypes[i].label] = v
+                total += v
+
+        if not raw:
+            return {prototypes[best_idx].label: 1.0}
+
+        if len(raw) == 1:
+            k = next(iter(raw))
+            return {k: 1.0}
+
+        if total <= 0.0:
+            return {prototypes[best_idx].label: 1.0}
+
+        return {k: v / total for k, v in raw.items()}
 
 
 
@@ -251,7 +304,7 @@ class FuzzyColor():
             return 0.0
 
         # Inside core → 1
-        if v_core.isInside(xyz):
+        if v_core.isInside(xyz) and not v_core.isInFace(xyz):
             return 1.0
 
         # --- Distance to domain cube (fallback) ---

@@ -1,5 +1,4 @@
 import math
-from typing import List
 
 from Source.geometry.Point import Point
 from Source.geometry.Vector import Vector
@@ -7,7 +6,7 @@ from Source.geometry.Plane import Plane
 
 
 class GeometryTools:
-    SMALL_NUM = 0.000000001  # anything that avoids division overflow
+    SMALL_NUM = 0.000000001
 
     @staticmethod
     def dot(u, v):
@@ -27,11 +26,15 @@ class GeometryTools:
 
     @staticmethod
     def cross_product(v, u):
-        return Vector(v.b * u.c - v.c * u.b, v.c * u.a - v.a * u.c, v.b * u.a - v.a * u.b)
+        return Vector(
+            v.b * u.c - v.c * u.b,
+            v.c * u.a - v.a * u.c,
+            v.b * u.a - v.a * u.b
+        )
 
     @staticmethod
     def intersect2_planes(p1, p2):
-        return None  # Implement your logic for intersecting two planes
+        return None
 
     @staticmethod
     def is_same_direction(v, u):
@@ -47,26 +50,22 @@ class GeometryTools:
         p1 = point1.get_double_point()
         p2 = point2.get_double_point()
         dc = [p1[i] - p2[i] for i in range(len(p1))]
-        dist = math.sqrt(sum(dc_i**2 for dc_i in dc))
-        return dist
+        return math.sqrt(sum(dc_i**2 for dc_i in dc))
 
     @staticmethod
     def common_face(f1, f2):
-        common = False
-        for i in range(len(f1)):
-            fi = f1[i]
-            for j in range(len(f2)):
-                fj = f2[j]
-                if fi.plane == fj.plane:
-                    common = True
-        return common
+        for fi in f1:
+            for fj in f2:
+                if fi.getPlane().isEqual(fj.getPlane()):
+                    return True
+        return False
 
     @staticmethod
     def perpendicular_point_plane(hyperplane, point1):
         denom = 0
         num = 0
         p1 = point1.get_double_point()
-        plane = hyperplane.get_plane()
+        plane = hyperplane.getPlane()
 
         for i in range(len(p1)):
             denom += plane[i] * plane[i]
@@ -74,7 +73,7 @@ class GeometryTools:
         if denom == 0:
             return None
         else:
-            num = -plane[-1]
+            num = plane[-1] * -1
             for i in range(len(p1)):
                 num -= plane[i] * p1[i]
             t = num / denom
@@ -86,36 +85,33 @@ class GeometryTools:
 
     @staticmethod
     def is_inside(region, xyz):
-        return region.is_inside(xyz)
+        return region.isInside(xyz)
 
     @staticmethod
     def check_in_face(xyz, c):
-        in_face = False
-        for i in range(len(c.faces)):
-            p = c.faces[i].plane
-            eval_result = p.evaluate_point(c.representative) * p.evaluate_point(xyz)
-
-            if -1 * GeometryTools.SMALL_NUM < eval_result < GeometryTools.SMALL_NUM:
-                in_face = True
-        return in_face
+        for face in c.getFaces():
+            p = face.getPlane()
+            eval_result = p.evaluatePoint(c.getRepresentative()) * p.evaluatePoint(xyz)
+            if -GeometryTools.SMALL_NUM < eval_result < GeometryTools.SMALL_NUM:
+                return True
+        return False
 
     @staticmethod
     def intersection_with_volume(v, p1, p2):
         min_dist = float('inf')
-        p_plane_k = None
+        p_result = None
         dir_vector = Vector.from_points(p1, p2)
 
-        for j in range(len(v.faces)):
-            plane = v.faces[j].p
-            pk = GeometryTools.intersection_plane_rect(plane, p1, p2)
-            if pk:
+        for i in range(len(v.getFaces())):
+            face = v.getFace(i)
+            pk = GeometryTools.intersection_plane_rect(face.getPlane(), p1, p2)
+            if pk is not None:
                 dist_pk = GeometryTools.euclidean_distance(p1, pk)
                 if GeometryTools.is_same_direction(dir_vector, Vector.from_points(p1, pk)) and dist_pk < min_dist:
                     min_dist = dist_pk
-                    p_plane_k = pk
+                    p_result = pk
 
-        return p_plane_k
-
+        return p_result
 
     @staticmethod
     def intersection_plane_rect(hyperplane, point0, point1):
@@ -131,7 +127,7 @@ class GeometryTools:
         if denom == 0:
             return None
         else:
-            num = hyperplane.D * -1
+            num = hyperplane.getD() * -1
             for i in range(len(p1)):
                 num -= plane[i] * p0[i]
             result = GeometryTools.point_at_rect(num / denom, p0, p1)
@@ -161,8 +157,10 @@ class GeometryTools:
     def parallel_planes(p, dist):
         n = p.getNormal()
         mod = GeometryTools.module(n)
-        mu = [Plane(n.a, n.b, n.c, p.D + dist * mod), Plane(n.a, n.b, n.c, p.D - dist * mod)]
-        return mu
+        return [
+            Plane(n.a, n.b, n.c, p.D + dist * mod),
+            Plane(n.a, n.b, n.c, p.D - dist * mod)
+        ]
 
     @staticmethod
     def mid_point(p1, p2):
@@ -179,8 +177,7 @@ class GeometryTools:
         B /= total
         C /= total
 
-        D = (A * mid.x) + (B * mid.y) + (C * mid.z) * -1.0
-
+        D = ((A * mid.x) + (B * mid.y) + (C * mid.z)) * -1.0
         return Plane(A, B, C, D)
 
     @staticmethod
@@ -190,9 +187,4 @@ class GeometryTools:
         C = p1.z - p2.z
 
         D = ((p2.x**2 - p1.x**2) + (p2.y**2 - p1.y**2) + (p2.z**2 - p1.z**2)) / 2.0
-
         return Plane(A, B, C, D)
-    
-
-
-

@@ -29,7 +29,6 @@ class ReferenceDomain:
 
     @staticmethod
     def default_voronoi_reference_domain():
-        # Asumiendo que los rangos típicos de LAB son aproximadamente [0, 100] para L, [-128, 128] para A, y [-128, 128] para B.
         return ReferenceDomain(0, 100, -128, 128, -128, 128) 
 
 

@@ -92,19 +92,23 @@ class Matrix:
         return c
 
     def pol_caracteristico(self):
-        pot = self.clone()
+        pot = Matrix(self.n)
+        for i in range(self.n):
+            pot.x[i][i] = 1.0
+
+        p = [0.0] * (self.n + 1)
+        s = [0.0] * (self.n + 1)
         for i in range(1, self.n + 1):
             pot = Matrix.producto(pot, self)
-        s = [0.0] * (self.n + 1)
-        p = [0.0] * (self.n + 1)
-        for i in range(1, self.n + 1):
             s[i] = pot.traza()
+
         p[0] = 1.0
         p[1] = -s[1]
         for i in range(2, self.n + 1):
             p[i] = -s[i] / i
             for j in range(1, i):
                 p[i] -= s[i - j] * p[j] / i
+
         return p
 
     def valores_propios(self, max_iter):
@@ -146,7 +150,7 @@ class Matrix:
             q = Matrix.producto(q, Matrix.traspuesta(p))
             contador += 1
         if contador == max_iter:
-            raise ValueError("No se han podido calcular los valores propios")
+            raise ValueError("The eigenvalues ​​could not be calculated")
         valores = [round(a.x[i][i], 3) for i in range(self.n)]
         return valores, q
 
@@ -169,10 +173,3 @@ class ValoresExcepcion(Exception):
         super().__init__(message)
 
 
-# Ejemplo de uso
-# matrix = Matrix(3, [[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-# valores, vectores = matrix.valores_propios(100)
-# print("Valores propios:", valores)
-# print("Vectores propios:")
-# for vector in vectores.x:
-#     print(vector)

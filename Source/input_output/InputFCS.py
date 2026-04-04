@@ -66,7 +66,6 @@ class InputFCS(Input):
                 progress_callback(current_line, total_lines)
 
             for color_name, lab_value in selected_colors_lab.items():
-                # ✅ Opción B: nombre entre comillas (y escapamos comillas internas)
                 safe_name = str(color_name).replace('"', '\\"')
                 file.write(f"\"{safe_name}\" {lab_value[0]} {lab_value[1]} {lab_value[2]}\n")
                 current_line += 1
@@ -85,7 +84,7 @@ class InputFCS(Input):
                     while c < len(cores_planes) and not isinstance(cores_planes[c], str):
                         plane_str = "\t".join(map(str, cores_planes[c]))
                         num_vertex = str(cores_planes[c + 1])
-                        vertices_str = "\n".join(" ".join(map(str, v)) for v in cores_planes[c + 2])
+                        vertices_str = "\n".join(f"{v[0]} {v[1]} {v[2]}" for v in cores_planes[c + 2])
 
                         file.write(f"{plane_str}\n")
                         current_line += 1
@@ -116,7 +115,7 @@ class InputFCS(Input):
                     while vol < len(voronoi_planes) and not isinstance(voronoi_planes[vol], str):
                         plane_str = "\t".join(map(str, voronoi_planes[vol]))
                         num_vertex = str(voronoi_planes[vol + 1])
-                        vertices_str = "\n".join(" ".join(map(str, v)) for v in voronoi_planes[vol + 2])
+                        vertices_str = "\n".join(f"{v[0]} {v[1]} {v[2]}" for v in voronoi_planes[vol + 2])
 
                         file.write(f"{plane_str}\n")
                         current_line += 1
@@ -147,7 +146,7 @@ class InputFCS(Input):
                     while s < len(supports_planes) and not isinstance(supports_planes[s], str):
                         plane_str = "\t".join(map(str, supports_planes[s]))
                         num_vertex = str(supports_planes[s + 1])
-                        vertices_str = "\n".join(" ".join(map(str, v)) for v in supports_planes[s + 2])
+                        vertices_str = "\n".join(f"{v[0]} {v[1]} {v[2]}" for v in supports_planes[s + 2])
 
                         file.write(f"{plane_str}\n")
                         current_line += 1
@@ -170,6 +169,10 @@ class InputFCS(Input):
 
 
     
+    def _parse_point_line(self, line):
+        vals = list(map(float, line.strip().split()))
+        return Point(*vals)
+
     def read_file(self, file_path):
         try:
             with open(file_path, 'r') as file:
@@ -186,24 +189,22 @@ class InputFCS(Input):
                             fcs_name = match.group(1).strip()
 
                     if cs is None:
-                        match = re.search(r'^@colorSpace\s*(.+)\s*$', line)
+                        match = re.search(r'^@colorSpace(?:LAB)?\s*(.*)\s*$', line)
                         if match:
-                            cs = match.group(1).strip()
+                            cs = match.group(1).strip() or "LAB"
 
                     if num_colors is None:
                         match = re.search(r'^@numberOfColors\s*(\d+)\s*$', line)
                         if match:
                             num_colors = int(match.group(1))
 
-                    # If find all
                     if fcs_name and cs and num_colors is not None:
                         break
 
-                # Read Colors and values
                 colors = []
                 for _ in range(num_colors):
                     raw = next(lines).strip()
-                    parts = shlex.split(raw)  # ✅ respeta "Medium Gray"
+                    parts = shlex.split(raw)
                     if len(parts) != 4:
                         raise ValueError(f"Invalid color line (expected 4 tokens): {raw}")
 
@@ -257,7 +258,7 @@ class InputFCS(Input):
 
                                 # Get Vertex
                                 num_vertex = int(next(lines).strip())
-                                vertex = [Point(*map(float, next(lines).strip().split())) for _ in range(num_vertex)]
+                                vertex = [self._parse_point_line(next(lines)) for _ in range(num_vertex)]
 
                                 # Create Face
                                 faces.append(Face(plane, vertex, infinity))
@@ -285,7 +286,7 @@ class InputFCS(Input):
 
                                 # Get Vertex
                                 num_vertex = int(next(lines).strip())
-                                vertex = [Point(*map(float, next(lines).strip().split())) for _ in range(num_vertex)]
+                                vertex = [self._parse_point_line(next(lines)) for _ in range(num_vertex)]
 
                                 # Create Face
                                 faces.append(Face(plane, vertex, infinity))
@@ -312,7 +313,7 @@ class InputFCS(Input):
 
                                 # Get Vertex
                                 num_vertex = int(next(lines).strip())
-                                vertex = [Point(*map(float, next(lines).strip().split())) for _ in range(num_vertex)]
+                                vertex = [self._parse_point_line(next(lines)) for _ in range(num_vertex)]
 
                                 # Create Face
                                 faces.append(Face(plane, vertex, infinity))

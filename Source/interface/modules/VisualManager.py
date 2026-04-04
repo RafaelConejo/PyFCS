@@ -26,8 +26,246 @@ It provides:
         * Order face points by angle for consistent polygon traversal
 """
 class VisualManager:
-    # Global-like flag used to control legend display across multiple prototype traces
+    # Shared flag that can be used to control legend duplication across traces.
     SHOW_LEGENDS = True
+
+    @staticmethod
+    def clip_face_to_volume(vertices, volume_limits):
+        """
+        Clamp face vertices to the axis-aligned LAB bounding box defined by volume_limits.
+
+        Expected component order in the input vertices:
+        - comp1 -> L*
+        - comp2 -> a*
+        - comp3 -> b*
+
+        Args:
+            vertices: Iterable of vertices. Items may be arrays/lists or custom Point objects.
+            volume_limits: Object containing comp1, comp2 and comp3 min/max bounds.
+
+        Returns:
+            A NumPy array with clipped vertices.
+        """
+        processed_vertices = [
+            vertex.get_double_point() if isinstance(vertex, Point) else vertex
+            for vertex in vertices
+        ]
+
+        vertices_array = np.asarray(processed_vertices, dtype=float)
+
+        lower_bounds = np.array(
+            [volume_limits.comp1[0], volume_limits.comp2[0], volume_limits.comp3[0]],
+            dtype=float,
+        )
+        upper_bounds = np.array(
+            [volume_limits.comp1[1], volume_limits.comp2[1], volume_limits.comp3[1]],
+            dtype=float,
+        )
+
+        return np.clip(vertices_array, lower_bounds, upper_bounds)
+
+
+
+    @staticmethod
+    def plot_combined_3D(
+        ax,
+        filename,
+        color_data,
+        core,
+        alpha,
+        support,
+        volume_limits,
+        hex_color,
+        selected_options,
+        filtered_points=None,
+    ):
+        """
+        Draw the complete 3D model on an existing Axes3D instance.
+
+        This function reuses the provided axis instead of creating a new figure
+        every time. That makes repeated updates much cheaper.
+
+        Args:
+            ax: Existing matplotlib 3D axis.
+            filename: Title shown on the plot.
+            color_data: Dictionary with representative color data.
+            core: List of core prototypes.
+            alpha: List of 0.5-cut prototypes.
+            support: List of support prototypes.
+            volume_limits: LAB axis limits.
+            hex_color: Mapping from display hex colors to LAB prototype values.
+            selected_options: Active visualization layers.
+            filtered_points: Optional filtered LAB points grouped by prototype name.
+        """
+        # Clear previous artists while keeping the same figure and widget alive.
+        ax.cla()
+
+        data_map = {
+            "Representative": color_data,
+            "0.5-cut": alpha,
+            "Core": core,
+            "Support": support,
+        }
+
+        def lab_to_key(lab):
+            """
+            Convert a LAB vector into a rounded hashable key.
+            """
+            return tuple(np.round(np.asarray(lab, dtype=float), 6))
+
+        # Build inverse color lookup once for this draw call.
+        inverse_hex_color = {
+            lab_to_key(lab_val): hex_key
+            for hex_key, lab_val in hex_color.items()
+        }
+
+        # Preconvert filtered points once to NumPy arrays.
+        filtered_points_arrays = {}
+        if filtered_points is not None:
+            for proto_name, points in filtered_points.items():
+                if points:
+                    filtered_points_arrays[proto_name] = np.asarray(points, dtype=float)
+
+        # ------------------------------------------------------------------
+        # Draw representative points
+        # ------------------------------------------------------------------
+        if "Representative" in selected_options and isinstance(color_data, dict):
+            lab_values = [value["positive_prototype"] for value in color_data.values()]
+
+            if lab_values:
+                lab_array = np.asarray(lab_values, dtype=float)
+
+                colors = [
+                    inverse_hex_color.get(lab_to_key(lab), "#000000")
+                    for lab in lab_values
+                ]
+
+                # Plot as x=a*, y=b*, z=L* for a more intuitive LAB view.
+                ax.scatter(
+                    lab_array[:, 1],
+                    lab_array[:, 2],
+                    lab_array[:, 0],
+                    c=colors,
+                    s=30,
+                    edgecolor="k",
+                    linewidths=0.6,
+                    alpha=0.8,
+                    depthshade=False,
+                )
+
+        # ------------------------------------------------------------------
+        # Draw fuzzy volumes and filtered points
+        # ------------------------------------------------------------------
+        for option in ("0.5-cut", "Core", "Support"):
+            if option not in selected_options:
+                continue
+
+            prototypes = data_map.get(option)
+            if not prototypes:
+                continue
+
+            all_faces = []
+            all_facecolors = []
+            all_filtered_points = []
+
+            for prototype in prototypes:
+                color = inverse_hex_color.get(
+                    lab_to_key(prototype.positive),
+                    "#000000",
+                )
+
+                # Cache clipped faces for each prototype and option to avoid
+                # recomputing the same geometry on every redraw.
+                cache_attr = f"_cached_faces_{option.replace('-', '_')}"
+                if not hasattr(prototype, cache_attr):
+                    valid_faces = []
+
+                    for face in prototype.voronoi_volume.faces:
+                        if face.infinity:
+                            continue
+
+                        clipped_face = VisualManager.clip_face_to_volume(
+                            face.vertex,
+                            volume_limits,
+                        )
+
+                        if len(clipped_face) >= 3:
+                            # Reorder from LAB = [L, a, b] to plot axes = [a, b, L].
+                            valid_faces.append(clipped_face[:, [1, 2, 0]])
+
+                    setattr(prototype, cache_attr, valid_faces)
+
+                valid_faces = getattr(prototype, cache_attr)
+
+                for face_vertices in valid_faces:
+                    all_faces.append(face_vertices)
+                    all_facecolors.append(color)
+
+                # Check which filtered points belong to the current prototype volume.
+                if filtered_points_arrays:
+                    for _proto_name, points_array in filtered_points_arrays.items():
+                        if len(points_array) == 0:
+                            continue
+
+                        points_inside = [
+                            point
+                            for point in points_array
+                            if prototype.voronoi_volume.isInside(Point(*point))
+                        ]
+
+                        if points_inside:
+                            all_filtered_points.extend(points_inside)
+
+            if all_faces:
+                ax.add_collection3d(
+                    Poly3DCollection(
+                        all_faces,
+                        facecolors=all_facecolors,
+                        edgecolors="black",
+                        linewidths=0.5,
+                        alpha=0.5,
+                    )
+                )
+
+            # Draw all filtered points for the current option in a single scatter.
+            if all_filtered_points:
+                points_array = np.asarray(all_filtered_points, dtype=float)
+
+                ax.scatter(
+                    points_array[:, 1],  # a*
+                    points_array[:, 2],  # b*
+                    points_array[:, 0],  # L*
+                    c="red",
+                    marker="o",
+                    s=10,
+                    alpha=0.8,
+                    depthshade=False,
+                )
+
+        # ------------------------------------------------------------------
+        # Configure axes
+        # ------------------------------------------------------------------
+        ax.set_xlabel("a* (Green-Red)", fontsize=10, labelpad=10)
+        ax.set_ylabel("b* (Blue-Yellow)", fontsize=10, labelpad=10)
+        ax.set_zlabel("L* (Lightness)", fontsize=10, labelpad=10)
+
+        if volume_limits:
+            ax.set_xlim(volume_limits.comp2)
+            ax.set_ylim(volume_limits.comp3)
+            ax.set_zlim(volume_limits.comp1)
+
+        ax.set_title(filename)
+        ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+
+        try:
+            ax.set_box_aspect((1, 1, 1))
+        except Exception:
+            pass
+
+
+
+
+
 
     @staticmethod
     def plot_more_combined_3D(
@@ -92,6 +330,8 @@ class VisualManager:
                     name="Centroids",
                 )
             )
+
+
 
         # ---------- Plot prototypes ----------
         def plot_prototypes(prototypes, label):
@@ -285,255 +525,3 @@ class VisualManager:
         # Reset the global legend flag for future executions
         VisualManager.SHOW_LEGENDS = True
         return fig
-
-    @staticmethod
-    def plot_combined_3D(
-        filename,
-        color_data,
-        core,
-        alpha,
-        support,
-        volume_limits,
-        hex_color,
-        selected_options,
-        filtered_points=None,
-    ):
-        """Generates a single figure combining centroids and prototypes based on selected options."""
-        fig = Figure(figsize=(8, 6), dpi=120)
-        ax = fig.add_subplot(111, projection="3d")
-
-        # Map each selectable option to its corresponding data object
-        data_map = {
-            "Representative": color_data,
-            "0.5-cut": alpha,
-            "Core": core,
-            "Support": support,
-        }
-
-        # Loop through selected options and plot the corresponding data
-        for option, data in data_map.items():
-            if option in selected_options and data:
-                if isinstance(data, dict):
-                    # ---- Color data (centroids) ----
-                    lab_values = [v["positive_prototype"] for v in data.values()]
-                    lab_array = np.array(lab_values)
-
-                    # Extract L*, a*, b* values from LAB
-                    L_values, A_values, B_values = (
-                        lab_array[:, 0],
-                        lab_array[:, 1],
-                        lab_array[:, 2],
-                    )
-
-                    # Assign a hex color to each centroid based on LAB match
-                    colors = [
-                        next(
-                            (
-                                hex_key
-                                for hex_key, lab_val in hex_color.items()
-                                if np.array_equal(lab, lab_val)
-                            ),
-                            "#000000",
-                        )
-                        for lab in lab_values
-                    ]
-
-                    # Scatter plot: x=a*, y=b*, z=L*
-                    ax.scatter(
-                        A_values,
-                        B_values,
-                        L_values,
-                        c=colors,
-                        marker="o",
-                        s=30,
-                        edgecolor="k",
-                        alpha=0.8,
-                    )
-
-                elif isinstance(data, list):
-                    # ---- Prototypes (Voronoi volumes) ----
-                    for prototype in data:
-                        # Determine prototype color from its positive LAB value
-                        color = next(
-                            (
-                                hex_key
-                                for hex_key, lab_val in hex_color.items()
-                                if np.array_equal(prototype.positive, lab_val)
-                            ),
-                            "#000000",
-                        )
-
-                        # Clip finite Voronoi faces to volume bounds
-                        valid_faces = [
-                            VisualManager.clip_face_to_volume(
-                                np.array(face.vertex), volume_limits
-                            )
-                            for face in prototype.voronoi_volume.faces
-                            if not face.infinity
-                        ]
-                        # Reorder to a*, b*, L* for plotting
-                        valid_faces = [
-                            f[:, [1, 2, 0]] for f in valid_faces if len(f) >= 3
-                        ]
-
-                        # Render the polyhedron if faces exist
-                        if valid_faces:
-                            ax.add_collection3d(
-                                Poly3DCollection(
-                                    valid_faces,
-                                    facecolors=color,
-                                    edgecolors="black",
-                                    linewidths=1,
-                                    alpha=0.5,
-                                )
-                            )
-
-                        # Plot filtered points inside this volume (if provided)
-                        if filtered_points is not None:
-                            for idx, proto_name in enumerate(filtered_points):
-                                points = filtered_points[proto_name]
-
-                                points_filter = [
-                                    p
-                                    for p in points
-                                    if prototype.voronoi_volume.isInside(Point(*p))
-                                ]
-
-                                if len(points_filter) > 0:
-                                    points_array = np.array(points_filter)
-                                    L_points, A_points, B_points = (
-                                        points_array[:, 0],
-                                        points_array[:, 1],
-                                        points_array[:, 2],
-                                    )
-                                    ax.scatter(
-                                        A_points,
-                                        B_points,
-                                        L_points,
-                                        c="red",
-                                        marker="o",
-                                        s=10,
-                                        alpha=0.8,
-                                    )
-
-        # ---------- Configure axes ----------
-        ax.set_xlabel("a* (Green-Red)", fontsize=10, labelpad=10)
-        ax.set_ylabel("b* (Blue-Yellow)", fontsize=10, labelpad=10)
-        ax.set_zlabel("L* (Lightness)", fontsize=10, labelpad=10)
-
-        # Apply volume limits if provided
-        if volume_limits:
-            ax.set_xlim(volume_limits.comp2[0], volume_limits.comp2[1])  # a*
-            ax.set_ylim(volume_limits.comp3[0], volume_limits.comp3[1])  # b*
-            ax.set_zlim(volume_limits.comp1[0], volume_limits.comp1[1])  # L*
-
-        ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
-        ax.set_title(filename, fontsize=12, pad=10)
-
-        return fig
-
-    @staticmethod
-    def get_intersection_with_cube(A, B, C, D, volume_limits):
-        """
-        Compute candidate intersection points between a plane (Ax + By + Cz + D = 0)
-        and the faces of the axis-aligned cube defined by volume_limits.
-
-        Returns:
-            np.ndarray of intersection points (x, y, z) that lie within the cube bounds.
-        """
-        intersections = []
-
-        # Define the cube limits
-        x_min, x_max = volume_limits.comp1
-        y_min, y_max = volume_limits.comp2
-        z_min, z_max = volume_limits.comp3
-
-        # Helper: solve the plane equation for x, y, or z (when the coefficient is non-zero)
-        def solve_plane_for_x(y, z):
-            if A != 0:
-                return -(B * y + C * z + D) / A
-            return None
-
-        def solve_plane_for_y(x, z):
-            if B != 0:
-                return -(A * x + C * z + D) / B
-            return None
-
-        def solve_plane_for_z(x, y):
-            if C != 0:
-                return -(A * x + B * y + D) / C
-            return None
-
-        # Intersections with Z-constant faces (XY planes)
-        for z in [z_min, z_max]:
-            for y in [y_min, y_max]:
-                x = solve_plane_for_x(y, z)
-                if x is not None and x_min <= x <= x_max:
-                    intersections.append((x, y, z))
-
-        # Intersections with Y-constant faces (XZ planes)
-        for y in [y_min, y_max]:
-            for z in [z_min, z_max]:
-                x = solve_plane_for_x(y, z)
-                if x is not None and x_min <= x <= x_max:
-                    intersections.append((x, y, z))
-
-        # Intersections with X-constant faces (YZ planes)
-        for x in [x_min, x_max]:
-            for z in [z_min, z_max]:
-                y = solve_plane_for_y(x, z)
-                if y is not None and y_min <= y <= y_max:
-                    intersections.append((x, y, z))
-
-        return np.array(intersections)
-
-    @staticmethod
-    def order_points_by_angle(points):
-        """
-        Order 2D-projected points around their centroid by polar angle.
-        This is useful to ensure polygon vertices are consistently ordered.
-        """
-        # Compute centroid
-        centroid = np.mean(points, axis=0)
-
-        # Compute angles around centroid (using x/y components)
-        angles = np.arctan2(points[:, 1] - centroid[1], points[:, 0] - centroid[0])
-
-        # Sort by angle
-        ordered_indices = np.argsort(angles)
-        return points[ordered_indices]
-
-    @staticmethod
-    def clip_face_to_volume(vertices, volume_limits):
-        """
-        Clip/adjust a set of face vertices to the axis-aligned bounding box defined by volume_limits.
-
-        For each vertex component, values are clamped to:
-          - comp1 range for x
-          - comp2 range for y
-          - comp3 range for z
-
-        Args:
-            vertices: Iterable of vertices; can include custom Point objects.
-            volume_limits: Object holding comp1, comp2, comp3 ranges.
-
-        Returns:
-            np.ndarray of adjusted vertices.
-        """
-        adjusted_vertices = []
-
-        for vertex in vertices:
-            # Convert from custom Point type if needed
-            if isinstance(vertex, Point):
-                vertex = vertex.get_double_point()
-
-            adjusted_vertex = np.array(
-                [
-                    np.clip(vertex[0], volume_limits.comp1[0], volume_limits.comp1[1]),
-                    np.clip(vertex[1], volume_limits.comp2[0], volume_limits.comp2[1]),
-                    np.clip(vertex[2], volume_limits.comp3[0], volume_limits.comp3[1]),
-                ]
-            )
-            adjusted_vertices.append(adjusted_vertex)
-
-        return np.array(adjusted_vertices)
