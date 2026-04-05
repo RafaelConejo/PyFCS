@@ -6,7 +6,7 @@ from Source.geometry.Plane import Plane
 
 
 class GeometryTools:
-    SMALL_NUM = 0.000000001
+    SMALL_NUM = 1e-9
 
     @staticmethod
     def dot(u, v):
@@ -37,9 +37,14 @@ class GeometryTools:
         return None
 
     @staticmethod
-    def is_same_direction(v, u):
-        alpha = GeometryTools.dot(v, u) / (GeometryTools.module(v) * GeometryTools.module(u))
-        return 1 - GeometryTools.SMALL_NUM < alpha < 1 + GeometryTools.SMALL_NUM
+    def is_same_direction(v, u, eps=1e-6):
+        mod_v = GeometryTools.module(v)
+        mod_u = GeometryTools.module(u)
+        if mod_v <= eps or mod_u <= eps:
+            return False
+
+        alpha = GeometryTools.dot(v, u) / (mod_v * mod_u)
+        return alpha > 1.0 - eps
 
     @staticmethod
     def module(v):
@@ -88,28 +93,41 @@ class GeometryTools:
         return region.isInside(xyz)
 
     @staticmethod
-    def check_in_face(xyz, c):
+    def check_in_face(xyz, c, eps=1e-6):
         for face in c.getFaces():
             p = face.getPlane()
-            eval_result = p.evaluatePoint(c.getRepresentative()) * p.evaluatePoint(xyz)
-            if -GeometryTools.SMALL_NUM < eval_result < GeometryTools.SMALL_NUM:
+            if abs(p.evaluatePoint(xyz)) <= eps:
                 return True
         return False
 
     @staticmethod
-    def intersection_with_volume(v, p1, p2):
-        min_dist = float('inf')
+    def intersection_with_volume(v, p1, p2, eps=1e-9):
+        min_t = float('inf')
         p_result = None
-        dir_vector = Vector.from_points(p1, p2)
 
-        for i in range(len(v.getFaces())):
-            face = v.getFace(i)
-            pk = GeometryTools.intersection_plane_rect(face.getPlane(), p1, p2)
-            if pk is not None:
-                dist_pk = GeometryTools.euclidean_distance(p1, pk)
-                if GeometryTools.is_same_direction(dir_vector, Vector.from_points(p1, pk)) and dist_pk < min_dist:
-                    min_dist = dist_pk
-                    p_result = pk
+        x0, y0, z0 = p1.x, p1.y, p1.z
+        dx = p2.x - p1.x
+        dy = p2.y - p1.y
+        dz = p2.z - p1.z
+
+        for face in v.getFaces():
+            plane = face.getPlane()
+            A, B, C, D = plane.A, plane.B, plane.C, plane.D
+
+            denom = A * dx + B * dy + C * dz
+            if abs(denom) <= eps:
+                continue
+
+            # Ax + By + Cz + D = 0
+            t = -(A * x0 + B * y0 + C * z0 + D) / denom
+
+            # Solo intersecciones en el rayo desde p1 hacia p2
+            if t < eps:
+                continue
+
+            if t < min_t:
+                min_t = t
+                p_result = Point(x0 + t * dx, y0 + t * dy, z0 + t * dz)
 
         return p_result
 

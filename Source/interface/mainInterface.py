@@ -645,6 +645,15 @@ class PyFCSApp:
 
 
 
+    def _ensure_creation_state(self):
+        """Lazy init for color-space creation workflow state."""
+        if not hasattr(self, "_creation_in_progress"):
+            self._creation_in_progress = False
+
+        if not hasattr(self, "_creation_windows"):
+            self._creation_windows = []
+
+
 
     def custom_warning(self, title="Warning", message="Warning"):
         """Creates a custom, aesthetic warning message window with gray tones."""
@@ -815,26 +824,179 @@ class PyFCSApp:
 
     def center_popup(self, popup, width, height):
         """
-        Centers a popup window on the same screen as the parent widget.
-        
-        Args:
-            parent: The parent widget (e.g., self.root).
-            popup: The popup window to center.
-            width: The width of the popup window.
-            height: The height of the popup window.
+        Center a popup window relative to the main window when possible.
+        If the main window is minimized or not in a usable state, center on screen.
         """
-        root_x = self.root.winfo_rootx()
-        root_y = self.root.winfo_rooty()
-        root_width = self.root.winfo_width()
-        root_height = self.root.winfo_height()
+        try:
+            popup.update_idletasks()
+        except Exception:
+            pass
 
-        popup_x = root_x + (root_width - width) // 2
-        popup_y = root_y + (root_height - height) // 2
+        try:
+            self.root.update_idletasks()
+            root_state = self.root.state()
+        except Exception:
+            root_state = None
+
+        # If root is minimized/hidden, center on screen
+        if root_state in ("iconic", "withdrawn"):
+            screen_width = popup.winfo_screenwidth()
+            screen_height = popup.winfo_screenheight()
+
+            popup_x = (screen_width - width) // 2
+            popup_y = (screen_height - height) // 2
+        else:
+            try:
+                root_x = self.root.winfo_rootx()
+                root_y = self.root.winfo_rooty()
+                root_width = self.root.winfo_width()
+                root_height = self.root.winfo_height()
+
+                # Fallback if geometry is invalid
+                if root_width <= 1 or root_height <= 1:
+                    raise ValueError("Root window geometry is not usable.")
+
+                popup_x = root_x + (root_width - width) // 2
+                popup_y = root_y + (root_height - height) // 2
+            except Exception:
+                screen_width = popup.winfo_screenwidth()
+                screen_height = popup.winfo_screenheight()
+
+                popup_x = (screen_width - width) // 2
+                popup_y = (screen_height - height) // 2
 
         popup.geometry(f"{width}x{height}+{popup_x}+{popup_y}")
 
 
 
+    def _ensure_creation_state(self):
+        """Lazy init for the color-space creation workflow state."""
+        if not hasattr(self, "_creation_windows"):
+            self._creation_windows = []
+
+        if not hasattr(self, "_creation_in_progress"):
+            self._creation_in_progress = False
+
+
+    def _register_creation_window(self, win):
+        """Track a creation-related window and auto-clean dead references."""
+        self._ensure_creation_state()
+
+        if win is None:
+            return
+
+        # Clean dead refs first
+        alive = []
+        for w in self._creation_windows:
+            try:
+                if w is not None and w.winfo_exists():
+                    alive.append(w)
+            except Exception:
+                pass
+        self._creation_windows = alive
+
+        if win not in self._creation_windows:
+            self._creation_windows.append(win)
+
+        self._creation_in_progress = True
+
+        def _cleanup(_event=None, window=win):
+            try:
+                self._creation_windows = [
+                    w for w in self._creation_windows
+                    if w is not None and w.winfo_exists() and w != window
+                ]
+            except Exception:
+                self._creation_windows = []
+
+            if not self._creation_windows:
+                self._creation_in_progress = False
+
+            for attr in (
+                "_palette_popup",
+                "_manual_popup",
+                "_detected_popup",
+                "_manual_picker_win",
+                "_detected_picker_win",
+            ):
+                if getattr(self, attr, None) is window:
+                    setattr(self, attr, None)
+
+        try:
+            win.bind("<Destroy>", _cleanup, add="+")
+        except Exception:
+            pass
+
+
+    def _close_creation_windows(self):
+        """Close all creation-related windows and reset workflow state."""
+        self._ensure_creation_state()
+
+        self._close_manual_picker_window()
+
+        for win in list(self._creation_windows):
+            try:
+                if win is not None and win.winfo_exists():
+                    win.destroy()
+            except Exception:
+                pass
+
+        self._creation_windows = []
+        self._creation_in_progress = False
+
+        self._palette_popup = None
+        self._manual_popup = None
+        self._detected_popup = None
+
+
+    def _can_start_new_creation(self):
+        """Allow only one color-space creation workflow at a time."""
+        self._ensure_creation_state()
+
+        alive = []
+        for w in self._creation_windows:
+            try:
+                if w is not None and w.winfo_exists():
+                    alive.append(w)
+            except Exception:
+                pass
+        self._creation_windows = alive
+
+        if self._creation_windows:
+            replace = messagebox.askyesno(
+                "Creation in Progress",
+                "There is already a color space creation in progress.\n\n"
+                "Do you want to close it and start a new one?"
+            )
+            if not replace:
+                return False
+
+            self._close_creation_windows()
+
+        self._creation_in_progress = True
+        return True
+
+
+    def _start_image_based_mode_and_close_popup(self, popup, mode):
+        """Start image-based creation and close the mode selector safely."""
+        try:
+            if popup is not None and popup.winfo_exists():
+                popup.destroy()
+        except Exception:
+            pass
+
+        self._start_image_based_mode(popup, mode=mode)
+
+
+    def _recalculate_detected_colors(self, popup, colors, threshold, min_samples):
+        """Close current detected-colors popup and continue with recalculate flow."""
+        try:
+            if popup is not None and popup.winfo_exists():
+                popup.destroy()
+        except Exception:
+            pass
+
+        self.get_fcs_image_recalculate(colors, threshold, min_samples, popup=None)
 
 
 
@@ -993,6 +1155,14 @@ class PyFCSApp:
 
 
 
+    def _on_color_space_saved_success(self, name):
+        messagebox.showinfo(
+            "Color Space Created",
+            f"Color Space '{name}' created successfully."
+        )
+        self._close_creation_windows()
+
+
     def _save_color_space_file(self, name, color_dict):
         """
         Save a fuzzy color space file in a background thread.
@@ -1010,33 +1180,39 @@ class PyFCSApp:
             try:
                 input_class = Input.instance(".fcs")
                 input_class.write_file(name, color_dict, progress_callback=update_progress)
-                self.root.after(
-                    0,
-                    lambda: messagebox.showinfo(
-                        "Color Space Created",
-                        f"Color Space '{name}' created successfully."
-                    )
-                )
+                self.root.after(0, lambda: self._on_color_space_saved_success(name))
             except Exception as e:
-                self.root.after(0, lambda: self.custom_warning("Error", f"An error occurred while saving: {e}"))
+                error_msg = f"An error occurred while saving: {e}"
+                self.root.after(0, lambda msg=error_msg: self.custom_warning("Error", msg))
             finally:
                 self.root.after(0, self.hide_loading)
 
         threading.Thread(target=run_save_process, daemon=True).start()
 
 
-
     def save_cs(self, name, selected_colors_lab):
         self._save_color_space_file(name, selected_colors_lab)
 
 
-
     def save_fcs(self, name, colors, color_dict=None):
         if color_dict is None:
-            color_dict = {
-                key: np.array(colors[idx]["lab"])
-                for idx, key in enumerate(self.color_entry_detect)
-            }
+            color_dict = {}
+            used_names = set()
+
+            for idx, item in enumerate(colors):
+                color_name = item.get("name", "").strip()
+                if not color_name:
+                    color_name = f"Color_{idx + 1}"
+
+                base_name = color_name
+                suffix = 2
+                while color_name in used_names:
+                    color_name = f"{base_name}_{suffix}"
+                    suffix += 1
+
+                used_names.add(color_name)
+                color_dict[color_name] = np.array(item["lab"], dtype=float)
+
             self.color_entry_detect.clear()
 
         self._save_color_space_file(name, color_dict)
@@ -1301,11 +1477,12 @@ class PyFCSApp:
         Logic for creating a new fuzzy color space using a predefined palette.
         Allows the user to select colors through a popup and creates a new fuzzy color space.
         """
-        # Load color data from the BASIC.cns file
+        if not self._can_start_new_creation():
+            return
+
         color_space_path = os.path.join(BASE_PATH, 'fuzzy_color_spaces', 'cns', 'ISCC_NBS_BASIC.cns')
         colors = UtilsTools.load_color_data(color_space_path)
 
-        # Create a popup window for color selection
         popup, self.scroll_palette_create_fcs = UtilsTools.create_popup_window(
             parent=self.root,
             title="Select colors for your Color Space",
@@ -1314,14 +1491,19 @@ class PyFCSApp:
             header_text="Select colors for your Color Space"
         )
         self._palette_popup = popup
+        self._register_creation_window(popup)
 
-        # Center the popup window
+        def on_close():
+            self._close_manual_picker_window()
+            self._palette_popup = None
+            popup.destroy()
+
+        popup.protocol("WM_DELETE_WINDOW", on_close)
+
         self.center_popup(popup, 450, 500)
 
-        # Dictionary to store the Checkbuttons for selected colors
         self.color_checks = {}
 
-        # Populate the scrollable frame with color data
         for color_name, data in colors.items():
             self.fuzzy_manager.create_color_display_frame(
                 parent=self.scroll_palette_create_fcs,
@@ -1331,11 +1513,9 @@ class PyFCSApp:
                 color_checks=self.color_checks
             )
 
-        # Add action buttons to the popup
         button_frame = ttk.Frame(popup)
         button_frame.pack(pady=20)
 
-        # Button to add a new color
         ttk.Button(
             button_frame,
             text="Add New Color",
@@ -1343,7 +1523,6 @@ class PyFCSApp:
             style="Accent.TButton"
         ).pack(side="left", padx=20)
 
-        # Button to create the color space
         ttk.Button(
             button_frame,
             text="Create Color Space",
@@ -1351,7 +1530,6 @@ class PyFCSApp:
             style="Accent.TButton"
         ).pack(side="left", padx=20)
 
-        # Style configuration for buttons
         style = ttk.Style()
         style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
 
@@ -1363,14 +1541,14 @@ class PyFCSApp:
         - Manual color selection from Image
         - Automatic Color detection (existing flow -> get_fcs_image)
         """
-        # Verify if there are available images to display
         if not hasattr(self, "load_images_names") or not self.load_images_names:
             self.custom_warning(message="No images are currently available to display.")
             return
 
-        self.FIRST_DBSCAN = True
+        if not self._can_start_new_creation():
+            return
 
-        # Ask for creation mode first
+        self.FIRST_DBSCAN = True
         self._popup_choose_image_creation_mode()
 
 
@@ -1379,6 +1557,8 @@ class PyFCSApp:
         popup = tk.Toplevel(self.root)
         popup.title("Image-Based Creation Mode")
         popup.resizable(False, False)
+
+        self._register_creation_window(popup)
 
         frame = tk.Frame(popup, padx=20, pady=12)
         frame.pack(fill="both", expand=True)
@@ -1394,7 +1574,7 @@ class PyFCSApp:
             frame,
             text="Manual Color Selection from Image",
             width=30,
-            command=lambda: self._start_image_based_mode(popup, mode="manual")
+            command=lambda: self._start_image_based_mode_and_close_popup(popup, mode="manual")
         )
         btn_manual.pack(fill="x", pady=4)
 
@@ -1402,11 +1582,10 @@ class PyFCSApp:
             frame,
             text="Automatic Color Detection from Image",
             width=30,
-            command=lambda: self._start_image_based_mode(popup, mode="auto")
+            command=lambda: self._start_image_based_mode_and_close_popup(popup, mode="auto")
         )
         btn_auto.pack(fill="x", pady=4)
 
-        # Center popup
         self.center_popup(popup, 360, 140)
 
 
@@ -1475,12 +1654,10 @@ class PyFCSApp:
     # manages window lifecycles to avoid stale references and ensures that UI
     # updates are only performed on valid widgets.
     # ============================================================================
-
     def get_fcs_image_manual(self, *args, **kwargs):
         """Open the manual FCS creation popup (palette-like) and manage its local color state."""
-        colors = {}  # Local storage for user-added colors (resets when the popup is closed)
+        colors = {}
 
-        # Create the main popup window and the scrollable area where colors will be displayed
         popup, self.scroll_palette_create_fcs = UtilsTools.create_popup_window(
             parent=self.root,
             title="Select colors for your Color Space",
@@ -1488,30 +1665,24 @@ class PyFCSApp:
             height=520,
             header_text="Select colors for your Color Space"
         )
+        self._register_creation_window(popup)
         self.center_popup(popup, 480, 520)
 
-        # Keep references to the active manual popup and selection checkbuttons
         self._manual_popup = popup
         self.color_checks = {}
 
-        # Cleanup on close (also closes the picker window if it is open)
         def on_close():
-            """Destroy associated picker window and clear references when closing the manual popup."""
-            if hasattr(self, "_manual_picker_win") and self._manual_picker_win and self._manual_picker_win.winfo_exists():
-                self._manual_picker_win.destroy()
-            self._manual_picker_win = None
+            self._close_manual_picker_window()
             self._manual_popup = None
             popup.destroy()
 
         popup.protocol("WM_DELETE_WINDOW", on_close)
 
-        # Buttons container (2 columns + a full-width Create button)
         button_frame = ttk.Frame(popup)
         button_frame.pack(fill="x", padx=20, pady=15)
         button_frame.columnconfigure(0, weight=1)
         button_frame.columnconfigure(1, weight=1)
 
-        # Open image picker (pass local colors dict + the target frame where rows will be added)
         btn_add_img = ttk.Button(
             button_frame,
             text="Add Color from Image",
@@ -1519,15 +1690,13 @@ class PyFCSApp:
             style="Accent.TButton"
         )
 
-        # Add a new color via the generic "addColor" flow (uses local colors dict)
         btn_add_new = ttk.Button(
             button_frame,
             text="Add New Color",
-            command=lambda: self.addColor_create_fcs(popup, colors),
+            command=lambda: [self._close_manual_picker_window(), self.addColor_create_fcs(popup, colors)],
             style="Accent.TButton"
         )
 
-        # Create the fuzzy color space using the currently selected colors
         btn_create = ttk.Button(
             button_frame,
             text="Create Color Space",
@@ -1535,11 +1704,8 @@ class PyFCSApp:
             style="Accent.TButton"
         )
 
-        # Row 0: two buttons
         btn_add_img.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 8))
         btn_add_new.grid(row=0, column=1, sticky="ew", padx=5, pady=(0, 8))
-
-        # Row 1: create button spans both columns
         btn_create.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5)
 
 
@@ -3862,14 +4028,18 @@ class PyFCSApp:
         popup.title("Detected Colors")
         popup.configure(bg="#f5f5f5")
 
+        self._register_creation_window(popup)
+
         # Center the popup window
         self.center_popup(popup, 500, 600)
 
         # Function to handle window closing
         def on_closing():
             """Clears the color entry dictionary when the window is closed."""
-            self.color_entry_detect.clear()  # Reset the entry dictionary
-            popup.destroy()  # Close the window
+            self.color_entry_detect.clear()
+            self._close_manual_picker_window()
+            self._detected_popup = None
+            popup.destroy()
 
         # Bind the closing event to the on_closing function
         popup.protocol("WM_DELETE_WINDOW", on_closing)
@@ -3942,7 +4112,7 @@ class PyFCSApp:
         tk.Button(
             controls_frame,
             text="Recalculate",
-            command=lambda: [self.get_fcs_image_recalculate(colors, threshold, min_samples, popup), popup.destroy()],
+            command=lambda: self._recalculate_detected_colors(popup, colors, threshold, min_samples),
             bg="#d2dff0",
             font=("Helvetica", 10, "bold"),
             padx=10
@@ -3993,14 +4163,46 @@ class PyFCSApp:
 
             for i, dect_color in enumerate(colors):
                 rgb = dect_color["rgb"]
-                lab = color.rgb2lab(np.array(dect_color["rgb"], dtype=np.uint8).reshape(1, 1, 3) / 255)
-                default_name = f"Color {i + 1}"  # Default name
+
+                # Normalize RGB in case it comes as nested list/array
+                if hasattr(rgb, "tolist"):
+                    rgb = rgb.tolist()
+
+                if isinstance(rgb, list) and len(rgb) == 1 and isinstance(rgb[0], (list, tuple)):
+                    rgb = rgb[0]
+
+                rgb = tuple(int(v) for v in rgb[:3])
+
+                if "lab" in dect_color:
+                    lab_data = dect_color["lab"]
+
+                    if isinstance(lab_data, dict):
+                        lab = np.array([
+                            float(lab_data["L"]),
+                            float(lab_data["A"]),
+                            float(lab_data["B"])
+                        ], dtype=float)
+                    else:
+                        lab = np.array(lab_data, dtype=float).reshape(3,)
+                else:
+                    lab = color.rgb2lab(
+                        np.array(rgb, dtype=np.uint8).reshape(1, 1, 3) / 255
+                    )[0, 0]
+
+                default_name = dect_color.get("name", f"Color {i + 1}")
 
                 frame = ttk.Frame(scrollable_frame)
                 frame.pack(fill="x", pady=8, padx=10)
 
                 # Color preview
-                color_box = tk.Label(frame, bg=UtilsTools.rgb_to_hex(rgb), width=4, height=2, relief="solid", bd=1)
+                color_box = tk.Label(
+                    frame,
+                    bg=UtilsTools.rgb_to_hex(rgb),
+                    width=4,
+                    height=2,
+                    relief="solid",
+                    bd=1
+                )
                 color_box.pack(side="left", padx=10)
 
                 # Retrieve the saved name or use the default
@@ -4009,12 +4211,11 @@ class PyFCSApp:
 
                 # Entry field for the color name
                 entry = ttk.Entry(frame, font=("Helvetica", 12))
-                entry.insert(0, saved_name)  # Insert the saved or default name
+                entry.insert(0, saved_name)
                 entry.pack(side="left", padx=10, fill="x", expand=True)
                 self.color_entry_detect[entry_name_key] = entry
 
                 # LAB values
-                lab = lab[0, 0]
                 lab_values = f"L: {lab[0]:.1f}, A: {lab[1]:.1f}, B: {lab[2]:.1f}"
                 tk.Label(
                     frame,
@@ -4037,34 +4238,47 @@ class PyFCSApp:
         # Display the initial colors
         update_color_frames()
 
+        # Keep references to this popup so the picker can dock to it
+        self._detected_popup = popup
+
         # Action buttons
         button_frame = ttk.Frame(popup)
-        button_frame.pack(pady=20)
+        button_frame.pack(pady=20, fill="x", padx=20)
+
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
 
         add_colors_button = ttk.Button(
             button_frame,
-            text="Add New Image Colors",
-            command=lambda: self.add_new_image_colors(popup, colors, threshold, min_samples),
+            text="Detect Colors from other Image",
+            command=lambda: [self._close_manual_picker_window(), self.add_new_image_colors(popup, colors, threshold, min_samples)],
             style="Accent.TButton"
         )
-        add_colors_button.pack(side="left", padx=10)
+        add_colors_button.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 8))
 
-        # --- New "Add New Color" button inserted here ---
         add_single_color_button = ttk.Button(
             button_frame,
-            text="Add Color",
-            command=lambda: self.addColor_to_image(popup, colors, update_color_frames),
+            text="Add Manual Color",
+            command=lambda: [self._close_manual_picker_window(), self.addColor_to_image(popup, colors, update_color_frames)],
             style="Accent.TButton"
         )
-        add_single_color_button.pack(side="left", padx=10)
+        add_single_color_button.grid(row=0, column=1, sticky="ew", padx=5, pady=(0, 8))
+
+        add_from_image_button = ttk.Button(
+            button_frame,
+            text="Add Manual Color from Image",
+            command=lambda: self._open_detected_image_picker_window(colors, update_color_frames),
+            style="Accent.TButton"
+        )
+        add_from_image_button.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 8))
 
         save_button = ttk.Button(
             button_frame,
             text="Create Fuzzy Color Space",
-            command=lambda: [self.process_fcs(colors), popup.destroy()],
+            command=lambda: self.process_fcs(colors, popup),
             style="Accent.TButton"
         )
-        save_button.pack(side="left", padx=10)
+        save_button.grid(row=1, column=1, sticky="ew", padx=5, pady=(0, 8))
 
         # Style for buttons
         style = ttk.Style()
@@ -4072,41 +4286,250 @@ class PyFCSApp:
 
 
 
-    
-    def process_fcs(self, colors):
+    def _open_detected_image_picker_window(self, colors, update_callback):
+        """Open a separate image picker window to add a sampled image color to detected colors."""
+        if not hasattr(self, "load_images_names") or not self.load_images_names:
+            self.custom_warning(message="No images are currently available to display.")
+            return
+
+        if hasattr(self, "_detected_picker_win") and self._detected_picker_win and self._detected_picker_win.winfo_exists():
+            self._detected_picker_win.lift()
+            self._detected_picker_win.focus_force()
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("Pick Color from Image")
+        win.resizable(False, False)
+        self._detected_picker_win = win
+
+        # Rectangle selection state
+        self._manual_dragging = False
+        self._manual_drag_start = None
+        self._manual_rect_id = None
+
+        # Dock to the right of the detected-colors popup
+        if hasattr(self, "_detected_popup") and self._detected_popup and self._detected_popup.winfo_exists():
+            self._dock_window_to_right(parent=self._detected_popup, child=win, gap=12)
+
+        container = ttk.Frame(win, padding=10)
+        container.pack(fill="both", expand=True)
+
+        left = ttk.Frame(container)
+        left.pack(side="left", fill="y")
+
+        right = ttk.Frame(container)
+        right.pack(side="left", fill="both", expand=True, padx=(10, 0))
+
+        ttk.Label(left, text="Loaded Images").pack(anchor="w")
+
+        listbox = tk.Listbox(left, width=22, height=18)
+        listbox.pack(pady=6)
+
+        self._manual_listbox_map = []
+
+        window_ids = list(self.load_images_names.keys())
+        for wid in window_ids:
+            path = self.load_images_names.get(wid, wid)
+            display = os.path.basename(path)
+            listbox.insert("end", display)
+            self._manual_listbox_map.append(wid)
+
+        listbox.bind("<<ListboxSelect>>", lambda e: self._manual_on_select_image(listbox))
+
+        ttk.Label(
+            right,
+            text="Tip: Click to sample a single pixel.\nClick and drag to select a rectangle and sample the average color.",
+            wraplength=420,
+            justify="left"
+        ).pack(anchor="w")
+
+        self._manual_img_canvas = tk.Canvas(right, width=350, height=300, bg="black", highlightthickness=1)
+        self._manual_img_canvas.pack(pady=6)
+
+        info = ttk.Frame(right)
+        info.pack(fill="x", pady=6)
+
+        self._picked_rgb_var = tk.StringVar(value="RGB: -")
+        self._picked_lab_var = tk.StringVar(value="LAB: -")
+
+        ttk.Label(info, textvariable=self._picked_rgb_var).pack(anchor="w")
+        ttk.Label(info, textvariable=self._picked_lab_var).pack(anchor="w")
+
+        ttk.Label(info, text="Color name:").pack(anchor="w", pady=(8, 0))
+
+        name_row = ttk.Frame(info)
+        name_row.pack(fill="x", pady=2)
+
+        self._picked_name_entry = ttk.Entry(name_row, width=18)
+        self._picked_name_entry.pack(side="left")
+
+        self._picked_preview = tk.Canvas(name_row, width=60, height=20, highlightthickness=1)
+        self._picked_preview.pack(side="left", padx=10)
+        self._picked_preview_rect = self._picked_preview.create_rectangle(
+            0, 0, 60, 20, fill="#000000", outline=""
+        )
+
+        ttk.Button(
+            info,
+            text="Add Selected Color",
+            command=lambda: self._detected_add_picked_color(colors, update_callback),
+            style="Accent.TButton"
+        ).pack(fill="x", pady=6)
+
+        style = ttk.Style()
+        style.configure("Accent.TButton", font=("Helvetica", 10, "bold"), padding=10)
+
+        self._manual_img_canvas.bind("<ButtonPress-1>", self._manual_on_mouse_down)
+        self._manual_img_canvas.bind("<B1-Motion>", self._manual_on_mouse_drag)
+        self._manual_img_canvas.bind("<ButtonRelease-1>", self._manual_on_mouse_up)
+
+        def on_close():
+            self._detected_picker_win = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", on_close)
+
+
+
+    def _close_manual_picker_window(self):
+        """Safely close any manual image picker window and clear related references."""
+        for attr_name in ("_manual_picker_win", "_detected_picker_win"):
+            win = getattr(self, attr_name, None)
+            if win is not None:
+                try:
+                    if win.winfo_exists():
+                        win.destroy()
+                except Exception:
+                    pass
+                setattr(self, attr_name, None)
+
+        # Clear transient picker state
+        self._manual_dragging = False
+        self._manual_drag_start = None
+        self._manual_rect_id = None
+
+
+
+    def _detected_add_picked_color(self, colors, update_callback):
+        """Append the picked color to detected colors and refresh the detected-colors list."""
+        if not hasattr(self, "_picked_rgb") or not hasattr(self, "_picked_lab"):
+            self.custom_warning(message="Pick a color by clicking on the image first.")
+            return
+
+        name = self._picked_name_entry.get().strip()
+
+        r, g, b = self._picked_rgb
+        rgb = (int(r), int(g), int(b))
+
+        lab = {
+            "L": float(self._picked_lab[0]),
+            "A": float(self._picked_lab[1]),
+            "B": float(self._picked_lab[2]),
+        }
+
+        new_color = {
+            "rgb": rgb,
+            "lab": lab,
+        }
+
+        if name:
+            new_color["name"] = name
+
+        colors.append(new_color)
+
+        if callable(update_callback):
+            update_callback()
+
+        self._picked_name_entry.delete(0, "end")
+
+
+    def process_fcs(self, colors, detected_popup=None):
         """
         Saves the names of the colors edited by the user in a file with a .cns extension.
         Prompts the user to enter a name for the fuzzy color space and validates the input.
         """
-        # Ensure at least two colors are selected
         if len(self.color_entry_detect) < 2:
             self.custom_warning("Not Enough Colors", "At least two colors must be selected to create the Color Space.")
             return
 
-        # Create a popup window for the user to name the color space
         popup = tk.Toplevel(self.root)
         popup.title("Input")
+        self._register_creation_window(popup)
         self.center_popup(popup, 300, 100)
 
-        # Add a label and entry field for the color space name
         tk.Label(popup, text="Name for the fuzzy color space:").pack(pady=5)
         name_entry = tk.Entry(popup)
         name_entry.pack(pady=5)
 
-        # Variable to store the entered name
         name = tk.StringVar()
 
         def on_ok():
             """Callback function for the OK button."""
-            name.set(name_entry.get())
-            popup.destroy()
-            self.save_fcs(name.get(), colors)
+            name.set(name_entry.get().strip())
 
-        # Add an OK button to confirm the name
+            if not name.get():
+                self.custom_warning("Warning", "Please enter a name for the fuzzy color space.")
+                return
+
+            try:
+                prepared_colors = []
+
+                for i, item in enumerate(colors):
+                    new_item = dict(item)
+
+                    entry = self.color_entry_detect.get(f"color_{i}")
+                    if entry is not None and entry.winfo_exists():
+                        edited_name = entry.get().strip()
+                        if edited_name:
+                            new_item["name"] = edited_name
+
+                    lab_value = new_item.get("lab")
+                    if isinstance(lab_value, dict):
+                        new_item["lab"] = [
+                            float(lab_value["L"]),
+                            float(lab_value["A"]),
+                            float(lab_value["B"]),
+                        ]
+                    elif lab_value is not None:
+                        lab_arr = np.array(lab_value, dtype=float).reshape(-1)
+                        new_item["lab"] = [
+                            float(lab_arr[0]),
+                            float(lab_arr[1]),
+                            float(lab_arr[2]),
+                        ]
+                    else:
+                        rgb = new_item.get("rgb")
+                        if hasattr(rgb, "tolist"):
+                            rgb = rgb.tolist()
+                        if isinstance(rgb, list) and len(rgb) == 1 and isinstance(rgb[0], (list, tuple, np.ndarray)):
+                            rgb = rgb[0]
+                        rgb = [int(v) for v in rgb[:3]]
+
+                        lab_arr = color.rgb2lab(
+                            np.array(rgb, dtype=np.uint8).reshape(1, 1, 3) / 255
+                        )[0, 0]
+
+                        new_item["lab"] = [
+                            float(lab_arr[0]),
+                            float(lab_arr[1]),
+                            float(lab_arr[2]),
+                        ]
+
+                    prepared_colors.append(new_item)
+
+                popup.destroy()
+
+                if detected_popup is not None and detected_popup.winfo_exists():
+                    detected_popup.destroy()
+
+                self.save_fcs(name.get(), prepared_colors)
+
+            except Exception as e:
+                self.custom_warning("Error", f"Could not prepare colors for saving: {e}")
+
         ok_button = tk.Button(popup, text="OK", command=on_ok)
         ok_button.pack(pady=5)
 
-        # Display the popup window
         popup.deiconify()
 
 
@@ -4206,6 +4629,151 @@ class PyFCSApp:
             window_id = unique_ids.pop() if unique_ids else None
             self.get_fcs_image(window_id, threshold, min_samples)
             popup.destroy()
+
+
+    def _build_named_colors_for_save(self, colors):
+        """
+        Build a normalized color list using the names currently written by the user
+        in the detected-colors entries.
+        """
+        prepared_colors = []
+
+        used_names = set()
+
+        for i, item in enumerate(colors):
+            new_item = dict(item)
+
+            entry = self.color_entry_detect.get(f"color_{i}")
+            if entry is not None and entry.winfo_exists():
+                color_name = entry.get().strip()
+            else:
+                color_name = new_item.get("name", f"Color_{i+1}")
+
+            if not color_name:
+                color_name = f"Color_{i+1}"
+
+            # Avoid duplicates
+            base_name = color_name
+            suffix = 2
+            while color_name in used_names:
+                color_name = f"{base_name}_{suffix}"
+                suffix += 1
+
+            used_names.add(color_name)
+            new_item["name"] = color_name
+
+            # Normalize RGB
+            rgb = new_item.get("rgb")
+            if rgb is not None:
+                if hasattr(rgb, "tolist"):
+                    rgb = rgb.tolist()
+
+                if isinstance(rgb, list) and len(rgb) == 1 and isinstance(rgb[0], (list, tuple, np.ndarray)):
+                    rgb = rgb[0]
+
+                new_item["rgb"] = [int(v) for v in rgb[:3]]
+
+            # Normalize LAB
+            lab_value = new_item.get("lab")
+            if lab_value is None:
+                rgb = new_item.get("rgb")
+                if rgb is None:
+                    raise ValueError(f"Color at index {i} has neither 'lab' nor 'rgb'.")
+                lab_arr = color.rgb2lab(
+                    np.array(rgb, dtype=np.uint8).reshape(1, 1, 3) / 255
+                )[0, 0]
+                new_item["lab"] = [
+                    float(lab_arr[0]),
+                    float(lab_arr[1]),
+                    float(lab_arr[2]),
+                ]
+            elif isinstance(lab_value, dict):
+                new_item["lab"] = [
+                    float(lab_value["L"]),
+                    float(lab_value["A"]),
+                    float(lab_value["B"]),
+                ]
+            else:
+                lab_arr = np.array(lab_value, dtype=float).reshape(-1)
+                if lab_arr.size != 3:
+                    raise ValueError(f"Invalid LAB format at index {i}: {lab_value}")
+                new_item["lab"] = [
+                    float(lab_arr[0]),
+                    float(lab_arr[1]),
+                    float(lab_arr[2]),
+                ]
+
+            prepared_colors.append(new_item)
+
+        return prepared_colors
+
+
+
+    def _normalize_detected_colors_for_save(self, colors):
+        """
+        Normalize detected/manual colors to the structure expected by save_fcs:
+        each color keeps rgb/source_image/name and stores lab as a flat [L, A, B] list.
+        """
+        normalized = []
+
+        for i, item in enumerate(colors):
+            new_item = dict(item)
+
+            # Normalize RGB if present
+            rgb = new_item.get("rgb")
+            if rgb is not None:
+                if hasattr(rgb, "tolist"):
+                    rgb = rgb.tolist()
+
+                if isinstance(rgb, list) and len(rgb) == 1 and isinstance(rgb[0], (list, tuple, np.ndarray)):
+                    rgb = rgb[0]
+
+                rgb = [int(v) for v in rgb[:3]]
+                new_item["rgb"] = rgb
+
+            # Normalize LAB
+            lab_value = new_item.get("lab")
+
+            if lab_value is None:
+                if rgb is None:
+                    raise ValueError(f"Color at index {i} has neither 'lab' nor valid 'rgb'.")
+                lab_arr = color.rgb2lab(
+                    np.array(rgb, dtype=np.uint8).reshape(1, 1, 3) / 255
+                )[0, 0]
+                new_item["lab"] = [
+                    float(lab_arr[0]),
+                    float(lab_arr[1]),
+                    float(lab_arr[2]),
+                ]
+
+            elif isinstance(lab_value, dict):
+                new_item["lab"] = [
+                    float(lab_value["L"]),
+                    float(lab_value["A"]),
+                    float(lab_value["B"]),
+                ]
+
+            else:
+                lab_arr = np.array(lab_value, dtype=float).reshape(-1)
+                if lab_arr.size != 3:
+                    raise ValueError(f"Invalid LAB format at index {i}: {lab_value}")
+                new_item["lab"] = [
+                    float(lab_arr[0]),
+                    float(lab_arr[1]),
+                    float(lab_arr[2]),
+                ]
+
+            normalized.append(new_item)
+
+        return normalized
+
+
+
+
+
+
+
+
 
 
 

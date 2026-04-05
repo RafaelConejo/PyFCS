@@ -85,6 +85,19 @@ class Prototype:
         faces = [[None] * num_colors for _ in range(num_colors)]
         cont = 0
 
+        # Número de negativos artificiales al final
+        num_false_negatives = len(Prototype.false_negatives) if self.add_false else 0
+        first_false_global_index = num_colors - num_false_negatives  # índice global en 'points'
+
+        def is_false_boundary_index(idx: int) -> bool:
+            """
+            idx es índice en 'points':
+            0 = positivo
+            1.. = negativos
+            Los últimos num_false_negatives son artificiales.
+            """
+            return num_false_negatives > 0 and idx >= first_false_global_index
+
         num_planes = int(lines[0].strip())
         cont += 1
         for i in range(1, num_planes + cont):
@@ -92,7 +105,15 @@ class Prototype:
             index1 = int(parts[1])
             index2 = int(parts[2])
             plane = Plane(*[float(part) for part in parts[3:]])
-            faces[index1][index2] = Face(plane, infinity=False)
+
+            false_boundary = is_false_boundary_index(index1) or is_false_boundary_index(index2)
+
+            faces[index1][index2] = Face(
+                plane,
+                infinity=False,
+                is_false_boundary=false_boundary,
+                source_index=index2,
+            )
 
         num_unbounded_planes = int(lines[num_planes + cont].strip())
         cont += 1
@@ -101,7 +122,15 @@ class Prototype:
             index1 = int(parts[1])
             index2 = int(parts[2])
             plane = Plane(*[float(part) for part in parts[3:]])
-            faces[index1][index2] = Face(plane, infinity=True)
+
+            false_boundary = is_false_boundary_index(index1) or is_false_boundary_index(index2)
+
+            faces[index1][index2] = Face(
+                plane,
+                infinity=True,
+                is_false_boundary=false_boundary,
+                source_index=index2,
+            )
 
         num_dimensions = int(lines[num_planes + num_unbounded_planes + cont].strip())
         cont += 1
@@ -109,15 +138,19 @@ class Prototype:
         cont += 1
 
         vertices = []
-        for i in range(num_planes + num_unbounded_planes + cont,
-                       num_planes + num_unbounded_planes + num_vertices + cont):
+        for i in range(
+            num_planes + num_unbounded_planes + cont,
+            num_planes + num_unbounded_planes + num_vertices + cont
+        ):
             coords = [float(part) for part in lines[i].split()]
             vertices.append(Point(*coords))
 
         num_faces = int(lines[num_planes + num_unbounded_planes + num_vertices + cont].strip())
         cont += 1
-        for i in range(num_planes + num_unbounded_planes + num_vertices + cont,
-                       num_planes + num_unbounded_planes + num_vertices + num_faces + cont):
+        for i in range(
+            num_planes + num_unbounded_planes + num_vertices + cont,
+            num_planes + num_unbounded_planes + num_vertices + num_faces + cont
+        ):
             parts = lines[i].split()
             index1 = int(parts[1])
             index2 = int(parts[2])
@@ -139,7 +172,6 @@ class Prototype:
                     volumes[j].addFace(faces[i][j])
 
         return volumes[0]
-
 
 
 
