@@ -1069,9 +1069,26 @@ class PyFCSApp:
         if not filename:
             return
 
+        if not hasattr(self, "mapping_locked_until_original"):
+            self.mapping_locked_until_original = {}
+
         if hasattr(self, "floating_images") and self.floating_images:
             for window_id in list(self.floating_images.keys()):
-                self.show_original_image(window_id)
+                mode = getattr(self, "window_mapping_mode", {}).get(window_id)
+
+                if mode == "single":
+                    self.show_original_image(window_id)
+
+                elif mode == "all":
+                    # Keep the displayed image and its options visible,
+                    # but mark it as belonging to an old color space.
+                    self.mapping_locked_until_original[window_id] = True
+                    self.CAN_APPLY_MAPPING[window_id] = False
+
+                    try:
+                        self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
+                    except Exception:
+                        pass
 
         self.show_loading_color_space()
 
@@ -2891,25 +2908,27 @@ class PyFCSApp:
 
     
     def open_image(self):
-        """Allows the user to select an image file and display its colors in columns with a scrollbar."""
-        # Set the initial directory to 'image_test\\' within the current working directory
-        initial_directory = BASE_PATH
+        """Allows the user to select an image file and display it in a floating window."""
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "Finish or cancel the current color mapping process before opening a new image."
+            )
+            return
+
         initial_directory = os.path.join(BASE_PATH, 'image_test')
-        
-        # Define the file types that can be selected (e.g., .jpg, .jpeg, .png, .bmp)
+
         filetypes = [
             ("Image Files", "*.jpg *.jpeg *.png *.bmp *.gif *.tiff"),
             ("All Files", "*.*")
         ]
-        
-        # Open a file dialog for the user to select an image
+
         filename = filedialog.askopenfilename(
-            title="Select an Image",  # Title of the file dialog
-            initialdir=initial_directory,  # Set the initial directory for file selection
-            filetypes=filetypes  # Restrict the file selection to the defined filetypes
+            title="Select an Image",
+            initialdir=initial_directory,
+            filetypes=filetypes
         )
-        
-        # If the user selects a file, create a floating window to display the image
+
         if filename:
             self.create_floating_window(50, 50, filename)
 
@@ -2921,6 +2940,12 @@ class PyFCSApp:
         The window is movable (from title bar only), resizable (bottom-right handle),
         and includes options for displaying the original image and color mapping.
         """
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "Finish or cancel the current color mapping process before opening a new image."
+            )
+            return
 
         # ---------------------------
         # Lazy-init dictionaries
@@ -3242,6 +3267,9 @@ class PyFCSApp:
             if self._has_active_job(window_id):
                 return "break"
 
+            locked_until_original = getattr(self, "mapping_locked_until_original", {}).get(window_id, False)
+            mapping_enabled = self.CAN_APPLY_MAPPING[window_id] and not locked_until_original
+
             menu = Menu(self.root, tearoff=0)
             menu.add_command(
                 label="Original Image",
@@ -3251,13 +3279,13 @@ class PyFCSApp:
             menu.add_separator()
             menu.add_command(
                 label="Color Mapping",
-                state=NORMAL if self.CAN_APPLY_MAPPING[window_id] else DISABLED,
+                state=NORMAL if mapping_enabled else DISABLED,
                 command=lambda: self.color_mapping(window_id)
             )
             menu.add_separator()
             menu.add_command(
                 label="Color Mapping All",
-                state=NORMAL if self.CAN_APPLY_MAPPING[window_id] else DISABLED,
+                state=NORMAL if mapping_enabled else DISABLED,
                 command=lambda: self.color_mapping_all(window_id)
             )
             menu.post(event.x_root, event.y_root)
@@ -4785,6 +4813,18 @@ class PyFCSApp:
             self.custom_warning("No Window", f"No floating window found with id {window_id}")
             return
 
+        if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
+            self.custom_warning(
+                "Restore Original Image",
+                "This image belongs to a previous Color Space. Press Original before applying Color Mapping."
+            )
+            return
+
+        if not hasattr(self, "window_mapping_mode"):
+            self.window_mapping_mode = {}
+
+        self.window_mapping_mode[window_id] = "single"
+
         # Disable original-image rectangle sampling because the view is no longer the original image
         try:
             self._disable_original_rectangle_sampling(window_id)
@@ -4926,26 +4966,35 @@ class PyFCSApp:
 
 
     def get_proto_percentage(self, window_id):
-        """Generates and displays the grayscale mask and shows coverage % under the image (cached by size)."""
+        if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
+            self.custom_warning(
+                "Restore Original Image",
+                "This image belongs to a previous Color Space. Press Original before selecting a prototype."
+            )
+            return
+
         if not hasattr(self, "current_protos") or window_id not in self.current_protos:
             self.custom_warning("Error", "No prototype selected for this window.")
             return
+
+        selected_proto = self.current_protos[window_id].get()
+        pos = self.color_matrix.index(selected_proto)
 
         def run_process(cancel_event, job_id):
             try:
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
 
-                pos = self.color_matrix.index(self.current_protos[window_id].get())
-
                 if not hasattr(self, "proto_percentage_cache"):
                     self.proto_percentage_cache = {}
                 if window_id not in self.proto_percentage_cache:
                     self.proto_percentage_cache[window_id] = {}
 
-                # Compute on the CURRENT displayed image so resizing changes the result
                 if not hasattr(self, "images") or window_id not in self.images:
-                    self.image_canvas.after(0, lambda: self.custom_warning("Error", "Current image not found for this window."))
+                    self.image_canvas.after(
+                        0,
+                        lambda: self.custom_warning("Error", "Current image not found for this window.")
+                    )
                     return
 
                 source_img = self.images[window_id]
@@ -4960,7 +5009,6 @@ class PyFCSApp:
                     pct = cached_entry["pct"]
                 else:
                     def update_progress(current_step, total_steps):
-                        """Update progress and abort safely if the job was cancelled."""
                         if cancel_event.is_set():
                             raise RuntimeError("__JOB_CANCELLED__")
                         self._update_window_progress(window_id, job_id, current_step, total_steps)
@@ -4977,7 +5025,6 @@ class PyFCSApp:
                     if self._is_job_cancelled(window_id, cancel_event, job_id):
                         return
 
-                    # Decide threshold automatically depending on the type of output
                     unique_vals = np.unique(grayscale_image_array) if grayscale_image_array.ndim == 2 else None
                     if grayscale_image_array.ndim == 2 and unique_vals is not None and unique_vals.size <= 3 and 255 in unique_vals:
                         thresh = 255
@@ -5000,17 +5047,13 @@ class PyFCSApp:
                     }
 
                 def _ui():
-                    """Apply the processed result on the main thread."""
                     if not self._is_current_job(window_id, job_id):
                         return
                     if not self._window_exists(window_id):
                         return
 
                     self.display_color_mapping(grayscale_image_array, window_id)
-
-                    proto_name = self.current_protos[window_id].get()
-                    txt = f"{proto_name}: {pct:.2f}%"
-                    self.image_canvas.itemconfig(f"{window_id}_pct_text", text=txt)
+                    self.image_canvas.itemconfig(f"{window_id}_pct_text", text=f"{selected_proto}: {pct:.2f}%")
                     self.image_canvas.tag_raise(f"{window_id}_pct_text")
 
                 self.image_canvas.after(0, _ui)
@@ -5076,6 +5119,12 @@ class PyFCSApp:
         try:
             # Cancel any running process linked to this image before restoring the original
             self._cancel_window_job(window_id)
+
+            if hasattr(self, "window_mapping_mode"):
+                self.window_mapping_mode.pop(window_id, None)
+
+            if hasattr(self, "mapping_locked_until_original"):
+                self.mapping_locked_until_original.pop(window_id, None)
 
             # Hide percentage text when showing original image
             try:
@@ -5242,6 +5291,18 @@ class PyFCSApp:
             self.custom_warning("No Window", f"No floating window found with id {window_id}")
             return
 
+        if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
+            self.custom_warning(
+                "Restore Original Image",
+                "This image belongs to a previous Color Space. Press Original before applying Color Mapping All."
+            )
+            return
+
+        if not hasattr(self, "window_mapping_mode"):
+            self.window_mapping_mode = {}
+
+        self.window_mapping_mode[window_id] = "all"
+
         # Disable original-image rectangle sampling because the view is no longer the original image
         try:
             self._disable_original_rectangle_sampling(window_id)
@@ -5401,6 +5462,13 @@ class PyFCSApp:
         # -------------------------------------------------------
         def recolor(window_id):
             """Switch palette without recomputing memberships."""
+            if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
+                self.custom_warning(
+                    "Old Color Space",
+                    "This Color Mapping All result belongs to a previous Color Space. Press Original to use the new one."
+                )
+                return
+
             if not self._window_exists(window_id):
                 return
 
@@ -5617,6 +5685,19 @@ class PyFCSApp:
         job_id = self._start_window_job(window_id, "color_mapping_all", run_process)
         if job_id is not None:
             self._show_window_loading(window_id, "Color Mapping All...")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
