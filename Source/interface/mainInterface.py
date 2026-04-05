@@ -2748,6 +2748,13 @@ class PyFCSApp:
         if not hasattr(self, "load_images_names") or not self.load_images_names:
             self.custom_warning(message="There are currently no images available to save.")
             return
+        
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "Finish or cancel the current color mapping process before opening a new image."
+            )
+            return
 
         # Create a popup window for image selection
         popup, listbox = UtilsTools.create_selection_popup(

@@ -1,0 +1,59 @@
+#########################################################################################################
+#
+#  THIS IS THE FORMAT TO THE COLOR NAMING SYSTEM FILE ... COLOR NAMES and REPRESENTATIVE VALUES in RGB
+#  YOU CAN EDIT THIS FILE ACCORDING TO THIS SPECIFICATIONS:
+#
+#       The extension of this file must be '.cns' and lines in file must content the following:
+#
+#       1- Color System name. It must start with @name
+#       2- reference domain: It must start with @reference
+#              minX \t maxX \t minY \t maxY \t minZ \t maxZ
+#       3- crisp color space type: It must start with @crispColorSpaceType
+#              int value. See static variables in ColorSpaceJMR class
+#       4- dimension: 3 (RGB)
+#       5- number of representative values: K
+#       6- next K lines: point coordinates, best if one point per line
+#           NOTE: First line corresponds to first color name label, second line corresponds to second color name, etc.
+#           NEXT k ROWS (RGB values):
+#            (Next rows in this format )
+#                R \t G \t B  (where \t is a tabulation and R.G.B is a RGB value in the range [0-255])
+#       7- next K lines:
+#             COLOR NAME LABEL
+#
+#
+#
+#  Created by SoTiLLo
+#
+##########################################################################################################
+@nameISCC_NBS_BASIC
+@reference0.0	255.0	0.0	255.0	0.0	255.0
+@crispColorSpaceType1000
+@colorSpace_RGB
+3
+13
+254.0	181.0	186.0
+200.0	1.0	25.0
+243.0	132.0	1.0
+138.0	40.0	27.0
+243.0	195.0	1.0
+102.0	93.0	30.0
+141.0	182.0	1.0
+1.0	98.0	45.0
+1.0	103.0	194.0
+154.0	78.0	174.0
+252.0	252.0	249.0
+135.0	134.0	134.0
+7.0	7.0	7.0
+Pink
+Red
+Orange
+Brown
+Yellow
+Olive
+Yellow-Green
+Green
+Blue
+Purple
+White
+Gray
+Black
