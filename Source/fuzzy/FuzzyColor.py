@@ -12,69 +12,47 @@ class FuzzyColor:
     @staticmethod
     def add_face_to_core_support(face, representative, core, support, scaling_factor):
         """
-        Add faces to the core and support volumes by scaling the prototypes
-        according to the scaling factor.
+        Add faces to the core and support volumes by scaling the prototypes according to the scaling factor.
 
-        Policy:
-        - Real boundary face:
-            core gets the inner parallel face, support gets the outer parallel face.
-        - False-negative boundary face:
-            core gets the inner parallel face, support keeps the original face.
-        This preserves domain closure without letting artificial boundaries
-        shrink the support.
+        Parameters:
+            face (Face): The face to be scaled.
+            representative (Point): The representative point of the face.
+            core (Volume): The core volume.
+            support (Volume): The support volume.
+            scaling_factor (float): The scaling factor.
+
+        Returns:
+            None
         """
-        # Contraction distance with respect to the original face
+        # Calculate the distance between the face and the representative point
         dist = GeometryTools.distance_point_plane(face.p, representative) * (1 - scaling_factor)
-
-        # Parallel faces
+        
+        # Create parallel planes for core and support
         parallel_planes = GeometryTools.parallel_planes(face.p, dist)
-        f1 = Face(
-            p=parallel_planes[0],
-            infinity=face.infinity,
-            is_false_boundary=face.is_false_boundary,
-            source_index=face.source_index,
-        )
-        f2 = Face(
-            p=parallel_planes[1],
-            infinity=face.infinity,
-            is_false_boundary=face.is_false_boundary,
-            source_index=face.source_index,
-        )
+        f1 = Face(p=parallel_planes[0], infinity=face.infinity)
+        f2 = Face(p=parallel_planes[1], infinity=face.infinity)
 
         if face.getArrayVertex() is not None:
+            # Create new vertices for each face of the core and support
             for v in face.getArrayVertex():
-                vertex_f1 = GeometryTools.intersection_plane_rect(f1.p, representative, v)
-                vertex_f2 = GeometryTools.intersection_plane_rect(f2.p, representative, v)
+                vertex_f1 = GeometryTools.intersection_plane_rect(f1.p, representative, Point(v[0], v[1], v[2]))
+                vertex_f2 = GeometryTools.intersection_plane_rect(f2.p, representative, Point(v[0], v[1], v[2]))
+                f1.addVertex(vertex_f1)
+                f2.addVertex(vertex_f2)
 
-                if vertex_f1 is not None:
-                    f1.addVertex(vertex_f1)
-                if vertex_f2 is not None:
-                    f2.addVertex(vertex_f2)
-
-        # The face closest to the representative becomes the core face
-        if (
-            GeometryTools.distance_point_plane(f1.p, representative)
-            < GeometryTools.distance_point_plane(f2.p, representative)
-        ):
-            core_face = f1
-            outer_face = f2
+        # Add the corresponding face to core and support
+        if GeometryTools.distance_point_plane(f1.p, representative) < GeometryTools.distance_point_plane(f2.p, representative):
+            core.addFace(f1)
+            support.addFace(f2)
         else:
-            core_face = f2
-            outer_face = f1
+            core.addFace(f2)
+            support.addFace(f1)
 
-        core.addFace(core_face)
-
-        # If the boundary is artificial, support keeps the original face
-        if face.isFalseBoundary():
-            support.addFace(face.copy())
-        else:
-            support.addFace(outer_face)
 
     @staticmethod
     def create_core_support(prototypes, scaling_factor):
         """
-        Create core and support volumes by scaling the prototypes according
-        to the scaling factor.
+        Create core and support volumes by scaling the prototypes according to the scaling factor.
 
         Parameters:
             prototypes (list): List of Prototype objects.
@@ -85,39 +63,21 @@ class FuzzyColor:
         """
         core_volumes = []
         support_volumes = []
-
         for proto in prototypes:
             core_volume = Volume(Point(*proto.positive))
             support_volume = Volume(Point(*proto.positive))
 
             for face in proto.voronoi_volume.getFaces():
-                FuzzyColor.add_face_to_core_support(
-                    face,
-                    Point(*proto.positive),
-                    core_volume,
-                    support_volume,
-                    scaling_factor,
-                )
+                    FuzzyColor.add_face_to_core_support(face, Point(*proto.positive), core_volume, support_volume, scaling_factor)
 
-            core_volume_dict = Prototype(
-                label=proto.label,
-                positive=proto.positive,
-                negatives=proto.negatives,
-                voronoi_volume=core_volume,
-                add_false=proto.add_false,
-            )
-            support_volume_dict = Prototype(
-                label=proto.label,
-                positive=proto.positive,
-                negatives=proto.negatives,
-                voronoi_volume=support_volume,
-                add_false=proto.add_false,
-            )
-
+            core_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=core_volume, add_false=proto.add_false)
+            support_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=support_volume, add_false=proto.add_false)
+            
             core_volumes.append(core_volume_dict)
             support_volumes.append(support_volume_dict)
 
         return core_volumes, support_volumes
+
 
     @staticmethod
     def update_geometry(prototypes, cores, supports):
@@ -192,6 +152,13 @@ class FuzzyColor:
                                     nearest.setArrayVertex(new_vs)
                             break
 
+
+
+
+
+
+
+
     @staticmethod
     def _raw_membership_for_index(new_color, i, function, pack):
         xyz = Point(new_color[0], new_color[1], new_color[2])
@@ -242,7 +209,7 @@ class FuzzyColor:
         return value
 
     @staticmethod
-    def get_best_prototype_index(new_color, prototypes, function, pack) -> int:
+    def get_membership_degree_mapping_all(new_color, prototypes, function, pack) -> int:
         xyz = Point(new_color[0], new_color[1], new_color[2])
 
         v_cores = pack["v_cores"]

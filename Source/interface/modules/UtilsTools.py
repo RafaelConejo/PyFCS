@@ -211,8 +211,7 @@ def process_prototypes(color_data):
         prototype = Prototype(
             label=color_name,
             positive=positive_prototype,
-            negatives=negative_prototypes,
-            add_false=True
+            negatives=negative_prototypes
         )
         prototypes.append(prototype)
 

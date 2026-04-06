@@ -272,25 +272,23 @@ class VisualManager:
         Draw a fixed-position 3D orientation inset that mimics the camera
         of the main axes but stays fixed on screen.
         """
-        # Eliminar inset anterior si existe
         for existing_ax in fig.axes[:]:
             if hasattr(existing_ax, "_is_orientation_inset"):
                 fig.delaxes(existing_ax)
 
-        # Crear axes pequeño fijo en la figura
         ax_inset = fig.add_axes([0.02, 0.02, 0.18, 0.30], projection="3d")
         ax_inset._is_orientation_inset = True
 
-        # Copiar orientación de cámara del gráfico principal
+        # Copy main graph orientation
         ax_inset.view_init(elev=ax_main.elev, azim=ax_main.azim)
 
-        # Límites pequeños centrados en el origen
+        # Small limits
         lim = 1.2
         ax_inset.set_xlim(-lim, lim)
         ax_inset.set_ylim(-lim, lim)
         ax_inset.set_zlim(-lim, lim)
 
-        # Ocultar ticks, labels y marco
+        # Hide ticks, labels 
         ax_inset.set_xticks([])
         ax_inset.set_yticks([])
         ax_inset.set_zticks([])
@@ -299,19 +297,19 @@ class VisualManager:
         ax_inset.set_zlabel("")
         ax_inset.set_axis_off()
 
-        # Eje a*: Green <-> Red
+        # a*: Green <-> Red
         ax_inset.quiver(0, 0, 0,  1, 0, 0, color="red",   arrow_length_ratio=0.2)
         ax_inset.quiver(0, 0, 0, -1, 0, 0, color="green", arrow_length_ratio=0.2)
 
-        # Eje b*: Blue <-> Yellow
+        # b*: Blue <-> Yellow
         ax_inset.quiver(0, 0, 0, 0,  1, 0, color="gold", arrow_length_ratio=0.2)
         ax_inset.quiver(0, 0, 0, 0, -1, 0, color="blue", arrow_length_ratio=0.2)
 
-        # Eje L*: Dark <-> Light
+        # L*: Dark <-> Light
         ax_inset.quiver(0, 0, 0, 0, 0,  1, color="gray", arrow_length_ratio=0.2)
         ax_inset.quiver(0, 0, 0, 0, 0, -1, color="black",  arrow_length_ratio=0.2)
 
-        # Etiquetas
+        # Labels
         ax_inset.text( 1.18, -0.05,  0.00, "+a*", fontsize=8)
         ax_inset.text(-1.32,  0.02,  0.02, "-a*", fontsize=8)
 
