@@ -4,18 +4,17 @@ from Source.geometry.Plane import Plane
 
 
 class Face:
-    def __init__(self, p: Plane, vertex: List[Point] = None, infinity: bool = False, is_false_boundary: bool = False, source_index: int = None):
+    def __init__(self, p: Plane, vertex: List[Point] = None, infinity: bool = False, source_index: int = None, is_domain_boundary: bool = False):
         self.p = p
+
         if isinstance(vertex, bool):
             infinity = vertex
             vertex = None
 
         self.vertex = vertex[:] if vertex is not None else None
         self.infinity = infinity
-
-        # Metadata extra
-        self.is_false_boundary = is_false_boundary
         self.source_index = source_index
+        self.is_domain_boundary = is_domain_boundary
 
     def addVertex(self, v: Point):
         if self.vertex is None:
@@ -49,11 +48,14 @@ class Face:
     def setInfinity(self):
         self.infinity = True
 
-    def isFalseBoundary(self) -> bool:
-        return self.is_false_boundary
+    def clearInfinity(self):
+        self.infinity = False
 
-    def setFalseBoundary(self, value: bool):
-        self.is_false_boundary = value
+    def isDomainBoundary(self) -> bool:
+        return self.is_domain_boundary
+
+    def setDomainBoundary(self, value: bool):
+        self.is_domain_boundary = value
 
     def getSourceIndex(self):
         return self.source_index
@@ -67,9 +69,9 @@ class Face:
             copied_vertices = [Point(v.x, v.y, v.z) for v in self.vertex]
 
         return Face(
-            p=Plane(self.p.A, self.p.B, self.p.C, self.p.D),
+            p=self.p.copy(),
             vertex=copied_vertices,
             infinity=self.infinity,
-            is_false_boundary=self.is_false_boundary,
             source_index=self.source_index,
+            is_domain_boundary=self.is_domain_boundary,
         )

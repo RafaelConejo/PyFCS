@@ -33,12 +33,14 @@ class FuzzyColor:
         f2 = Face(p=parallel_planes[1], infinity=face.infinity)
 
         if face.getArrayVertex() is not None:
-            # Create new vertices for each face of the core and support
             for v in face.getArrayVertex():
-                vertex_f1 = GeometryTools.intersection_plane_rect(f1.p, representative, Point(v[0], v[1], v[2]))
-                vertex_f2 = GeometryTools.intersection_plane_rect(f2.p, representative, Point(v[0], v[1], v[2]))
-                f1.addVertex(vertex_f1)
-                f2.addVertex(vertex_f2)
+                vertex_f1 = GeometryTools.intersection_plane_rect(f1.p, representative, v)
+                vertex_f2 = GeometryTools.intersection_plane_rect(f2.p, representative, v)
+
+                if vertex_f1 is not None:
+                    f1.addVertex(vertex_f1)
+                if vertex_f2 is not None:
+                    f2.addVertex(vertex_f2)
 
         # Add the corresponding face to core and support
         if GeometryTools.distance_point_plane(f1.p, representative) < GeometryTools.distance_point_plane(f2.p, representative):
@@ -70,8 +72,8 @@ class FuzzyColor:
             for face in proto.voronoi_volume.getFaces():
                     FuzzyColor.add_face_to_core_support(face, Point(*proto.positive), core_volume, support_volume, scaling_factor)
 
-            core_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=core_volume, add_false=proto.add_false)
-            support_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=support_volume, add_false=proto.add_false)
+            core_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=core_volume)
+            support_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=support_volume)
             
             core_volumes.append(core_volume_dict)
             support_volumes.append(support_volume_dict)

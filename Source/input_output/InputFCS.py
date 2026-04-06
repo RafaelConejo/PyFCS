@@ -21,8 +21,7 @@ class InputFCS(Input):
             Prototype(
                 label=color_name,
                 positive=lab_value,
-                negatives=[lab for other_name, lab in selected_colors_lab.items() if other_name != color_name],
-                add_false=True
+                negatives=[lab for other_name, lab in selected_colors_lab.items() if other_name != color_name]
             )
             for color_name, lab_value in selected_colors_lab.items()
         ]
@@ -30,37 +29,85 @@ class InputFCS(Input):
         # Step 3: Create the fuzzy color space
         fuzzy_color_space = FuzzyColorSpace(space_name=name, prototypes=prototypes)
 
-        cores_planes = self.extract_planes_and_vertex(getattr(fuzzy_color_space, "cores", []))
-        voronoi_planes = self.extract_planes_and_vertex(getattr(fuzzy_color_space, "prototypes", []))
-        supports_planes = self.extract_planes_and_vertex(getattr(fuzzy_color_space, "supports", []))
+        cores_planes = self.extract_planes_and_vertex(getattr(fuzzy_color_space, "cores", None) or [])
+        voronoi_planes = self.extract_planes_and_vertex(getattr(fuzzy_color_space, "prototypes", None) or [])
+        supports_planes = self.extract_planes_and_vertex(getattr(fuzzy_color_space, "supports", None) or [])
+
+        # Evitar None por seguridad
+        cores_planes = cores_planes or []
+        voronoi_planes = voronoi_planes or []
+        supports_planes = supports_planes or []
 
         save_path = os.path.join(get_base_path(), "fuzzy_color_spaces")
         os.makedirs(save_path, exist_ok=True)
         file_path = os.path.join(save_path, f"{name}.fcs")
 
+        def safe_vertices(vertices):
+            """Return a clean list of 3D vertices, never None."""
+            if vertices is None:
+                return []
+            clean = []
+            for v in vertices:
+                if v is None:
+                    continue
+                if isinstance(v, (list, tuple)) and len(v) >= 3:
+                    clean.append(v)
+            return clean
+
+        def count_plane_lines(block):
+            """
+            Count approximate output lines for a plane block returned by
+            extract_planes_and_vertex():
+                [label:str, plane, num_vertex, vertices, plane, num_vertex, vertices, ..., label:str, ...]
+            """
+            if not block:
+                return 0
+
+            total = 0
+            i = 0
+            while i < len(block):
+                item = block[i]
+
+                # color label separator
+                if isinstance(item, str):
+                    i += 1
+                    continue
+
+                # must have plane + num + vertices
+                if i + 2 >= len(block):
+                    break
+
+                vertices = safe_vertices(block[i + 2])
+
+                # 1 line plane + 1 line num_vertex + N vertex lines
+                total += 2 + len(vertices)
+                i += 3
+
+            return total
+
         # Total Lines for Loading
         total_lines = (
             3 +  # @name, @colorSpaceLAB, @numberOfColors
-            len(selected_colors_lab) +  # Cada color
-            (len(cores_planes) // 3) * 3 + len(cores_planes) // 3 +  # @core y sus datos
-            (len(voronoi_planes) // 3) * 3 + len(voronoi_planes) // 3 +  # @voronoi y sus datos
-            (len(supports_planes) // 3) * 3 + len(supports_planes) // 3   # @support y sus datos
+            len(selected_colors_lab) +  # each color
+            sum(1 for x in cores_planes if isinstance(x, str)) + count_plane_lines(cores_planes) +
+            sum(1 for x in voronoi_planes if isinstance(x, str)) + count_plane_lines(voronoi_planes) +
+            sum(1 for x in supports_planes if isinstance(x, str)) + count_plane_lines(supports_planes)
         )
 
-        current_line = 0  # Contador de líneas escritas
+        current_line = 0  # written lines counter
 
         with open(file_path, "w") as file:
-            file.write("@name" + f"{name}\n")
+            file.write(f"@name {name}\n")
             current_line += 1
             if progress_callback:
                 progress_callback(current_line, total_lines)
 
-            file.write("@colorSpaceLAB " + "\n")
+            file.write("@colorSpaceLAB\n")
             current_line += 1
             if progress_callback:
                 progress_callback(current_line, total_lines)
 
-            file.write("@numberOfColors" + f"{len(prototypes)}\n")
+            file.write(f"@numberOfColors {len(prototypes)}\n")
             current_line += 1
             if progress_callback:
                 progress_callback(current_line, total_lines)
@@ -73,6 +120,7 @@ class InputFCS(Input):
                     progress_callback(current_line, total_lines)
 
             c = vol = s = 0
+
             while cores_planes or voronoi_planes or supports_planes:
                 if cores_planes:
                     file.write("@core\n")
@@ -82,9 +130,14 @@ class InputFCS(Input):
 
                     c += 1
                     while c < len(cores_planes) and not isinstance(cores_planes[c], str):
-                        plane_str = "\t".join(map(str, cores_planes[c]))
-                        num_vertex = str(cores_planes[c + 1])
-                        vertices_str = "\n".join(f"{v[0]} {v[1]} {v[2]}" for v in cores_planes[c + 2])
+                        if c + 2 >= len(cores_planes):
+                            break
+
+                        plane = cores_planes[c]
+                        vertices = safe_vertices(cores_planes[c + 2])
+
+                        plane_str = "\t".join(map(str, plane))
+                        num_vertex = len(vertices)
 
                         file.write(f"{plane_str}\n")
                         current_line += 1
@@ -96,12 +149,14 @@ class InputFCS(Input):
                         if progress_callback:
                             progress_callback(current_line, total_lines)
 
-                        file.write(f"{vertices_str}\n")
-                        current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
+                        for v in vertices:
+                            file.write(f"{v[0]} {v[1]} {v[2]}\n")
+                            current_line += 1
+                            if progress_callback:
+                                progress_callback(current_line, total_lines)
 
                         c += 3
+
                     del cores_planes[:c]
                     c = 0
 
@@ -113,9 +168,14 @@ class InputFCS(Input):
 
                     vol += 1
                     while vol < len(voronoi_planes) and not isinstance(voronoi_planes[vol], str):
-                        plane_str = "\t".join(map(str, voronoi_planes[vol]))
-                        num_vertex = str(voronoi_planes[vol + 1])
-                        vertices_str = "\n".join(f"{v[0]} {v[1]} {v[2]}" for v in voronoi_planes[vol + 2])
+                        if vol + 2 >= len(voronoi_planes):
+                            break
+
+                        plane = voronoi_planes[vol]
+                        vertices = safe_vertices(voronoi_planes[vol + 2])
+
+                        plane_str = "\t".join(map(str, plane))
+                        num_vertex = len(vertices)
 
                         file.write(f"{plane_str}\n")
                         current_line += 1
@@ -127,12 +187,14 @@ class InputFCS(Input):
                         if progress_callback:
                             progress_callback(current_line, total_lines)
 
-                        file.write(f"{vertices_str}\n")
-                        current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
+                        for v in vertices:
+                            file.write(f"{v[0]} {v[1]} {v[2]}\n")
+                            current_line += 1
+                            if progress_callback:
+                                progress_callback(current_line, total_lines)
 
                         vol += 3
+
                     del voronoi_planes[:vol]
                     vol = 0
 
@@ -144,9 +206,14 @@ class InputFCS(Input):
 
                     s += 1
                     while s < len(supports_planes) and not isinstance(supports_planes[s], str):
-                        plane_str = "\t".join(map(str, supports_planes[s]))
-                        num_vertex = str(supports_planes[s + 1])
-                        vertices_str = "\n".join(f"{v[0]} {v[1]} {v[2]}" for v in supports_planes[s + 2])
+                        if s + 2 >= len(supports_planes):
+                            break
+
+                        plane = supports_planes[s]
+                        vertices = safe_vertices(supports_planes[s + 2])
+
+                        plane_str = "\t".join(map(str, plane))
+                        num_vertex = len(vertices)
 
                         file.write(f"{plane_str}\n")
                         current_line += 1
@@ -158,12 +225,14 @@ class InputFCS(Input):
                         if progress_callback:
                             progress_callback(current_line, total_lines)
 
-                        file.write(f"{vertices_str}\n")
-                        current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
+                        for v in vertices:
+                            file.write(f"{v[0]} {v[1]} {v[2]}\n")
+                            current_line += 1
+                            if progress_callback:
+                                progress_callback(current_line, total_lines)
 
                         s += 3
+
                     del supports_planes[:s]
                     s = 0
 
@@ -268,7 +337,7 @@ class InputFCS(Input):
                                     negatives = [color[1:] for idx, color in enumerate(colors) if idx != i]
                                     voronoi_volume = Volume(Point(*colors[i][1:]), faces)
 
-                                    cores.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
+                                    cores.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume))
 
                                     faces = []
                                     break
@@ -295,7 +364,7 @@ class InputFCS(Input):
                                 if line.startswith("@support"):
                                     voronoi_volume = Volume(Point(*colors[i][1:]), faces)
 
-                                    prototypes.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
+                                    prototypes.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume))
 
                                     faces = []
                                     break
@@ -321,7 +390,7 @@ class InputFCS(Input):
                                 line = next(lines).strip()
                                 if line.startswith("@core"):
                                     voronoi_volume = Volume(Point(*colors[i][1:]), faces)
-                                    supports.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
+                                    supports.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume))
 
                                     faces = []
                                     i += 1  # Activate Next Color
@@ -329,7 +398,7 @@ class InputFCS(Input):
 
                     except StopIteration:
                         voronoi_volume = Volume(Point(*colors[i][1:]), faces)
-                        supports.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume, True))
+                        supports.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume))
                         break
 
                 return color_data, FuzzyColorSpace(fcs_name, prototypes, cores, supports)
@@ -343,27 +412,52 @@ class InputFCS(Input):
 
     def extract_planes_and_vertex(self, prototypes):
         data = []
-        
-        for prototype in prototypes:
-            data.append(prototype.label)
-            for face in getattr(prototype.voronoi_volume, "faces", []):  
-                plane = getattr(face, "p", None)  
-                infinity = getattr(face, "infinity", None)
-                vertex = getattr(face, "vertex", [])  
-                
-                if plane:
-                    A = getattr(plane, "A", None)
-                    B = getattr(plane, "B", None)
-                    C = getattr(plane, "C", None)
-                    D = getattr(plane, "D", None)
-                    
-                    if None not in (A, B, C, D):
-                        # Extrae las coordenadas de los vértices si existen
-                        vertex_coords = [(v.x, v.y, v.z) if hasattr(v, 'x') else tuple(v) for v in vertex]
-                        data.append((A, B, C, D, infinity))
-                        data.append(len(vertex_coords))
-                        data.append(vertex_coords)
-        
-        return data
 
-    
+        if not prototypes:
+            return data
+
+        for prototype in prototypes:
+            if prototype is None:
+                continue
+
+            data.append(getattr(prototype, "label", "Unknown"))
+
+            volume = getattr(prototype, "voronoi_volume", None)
+            if volume is None:
+                continue
+
+            faces = getattr(volume, "faces", None) or []
+            for face in faces:
+                if face is None:
+                    continue
+
+                plane = getattr(face, "p", None)
+                infinity = getattr(face, "infinity", None)
+                vertex = getattr(face, "vertex", None) or []
+
+                if not plane:
+                    continue
+
+                A = getattr(plane, "A", None)
+                B = getattr(plane, "B", None)
+                C = getattr(plane, "C", None)
+                D = getattr(plane, "D", None)
+
+                if None in (A, B, C, D):
+                    continue
+
+                vertex_coords = []
+                for v in vertex:
+                    if v is None:
+                        continue
+
+                    if hasattr(v, "x") and hasattr(v, "y") and hasattr(v, "z"):
+                        vertex_coords.append((v.x, v.y, v.z))
+                    elif isinstance(v, (list, tuple)) and len(v) >= 3:
+                        vertex_coords.append((v[0], v[1], v[2]))
+
+                data.append((A, B, C, D, infinity))
+                data.append(len(vertex_coords))
+                data.append(vertex_coords)
+
+        return data

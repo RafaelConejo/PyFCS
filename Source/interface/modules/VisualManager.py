@@ -33,23 +33,17 @@ class VisualManager:
     def clip_face_to_volume(vertices, volume_limits):
         """
         Clamp face vertices to the axis-aligned LAB bounding box defined by volume_limits.
-
-        Expected component order in the input vertices:
-        - comp1 -> L*
-        - comp2 -> a*
-        - comp3 -> b*
-
-        Args:
-            vertices: Iterable of vertices. Items may be arrays/lists or custom Point objects.
-            volume_limits: Object containing comp1, comp2 and comp3 min/max bounds.
-
-        Returns:
-            A NumPy array with clipped vertices.
         """
+        if vertices is None:
+            return np.empty((0, 3), dtype=float)
+
         processed_vertices = [
             vertex.get_double_point() if isinstance(vertex, Point) else vertex
             for vertex in vertices
         ]
+
+        if not processed_vertices:
+            return np.empty((0, 3), dtype=float)
 
         vertices_array = np.asarray(processed_vertices, dtype=float)
 
@@ -181,7 +175,7 @@ class VisualManager:
                     valid_faces = []
 
                     for face in prototype.voronoi_volume.faces:
-                        if face.infinity:
+                        if face.infinity or face.vertex is None:
                             continue
 
                         clipped_face = VisualManager.clip_face_to_volume(
@@ -190,7 +184,6 @@ class VisualManager:
                         )
 
                         if len(clipped_face) >= 3:
-                            # Reorder from LAB = [L, a, b] to plot axes = [a, b, L].
                             valid_faces.append(clipped_face[:, [1, 2, 0]])
 
                     setattr(prototype, cache_attr, valid_faces)
@@ -267,10 +260,10 @@ class VisualManager:
 
 
     @staticmethod
-    def draw_orientation_inset(fig, ax_main):
+    def draw_orientation_inset(fig, ax_main=None):
         """
-        Draw a fixed-position 3D orientation inset that mimics the camera
-        of the main axes but stays fixed on screen.
+        Draw a fixed-position 3D orientation inset with a fixed camera,
+        independent from the main axes.
         """
         for existing_ax in fig.axes[:]:
             if hasattr(existing_ax, "_is_orientation_inset"):
@@ -279,16 +272,14 @@ class VisualManager:
         ax_inset = fig.add_axes([0.02, 0.02, 0.18, 0.30], projection="3d")
         ax_inset._is_orientation_inset = True
 
-        # Copy main graph orientation
-        ax_inset.view_init(elev=ax_main.elev, azim=ax_main.azim)
+        # Fixed orientation
+        ax_inset.view_init(elev=30, azim=-60)
 
-        # Small limits
         lim = 1.2
         ax_inset.set_xlim(-lim, lim)
         ax_inset.set_ylim(-lim, lim)
         ax_inset.set_zlim(-lim, lim)
 
-        # Hide ticks, labels 
         ax_inset.set_xticks([])
         ax_inset.set_yticks([])
         ax_inset.set_zticks([])
@@ -306,10 +297,9 @@ class VisualManager:
         ax_inset.quiver(0, 0, 0, 0, -1, 0, color="blue", arrow_length_ratio=0.2)
 
         # L*: Dark <-> Light
-        ax_inset.quiver(0, 0, 0, 0, 0,  1, color="gray", arrow_length_ratio=0.2)
-        ax_inset.quiver(0, 0, 0, 0, 0, -1, color="black",  arrow_length_ratio=0.2)
+        ax_inset.quiver(0, 0, 0, 0, 0,  1, color="gray",  arrow_length_ratio=0.2)
+        ax_inset.quiver(0, 0, 0, 0, 0, -1, color="black", arrow_length_ratio=0.2)
 
-        # Labels
         ax_inset.text( 1.18, -0.05,  0.00, "+a*", fontsize=8)
         ax_inset.text(-1.32,  0.02,  0.02, "-a*", fontsize=8)
 
@@ -427,18 +417,20 @@ class VisualManager:
 
                 # Build a triangulated mesh for each finite Voronoi face
                 for face in prototype.voronoi_volume.faces:
-                    if not face.infinity:
-                        clipped = VisualManager.clip_face_to_volume(
-                            np.array(face.vertex), volume_limits
-                        )
-                        if len(clipped) >= 3:
-                            # Reorder to a*, b*, L* for plotting coordinates
-                            clipped = clipped[:, [1, 2, 0]]
-                            triangles = triangulate_face(clipped)
-                            for tri in triangles:
-                                idx0 = len(vertices)
-                                vertices.extend(tri)
-                                faces.append([idx0, idx0 + 1, idx0 + 2])
+                    if face.infinity or face.vertex is None:
+                        continue
+
+                    clipped = VisualManager.clip_face_to_volume(
+                        face.vertex,
+                        volume_limits
+                    )
+                    if len(clipped) >= 3:
+                        clipped = clipped[:, [1, 2, 0]]
+                        triangles = triangulate_face(clipped)
+                        for tri in triangles:
+                            idx0 = len(vertices)
+                            vertices.extend(tri)
+                            faces.append([idx0, idx0 + 1, idx0 + 2])
 
                 if vertices:
                     vertices = np.array(vertices)
