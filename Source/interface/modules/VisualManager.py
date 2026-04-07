@@ -272,6 +272,10 @@ class VisualManager:
         ax_inset = fig.add_axes([0.02, 0.02, 0.18, 0.30], projection="3d")
         ax_inset._is_orientation_inset = True
 
+        # Remove white background
+        ax_inset.set_facecolor((1, 1, 1, 0))
+        ax_inset.patch.set_alpha(0)
+
         # Fixed orientation
         ax_inset.view_init(elev=30, azim=-60)
 
@@ -287,6 +291,18 @@ class VisualManager:
         ax_inset.set_ylabel("")
         ax_inset.set_zlabel("")
         ax_inset.set_axis_off()
+
+        # También por si Matplotlib deja panes visibles en 3D
+        try:
+            ax_inset.xaxis.pane.fill = False
+            ax_inset.yaxis.pane.fill = False
+            ax_inset.zaxis.pane.fill = False
+
+            ax_inset.xaxis.pane.set_edgecolor((1, 1, 1, 0))
+            ax_inset.yaxis.pane.set_edgecolor((1, 1, 1, 0))
+            ax_inset.zaxis.pane.set_edgecolor((1, 1, 1, 0))
+        except Exception:
+            pass
 
         # a*: Green <-> Red
         ax_inset.quiver(0, 0, 0,  1, 0, 0, color="red",   arrow_length_ratio=0.2)

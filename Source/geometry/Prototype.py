@@ -37,7 +37,7 @@ class Prototype:
             # and avoids qvoronoi failures with insufficient or degenerate inputs.
             # For larger sets, qvoronoi is much faster.
             if total_points < 10:
-                self.voronoi_volume = self.build_volume_small(
+                self.voronoi_volume = self.build_volume_voronoi(
                     self.positive,
                     self.negatives
                 )

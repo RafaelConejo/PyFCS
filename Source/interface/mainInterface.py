@@ -15,6 +15,7 @@ if BASE_PATH not in sys.path:
 
 import math
 import time
+import copy
 import random
 import platform
 import itertools
@@ -24,6 +25,7 @@ import tkinter as tk
 from skimage import color
 import tkinter.font as tkFont
 from functools import partial
+import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageEnhance
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -32,7 +34,6 @@ from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORM
 from PyQt5.QtCore import QUrl, QEventLoop
 from PyQt5.QtWidgets import QVBoxLayout, QWidget, QApplication, QMainWindow
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-import matplotlib.pyplot as plt
 
 # --- project imports ---
 from Source.input_output.Input import Input
@@ -91,6 +92,15 @@ class PyFCSApp:
 
         # Centralized image/icon references to avoid garbage collection
         self.ui_icons = {}
+
+        if not hasattr(self, "threshold_settings"):
+            self.threshold_settings = {
+                "metric": "CIEDE2000",
+                "mode": "known",      # raw | known | custom
+                "preset": "pt_at",    # pt | at | pt_at
+                "lower": 0.8,
+                "upper": 1.8,
+            }
 
         # ---------------------------------------------------------------------
         # Main window configuration
@@ -1102,6 +1112,7 @@ class PyFCSApp:
             self.proto_percentage_cache.clear()
 
             self.color_data = data["color_data"]
+            self.edit_color_data = copy.deepcopy(self.color_data)
             self.display_data_window()
             self._reset_3d_canvas()
 
@@ -1348,37 +1359,52 @@ class PyFCSApp:
 
         def confirm_color():
             """
-            Validates the input and adds the new color to the colors dictionary.
-            Closes the popup if the input is valid.
+            Validates the input and stores the new color result.
+            Closes the popup only if the input is valid.
             """
+            color_name = color_name_var.get().strip()
+
+            if not color_name:
+                self.custom_warning("Invalid Input", "The color name cannot be empty.")
+                return
+
+            # Optional: case-insensitive duplicate check
+            existing_names = {name.strip().lower() for name in colors.keys()}
+            if color_name.lower() in existing_names:
+                self.custom_warning(
+                    "Invalid Input",
+                    f"The color name '{color_name}' already exists."
+                )
+                return
+
             try:
-                color_name = color_name_var.get().strip()
                 l_value = float(l_value_var.get())
                 a_value = float(a_value_var.get())
                 b_value = float(b_value_var.get())
+            except ValueError:
+                self.custom_warning(
+                    "Invalid Input",
+                    "L, A and B values must be valid numbers."
+                )
+                return
 
-                # Validate inputs
-                if not color_name:
-                    raise ValueError("The color name cannot be empty.")
-                if not (0 <= l_value <= 100):
-                    raise ValueError("L value must be between 0 and 100.")
-                if not (-128 <= a_value <= 127):
-                    raise ValueError("A value must be between -128 and 127.")
-                if not (-128 <= b_value <= 127):
-                    raise ValueError("B value must be between -128 and 127.")
-                if color_name in colors:
-                    raise ValueError(f"The color name '{color_name}' already exists.")
+            if not (0 <= l_value <= 100):
+                self.custom_warning("Invalid Input", "L value must be between 0 and 100.")
+                return
 
-                # Store the result
-                result["color_name"] = color_name
-                result["lab"] = {"L": l_value, "A": a_value, "B": b_value}
+            if not (-128 <= a_value <= 127):
+                self.custom_warning("Invalid Input", "A value must be between -128 and 127.")
+                return
 
-                # Add the color to the dictionary
-                colors[color_name] = {"lab": result["lab"]}
-                popup.destroy()  # Close the popup
+            if not (-128 <= b_value <= 127):
+                self.custom_warning("Invalid Input", "B value must be between -128 and 127.")
+                return
 
-            except ValueError as e:
-                self.custom_warning("Invalid Input", str(e))  # Show error message for invalid input
+            result["color_name"] = color_name
+            result["lab"] = {"L": l_value, "A": a_value, "B": b_value}
+
+            popup.destroy()
+
 
         def browse_color():
             """
@@ -2576,8 +2602,15 @@ class PyFCSApp:
         self.color_matrix = []  # Store color names
 
         # Iterate through color data and populate rows
-        for i, (color_name, color_value) in enumerate(self.color_data.items()):
-            lab = np.array(color_value['positive_prototype'])  # Extract and convert LAB color values
+        data_source = getattr(self, "edit_color_data", self.color_data)
+        for i, (color_name, color_value) in enumerate(data_source.items()):
+            # Extract and convert LAB color values
+            if "positive_prototype" in color_value:
+                lab = np.array(color_value["positive_prototype"])
+            elif "Color" in color_value:
+                lab = np.array(color_value["Color"])
+            else:
+                continue
             self.color_matrix.append(color_name)
 
             # Draw table columns (L, a, b, Label)
@@ -2624,104 +2657,126 @@ class PyFCSApp:
             
 
     def remove_color(self, index):
-        """Remove a color at a specific index and refresh the display."""
-        if len(self.color_data) <= 2:
-            # Ensure at least two colors remain in the dataset
-            self.custom_warning("Cannot Remove Color", "At least two colors must remain. The color was not removed.")
-            return  
-        
-        # Get the name of the color to remove using the provided index
+        """Remove a color from the editable dataset and refresh the display."""
+        if len(self.edit_color_data) <= 2:
+            self.custom_warning(
+                "Cannot Remove Color",
+                "At least two colors must remain. The color was not removed."
+            )
+            return
+
         color_name = self.color_matrix[index]
-        
-        # Check if the color exists in color_data
-        if color_name in self.color_data:
-            # Iterate over other colors to remove the corresponding negative prototype
-            for _, data in self.color_data.items():
-                # Filter out the negative prototypes matching the positive prototype of the color being removed
-                data["negative_prototypes"] = [
-                    prototype for prototype in data["negative_prototypes"]
-                    if not np.array_equal(prototype, self.color_data[color_name]["positive_prototype"])
+
+        if color_name in self.edit_color_data:
+            color_entry = self.edit_color_data[color_name]
+            if "positive_prototype" in color_entry:
+                removed_positive = np.array(color_entry["positive_prototype"])
+            elif "Color" in color_entry:
+                removed_positive = np.array(color_entry["Color"])
+            else:
+                return
+
+            for existing_color, data in self.edit_color_data.items():
+                if existing_color == color_name:
+                    continue
+
+                negatives = data["negative_prototypes"]
+                filtered = [
+                    prototype for prototype in negatives
+                    if not np.array_equal(prototype, removed_positive)
                 ]
-            
-            # Remove the color from color_data
-            del self.color_data[color_name]
-        
-        # Refresh the display and prototypes to reflect the changes
+                data["negative_prototypes"] = np.array(filtered)
+
+            del self.edit_color_data[color_name]
+
         self.display_data_window()
-        self.update_volumes()
 
 
 
     def addColor_data_window(self):
-        """Add a new color to the dataset and update the display."""
-        if self.COLOR_SPACE:
-            # Call `addColor` to get the new color's data
-            new_color_data = self.color_data.copy()
-            new_color, lab_values = self.addColor(self.inner_frame_data, new_color_data)
-            new_color_data = self.color_data.copy()
+        """Add a new color to the editable dataset and update the display."""
+        if not self.COLOR_SPACE:
+            return
 
-            # Verify if the user added a valid color
-            if new_color and lab_values:
-                # Create the data structure for the new color
-                positive_prototype = np.array([lab_values["L"], lab_values["A"], lab_values["B"]])
-                negative_prototypes = []
+        import copy
+        new_color_data = copy.deepcopy(self.edit_color_data)
+        new_color, lab_values = self.addColor(self.inner_frame_data, new_color_data)
 
-                # Gather positive prototypes of other colors to use as negative prototypes for the new color
-                for existing_color, data in new_color_data.items():
-                    negative_prototypes.append(data["positive_prototype"])
+        if new_color and lab_values:
+            positive_prototype = np.array([
+                lab_values["L"],
+                lab_values["A"],
+                lab_values["B"]
+            ])
 
-                # Convert the list of negative prototypes into a NumPy array
-                negative_prototypes = np.array(negative_prototypes)
+            negative_prototypes = []
+            for _, data in new_color_data.items():
+                if "positive_prototype" in data:
+                    negative_prototypes.append(np.array(data["positive_prototype"]))
+                elif "Color" in data:
+                    negative_prototypes.append(np.array(data["Color"]))
 
-                # Add the new color to color_data
-                new_color_data[new_color] = {
-                    "Color": [lab_values["L"], lab_values["A"], lab_values["B"]],
-                    "positive_prototype": positive_prototype,
-                    "negative_prototypes": negative_prototypes
-                }
+            negative_prototypes = np.array(negative_prototypes)
 
-                # Add the new color's positive prototype as a negative prototype to other colors
-                for existing_color, data in new_color_data.items():
-                    if existing_color != new_color:
-                        existing_prototypes = data["negative_prototypes"]
-                        updated_prototypes = (
-                            np.vstack([existing_prototypes, positive_prototype]) 
-                            if len(existing_prototypes) > 0 
-                            else positive_prototype
-                        )
-                        new_color_data[existing_color]["negative_prototypes"] = updated_prototypes
+            new_color_data[new_color] = {
+                "Color": [lab_values["L"], lab_values["A"], lab_values["B"]],
+                "positive_prototype": positive_prototype,
+                "negative_prototypes": negative_prototypes
+            }
 
-                # Update color_data with the new dataset
-                self.color_data = new_color_data.copy()
+            for existing_color, data in new_color_data.items():
+                if existing_color == new_color:
+                    continue
 
-                # Refresh the display and prototypes to include the new color
-                self.display_data_window()
-                self.update_volumes()
+                existing_negatives = data.get("negative_prototypes", [])
+
+                if len(existing_negatives) > 0:
+                    updated_negatives = np.vstack([existing_negatives, positive_prototype])
+                else:
+                    updated_negatives = np.array([positive_prototype])
+
+                new_color_data[existing_color]["negative_prototypes"] = updated_negatives
+
+            self.edit_color_data = new_color_data
+            self.display_data_window()
 
 
 
     def apply_changes(self):
-        """Applies the changes made to the color list."""
-        if not self.file_path:
-            self.custom_warning("Error", "No file has been loaded.")
+        """Applies the pending changes made to the editable color list."""
+        if not self.COLOR_SPACE:
+            self.custom_warning("Error", "No Color Space has been loaded.")
+            return
+
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
+            )
             return
 
         try:
-            # Delete the original file
+            import copy
+            self.color_data = copy.deepcopy(self.edit_color_data)
+
             if os.path.exists(self.file_path):
-                with open(self.file_path, 'w') as f:
+                with open(self.file_path, "w") as f:
                     f.close()
                 os.remove(self.file_path)
 
-            # Save the changes in a new file with the same name
             with open(self.file_path, "w", encoding="utf-8") as file:
-                color_dict = {key: value['positive_prototype'] for key, value in self.color_data.items()}
+                color_dict = {
+                    key: value["positive_prototype"]
+                    for key, value in self.color_data.items()
+                }
                 self.save_fcs(self.file_name_entry.get(), self.color_data, color_dict)
-        
+
+            self.update_volumes()
+
         except Exception as e:
             self.custom_warning("Error", f"Changes could not be saved: {e}")
 
-        
+
 
 
 
@@ -2879,6 +2934,12 @@ class PyFCSApp:
         """
         if hasattr(self, "floating_images"):
             for window_id in list(self.floating_images.keys()):
+                # Delete rectangle o pixel info
+                try:
+                    self._disable_original_rectangle_sampling(window_id)
+                except Exception:
+                    pass
+        
                 # Close each window
                 self.image_canvas.delete(window_id)
                 del self.floating_images[window_id]
@@ -2939,6 +3000,30 @@ class PyFCSApp:
         if filename:
             self.create_floating_window(50, 50, filename)
 
+
+
+    def _clear_original_selection_rectangle(self, window_id):
+        """
+        Remove the current original-image selection rectangle for a floating window
+        without disabling rectangle sampling bindings/state.
+        """
+        if not hasattr(self, "_original_sampling_state"):
+            return
+
+        state = self._original_sampling_state.get(window_id)
+        if not state:
+            return
+
+        rect_id = state.get("rect_id")
+        if rect_id is not None:
+            try:
+                self.image_canvas.delete(rect_id)
+            except Exception:
+                pass
+
+        state["rect_id"] = None
+        state["dragging"] = False
+        state["drag_start"] = None
 
 
     def create_floating_window(self, x, y, filename):
@@ -3201,6 +3286,30 @@ class PyFCSApp:
             _relayout(window_id)
 
         # ---------------------------
+        # Menu action wrappers
+        # ---------------------------
+        def _show_original_image_action():
+            try:
+                self._clear_original_selection_rectangle(window_id)
+            except Exception:
+                pass
+            self.show_original_image(window_id)
+
+        def _color_mapping_action():
+            try:
+                self._clear_original_selection_rectangle(window_id)
+            except Exception:
+                pass
+            self.color_mapping(window_id)
+
+        def _color_mapping_all_action():
+            try:
+                self._clear_original_selection_rectangle(window_id)
+            except Exception:
+                pass
+            self.color_mapping_all(window_id)
+
+        # ---------------------------
         # Close window
         # ---------------------------
         def close_window(event):
@@ -3281,19 +3390,19 @@ class PyFCSApp:
             menu.add_command(
                 label="Original Image",
                 state=NORMAL if self.SHOW_ORIGINAL[window_id] else DISABLED,
-                command=lambda: self.show_original_image(window_id)
+                command=_show_original_image_action
             )
             menu.add_separator()
             menu.add_command(
                 label="Color Mapping",
                 state=NORMAL if mapping_enabled else DISABLED,
-                command=lambda: self.color_mapping(window_id)
+                command=_color_mapping_action
             )
             menu.add_separator()
             menu.add_command(
                 label="Color Mapping All",
                 state=NORMAL if mapping_enabled else DISABLED,
-                command=lambda: self.color_mapping_all(window_id)
+                command=_color_mapping_all_action
             )
             menu.post(event.x_root, event.y_root)
             return "break"
@@ -3307,6 +3416,11 @@ class PyFCSApp:
                 return "break"
             
             self._focus_floating_window(window_id)
+
+            try:
+                self._clear_original_selection_rectangle(window_id)
+            except Exception:
+                pass
 
             self.last_x, self.last_y = event.x, event.y
 
@@ -3336,6 +3450,11 @@ class PyFCSApp:
             """Store initial state for resizing using the bottom-right handle."""
             if self._has_active_job(window_id):
                 return "break"
+
+            try:
+                self._clear_original_selection_rectangle(window_id)
+            except Exception:
+                pass
 
             st = self.floating_window_state[window_id]
             self._resize_start = {
@@ -3376,6 +3495,11 @@ class PyFCSApp:
             self._cancel_window_job(window_id)
 
             self._resize_start = None
+
+            try:
+                self._clear_original_selection_rectangle(window_id)
+            except Exception:
+                pass
 
             # Clear cached results for this window when resizing ends
             try:
@@ -3485,7 +3609,6 @@ class PyFCSApp:
 
         # Focus the newly created window
         self._focus_floating_window(window_id)
-
 
 
 
@@ -5799,13 +5922,7 @@ class PyFCSApp:
         This is used whenever the displayed content is no longer the original image.
         """
         if hasattr(self, "_original_sampling_state") and window_id in self._original_sampling_state:
-            rect_id = self._original_sampling_state[window_id].get("rect_id")
-            if rect_id is not None:
-                try:
-                    self.image_canvas.delete(rect_id)
-                except Exception:
-                    pass
-
+            self._clear_original_selection_rectangle(window_id)
             del self._original_sampling_state[window_id]
 
         # Remove drag-based bindings from both tags
@@ -5824,20 +5941,41 @@ class PyFCSApp:
             pass
 
 
+    def _clip_original_canvas_point_to_image(self, x, y, window_id):
+        """
+        Clamp a canvas point to the visible bounds of the displayed original image.
+        Returns the clipped (x, y) in canvas coordinates.
+        """
+        if not hasattr(self, "_original_sampling_state") or window_id not in self._original_sampling_state:
+            return x, y
+
+        state = self._original_sampling_state[window_id]
+
+        img_x = state["img_x"]
+        img_y = state["img_y"]
+        draw_w = state["draw_w"]
+        draw_h = state["draw_h"]
+
+        clipped_x = max(img_x, min(img_x + draw_w, x))
+        clipped_y = max(img_y, min(img_y + draw_h, y))
+
+        return clipped_x, clipped_y
+
     def _on_original_mouse_down(self, event, window_id):
         """Start rectangle selection on an original floating image."""
         if not hasattr(self, "_original_sampling_state") or window_id not in self._original_sampling_state:
             return
 
-        # Ignore interaction while a background job is active for this window
         if self._has_active_job(window_id):
             return "break"
 
         state = self._original_sampling_state[window_id]
-        state["dragging"] = True
-        state["drag_start"] = (event.x, event.y)
 
-        # Remove any previous selection rectangle
+        start_x, start_y = self._clip_original_canvas_point_to_image(event.x, event.y, window_id)
+
+        state["dragging"] = True
+        state["drag_start"] = (start_x, start_y)
+
         if state["rect_id"] is not None:
             try:
                 self.image_canvas.delete(state["rect_id"])
@@ -5845,9 +5983,8 @@ class PyFCSApp:
                 pass
             state["rect_id"] = None
 
-        # Create a new rectangle that will be updated during drag
         state["rect_id"] = self.image_canvas.create_rectangle(
-            event.x, event.y, event.x, event.y,
+            start_x, start_y, start_x, start_y,
             outline="#ff0000",
             width=2,
             tags=(window_id, "floating", f"{window_id}_selection_rect")
@@ -5857,7 +5994,7 @@ class PyFCSApp:
 
 
     def _on_original_mouse_drag(self, event, window_id):
-        """Update the selection rectangle while dragging."""
+        """Update the selection rectangle while dragging, clipped to image bounds."""
         if not hasattr(self, "_original_sampling_state") or window_id not in self._original_sampling_state:
             return
 
@@ -5866,7 +6003,9 @@ class PyFCSApp:
             return
 
         x0, y0 = state["drag_start"]
-        self.image_canvas.coords(state["rect_id"], x0, y0, event.x, event.y)
+        x1, y1 = self._clip_original_canvas_point_to_image(event.x, event.y, window_id)
+
+        self.image_canvas.coords(state["rect_id"], x0, y0, x1, y1)
 
         return "break"
 
@@ -5901,7 +6040,7 @@ class PyFCSApp:
         full_h = state["full_h"]
 
         x0, y0 = state["drag_start"]
-        x1, y1 = event.x, event.y
+        x1, y1 = self._clip_original_canvas_point_to_image(event.x, event.y, window_id)
 
         left = min(x0, x1)
         right = max(x0, x1)
@@ -5915,9 +6054,6 @@ class PyFCSApp:
 
             # Ignore clicks outside the displayed image
             if local_x < 0 or local_y < 0 or local_x >= draw_w or local_y >= draw_h:
-                if state["rect_id"] is not None:
-                    self.image_canvas.delete(state["rect_id"])
-                    state["rect_id"] = None
                 return "break"
 
             full_x = int(local_x * full_w / draw_w)
@@ -5930,11 +6066,7 @@ class PyFCSApp:
             pixel_lab = UtilsTools.srgb_to_lab(r, g, b)
 
             if self.COLOR_SPACE:
-                self.display_pixel_value(full_x, full_y, pixel_lab, is_average=False)
-
-            if state["rect_id"] is not None:
-                self.image_canvas.delete(state["rect_id"])
-                state["rect_id"] = None
+                self.display_pixel_value(full_x, full_y, pixel_lab, is_average=False, selection_info=None)
 
             return "break"
 
@@ -5951,9 +6083,6 @@ class PyFCSApp:
         bottom_i = max(0, min(draw_h, bottom_i))
 
         if right_i <= left_i or bottom_i <= top_i:
-            if state["rect_id"] is not None:
-                self.image_canvas.delete(state["rect_id"])
-                state["rect_id"] = None
             return "break"
 
         # Map displayed-image coordinates back to original-image coordinates
@@ -5968,9 +6097,6 @@ class PyFCSApp:
         full_bottom = max(0, min(full_h, full_bottom))
 
         if full_right <= full_left or full_bottom <= full_top:
-            if state["rect_id"] is not None:
-                self.image_canvas.delete(state["rect_id"])
-                state["rect_id"] = None
             return "break"
 
         # Compute mean RGB inside the selected rectangle
@@ -5984,168 +6110,42 @@ class PyFCSApp:
 
         pixel_lab = UtilsTools.srgb_to_lab(r, g, b)
 
-        # Use the rectangle center as representative coordinates
+        # Representative coordinates = rectangle center
         cx = (full_left + full_right) // 2
         cy = (full_top + full_bottom) // 2
 
-        if self.COLOR_SPACE:
-            self.display_pixel_value(cx, cy, pixel_lab, is_average=True)
+        selection_info = {
+            "type": "roi",
+            "x1": full_left,
+            "y1": full_top,
+            "x2": full_right - 1,
+            "y2": full_bottom - 1,
+            "width": full_right - full_left,
+            "height": full_bottom - full_top,
+            "pixels": (full_right - full_left) * (full_bottom - full_top),
+            "center_x": cx,
+            "center_y": cy,
+            "mean_rgb": (r, g, b),
+        }
 
-        # Remove selection rectangle after finishing
-        if state["rect_id"] is not None:
-            self.image_canvas.delete(state["rect_id"])
-            state["rect_id"] = None
+        if self.COLOR_SPACE:
+            self.display_pixel_value(
+                cx,
+                cy,
+                pixel_lab,
+                is_average=True,
+                selection_info=selection_info
+            )
 
         return "break"
 
 
-    def show_more_info(self):
-        """Shows detailed information about the last clicked pixel in a 2-column popup (membership vs ΔE00)."""
-        info = getattr(self, "_last_pixel_info", None)
-        if not info:
-            messagebox.showinfo("More Info", "Click on an image pixel first.")
-            return
 
-        win = tk.Toplevel(self.root)
-        win.title("More Info")
-
-        # Fixed initial size to prevent the right column from collapsing
-        WIN_W, WIN_H = 640, 320
-        win.geometry(f"{WIN_W}x{WIN_H}")
-        win.resizable(False, False)
-
-        # Grid: left | separator | right
-        win.grid_rowconfigure(0, weight=1)
-        win.grid_columnconfigure(0, weight=1, minsize=380)
-        win.grid_columnconfigure(1, weight=0)
-        win.grid_columnconfigure(2, weight=1, minsize=240)
-
-        left = tk.Frame(win, padx=12, pady=10)
-        left.grid(row=0, column=0, sticky="nsew")
-
-        separator = tk.Frame(win, width=1, bg="#b0b0b0")
-        separator.grid(row=0, column=1, sticky="ns", padx=6)
-
-        right = tk.Frame(win, padx=12, pady=10)
-        right.grid(row=0, column=2, sticky="nsew")
-
-        # Header at the bottom
-        header = tk.Frame(win, padx=12, pady=8)
-        header.grid(row=1, column=0, columnspan=3, sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
-
-        lab = info["lab"]
-        coord_text = f"({info['x']}, {info['y']})"
-        if info.get("is_average", False):
-            coord_text += " [avg]"
-
-        header_label = tk.Label(
-            header,
-            text=f"Coordinates: {coord_text}    |    LAB: {lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
-            anchor="w"
-        )
-        header_label.grid(row=0, column=0, sticky="ew")
-
-        # ---------------------------
-        # Left: Membership
-        # ---------------------------
-        tk.Label(left, text="Membership Degree (μ)", font=("Sans", 11, "bold"), anchor="w").pack(fill="x")
-
-        winner_label = info.get("winner_label", "None")
-        winner_mu = float(info.get("winner_mu", 0.0))
-        tk.Label(left, text=f"Winner: {winner_label}  |  μ = {winner_mu:.4f}", anchor="w").pack(fill="x", pady=(6, 0))
-
-        tk.Label(left, text="Legend (μ thresholds):", font=("Sans", 10, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
-        tk.Label(
-            left,
-            text="Green   :        μ ≥ 0.80\nOrange :   0.50 ≤ μ < 0.80\nRed       :        μ < 0.50",
-            justify="left",
-            anchor="w"
-        ).pack(fill="x")
-
-        top_memberships = info.get("top_memberships", [])
-        tk.Label(left, text="Top memberships:", font=("Sans", 10, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
-
-        txt = tk.Text(left, height=6, wrap="word")
-        txt.pack(fill="x", expand=False, pady=(4, 0))
-
-        if top_memberships:
-            for lbl, mu in top_memberships:
-                txt.insert("end", f"- {lbl}: {float(mu):.4f}\n")
-        else:
-            txt.insert("end", "No memberships available.\n")
-        txt.config(state="disabled")
-
-        # ---------------------------
-        # Right: CIEDE2000
-        # ---------------------------
-        tk.Label(right, text="CIEDE2000 (ΔE00)", font=("Sans", 11, "bold"), anchor="w").pack(fill="x")
-
-        delta_e = info.get("delta_e", None)
-        if delta_e is None:
-            tk.Label(
-                right,
-                text="ΔE00: not available for this pixel/prototype.",
-                anchor="w",
-                justify="left",
-                wraplength=220
-            ).pack(fill="x", pady=(6, 0))
-        else:
-            tk.Label(
-                right,
-                text=f"ΔE00 (vs positive prototype): {float(delta_e):.3f}",
-                anchor="w",
-                wraplength=220
-            ).pack(fill="x", pady=(6, 0))
-
-            tk.Label(right, text="Legend (ΔE00 thresholds):", font=("Sans", 10, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
-            tk.Label(
-                right,
-                text="PT  :      ΔE ≤ 0.8\nAT  :   0.8 < ΔE ≤ 1.8\n∅    :      ΔE > 1.8",
-                justify="left",
-                anchor="w",
-                wraplength=220
-            ).pack(fill="x")
-
-        # Buttons
-        btns = tk.Frame(win, padx=12, pady=10)
-        btns.grid(row=2, column=0, columnspan=3, sticky="e")
-        tk.Button(btns, text="Close", command=win.destroy).pack()
-
-        # Modal-like behavior
-        win.transient(self.root)
-        win.grab_set()
-        win.focus_set()
-
-        # Center over root
-        win.update_idletasks()
-        root_x = self.root.winfo_rootx()
-        root_y = self.root.winfo_rooty()
-        root_w = self.root.winfo_width()
-        root_h = self.root.winfo_height()
-
-        x = root_x + (root_w - WIN_W) // 2
-        y = root_y + (root_h - WIN_H) // 2
-        win.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
-
-
-
-    def display_pixel_value(self, x_original, y_original, pixel_lab, is_average=False):
+    def display_pixel_value(self, x_original, y_original, pixel_lab, is_average=False, selection_info=None):
         """
         Displays the pixel value in LAB format and its coordinates within a frame at the bottom of the canvas.
-        Shows the closest prototype, its membership degree, and colors the text using membership (μ) thresholds.
-        Also computes ΔE00 (CIEDE2000) and stores detailed info for the "More Info" popup.
-
-        Parameters
-        ----------
-        x_original : int
-            X coordinate in the original image.
-        y_original : int
-            Y coordinate in the original image.
-        pixel_lab : tuple/list/ndarray
-            LAB value to analyze.
-        is_average : bool, optional
-            True when the LAB value comes from the average color of a selected rectangle.
+        Shows only the selected prototype in black text.
+        Stores pixel/ROI info for the "More Info" popup.
         """
         # Create the frame and labels only once
         if not hasattr(self, "lab_value_frame"):
@@ -6156,44 +6156,31 @@ class PyFCSApp:
             text_frame = tk.Frame(self.lab_value_frame, bg="lightgray")
             text_frame.pack(side="left", padx=10, pady=5, fill="x")
 
-            # Define fonts for labels
             bold_font = ("Sans", 12, "bold")
             normal_font = ("Sans", 12)
 
-            # Coordinates label and value
             coord_label = tk.Label(text_frame, text="Coordinates: ", font=bold_font, bg="lightgray")
             coord_label.pack(side="left")
             self.coord_value = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
             self.coord_value.pack(side="left")
 
-            # LAB label and value
             lab_label = tk.Label(text_frame, text="LAB: ", font=bold_font, bg="lightgray")
             lab_label.pack(side="left")
             self.lab_value_print = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
             self.lab_value_print.pack(side="left")
 
-            # Fuzzy color label and value
-            proto_label = tk.Label(text_frame, text="Fuzzy Color: ", font=bold_font, bg="lightgray")
+            proto_label = tk.Label(text_frame, text="Selected Prototype: ", font=bold_font, bg="lightgray")
             proto_label.pack(side="left")
 
-            self.proto_value_text = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
+            self.proto_value_text = tk.Label(text_frame, text="", font=normal_font, bg="lightgray", fg="black")
             self.proto_value_text.pack(side="left")
 
-            self.proto_value_symbol = tk.Label(
-                text_frame,
-                text="",
-                font=("Sans", 20, "bold"),
-                bg="lightgray"
-            )
-            self.proto_value_symbol.pack(side="left", padx=(2, 0))
-
-            # "More Info" button
             more_info_button = tk.Button(
                 self.lab_value_frame,
                 text="🔍",
                 font=("Sans", 9),
                 bg="white",
-                command=self.show_more_info,
+                command=self.show_more_info_pixel,
                 relief="flat",
                 borderwidth=0
             )
@@ -6207,41 +6194,11 @@ class PyFCSApp:
         if membership_degrees:
             max_proto = max(membership_degrees, key=membership_degrees.get)
             winner_mu = float(membership_degrees[max_proto])
-
-            # Store top memberships for the popup
-            top_memberships = sorted(membership_degrees.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            top_memberships = sorted(membership_degrees.items(), key=lambda kv: kv[1], reverse=True)
         else:
             max_proto = None
             winner_mu = 0.0
             top_memberships = []
-
-        # ---------------------------
-        # ΔE00 computation
-        # ---------------------------
-        delta_e = None
-        if max_proto is not None:
-            try:
-                positive = self.color_data[max_proto]["positive_prototype"]
-                delta_e = float(self.color_manager.delta_e_ciede2000(positive, pixel_lab))
-            except Exception:
-                delta_e = None
-
-        # ---------------------------
-        # Choose text color using μ confidence
-        # ---------------------------
-        if max_proto is None:
-            c = "black"
-            mu_class = "none"
-        else:
-            if winner_mu >= 0.80:
-                c = "green"
-                mu_class = "high"
-            elif winner_mu >= 0.50:
-                c = "orange"
-                mu_class = "medium"
-            else:
-                c = "red"
-                mu_class = "low"
 
         # ---------------------------
         # Store data for the "More Info" popup
@@ -6251,53 +6208,1052 @@ class PyFCSApp:
             "y": y_original,
             "lab": pixel_lab,
             "is_average": bool(is_average),
+            "selection_info": selection_info,
 
-            # Membership info
             "winner_label": max_proto if max_proto is not None else "None",
             "winner_mu": winner_mu,
-            "mu_class": mu_class,
             "top_memberships": top_memberships,
-            "mu_thresholds": {"green": 0.80, "orange": 0.50},
-
-            # CIEDE2000 info
-            "delta_e": delta_e,
-            "delta_e_thresholds": {"green": 0.8, "orange": 1.8},
+            "all_memberships": top_memberships,
         }
-
-        # Classify ΔE00 into a short code for compact UI
-        if delta_e is None:
-            de_class = "—"
-        elif delta_e <= 0.8:
-            de_class = "PT"
-        elif delta_e <= 1.8:
-            de_class = "AT"
-        else:
-            de_class = "∅"
 
         # ---------------------------
         # Update UI
         # ---------------------------
-        coord_text = f"({x_original}, {y_original})"
-        if is_average:
-            coord_text += " [avg]"
+        if selection_info and selection_info.get("type") == "roi":
+            coord_text = f"({selection_info['x1']},{selection_info['y1']})→({selection_info['x2']},{selection_info['y2']})"
+        else:
+            coord_text = f"({x_original}, {y_original})"
 
         self.coord_value.config(text=f"{coord_text}    |    ")
         self.lab_value_print.config(text=f"{pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}    |    ")
 
         if max_proto is None:
-            self.proto_value_text.config(text="—", fg=c)
-            self.proto_value_symbol.config(text="")
+            self.proto_value_text.config(text="—", fg="black")
         else:
-            self.proto_value_text.config(text=f"{max_proto}  |", fg=c)
+            self.proto_value_text.config(text=f"{max_proto}", fg="black")
 
-            # Show the far symbol larger only for the strongest visual warning
-            if de_class == "∅":
-                self.proto_value_symbol.config(text=de_class, fg=c)
+
+
+
+    def show_more_info_pixel(self):
+        """Show detailed info for the last clicked pixel/ROI with clickable prototype preview."""
+        info = getattr(self, "_last_pixel_info", None)
+        if not info:
+            messagebox.showinfo("More Info", "Click on an image pixel first.")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("More Info")
+
+        WIN_W, WIN_H = 980, 640
+        win.geometry(f"{WIN_W}x{WIN_H}")
+        win.resizable(False, False)
+        win.configure(bg="#f2f2f2")
+
+        # ---------------------------
+        # Helpers
+        # ---------------------------
+        def safe_hex_from_rgb(rgb, default="#cccccc"):
+            try:
+                r, g, b = rgb
+                r = max(0, min(255, int(round(r))))
+                g = max(0, min(255, int(round(g))))
+                b = max(0, min(255, int(round(b))))
+                return f"#{r:02x}{g:02x}{b:02x}"
+            except Exception:
+                return default
+
+        def get_proto_lab(label):
+            try:
+                proto = self.color_data[label]["positive_prototype"]
+                if isinstance(proto, np.ndarray):
+                    proto = proto.tolist()
+                return tuple(float(v) for v in proto)
+            except Exception:
+                return None
+
+        def get_proto_rgb(label):
+            try:
+                proto_lab = get_proto_lab(label)
+                if proto_lab is None:
+                    return (200, 200, 200)
+                return UtilsTools.lab_to_rgb(proto_lab)
+            except Exception:
+                return (200, 200, 200)
+
+        def get_proto_hex(label):
+            return safe_hex_from_rgb(get_proto_rgb(label))
+
+        # ---------------------------
+        # Base data
+        # ---------------------------
+        lab = info.get("lab", (0, 0, 0))
+        selection_info = info.get("selection_info")
+        is_average = bool(info.get("is_average", False))
+
+        if selection_info and selection_info.get("mean_rgb") is not None:
+            sampled_rgb = selection_info["mean_rgb"]
+        else:
+            try:
+                sampled_rgb = UtilsTools.lab_to_rgb(lab)
+            except Exception:
+                sampled_rgb = (200, 200, 200)
+
+        sampled_hex = safe_hex_from_rgb(sampled_rgb)
+        sampled_title = "Mean Color" if is_average else "Selected Color"
+
+        memberships = info.get("all_memberships")
+        if not memberships:
+            memberships = info.get("top_memberships", [])
+
+        winner_label = info.get("winner_label", "None")
+        winner_mu = float(info.get("winner_mu", 0.0))
+
+        selected_label_var = tk.StringVar(value=winner_label if winner_label != "None" else "")
+        selected_rgb_var = tk.StringVar(value="")
+        selected_hex_var = tk.StringVar(value="")
+        selected_lab_var = tk.StringVar(value="")
+
+        if not hasattr(self, "threshold_settings"):
+            self.threshold_settings = {
+                "metric": "CIEDE2000",
+                "mode": "known",
+                "preset": "pt_at",
+                "lower": 0.8,
+                "upper": 1.8,
+            }
+
+        threshold_metric_var = tk.StringVar(value=self.threshold_settings.get("metric", "CIEDE2000"))
+        threshold_mode_var = tk.StringVar(value=self.threshold_settings.get("mode", "known"))
+        threshold_preset_var = tk.StringVar(value=self.threshold_settings.get("preset", "pt_at"))
+        threshold_lower_var = tk.StringVar(value=str(self.threshold_settings.get("lower", 0.8)))
+        threshold_upper_var = tk.StringVar(value=str(self.threshold_settings.get("upper", 1.8)))
+
+        threshold_result_title_var = tk.StringVar(value="")
+        threshold_result_detail_var = tk.StringVar(value="")
+        threshold_result_summary_var = tk.StringVar(value="")
+        threshold_mode_var = tk.StringVar(value="")
+        threshold_info_var = tk.StringVar(value="")
+        threshold_result_var = tk.StringVar(value="")
+        membership_rows = {}
+
+        # ---------------------------
+        # Main container
+        # ---------------------------
+        main = tk.Frame(win, bg="#f2f2f2")
+        main.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # ---------------------------
+        # Header
+        # ---------------------------
+        header = tk.Frame(main, bg="white", bd=1, relief="solid")
+        header.pack(fill="x", pady=(0, 10))
+
+        if selection_info and selection_info.get("type") == "roi":
+            coord_text = (
+                f"ROI: ({selection_info['x1']}, {selection_info['y1']}) "
+                f"→ ({selection_info['x2']}, {selection_info['y2']})"
+            )
+            roi_text = (
+                f"Size: {selection_info['width']} x {selection_info['height']} px"
+                f"    |    Pixels: {selection_info['pixels']}"
+                f"    |    Center: ({selection_info['center_x']}, {selection_info['center_y']})"
+            )
+        else:
+            coord_text = f"Coordinates: ({info.get('x', 0)}, {info.get('y', 0)})"
+            roi_text = None
+
+        tk.Label(
+            header,
+            text=coord_text,
+            anchor="w",
+            bg="white",
+            font=("Sans", 11, "bold"),
+            padx=12,
+            pady=6
+        ).pack(fill="x")
+
+        if roi_text:
+            tk.Label(
+                header,
+                text=roi_text,
+                anchor="w",
+                bg="white",
+                font=("Sans", 10),
+                padx=12,
+                pady=0
+            ).pack(fill="x", pady=(0, 4))
+
+        lab_text = f"{float(lab[0]):.2f}, {float(lab[1]):.2f}, {float(lab[2]):.2f}"
+        rgb_text = f"{int(sampled_rgb[0])}, {int(sampled_rgb[1])}, {int(sampled_rgb[2])}"
+        hex_text = sampled_hex.upper()
+
+        tk.Label(
+            header,
+            text=f"LAB: {lab_text}    |    RGB: {rgb_text}    |    HEX: {hex_text}",
+            anchor="w",
+            bg="white",
+            font=("Sans", 10),
+            padx=12,
+            pady=0
+        ).pack(fill="x", pady=(0, 8))
+
+        # ---------------------------
+        # Content area
+        # ---------------------------
+        content = tk.Frame(main, bg="#f2f2f2")
+        content.pack(fill="both", expand=True)
+
+        top_content = tk.Frame(content, bg="#f2f2f2")
+        top_content.pack(fill="x", anchor="n")
+
+        left = tk.Frame(top_content, bg="white", bd=1, relief="solid", width=320, height=285)
+        left.pack(side="left", fill="y", padx=(0, 6), anchor="n")
+        left.pack_propagate(False)
+
+        center = tk.Frame(top_content, bg="white", bd=1, relief="solid", height=285)
+        center.pack(side="left", fill="x", expand=True, padx=(6, 0), anchor="n")
+        center.pack_propagate(False)
+
+        # ---------------------------
+        # Left: memberships
+        # ---------------------------
+        tk.Label(
+            left,
+            text="Membership Degree (μ)",
+            font=("Sans", 11, "bold"),
+            anchor="w",
+            bg="white",
+            padx=12,
+            pady=10
+        ).pack(fill="x")
+
+        tk.Label(
+            left,
+            text=f"Winner: {winner_label}    |    μ = {winner_mu:.4f}",
+            anchor="w",
+            bg="white",
+            padx=12
+        ).pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            left,
+            text="Memberships:",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white",
+            padx=12
+        ).pack(fill="x", pady=(0, 6))
+
+        memberships_box = tk.Frame(left, bg="white", bd=1, relief="solid", height=140)
+        memberships_box.pack(fill="x", padx=12, pady=(0, 8))
+        memberships_box.pack_propagate(False)
+
+        list_canvas = tk.Canvas(
+            memberships_box,
+            bg="white",
+            highlightthickness=0,
+            bd=0
+        )
+        list_scroll = ttk.Scrollbar(
+            memberships_box,
+            orient="vertical",
+            command=list_canvas.yview
+        )
+        list_inner = tk.Frame(list_canvas, bg="white")
+
+        list_inner.bind(
+            "<Configure>",
+            lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all"))
+        )
+
+        list_canvas.create_window((0, 0), window=list_inner, anchor="nw")
+        list_canvas.configure(yscrollcommand=list_scroll.set)
+
+        list_canvas.pack(side="left", fill="both", expand=True)
+        list_scroll.pack(side="right", fill="y")
+
+        def _on_membership_mousewheel(event):
+            list_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        list_canvas.bind("<Enter>", lambda e: list_canvas.bind_all("<MouseWheel>", _on_membership_mousewheel))
+        list_canvas.bind("<Leave>", lambda e: list_canvas.unbind_all("<MouseWheel>"))
+
+        # Info below memberships
+        tip_container = tk.Frame(left, bg="white")
+        tip_container.pack(fill="x", side="bottom", padx=12, pady=(0, 10))
+
+        tk.Frame(tip_container, bg="#d0d0d0", height=1).pack(fill="x", pady=(0, 6))
+
+        tk.Label(
+            tip_container,
+            text="ℹ Click a color to inspect it.",
+            justify="center",
+            anchor="center",
+            wraplength=260,
+            bg="white",
+            fg="#555555",
+            font=("Sans", 9, "italic"),
+            pady=6
+        ).pack(fill="x")
+
+        # ---------------------------
+        # Center: selected prototype + selected/mean color side by side
+        # ---------------------------
+        SWATCH_W = 100
+        SWATCH_H = 75
+        PAD_X = 10
+        PAD_Y = 10
+
+        canvas_w = SWATCH_W + 2 * PAD_X
+        canvas_h = SWATCH_H + 2 * PAD_Y
+
+        top_colors = tk.Frame(center, bg="white")
+        top_colors.pack(fill="x", pady=(8, 6), padx=10)
+
+        left_card = tk.Frame(top_colors, bg="white")
+        left_card.pack(side="left", fill="both", expand=True, padx=(0, 8))
+
+        right_card = tk.Frame(top_colors, bg="white")
+        right_card.pack(side="left", fill="both", expand=True, padx=(8, 0))
+
+        # Selected Prototype
+        tk.Label(
+            left_card,
+            text="Selected Prototype",
+            font=("Sans", 11, "bold"),
+            bg="white"
+        ).pack(fill="x")
+
+        selected_name_label = tk.Label(
+            left_card,
+            textvariable=selected_label_var,
+            bg="white",
+            font=("Sans", 10, "bold")
+        )
+        selected_name_label.pack(pady=(6, 2))
+
+        selected_proto_canvas = tk.Canvas(
+            left_card,
+            width=canvas_w,
+            height=canvas_h,
+            bg="white",
+            highlightthickness=0
+        )
+        selected_proto_canvas.pack(pady=(4, 8))
+
+        selected_proto_rect = selected_proto_canvas.create_rectangle(
+            PAD_X,
+            PAD_Y,
+            PAD_X + SWATCH_W,
+            PAD_Y + SWATCH_H,
+            fill="#cccccc",
+            outline="#606060",
+            width=1
+        )
+
+        selected_lab_label = tk.Label(
+            left_card,
+            textvariable=selected_lab_var,
+            bg="white",
+            font=("Sans", 10),
+            justify="center",
+            wraplength=240
+        )
+        selected_lab_label.pack()
+
+        selected_rgb_label = tk.Label(
+            left_card,
+            textvariable=selected_rgb_var,
+            bg="white",
+            font=("Sans", 10)
+        )
+        selected_rgb_label.pack()
+
+        selected_hex_label = tk.Label(
+            left_card,
+            textvariable=selected_hex_var,
+            bg="white",
+            font=("Sans", 10)
+        )
+        selected_hex_label.pack(pady=(2, 0))
+
+        # Selected / Mean Color
+        tk.Label(
+            right_card,
+            text=sampled_title,
+            font=("Sans", 11, "bold"),
+            bg="white"
+        ).pack(fill="x")
+
+        sampled_canvas = tk.Canvas(
+            right_card,
+            width=canvas_w,
+            height=canvas_h,
+            bg="white",
+            highlightthickness=0
+        )
+        sampled_canvas.pack(pady=(28, 8))
+
+        sampled_canvas.create_rectangle(
+            PAD_X,
+            PAD_Y,
+            PAD_X + SWATCH_W,
+            PAD_Y + SWATCH_H,
+            fill=sampled_hex,
+            outline="#606060",
+            width=1
+        )
+
+        tk.Label(
+            right_card,
+            text=f"LAB: {float(lab[0]):.2f}, {float(lab[1]):.2f}, {float(lab[2]):.2f}",
+            bg="white",
+            font=("Sans", 10)
+        ).pack()
+
+        tk.Label(
+            right_card,
+            text=f"RGB: {int(sampled_rgb[0])}, {int(sampled_rgb[1])}, {int(sampled_rgb[2])}",
+            bg="white",
+            font=("Sans", 10)
+        ).pack()
+
+        tk.Label(
+            right_card,
+            text=f"HEX: {sampled_hex.upper()}",
+            bg="white",
+            font=("Sans", 10)
+        ).pack(pady=(2, 0))
+
+        # ---------------------------
+        # Bottom independent block: Threshold
+        # ---------------------------
+        threshold_panel = tk.Frame(content, bg="white", bd=1, relief="solid")
+        threshold_panel.pack(fill="x", pady=(6, 0), anchor="n")
+
+        tk.Label(
+            threshold_panel,
+            text="Threshold",
+            font=("Sans", 11, "bold"),
+            anchor="w",
+            bg="white",
+            padx=12,
+            pady=10
+        ).pack(fill="x")
+
+        threshold_body = tk.Frame(threshold_panel, bg="white")
+        threshold_body.pack(fill="x", padx=12, pady=(0, 10))
+
+        col_metric = tk.Frame(threshold_body, bg="white")
+        col_metric.pack(side="left", fill="y", padx=(0, 20))
+
+        col_mode = tk.Frame(threshold_body, bg="white")
+        col_mode.pack(side="left", fill="y", padx=(0, 20))
+
+        col_config = tk.Frame(threshold_body, bg="white")
+        col_config.pack(side="left", fill="both", expand=True, padx=(0, 20))
+
+        col_result = tk.Frame(threshold_body, bg="white")
+        col_result.pack(side="left", fill="both", expand=True)
+
+        # ---------------------------
+        # Column 1: Metric
+        # ---------------------------
+        tk.Label(
+            col_metric,
+            text="Metric",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 6))
+
+        metric_combo = ttk.Combobox(
+            col_metric,
+            textvariable=threshold_metric_var,
+            state="readonly",
+            width=16,
+            values=["CIEDE2000"]
+        )
+        metric_combo.pack(anchor="w")
+
+        # ---------------------------
+        # Column 2: Mode
+        # ---------------------------
+        tk.Label(
+            col_mode,
+            text="Threshold Type",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 6))
+
+        mode_combo = ttk.Combobox(
+            col_mode,
+            textvariable=threshold_mode_var,
+            state="readonly",
+            width=14,
+            values=["known", "custom", "raw"]
+        )
+        mode_combo.pack(anchor="w")
+
+        # ---------------------------
+        # Column 3: Configuration
+        # ---------------------------
+        tk.Label(
+            col_config,
+            text="Configuration",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        preset_label = tk.Label(
+            col_config,
+            text="Known preset:",
+            bg="white",
+            anchor="w"
+        )
+        preset_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
+
+        preset_combo = ttk.Combobox(
+            col_config,
+            textvariable=threshold_preset_var,
+            state="readonly",
+            width=24,
+            values=[
+                "Perceptibility Threshold",
+                "Acceptability Threshold",
+                "Perceptibility + Acceptability"
+            ]
+        )
+        preset_combo.grid(row=1, column=1, sticky="w", pady=(0, 6))
+
+        lower_label = tk.Label(
+            col_config,
+            text="Lower threshold:",
+            bg="white",
+            anchor="w"
+        )
+        lower_entry = tk.Entry(
+            col_config,
+            textvariable=threshold_lower_var,
+            width=10
+        )
+
+        upper_label = tk.Label(
+            col_config,
+            text="Upper threshold:",
+            bg="white",
+            anchor="w"
+        )
+        upper_entry = tk.Entry(
+            col_config,
+            textvariable=threshold_upper_var,
+            width=10
+        )
+
+        # ---------------------------
+        # Column 4: Result
+        # ---------------------------
+        tk.Label(
+            col_result,
+            text="Result",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 6))
+
+        threshold_result_title_label = tk.Label(
+            col_result,
+            textvariable=threshold_result_title_var,
+            anchor="w",
+            justify="left",
+            bg="white",
+            font=("Sans", 10, "bold")
+        )
+        threshold_result_title_label.pack(anchor="w", fill="x", pady=(0, 6))
+
+        threshold_result_detail_label = tk.Label(
+            col_result,
+            textvariable=threshold_result_detail_var,
+            anchor="w",
+            justify="left",
+            bg="white"
+        )
+        threshold_result_detail_label.pack(anchor="w", fill="x", pady=(0, 6))
+
+        threshold_result_summary_label = tk.Label(
+            col_result,
+            textvariable=threshold_result_summary_var,
+            anchor="w",
+            justify="left",
+            bg="white"
+        )
+        threshold_result_summary_label.pack(anchor="w", fill="x")
+
+
+        def refresh_threshold_section(proto_lab=None):
+            """
+            Refresh threshold controls visibility and result text.
+            If proto_lab is provided, also evaluate the selected prototype.
+            """
+            mode_value = threshold_mode_var.get().strip().lower()
+
+            # Save UI state into self.threshold_settings
+            self.threshold_settings["metric"] = threshold_metric_var.get().strip()
+            self.threshold_settings["mode"] = mode_value
+            self.threshold_settings["preset"] = threshold_preset_var.get().strip()
+
+            try:
+                self.threshold_settings["lower"] = float(threshold_lower_var.get())
+            except Exception:
+                self.threshold_settings["lower"] = None
+
+            try:
+                self.threshold_settings["upper"] = float(threshold_upper_var.get())
+            except Exception:
+                self.threshold_settings["upper"] = None
+
+            # Show/hide controls depending on mode
+            preset_label.grid_remove()
+            preset_combo.grid_remove()
+            lower_label.grid_remove()
+            lower_entry.grid_remove()
+            upper_label.grid_remove()
+            upper_entry.grid_remove()
+
+            if mode_value == "known":
+                preset_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
+                preset_combo.grid(row=1, column=1, sticky="w", pady=(0, 6))
+
+            elif mode_value == "custom":
+                lower_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
+                lower_entry.grid(row=1, column=1, sticky="w", pady=(0, 6))
+                upper_label.grid(row=2, column=0, sticky="w", pady=(0, 6))
+                upper_entry.grid(row=2, column=1, sticky="w", pady=(0, 6))
+
+            if proto_lab is None:
+                threshold_result_title_var.set("Select a prototype to evaluate.")
+                threshold_result_detail_var.set("")
+                threshold_result_summary_var.set("")
+                return
+
+            evaluation = self.evaluate_color_difference_threshold(
+                sample_lab=lab,
+                prototype_lab=proto_lab,
+                metric=self.threshold_settings.get("metric", "CIEDE2000"),
+                threshold_settings=self.threshold_settings
+            )
+
+            delta_e_value = evaluation.get("delta_e")
+            if delta_e_value is None:
+                threshold_result_title_var.set("ΔE not available")
             else:
-                self.proto_value_text.config(text=f"{max_proto}  |  {de_class}", fg=c)
-                self.proto_value_symbol.config(text="")
+                threshold_result_title_var.set(f"{evaluation.get('evaluation', 'No evaluation available')}")
+
+            mode_text = evaluation.get("mode", "")
+            preset_text = evaluation.get("preset", "")
+
+            if mode_text == "known":
+                if preset_text == "pt":
+                    detail = "Known preset: Perceptibility Threshold"
+                elif preset_text == "at":
+                    detail = "Known preset: Acceptability Threshold"
+                else:
+                    detail = "Known preset: Perceptibility + Acceptability"
+            elif mode_text == "custom":
+                detail = "Custom thresholds"
+            elif mode_text == "raw":
+                detail = "Raw ΔE only"
+            else:
+                detail = f"Mode: {mode_text}"
+
+            threshold_result_detail_var.set(detail)
+            threshold_result_summary_var.set(evaluation.get("summary", ""))
+
+        metric_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda e: refresh_threshold_section(
+                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
+            )
+        )
+
+        mode_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda e: refresh_threshold_section(
+                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
+            )
+        )
+
+        preset_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda e: refresh_threshold_section(
+                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
+            )
+        )
+
+        lower_entry.bind(
+            "<KeyRelease>",
+            lambda e: refresh_threshold_section(
+                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
+            )
+        )
+
+        upper_entry.bind(
+            "<KeyRelease>",
+            lambda e: refresh_threshold_section(
+                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
+            )
+        )
 
 
+        # ---------------------------
+        # Selection / update logic
+        # ---------------------------
+        def highlight_selected_row(active_label):
+            for lbl, row in membership_rows.items():
+                if lbl == active_label:
+                    row.configure(bg="#e8f0ff")
+                    for child in row.winfo_children():
+                        try:
+                            child.configure(bg="#e8f0ff")
+                        except Exception:
+                            pass
+                else:
+                    row.configure(bg="white")
+                    for child in row.winfo_children():
+                        try:
+                            child.configure(bg="white")
+                        except Exception:
+                            pass
+
+        def select_membership(label, mu):
+            selected_label_var.set(label)
+
+            proto_rgb = get_proto_rgb(label)
+            proto_hex = safe_hex_from_rgb(proto_rgb)
+            proto_lab = get_proto_lab(label)
+
+            selected_proto_canvas.itemconfig(selected_proto_rect, fill=proto_hex)
+
+            if proto_lab is not None:
+                selected_lab_var.set(
+                    f"LAB: {proto_lab[0]:.2f}, {proto_lab[1]:.2f}, {proto_lab[2]:.2f}"
+                )
+            else:
+                selected_lab_var.set("LAB: not available")
+
+            selected_rgb_var.set(f"RGB: {int(proto_rgb[0])}, {int(proto_rgb[1])}, {int(proto_rgb[2])}")
+            selected_hex_var.set(f"HEX: {proto_hex.upper()}")
+
+            self._current_threshold_proto_lab = proto_lab
+            refresh_threshold_section(proto_lab=proto_lab)
+            highlight_selected_row(label)
+
+        # ---------------------------
+        # Populate memberships
+        # ---------------------------
+        if memberships:
+            for lbl, mu in memberships:
+                row = tk.Frame(list_inner, bg="white", cursor="hand2", bd=0, highlightthickness=0)
+                row.pack(fill="x", pady=1, padx=2)
+
+                membership_rows[lbl] = row
+
+                proto_hex = get_proto_hex(lbl)
+
+                swatch = tk.Canvas(row, width=16, height=16, bg="white", highlightthickness=0)
+                swatch.pack(side="left", padx=(4, 6), pady=2)
+                swatch.create_rectangle(1, 1, 15, 15, fill=proto_hex, outline="#707070")
+
+                lbl_name = tk.Label(
+                    row,
+                    text=str(lbl),
+                    anchor="w",
+                    bg="white",
+                    font=("Sans", 10)
+                )
+                lbl_name.pack(side="left", fill="x", expand=True)
+
+                lbl_mu = tk.Label(
+                    row,
+                    text=f"μ = {float(mu):.4f}",
+                    anchor="e",
+                    bg="white",
+                    font=("Sans", 10)
+                )
+                lbl_mu.pack(side="right", padx=(6, 4))
+
+                for widget in (row, swatch, lbl_name, lbl_mu):
+                    widget.bind(
+                        "<Button-1>",
+                        lambda e, label=lbl, mu_value=mu: select_membership(label, mu_value)
+                    )
+        else:
+            tk.Label(
+                list_inner,
+                text="No memberships available.",
+                anchor="w",
+                bg="white"
+            ).pack(fill="x")
+
+        # Initial selection = winner
+        if memberships:
+            initial_label = winner_label if winner_label not in (None, "None", "") else memberships[0][0]
+            initial_mu = None
+            for lbl, mu in memberships:
+                if lbl == initial_label:
+                    initial_mu = mu
+                    break
+            if initial_mu is None:
+                initial_label, initial_mu = memberships[0]
+            select_membership(initial_label, initial_mu)
+
+        # ---------------------------
+        # Bottom buttons
+        # ---------------------------
+        btns = tk.Frame(main, bg="#f2f2f2")
+        btns.pack(fill="x", pady=(10, 0))
+        tk.Button(btns, text="Close", command=win.destroy, width=12).pack(side="right")
+
+        # Modal-like behavior
+        win.transient(self.root)
+        win.grab_set()
+        win.focus_set()
+
+        win.update_idletasks()
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_w = self.root.winfo_width()
+        root_h = self.root.winfo_height()
+
+        x = root_x + (root_w - WIN_W) // 2
+        y = root_y + (root_h - WIN_H) // 2
+        win.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
+
+
+
+
+    def evaluate_color_difference_threshold(self, sample_lab, prototype_lab, metric="CIEDE2000", threshold_settings=None):
+        """
+        Compute the color difference between a sampled color and a prototype color,
+        then evaluate that difference according to the active threshold configuration.
+
+        Parameters
+        ----------
+        sample_lab : tuple/list
+            LAB coordinates of the sampled color.
+        prototype_lab : tuple/list
+            LAB coordinates of the selected prototype.
+        metric : str
+            Color-difference metric name. For now only 'CIEDE2000' is supported.
+        threshold_settings : dict or None
+            Dictionary describing how the threshold evaluation should be performed.
+
+            Expected structure:
+            {
+                "mode": "raw" | "known" | "custom",
+                "preset": "pt" | "at" | "pt_at",   # only for known
+                "lower": float or None,             # only for custom
+                "upper": float or None              # only for custom
+            }
+
+        Returns
+        -------
+        dict
+            Example:
+            {
+                "metric": "CIEDE2000",
+                "delta_e": 1.234,
+                "mode": "known",
+                "preset": "pt_at",
+                "lower": 0.8,
+                "upper": 1.8,
+                "status": "between",
+                "evaluation": "Between perceptibility and acceptability thresholds.",
+                "summary": "ΔE = 1.234 | PT = 0.800 | AT = 1.800"
+            }
+        """
+        default_settings = {
+            "mode": "known",
+            "preset": "pt_at",
+            "lower": None,
+            "upper": None,
+        }
+
+        if threshold_settings is None:
+            threshold_settings = default_settings
+        else:
+            merged = default_settings.copy()
+            merged.update(threshold_settings)
+            threshold_settings = merged
+
+        result = {
+            "metric": metric,
+            "delta_e": None,
+            "mode": threshold_settings.get("mode", "known"),
+            "preset": threshold_settings.get("preset"),
+            "lower": None,
+            "upper": None,
+            "status": "unavailable",
+            "evaluation": "Color difference could not be computed.",
+            "summary": "ΔE: not available"
+        }
+
+        # ---------------------------
+        # Compute metric
+        # ---------------------------
+        try:
+            if metric == "CIEDE2000":
+                delta_e_value = float(self.color_manager.delta_e_ciede2000(prototype_lab, sample_lab))
+            else:
+                result["status"] = "unsupported_metric"
+                result["evaluation"] = f"Metric '{metric}' is not supported yet."
+                result["summary"] = f"Metric: {metric} (not supported)"
+                return result
+        except Exception:
+            return result
+
+        result["delta_e"] = delta_e_value
+
+        mode = threshold_settings.get("mode", "known")
+
+        # ---------------------------
+        # RAW MODE
+        # ---------------------------
+        if mode == "raw":
+            result["status"] = "raw"
+            result["evaluation"] = "Raw color difference only."
+            result["summary"] = f"ΔE = {delta_e_value:.3f}"
+            return result
+
+        # ---------------------------
+        # KNOWN MODE
+        # ---------------------------
+        if mode == "known":
+            preset = threshold_settings.get("preset", "pt_at")
+            result["preset"] = preset
+
+            if preset == "pt":
+                lower = 0.8
+                upper = None
+
+                result["lower"] = lower
+                result["upper"] = upper
+
+                if delta_e_value <= lower:
+                    result["status"] = "below_pt"
+                    result["evaluation"] = "Below perceptibility threshold."
+                else:
+                    result["status"] = "above_pt"
+                    result["evaluation"] = "Above perceptibility threshold."
+
+                result["summary"] = f"ΔE = {delta_e_value:.3f} | PT = {lower:.3f}"
+                return result
+
+            elif preset == "at":
+                lower = 1.8
+                upper = None
+
+                result["lower"] = lower
+                result["upper"] = upper
+
+                if delta_e_value <= lower:
+                    result["status"] = "below_at"
+                    result["evaluation"] = "Below acceptability threshold."
+                else:
+                    result["status"] = "above_at"
+                    result["evaluation"] = "Above acceptability threshold."
+
+                result["summary"] = f"ΔE = {delta_e_value:.3f} | AT = {lower:.3f}"
+                return result
+
+            else:  # pt_at
+                lower = 0.8
+                upper = 1.8
+
+                result["lower"] = lower
+                result["upper"] = upper
+
+                if delta_e_value <= lower:
+                    result["status"] = "below_pt"
+                    result["evaluation"] = "Below perceptibility threshold."
+                elif delta_e_value <= upper:
+                    result["status"] = "between_pt_at"
+                    result["evaluation"] = "Between perceptibility and acceptability thresholds."
+                else:
+                    result["status"] = "above_at"
+                    result["evaluation"] = "Above acceptability threshold."
+
+                result["summary"] = (
+                    f"ΔE = {delta_e_value:.3f} | PT = {lower:.3f} | AT = {upper:.3f}"
+                )
+                return result
+
+        # ---------------------------
+        # CUSTOM MODE
+        # ---------------------------
+        if mode == "custom":
+            lower = threshold_settings.get("lower")
+            upper = threshold_settings.get("upper")
+
+            try:
+                lower = float(lower) if lower not in (None, "", "None") else None
+            except Exception:
+                lower = None
+
+            try:
+                upper = float(upper) if upper not in (None, "", "None") else None
+            except Exception:
+                upper = None
+
+            result["lower"] = lower
+            result["upper"] = upper
+
+            if lower is None and upper is None:
+                result["status"] = "unconfigured"
+                result["evaluation"] = "Custom thresholds are not configured."
+                result["summary"] = f"ΔE = {delta_e_value:.3f}"
+                return result
+
+            if lower is not None and upper is not None and lower > upper:
+                result["status"] = "invalid"
+                result["evaluation"] = "Invalid custom thresholds: lower threshold is greater than upper threshold."
+                result["summary"] = f"ΔE = {delta_e_value:.3f} | lower = {lower:.3f} | upper = {upper:.3f}"
+                return result
+
+            if upper is None:
+                if delta_e_value <= lower:
+                    result["status"] = "below_custom"
+                    result["evaluation"] = "Below custom threshold."
+                else:
+                    result["status"] = "above_custom"
+                    result["evaluation"] = "Above custom threshold."
+
+                result["summary"] = f"ΔE = {delta_e_value:.3f} | threshold = {lower:.3f}"
+                return result
+
+            if delta_e_value <= lower:
+                result["status"] = "below_lower"
+                result["evaluation"] = "Below lower threshold."
+            elif delta_e_value <= upper:
+                result["status"] = "between_custom"
+                result["evaluation"] = "Between lower and upper thresholds."
+            else:
+                result["status"] = "above_upper"
+                result["evaluation"] = "Above upper threshold."
+
+            result["summary"] = (
+                f"ΔE = {delta_e_value:.3f} | lower = {lower:.3f} | upper = {upper:.3f}"
+            )
+            return result
+
+        # Unknown mode
+        result["status"] = "unknown_mode"
+        result["evaluation"] = f"Unknown threshold mode: {mode}"
+        result["summary"] = f"ΔE = {delta_e_value:.3f}"
+        return result
 
 
 
