@@ -600,6 +600,15 @@ class PyFCSApp:
         )
         apply_button.pack(side="left", padx=20)
 
+        delete_button = tk.Button(
+        button_container,
+            text="Delete Color Space",
+            font=("Helvetica", 12, "bold"),
+            bg="#F8D7DA",
+            command=self.delete_color_space
+        )
+        delete_button.pack(side="left", padx=20)
+
 
 
 
@@ -2552,37 +2561,39 @@ class PyFCSApp:
     # ============================================================================================================================================================
     #  FUNCTIONS DATA
     # ============================================================================================================================================================
-    
     def display_data_window(self):
         """
         Displays the color data in a scrollable table within the canvas.
         Updates the table with LAB values, labels, and color previews.
         """
-        # Update the "Name" field with the current file name
-        self.file_name_entry.delete(0, "end")  # Clear previous text in the entry
-        self.file_name_entry.insert(0, self.file_base_name)  # Insert the current file name
+        if hasattr(self, "file_name_entry"):
+            self.file_name_entry.delete(0, "end")
+            self.file_name_entry.insert(0, getattr(self, "file_base_name", ""))
 
-        # Clear the canvas
         self.data_window.delete("all")
-        self.data_window.update_idletasks()  # Ensure the canvas is updated
+        self.data_window.update_idletasks()
 
-        # Calculate canvas and table dimensions
-        canvas_width = self.data_window.winfo_width()  # Canvas width
-        column_widths = [80, 80, 80, 200, 150]  # Column widths (without Action)
-        table_width = sum(column_widths)  # Total table width
-        margin = max((canvas_width - table_width) // 2, 20)  # Dynamic margin or minimum of 20
+        data_source = getattr(self, "edit_color_data", {})
 
-        # Starting coordinates
+        if not data_source:
+            self.data_window.configure(scrollregion=(0, 0, 0, 0))
+            self.color_matrix = []
+            self.hex_color = {}
+            return
+
+        canvas_width = self.data_window.winfo_width()
+        column_widths = [80, 80, 80, 200, 150]
+        table_width = sum(column_widths)
+        margin = max((canvas_width - table_width) // 2, 20)
+
         x_start = margin
         y_start = 20
 
-        # Column headers and dimensions
         headers = ["L", "a", "b", "Label", "Color"]
         header_height = 30
 
-        # Draw table headers
         for i, header in enumerate(headers):
-            x_pos = x_start + sum(column_widths[:i])  # Calculate header position
+            x_pos = x_start + sum(column_widths[:i])
             self.data_window.create_rectangle(
                 x_pos, y_start, x_pos + column_widths[i], y_start + header_height,
                 fill="#d3d3d3", outline="#a9a9a9"
@@ -2592,45 +2603,41 @@ class PyFCSApp:
                 text=header, anchor="center", font=("Sans", 10, "bold")
             )
 
-        # Adjust starting point for rows
         y_start += header_height + 10
         row_height = 40
-        rect_width = 120  # Width of the color rectangle
+        rect_width = 120
         rect_height = 30
 
-        self.hex_color = {}  # Store HEX color mapping
-        self.color_matrix = []  # Store color names
+        self.hex_color = {}
+        self.color_matrix = []
 
-        # Iterate through color data and populate rows
-        data_source = getattr(self, "edit_color_data", self.color_data)
         for i, (color_name, color_value) in enumerate(data_source.items()):
-            # Extract and convert LAB color values
             if "positive_prototype" in color_value:
                 lab = np.array(color_value["positive_prototype"])
             elif "Color" in color_value:
                 lab = np.array(color_value["Color"])
             else:
                 continue
+
             self.color_matrix.append(color_name)
 
-            # Draw table columns (L, a, b, Label)
             for j, value in enumerate([lab[0], lab[1], lab[2], color_name]):
-                x_pos = x_start + sum(column_widths[:j])  # Column starting position
+                x_pos = x_start + sum(column_widths[:j])
                 self.data_window.create_rectangle(
                     x_pos, y_start, x_pos + column_widths[j], y_start + row_height,
                     fill="white", outline="#a9a9a9"
                 )
                 self.data_window.create_text(
                     x_pos + column_widths[j] / 2, y_start + row_height / 2,
-                    text=str(round(value, 2)) if j < 3 else value, anchor="center", font=("Sans", 10)
+                    text=str(round(value, 2)) if j < 3 else value,
+                    anchor="center", font=("Sans", 10)
                 )
 
-            # Convert LAB to RGB and draw the color rectangle
             rgb_data = tuple(map(lambda x: int(x * 255), color.lab2rgb([lab])[0]))
             hex_color = f'#{rgb_data[0]:02x}{rgb_data[1]:02x}{rgb_data[2]:02x}'
             self.hex_color[hex_color] = lab
 
-            color_x_pos = x_start + sum(column_widths[:4])  # Color column position
+            color_x_pos = x_start + sum(column_widths[:4])
             self.data_window.create_rectangle(
                 color_x_pos + (column_widths[4] - rect_width) / 2, y_start + (row_height - rect_height) / 2,
                 color_x_pos + (column_widths[4] - rect_width) / 2 + rect_width,
@@ -2638,8 +2645,7 @@ class PyFCSApp:
                 fill=hex_color, outline="black"
             )
 
-            # Draw the delete button outside the table
-            action_x_pos = x_start + table_width + 20  # Position to the right of the table
+            action_x_pos = x_start + table_width + 20
             self.data_window.create_text(
                 action_x_pos, y_start + row_height / 2,
                 text="❌", fill="black", font=("Sans", 10, "bold"), anchor="center",
@@ -2647,10 +2653,8 @@ class PyFCSApp:
             )
             self.data_window.tag_bind(f"delete_{i}", "<Button-1>", lambda event, idx=i: self.remove_color(idx))
 
-            # Move to the next row
             y_start += row_height + 10
 
-        # Adjust the scrollable region of the canvas
         self.data_window.configure(scrollregion=self.data_window.bbox("all"))
         self.data_window.bind("<Configure>", lambda event: self.display_data_window())
 
@@ -2742,6 +2746,21 @@ class PyFCSApp:
 
 
 
+    def clear_data_window(self):
+        """Clear the data display area and reset related UI/state."""
+        if hasattr(self, "data_window"):
+            self.data_window.delete("all")
+            self.data_window.configure(scrollregion=(0, 0, 0, 0))
+
+        if hasattr(self, "file_name_entry"):
+            self.file_name_entry.delete(0, tk.END)
+
+        self.file_base_name = ""
+        self.color_matrix = []
+        self.hex_color = {}
+
+
+
     def apply_changes(self):
         """Applies the pending changes made to the editable color list."""
         if not self.COLOR_SPACE:
@@ -2756,25 +2775,85 @@ class PyFCSApp:
             return
 
         try:
-            import copy
             self.color_data = copy.deepcopy(self.edit_color_data)
 
-            if os.path.exists(self.file_path):
-                with open(self.file_path, "w") as f:
-                    f.close()
-                os.remove(self.file_path)
+            color_dict = {
+                key: value["positive_prototype"]
+                for key, value in self.color_data.items()
+            }
 
-            with open(self.file_path, "w", encoding="utf-8") as file:
-                color_dict = {
-                    key: value["positive_prototype"]
-                    for key, value in self.color_data.items()
-                }
-                self.save_fcs(self.file_name_entry.get(), self.color_data, color_dict)
+            output_name = self.file_name_entry.get().strip()
+            if not output_name:
+                self.custom_warning("Error", "Please enter a valid file name.")
+                return
+
+            # Save always as .fcs the new one
+            self.save_fcs(output_name, self.color_data, color_dict)
+
+            # Update new path
+            self.file_path = os.path.join(
+                UtilsTools.get_base_path(),
+                "fuzzy_color_spaces",
+                f"{output_name}.fcs"
+            )
 
             self.update_volumes()
 
         except Exception as e:
             self.custom_warning("Error", f"Changes could not be saved: {e}")
+
+
+    def delete_color_space(self):
+        """Delete the currently loaded color space file (.fcs or .cns) and clear the app state."""
+        if not self.COLOR_SPACE:
+            self.custom_warning("Error", "No Color Space has been loaded.")
+            return
+
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "There is a process currently running. Please wait for it to finish or cancel it before deleting the Color Space."
+            )
+            return
+
+        file_path = getattr(self, "file_path", None)
+        file_name = os.path.basename(file_path) if file_path else "current color space"
+
+        confirm = messagebox.askyesno(
+            "Delete Color Space",
+            f"Are you sure you want to permanently delete:\n\n{file_name}\n\nThis action cannot be undone."
+        )
+        if not confirm:
+            return
+
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+
+            self.COLOR_SPACE = None
+            self.color_data = {}
+            self.edit_color_data = {}
+            self.file_path = None
+            self.file_base_name = ""
+
+            if hasattr(self, "selected_color_name"):
+                self.selected_color_name = None
+            if hasattr(self, "selected_color_index"):
+                self.selected_color_index = None
+            if hasattr(self, "current_color_to_edit"):
+                self.current_color_to_edit = None
+
+            self.clear_data_window()
+            self.update_volumes()
+
+            messagebox.showinfo("Deleted", f"{file_name} was deleted successfully.")
+
+        except Exception as e:
+            self.custom_warning("Error", f"The Color Space could not be deleted: {e}")
+
+
+
+
 
 
 
