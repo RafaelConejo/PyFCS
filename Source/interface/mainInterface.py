@@ -92,16 +92,7 @@ class PyFCSApp:
 
         # Centralized image/icon references to avoid garbage collection
         self.ui_icons = {}
-
-        if not hasattr(self, "threshold_settings"):
-            self.threshold_settings = {
-                "metric": "CIEDE2000",
-                "mode": "known",      # raw | known | custom
-                "preset": "pt_at",    # pt | at | pt_at
-                "lower": 0.8,
-                "upper": 1.8,
-            }
-
+        
         # ---------------------------------------------------------------------
         # Main window configuration
         # ---------------------------------------------------------------------
@@ -6396,22 +6387,52 @@ class PyFCSApp:
         if not hasattr(self, "threshold_settings"):
             self.threshold_settings = {
                 "metric": "CIEDE2000",
-                "mode": "known",
-                "preset": "pt_at",
+                "mode": "default",                   # default | custom
+                "preset": "pt_at",                   # pt | at | pt_at
+                "custom_type": "single",             # single | lower_upper
+                "single": 1.0,
                 "lower": 0.8,
                 "upper": 1.8,
             }
 
+        preset_display_map = {
+            "pt": "Perceptibility Threshold",
+            "at": "Acceptability Threshold",
+            "pt_at": "Perceptibility + Acceptability"
+        }
+        preset_reverse_map = {v: k for k, v in preset_display_map.items()}
+
+        saved_mode = self.threshold_settings.get("mode", "known")
+        display_mode = "default" if saved_mode == "known" else saved_mode
+
         threshold_metric_var = tk.StringVar(value=self.threshold_settings.get("metric", "CIEDE2000"))
-        threshold_mode_var = tk.StringVar(value=self.threshold_settings.get("mode", "known"))
-        threshold_preset_var = tk.StringVar(value=self.threshold_settings.get("preset", "pt_at"))
+        threshold_mode_var = tk.StringVar(value=display_mode)
+        threshold_preset_var = tk.StringVar(
+            value=preset_display_map.get(
+                self.threshold_settings.get("preset", "pt_at"),
+                "Perceptibility + Acceptability"
+            )
+        )
         threshold_lower_var = tk.StringVar(value=str(self.threshold_settings.get("lower", 0.8)))
         threshold_upper_var = tk.StringVar(value=str(self.threshold_settings.get("upper", 1.8)))
+
+        custom_type_display_map = {
+            "single": "Single threshold",
+            "lower_upper": "Lower and upper thresholds"
+        }
+        custom_type_reverse_map = {v: k for k, v in custom_type_display_map.items()}
+
+        threshold_custom_type_var = tk.StringVar(
+            value=custom_type_display_map.get(
+                self.threshold_settings.get("custom_type", "single"),
+                "Single threshold"
+            )
+        )
+        threshold_single_var = tk.StringVar(value=str(self.threshold_settings.get("single", 1.0)))
 
         threshold_result_title_var = tk.StringVar(value="")
         threshold_result_detail_var = tk.StringVar(value="")
         threshold_result_summary_var = tk.StringVar(value="")
-        threshold_mode_var = tk.StringVar(value="")
         threshold_info_var = tk.StringVar(value="")
         threshold_result_var = tk.StringVar(value="")
         membership_rows = {}
@@ -6724,150 +6745,194 @@ class PyFCSApp:
         threshold_body = tk.Frame(threshold_panel, bg="white")
         threshold_body.pack(fill="x", padx=12, pady=(0, 10))
 
-        col_metric = tk.Frame(threshold_body, bg="white")
-        col_metric.pack(side="left", fill="y", padx=(0, 20))
+        # 3 visual sections
+        section_selection = tk.Frame(threshold_body, bg="white")
+        section_selection.pack(side="left", fill="y", padx=(0, 12))
 
-        col_mode = tk.Frame(threshold_body, bg="white")
-        col_mode.pack(side="left", fill="y", padx=(0, 20))
+        sep_1 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=120)
+        sep_1.pack(side="left", fill="y", padx=(0, 12), pady=2)
 
-        col_config = tk.Frame(threshold_body, bg="white")
-        col_config.pack(side="left", fill="both", expand=True, padx=(0, 20))
+        section_config = tk.Frame(threshold_body, bg="white")
+        section_config.pack(side="left", fill="both", expand=True, padx=(0, 12))
 
-        col_result = tk.Frame(threshold_body, bg="white")
-        col_result.pack(side="left", fill="both", expand=True)
+        sep_2 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=120)
+        sep_2.pack(side="left", fill="y", padx=(0, 12), pady=2)
+
+        section_result = tk.Frame(threshold_body, bg="white")
+        section_result.pack(side="left", fill="both", expand=True)
 
         # ---------------------------
-        # Column 1: Metric
+        # Section 1: Selection
         # ---------------------------
         tk.Label(
-            col_metric,
+            section_selection,
             text="Metric",
             font=("Sans", 10, "bold"),
             anchor="w",
             bg="white"
-        ).pack(anchor="w", pady=(0, 6))
+        ).pack(anchor="w", pady=(0, 4))
 
         metric_combo = ttk.Combobox(
-            col_metric,
+            section_selection,
             textvariable=threshold_metric_var,
             state="readonly",
-            width=16,
+            width=18,
             values=["CIEDE2000"]
         )
-        metric_combo.pack(anchor="w")
+        metric_combo.pack(anchor="w", pady=(0, 10))
 
-        # ---------------------------
-        # Column 2: Mode
-        # ---------------------------
         tk.Label(
-            col_mode,
+            section_selection,
             text="Threshold Type",
             font=("Sans", 10, "bold"),
             anchor="w",
             bg="white"
-        ).pack(anchor="w", pady=(0, 6))
+        ).pack(anchor="w", pady=(0, 4))
 
         mode_combo = ttk.Combobox(
-            col_mode,
+            section_selection,
             textvariable=threshold_mode_var,
             state="readonly",
-            width=14,
-            values=["known", "custom", "raw"]
+            width=18,
+            values=["default", "custom"]
         )
         mode_combo.pack(anchor="w")
 
         # ---------------------------
-        # Column 3: Configuration
+        # Section 2: Configuration
         # ---------------------------
         tk.Label(
-            col_config,
+            section_config,
             text="Configuration",
             font=("Sans", 10, "bold"),
             anchor="w",
             bg="white"
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         preset_label = tk.Label(
-            col_config,
-            text="Known preset:",
+            section_config,
+            text="Default preset:",
             bg="white",
             anchor="w"
         )
-        preset_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
 
         preset_combo = ttk.Combobox(
-            col_config,
+            section_config,
             textvariable=threshold_preset_var,
             state="readonly",
-            width=24,
+            width=28,
             values=[
                 "Perceptibility Threshold",
                 "Acceptability Threshold",
                 "Perceptibility + Acceptability"
             ]
         )
-        preset_combo.grid(row=1, column=1, sticky="w", pady=(0, 6))
+
+        custom_type_label = tk.Label(
+            section_config,
+            text="Custom mode:",
+            bg="white",
+            anchor="w"
+        )
+
+        custom_type_combo = ttk.Combobox(
+            section_config,
+            textvariable=threshold_custom_type_var,
+            state="readonly",
+            width=28,
+            values=[
+                "Single threshold",
+                "Lower and upper thresholds"
+            ]
+        )
+
+        single_label = tk.Label(
+            section_config,
+            text="Threshold:",
+            bg="white",
+            anchor="w"
+        )
+        single_entry = tk.Entry(
+            section_config,
+            textvariable=threshold_single_var,
+            width=10
+        )
 
         lower_label = tk.Label(
-            col_config,
+            section_config,
             text="Lower threshold:",
             bg="white",
             anchor="w"
         )
         lower_entry = tk.Entry(
-            col_config,
+            section_config,
             textvariable=threshold_lower_var,
             width=10
         )
 
         upper_label = tk.Label(
-            col_config,
+            section_config,
             text="Upper threshold:",
             bg="white",
             anchor="w"
         )
         upper_entry = tk.Entry(
-            col_config,
+            section_config,
             textvariable=threshold_upper_var,
             width=10
         )
 
+        config_hint_var = tk.StringVar(value="")
+        config_hint_label = tk.Label(
+            section_config,
+            textvariable=config_hint_var,
+            bg="white",
+            fg="#666666",
+            anchor="w",
+            justify="left",
+            wraplength=260,
+            font=("Sans", 9, "italic")
+        )
+
         # ---------------------------
-        # Column 4: Result
+        # Section 3: Result
         # ---------------------------
         tk.Label(
-            col_result,
-            text="Result",
+            section_result,
+            text="Results",
             font=("Sans", 10, "bold"),
             anchor="w",
             bg="white"
-        ).pack(anchor="w", pady=(0, 6))
+        ).pack(anchor="w", pady=(0, 8))
 
         threshold_result_title_label = tk.Label(
-            col_result,
+            section_result,
             textvariable=threshold_result_title_var,
             anchor="w",
             justify="left",
             bg="white",
-            font=("Sans", 10, "bold")
+            font=("Sans", 10, "bold"),
+            wraplength=300
         )
         threshold_result_title_label.pack(anchor="w", fill="x", pady=(0, 6))
 
         threshold_result_detail_label = tk.Label(
-            col_result,
+            section_result,
             textvariable=threshold_result_detail_var,
             anchor="w",
             justify="left",
-            bg="white"
+            bg="white",
+            wraplength=300
         )
         threshold_result_detail_label.pack(anchor="w", fill="x", pady=(0, 6))
 
         threshold_result_summary_label = tk.Label(
-            col_result,
+            section_result,
             textvariable=threshold_result_summary_var,
             anchor="w",
             justify="left",
-            bg="white"
+            bg="white",
+            wraplength=300
         )
         threshold_result_summary_label.pack(anchor="w", fill="x")
 
@@ -6878,39 +6943,86 @@ class PyFCSApp:
             If proto_lab is provided, also evaluate the selected prototype.
             """
             mode_value = threshold_mode_var.get().strip().lower()
+            internal_mode = "known" if mode_value == "default" else mode_value
+
+            selected_preset_display = threshold_preset_var.get().strip()
+            selected_preset_key = preset_reverse_map.get(selected_preset_display, "pt_at")
+
+            selected_custom_type_display = threshold_custom_type_var.get().strip()
+            selected_custom_type_key = custom_type_reverse_map.get(selected_custom_type_display, "single")
+
+            single_text = threshold_single_var.get().strip()
+            lower_text = threshold_lower_var.get().strip()
+            upper_text = threshold_upper_var.get().strip()
 
             # Save UI state into self.threshold_settings
             self.threshold_settings["metric"] = threshold_metric_var.get().strip()
-            self.threshold_settings["mode"] = mode_value
-            self.threshold_settings["preset"] = threshold_preset_var.get().strip()
+            self.threshold_settings["mode"] = internal_mode
+            self.threshold_settings["preset"] = selected_preset_key
+            self.threshold_settings["custom_type"] = selected_custom_type_key
 
-            try:
-                self.threshold_settings["lower"] = float(threshold_lower_var.get())
-            except Exception:
-                self.threshold_settings["lower"] = None
+            self.threshold_settings["single"] = single_text if single_text != "" else None
+            self.threshold_settings["lower"] = lower_text if lower_text != "" else None
+            self.threshold_settings["upper"] = upper_text if upper_text != "" else None
 
-            try:
-                self.threshold_settings["upper"] = float(threshold_upper_var.get())
-            except Exception:
-                self.threshold_settings["upper"] = None
-
-            # Show/hide controls depending on mode
+            # Reset config controls
             preset_label.grid_remove()
             preset_combo.grid_remove()
+            custom_type_label.grid_remove()
+            custom_type_combo.grid_remove()
+            single_label.grid_remove()
+            single_entry.grid_remove()
             lower_label.grid_remove()
             lower_entry.grid_remove()
             upper_label.grid_remove()
             upper_entry.grid_remove()
+            config_hint_label.grid_remove()
 
-            if mode_value == "known":
+            if mode_value == "default":
                 preset_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
                 preset_combo.grid(row=1, column=1, sticky="w", pady=(0, 6))
 
+                config_hint_var.set("Use predefined perceptibility and/or acceptability thresholds.")
+                config_hint_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
             elif mode_value == "custom":
-                lower_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
-                lower_entry.grid(row=1, column=1, sticky="w", pady=(0, 6))
-                upper_label.grid(row=2, column=0, sticky="w", pady=(0, 6))
-                upper_entry.grid(row=2, column=1, sticky="w", pady=(0, 6))
+                custom_type_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
+                custom_type_combo.grid(row=1, column=1, sticky="w", pady=(0, 6))
+
+                if selected_custom_type_key == "single":
+                    single_label.grid(row=2, column=0, sticky="w", pady=(0, 6))
+                    single_entry.grid(row=2, column=1, sticky="w", pady=(0, 6))
+                    config_hint_var.set("Define one threshold greater than 0.")
+
+                    # Optional live validation message
+                    if single_text == "":
+                        config_hint_var.set("Enter a threshold greater than 0.")
+                    else:
+                        parsed_single, err_single = self._parse_positive_threshold(single_text)
+                        if err_single:
+                            config_hint_var.set(err_single)
+
+                    config_hint_label.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+                else:  # lower_upper
+                    lower_label.grid(row=2, column=0, sticky="w", pady=(0, 6))
+                    lower_entry.grid(row=2, column=1, sticky="w", pady=(0, 6))
+                    upper_label.grid(row=3, column=0, sticky="w", pady=(0, 6))
+                    upper_entry.grid(row=3, column=1, sticky="w", pady=(0, 6))
+
+                    config_hint_var.set("Define two thresholds greater than 0, with lower < upper.")
+
+                    if lower_text == "" or upper_text == "":
+                        config_hint_var.set("Enter both thresholds. Values must be greater than 0.")
+                    else:
+                        _, _, err_range = self._validate_custom_range(lower_text, upper_text)
+                        if err_range:
+                            config_hint_var.set(err_range)
+
+                    config_hint_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+            else:
+                config_hint_var.set("")
 
             if proto_lab is None:
                 threshold_result_title_var.set("Select a prototype to evaluate.")
@@ -6929,28 +7041,34 @@ class PyFCSApp:
             if delta_e_value is None:
                 threshold_result_title_var.set("ΔE not available")
             else:
-                threshold_result_title_var.set(f"{evaluation.get('evaluation', 'No evaluation available')}")
+                threshold_result_title_var.set(
+                    evaluation.get("evaluation", "No evaluation available")
+                )
 
             mode_text = evaluation.get("mode", "")
             preset_text = evaluation.get("preset", "")
+            custom_type_text = evaluation.get("custom_type", "")
 
-            if mode_text == "known":
+            if mode_text == "default":
                 if preset_text == "pt":
-                    detail = "Known preset: Perceptibility Threshold"
+                    detail = "Default preset: Perceptibility Threshold"
                 elif preset_text == "at":
-                    detail = "Known preset: Acceptability Threshold"
+                    detail = "Default preset: Acceptability Threshold"
                 else:
-                    detail = "Known preset: Perceptibility + Acceptability"
+                    detail = "Default preset: Perceptibility + Acceptability"
             elif mode_text == "custom":
-                detail = "Custom thresholds"
-            elif mode_text == "raw":
-                detail = "Raw ΔE only"
+                if custom_type_text == "single":
+                    detail = "Custom mode: Single threshold"
+                else:
+                    detail = "Custom mode: Lower and upper thresholds"
             else:
                 detail = f"Mode: {mode_text}"
 
             threshold_result_detail_var.set(detail)
             threshold_result_summary_var.set(evaluation.get("summary", ""))
 
+
+        #Bind Controls
         metric_combo.bind(
             "<<ComboboxSelected>>",
             lambda e: refresh_threshold_section(
@@ -6986,6 +7104,19 @@ class PyFCSApp:
             )
         )
 
+        custom_type_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda e: refresh_threshold_section(
+                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
+            )
+        )
+
+        single_entry.bind(
+            "<KeyRelease>",
+            lambda e: refresh_threshold_section(
+                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
+            )
+        )
 
         # ---------------------------
         # Selection / update logic
@@ -7114,49 +7245,51 @@ class PyFCSApp:
 
 
 
+
+    def _parse_positive_threshold(self, value):
+        if value is None:
+            return None, "Threshold cannot be empty."
+
+        text = str(value).strip()
+        if text == "":
+            return None, "Threshold cannot be empty."
+
+        try:
+            parsed = float(text)
+        except Exception:
+            return None, "Threshold must be a valid number."
+
+        if parsed <= 0:
+            return None, "Threshold must be greater than 0."
+
+        return parsed, None
+    
+
+    def _validate_custom_range(self, lower_value, upper_value):
+        lower, err_lower = self._parse_positive_threshold(lower_value)
+        if err_lower:
+            return None, None, f"Lower threshold: {err_lower}"
+
+        upper, err_upper = self._parse_positive_threshold(upper_value)
+        if err_upper:
+            return None, None, f"Upper threshold: {err_upper}"
+
+        if lower >= upper:
+            return None, None, "Lower threshold must be smaller than upper threshold."
+
+        return lower, upper, None
+
+
     def evaluate_color_difference_threshold(self, sample_lab, prototype_lab, metric="CIEDE2000", threshold_settings=None):
         """
         Compute the color difference between a sampled color and a prototype color,
         then evaluate that difference according to the active threshold configuration.
-
-        Parameters
-        ----------
-        sample_lab : tuple/list
-            LAB coordinates of the sampled color.
-        prototype_lab : tuple/list
-            LAB coordinates of the selected prototype.
-        metric : str
-            Color-difference metric name. For now only 'CIEDE2000' is supported.
-        threshold_settings : dict or None
-            Dictionary describing how the threshold evaluation should be performed.
-
-            Expected structure:
-            {
-                "mode": "raw" | "known" | "custom",
-                "preset": "pt" | "at" | "pt_at",   # only for known
-                "lower": float or None,             # only for custom
-                "upper": float or None              # only for custom
-            }
-
-        Returns
-        -------
-        dict
-            Example:
-            {
-                "metric": "CIEDE2000",
-                "delta_e": 1.234,
-                "mode": "known",
-                "preset": "pt_at",
-                "lower": 0.8,
-                "upper": 1.8,
-                "status": "between",
-                "evaluation": "Between perceptibility and acceptability thresholds.",
-                "summary": "ΔE = 1.234 | PT = 0.800 | AT = 1.800"
-            }
         """
         default_settings = {
-            "mode": "known",
+            "mode": "default",
             "preset": "pt_at",
+            "custom_type": "single",
+            "single": None,
             "lower": None,
             "upper": None,
         }
@@ -7168,10 +7301,14 @@ class PyFCSApp:
             merged.update(threshold_settings)
             threshold_settings = merged
 
+        mode = threshold_settings.get("mode", "default")
+        if mode == "known":  # compatibilidad
+            mode = "default"
+
         result = {
             "metric": metric,
             "delta_e": None,
-            "mode": threshold_settings.get("mode", "known"),
+            "mode": mode,
             "preset": threshold_settings.get("preset"),
             "lower": None,
             "upper": None,
@@ -7196,8 +7333,6 @@ class PyFCSApp:
 
         result["delta_e"] = delta_e_value
 
-        mode = threshold_settings.get("mode", "known")
-
         # ---------------------------
         # RAW MODE
         # ---------------------------
@@ -7208,9 +7343,9 @@ class PyFCSApp:
             return result
 
         # ---------------------------
-        # KNOWN MODE
+        # DEFAULT MODE
         # ---------------------------
-        if mode == "known":
+        if mode == "default":
             preset = threshold_settings.get("preset", "pt_at")
             result["preset"] = preset
 
@@ -7265,70 +7400,66 @@ class PyFCSApp:
                     result["status"] = "above_at"
                     result["evaluation"] = "Above acceptability threshold."
 
-                result["summary"] = (
-                    f"ΔE = {delta_e_value:.3f} | PT = {lower:.3f} | AT = {upper:.3f}"
-                )
+                result["summary"] = f"ΔE = {delta_e_value:.3f} | PT = {lower:.3f} | AT = {upper:.3f}"
                 return result
 
         # ---------------------------
         # CUSTOM MODE
         # ---------------------------
         if mode == "custom":
-            lower = threshold_settings.get("lower")
-            upper = threshold_settings.get("upper")
+            custom_type = threshold_settings.get("custom_type", "single")
+            result["custom_type"] = custom_type
 
-            try:
-                lower = float(lower) if lower not in (None, "", "None") else None
-            except Exception:
-                lower = None
+            if custom_type == "single":
+                single, err_single = self._parse_positive_threshold(
+                    threshold_settings.get("single")
+                )
+                result["single"] = single
 
-            try:
-                upper = float(upper) if upper not in (None, "", "None") else None
-            except Exception:
-                upper = None
+                if err_single:
+                    result["status"] = "invalid"
+                    result["evaluation"] = err_single
+                    result["summary"] = f"ΔE = {delta_e_value:.3f}"
+                    return result
 
-            result["lower"] = lower
-            result["upper"] = upper
-
-            if lower is None and upper is None:
-                result["status"] = "unconfigured"
-                result["evaluation"] = "Custom thresholds are not configured."
-                result["summary"] = f"ΔE = {delta_e_value:.3f}"
-                return result
-
-            if lower is not None and upper is not None and lower > upper:
-                result["status"] = "invalid"
-                result["evaluation"] = "Invalid custom thresholds: lower threshold is greater than upper threshold."
-                result["summary"] = f"ΔE = {delta_e_value:.3f} | lower = {lower:.3f} | upper = {upper:.3f}"
-                return result
-
-            if upper is None:
-                if delta_e_value <= lower:
+                if delta_e_value <= single:
                     result["status"] = "below_custom"
                     result["evaluation"] = "Below custom threshold."
                 else:
                     result["status"] = "above_custom"
                     result["evaluation"] = "Above custom threshold."
 
-                result["summary"] = f"ΔE = {delta_e_value:.3f} | threshold = {lower:.3f}"
+                result["summary"] = f"ΔE = {delta_e_value:.3f} | threshold = {single:.3f}"
                 return result
 
-            if delta_e_value <= lower:
-                result["status"] = "below_lower"
-                result["evaluation"] = "Below lower threshold."
-            elif delta_e_value <= upper:
-                result["status"] = "between_custom"
-                result["evaluation"] = "Between lower and upper thresholds."
-            else:
-                result["status"] = "above_upper"
-                result["evaluation"] = "Above upper threshold."
+            elif custom_type == "lower_upper":
+                lower, upper, err_range = self._validate_custom_range(
+                    threshold_settings.get("lower"),
+                    threshold_settings.get("upper")
+                )
 
-            result["summary"] = (
-                f"ΔE = {delta_e_value:.3f} | lower = {lower:.3f} | upper = {upper:.3f}"
-            )
-            return result
+                result["lower"] = lower
+                result["upper"] = upper
 
-        # Unknown mode
+                if err_range:
+                    result["status"] = "invalid"
+                    result["evaluation"] = err_range
+                    result["summary"] = f"ΔE = {delta_e_value:.3f}"
+                    return result
+
+                if delta_e_value <= lower:
+                    result["status"] = "below_lower"
+                    result["evaluation"] = "Below lower threshold."
+                elif delta_e_value <= upper:
+                    result["status"] = "between_custom"
+                    result["evaluation"] = "Between lower and upper thresholds."
+                else:
+                    result["status"] = "above_upper"
+                    result["evaluation"] = "Above upper threshold."
+
+                result["summary"] = f"ΔE = {delta_e_value:.3f} | lower = {lower:.3f} | upper = {upper:.3f}"
+                return result
+
         result["status"] = "unknown_mode"
         result["evaluation"] = f"Unknown threshold mode: {mode}"
         result["summary"] = f"ΔE = {delta_e_value:.3f}"
