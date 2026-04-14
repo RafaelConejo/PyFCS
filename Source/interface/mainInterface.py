@@ -5614,11 +5614,15 @@ class PyFCSApp:
             for i, prototype in enumerate(prototypes):
                 rgb = palette_uint8[i].astype(int)
                 color_hex = "#{:02x}{:02x}{:02x}".format(rgb[0], rgb[1], rgb[2])
+
+                luminance = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+                text_color = "white" if luminance < 80 else "black"
+
                 label = tk.Label(
                     inner_frame,
                     text=prototype.label,
                     bg=color_hex,
-                    fg="black" if np.mean(rgb) > 128 else "white",
+                    fg=text_color,
                     padx=5,
                     pady=2
                 )
@@ -7302,7 +7306,7 @@ class PyFCSApp:
             threshold_settings = merged
 
         mode = threshold_settings.get("mode", "default")
-        if mode == "known":  # compatibilidad
+        if mode == "known":  
             mode = "default"
 
         result = {
