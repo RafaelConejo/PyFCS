@@ -594,3 +594,271 @@ class VisualManager:
         # Reset the global legend flag for future executions
         VisualManager.SHOW_LEGENDS = True
         return fig
+
+
+
+
+
+
+
+    # @staticmethod
+    # def plot_combined_3D(
+    #     ax,
+    #     filename,
+    #     color_data,
+    #     core,
+    #     alpha,
+    #     support,
+    #     volume_limits,
+    #     hex_color,
+    #     selected_options,
+    #     filtered_points=None,
+    # ):
+    #     """
+    #     Draw the complete 3D model on an existing Axes3D instance.
+
+    #     Args:
+    #         ax: Existing matplotlib 3D axis.
+    #         filename: Title shown on the plot.
+    #         color_data: Dictionary with representative color data.
+    #         core: List of core prototypes.
+    #         alpha: List of 0.5-cut prototypes.
+    #         support: List of support prototypes.
+    #         volume_limits: LAB axis limits.
+    #         hex_color: Mapping from display hex colors to LAB prototype values.
+    #         selected_options: Active visualization layers.
+    #         filtered_points: Optional filtered LAB points grouped by prototype name.
+    #     """
+    #     import numpy as np
+    #     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    #     ax.cla()
+
+    #     data_map = {
+    #         "Representative": color_data,
+    #         "0.5-cut": alpha,
+    #         "Core": core,
+    #         "Support": support,
+    #     }
+
+    #     def lab_to_key(lab):
+    #         return tuple(np.round(np.asarray(lab, dtype=float), 6))
+
+    #     inverse_hex_color = {
+    #         lab_to_key(lab_val): hex_key
+    #         for hex_key, lab_val in hex_color.items()
+    #     }
+
+    #     filtered_points_arrays = {}
+    #     if filtered_points is not None:
+    #         for proto_name, points in filtered_points.items():
+    #             if points:
+    #                 filtered_points_arrays[proto_name] = np.asarray(points, dtype=float)
+
+    #     # ------------------------------------------------------------------
+    #     # Fondo totalmente limpio
+    #     # ------------------------------------------------------------------
+    #     fig = ax.get_figure()
+    #     fig.patch.set_facecolor("white")
+    #     ax.set_facecolor("white")
+
+    #     # Quitar paneles del cubo 3D
+    #     try:
+    #         ax.xaxis.pane.fill = False
+    #         ax.yaxis.pane.fill = False
+    #         ax.zaxis.pane.fill = False
+
+    #         ax.xaxis.pane.set_edgecolor((1, 1, 1, 0))
+    #         ax.yaxis.pane.set_edgecolor((1, 1, 1, 0))
+    #         ax.zaxis.pane.set_edgecolor((1, 1, 1, 0))
+    #     except Exception:
+    #         pass
+
+    #     # Quitar líneas de eje, ticks, labels y grid
+    #     ax.grid(False)
+    #     ax.set_xticks([])
+    #     ax.set_yticks([])
+    #     ax.set_zticks([])
+
+    #     ax.set_xlabel("")
+    #     ax.set_ylabel("")
+    #     ax.set_zlabel("")
+
+    #     # Ocultar línea base de los ejes 3D si matplotlib lo permite
+    #     try:
+    #         ax.xaxis.line.set_color((1, 1, 1, 0))
+    #         ax.yaxis.line.set_color((1, 1, 1, 0))
+    #         ax.zaxis.line.set_color((1, 1, 1, 0))
+    #     except Exception:
+    #         pass
+
+    #     # ------------------------------------------------------------------
+    #     # Puntos representativos
+    #     # ------------------------------------------------------------------
+    #     if "Representative" in selected_options and isinstance(color_data, dict):
+    #         lab_values = [value["positive_prototype"] for value in color_data.values()]
+
+    #         if lab_values:
+    #             lab_array = np.asarray(lab_values, dtype=float)
+
+    #             colors = [
+    #                 inverse_hex_color.get(lab_to_key(lab), "#000000")
+    #                 for lab in lab_values
+    #             ]
+
+
+    #             # Capa intermedia blanca para dar contraste
+    #             ax.scatter(
+    #                 lab_array[:, 1],
+    #                 lab_array[:, 2],
+    #                 lab_array[:, 0],
+    #                 c="white",
+    #                 s=58,
+    #                 alpha=1.0,
+    #                 depthshade=False,
+    #                 zorder=21,
+    #             )
+
+    #             # Capa interior con color real
+    #             ax.scatter(
+    #                 lab_array[:, 1],
+    #                 lab_array[:, 2],
+    #                 lab_array[:, 0],
+    #                 c=colors,
+    #                 s=28,
+    #                 edgecolor="black",
+    #                 linewidths=0.8,
+    #                 alpha=1.0,
+    #                 depthshade=False,
+    #                 zorder=22,
+    #             )
+
+    #     # ------------------------------------------------------------------
+    #     # Volúmenes y puntos filtrados
+    #     # ------------------------------------------------------------------
+    #     for option in ("0.5-cut", "Core", "Support"):
+    #         if option not in selected_options:
+    #             continue
+
+    #         prototypes = data_map.get(option)
+    #         if not prototypes:
+    #             continue
+
+    #         all_faces = []
+    #         all_facecolors = []
+    #         all_filtered_points = []
+
+    #         for prototype in prototypes:
+    #             color = inverse_hex_color.get(
+    #                 lab_to_key(prototype.positive),
+    #                 "#000000",
+    #             )
+
+    #             cache_attr = f"_cached_faces_{option.replace('-', '_')}"
+    #             if not hasattr(prototype, cache_attr):
+    #                 valid_faces = []
+
+    #                 for face in prototype.voronoi_volume.faces:
+    #                     if face.infinity or face.vertex is None:
+    #                         continue
+
+    #                     clipped_face = VisualManager.clip_face_to_volume(
+    #                         face.vertex,
+    #                         volume_limits,
+    #                     )
+
+    #                     if len(clipped_face) >= 3:
+    #                         valid_faces.append(clipped_face[:, [1, 2, 0]])
+
+    #                 setattr(prototype, cache_attr, valid_faces)
+
+    #             valid_faces = getattr(prototype, cache_attr)
+
+    #             for face_vertices in valid_faces:
+    #                 all_faces.append(face_vertices)
+    #                 all_facecolors.append(color)
+
+    #             if filtered_points_arrays:
+    #                 for _proto_name, points_array in filtered_points_arrays.items():
+    #                     if len(points_array) == 0:
+    #                         continue
+
+    #                     points_inside = [
+    #                         point
+    #                         for point in points_array
+    #                         if prototype.voronoi_volume.isInside(Point(*point))
+    #                     ]
+
+    #                     if points_inside:
+    #                         all_filtered_points.extend(points_inside)
+
+    #         if all_faces:
+    #             ax.add_collection3d(
+    #                 Poly3DCollection(
+    #                     all_faces,
+    #                     facecolors=all_facecolors,
+    #                     edgecolors="black",
+    #                     linewidths=0.7,
+    #                     alpha=0.28,   # más limpio y legible
+    #                 )
+    #             )
+
+    #         # Punto filtrado más visible
+    #         if all_filtered_points:
+    #             points_array = np.asarray(all_filtered_points, dtype=float)
+
+    #             # halo negro
+    #             ax.scatter(
+    #                 points_array[:, 1],
+    #                 points_array[:, 2],
+    #                 points_array[:, 0],
+    #                 c="black",
+    #                 s=85,
+    #                 alpha=1.0,
+    #                 depthshade=False,
+    #                 zorder=30,
+    #             )
+
+    #             # halo blanco
+    #             ax.scatter(
+    #                 points_array[:, 1],
+    #                 points_array[:, 2],
+    #                 points_array[:, 0],
+    #                 c="white",
+    #                 s=52,
+    #                 alpha=1.0,
+    #                 depthshade=False,
+    #                 zorder=31,
+    #             )
+
+    #             # núcleo rojo
+    #             ax.scatter(
+    #                 points_array[:, 1],
+    #                 points_array[:, 2],
+    #                 points_array[:, 0],
+    #                 c="#ff2d2d",
+    #                 marker="o",
+    #                 s=24,
+    #                 alpha=1.0,
+    #                 depthshade=False,
+    #                 zorder=32,
+    #             )
+
+    #     # ------------------------------------------------------------------
+    #     # Límites y aspecto
+    #     # ------------------------------------------------------------------
+    #     if volume_limits:
+    #         ax.set_xlim(volume_limits.comp2)
+    #         ax.set_ylim(volume_limits.comp3)
+    #         ax.set_zlim(volume_limits.comp1)
+
+    #     try:
+    #         ax.set_box_aspect((1, 1, 1))
+    #     except Exception:
+    #         pass
+
+    #     # Sin título si quieres que solo salgan los volúmenes
+    #     ax.set_title("")
+
+    #     # Si tampoco quieres el inset de orientación, comenta esta línea:
+    #     # VisualManager.draw_orientation_inset(fig, ax)

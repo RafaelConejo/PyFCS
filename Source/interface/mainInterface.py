@@ -79,8 +79,6 @@ class PyFCSApp:
         self.hex_color = []
         self.images = {}
         self.color_entry_detect = {}
-        self.cm_cache = {}
-        self.proto_percentage_cache = {}
         self.display_pil = {}
         self.image_jobs = {}
 
@@ -104,21 +102,6 @@ class PyFCSApp:
         # ---------------------------------------------------------------------
         # Local UI helpers
         # ---------------------------------------------------------------------
-        def load_toolbar_icon(filename, size=None):
-            """
-            Load an icon once and keep a persistent reference.
-            Optionally resize it to keep the toolbar compact.
-            """
-            icon_path = os.path.join(BASE_PATH, "Source", "external", "icons", filename)
-            img = Image.open(icon_path)
-
-            if size is not None:
-                img = img.resize(size, Image.LANCZOS)
-
-            tk_img = ImageTk.PhotoImage(img)
-            self.ui_icons[filename] = tk_img
-            return tk_img
-
         def create_toolbar_button(parent, text, command, image=None, side="left", padx=4, pady=2, width=None):
             """
             Create a toolbar button with consistent styling.
@@ -229,12 +212,13 @@ class PyFCSApp:
 
         # Load icons once
         icon_size = (35, 35)
-        load_image_icon = load_toolbar_icon("LoadImage.png", icon_size)
-        save_image_icon = load_toolbar_icon("SaveImage.png", icon_size)
-        new_fcs_icon = load_toolbar_icon("NewFCS1.png", icon_size)
-        load_fcs_icon = load_toolbar_icon("LoadFCS.png", icon_size)
-        at_icon = load_toolbar_icon("AT.png", icon_size)
-        pt_icon = load_toolbar_icon("PT.png", icon_size)
+        load_image_icon = self.load_toolbar_icon("LoadImage.png", icon_size)
+        save_image_icon = self.load_toolbar_icon("SaveImage.png", icon_size)
+        new_fcs_icon = self.load_toolbar_icon("NewFCS1.png", icon_size)
+        load_fcs_icon = self.load_toolbar_icon("LoadFCS.png", icon_size)
+        at_icon = self.load_toolbar_icon("AT.png", icon_size)
+        pt_icon = self.load_toolbar_icon("PT.png", icon_size)
+        evaluate_icon = self.load_toolbar_icon("evaluateColor.png", icon_size)
 
         image_manager_frame = tk.LabelFrame(
             main_frame,
@@ -284,7 +268,7 @@ class PyFCSApp:
 
         color_evaluation_frame = tk.LabelFrame(
             main_frame,
-            text="Color Evaluation",
+            text="Color Difference Evaluation",
             font=("Segoe UI", 10),
             bg="gray95",
             padx=8,
@@ -304,6 +288,13 @@ class PyFCSApp:
             image=at_icon,
             command=self.deploy_at
         )
+        create_toolbar_button(
+            color_evaluation_frame,
+            text="Color Evaluation",
+            image=evaluate_icon,
+            command=self.color_evaluation
+        )
+        
 
         # ---------------------------------------------------------------------
         # Main working area
@@ -662,6 +653,27 @@ class PyFCSApp:
 
         if not hasattr(self, "_creation_windows"):
             self._creation_windows = []
+
+
+
+    def load_toolbar_icon(self, filename, size=None):
+        if not hasattr(self, "ui_icons"):
+            self.ui_icons = {}
+
+        key = (filename, size)
+
+        if key in self.ui_icons:
+            return self.ui_icons[key]
+
+        icon_path = os.path.join(BASE_PATH, "Source", "external", "icons", filename)
+        img = Image.open(icon_path)
+
+        if size is not None:
+            img = img.resize(size, Image.Resampling.LANCZOS)
+
+        tk_img = ImageTk.PhotoImage(img)
+        self.ui_icons[key] = tk_img
+        return tk_img
 
 
 
@@ -1064,7 +1076,7 @@ class PyFCSApp:
 
 
 
-    def load_color_space(self):
+    def load_color_space(self, filename=None):
         """
         Load a fuzzy color space file and update the application state.
         """
@@ -1074,8 +1086,12 @@ class PyFCSApp:
                 "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
             )
             return
+        
+        # Close pixel/ROI info window because its content belongs to the previous color space
+        self._close_more_info_window()
 
-        filename = UtilsTools.prompt_file_selection("fuzzy_color_spaces/")
+        if filename is None:
+            filename = UtilsTools.prompt_file_selection("fuzzy_color_spaces/")
         if not filename:
             return
 
@@ -1108,8 +1124,10 @@ class PyFCSApp:
             self.file_path = filename
             self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
 
-            self.cm_cache.clear()
-            self.proto_percentage_cache.clear()
+            if hasattr(self, "cm_cache_by_image"):
+                self.cm_cache_by_image.clear()
+            if hasattr(self, "proto_percentage_cache_by_image"):
+                self.proto_percentage_cache_by_image.clear()
 
             self.color_data = data["color_data"]
             self.edit_color_data = copy.deepcopy(self.color_data)
@@ -1138,7 +1156,7 @@ class PyFCSApp:
     def create_color_space(self):
         """
         Create a fuzzy color space from the selected colors and prompt the user for its name.
-        Once confirmed, save the color space and close the creation popup.
+        Once confirmed, save the color space.
         """
         selected_colors_lab = {
             name: np.array([data["lab"]["L"], data["lab"]["A"], data["lab"]["B"]])
@@ -1172,7 +1190,6 @@ class PyFCSApp:
                 return
 
             popup.destroy()
-            self._close_creation_windows()
             self.save_cs(name, selected_colors_lab)
 
         ok_button = tk.Button(popup, text="OK", command=on_ok)
@@ -1183,15 +1200,40 @@ class PyFCSApp:
 
 
 
-    def _on_color_space_saved_success(self, name):
-        messagebox.showinfo(
-            "Color Space Created",
-            f"Color Space '{name}' created successfully."
-        )
+    def _on_color_space_saved_success(self, name, file_path=None):
         self._close_creation_windows()
 
+        load_now = messagebox.askyesno(
+            "Color Space Created",
+            f"Color Space '{name}' created successfully.\n\nDo you want to load it now?"
+        )
 
-    def _save_color_space_file(self, name, color_dict):
+        if load_now:
+            if file_path and os.path.exists(file_path):
+                self.load_color_space(file_path)
+            else:
+                self.custom_warning(
+                    "Load Error",
+                    "The color space was created successfully, but its file path could not be determined."
+                )
+
+
+    def _on_apply_changes_saved_success(self, name, file_path, saved_color_data):
+        self.color_data = copy.deepcopy(saved_color_data)
+        self.edit_color_data = copy.deepcopy(saved_color_data)
+        self.file_path = file_path
+        self.file_base_name = name
+
+        self.update_volumes()
+        self.display_data_window()
+
+        messagebox.showinfo(
+            "Changes Applied",
+            f"Color Space '{name}' was updated successfully."
+        )
+        
+
+    def _save_color_space_file(self, name, color_dict, saved_color_data=None, apply_after_save=False):
         """
         Save a fuzzy color space file in a background thread.
         """
@@ -1207,8 +1249,23 @@ class PyFCSApp:
         def run_save_process():
             try:
                 input_class = Input.instance(".fcs")
-                input_class.write_file(name, color_dict, progress_callback=update_progress)
-                self.root.after(0, lambda: self._on_color_space_saved_success(name))
+                file_path = input_class.write_file(
+                    name,
+                    color_dict,
+                    progress_callback=update_progress
+                )
+
+                if apply_after_save:
+                    self.root.after(
+                        0,
+                        lambda: self._on_apply_changes_saved_success(name, file_path, saved_color_data)
+                    )
+                else:
+                    self.root.after(
+                        0,
+                        lambda: self._on_color_space_saved_success(name, file_path)
+                    )
+
             except Exception as e:
                 error_msg = f"An error occurred while saving: {e}"
                 self.root.after(0, lambda msg=error_msg: self.custom_warning("Error", msg))
@@ -1222,7 +1279,7 @@ class PyFCSApp:
         self._save_color_space_file(name, selected_colors_lab)
 
 
-    def save_fcs(self, name, colors, color_dict=None):
+    def save_fcs(self, name, colors, color_dict=None, apply_after_save=False):
         if color_dict is None:
             color_dict = {}
             used_names = set()
@@ -1243,8 +1300,12 @@ class PyFCSApp:
 
             self.color_entry_detect.clear()
 
-        self._save_color_space_file(name, color_dict)
-
+        self._save_color_space_file(
+            name,
+            color_dict,
+            saved_color_data=copy.deepcopy(colors),
+            apply_after_save=apply_after_save
+        )
     
 
     def _get_color_wheel_image(self, canvas_size=300):
@@ -2753,7 +2814,7 @@ class PyFCSApp:
 
 
     def apply_changes(self):
-        """Applies the pending changes made to the editable color list."""
+        """Apply the pending changes made to the editable color list."""
         if not self.COLOR_SPACE:
             self.custom_warning("Error", "No Color Space has been loaded.")
             return
@@ -2766,32 +2827,27 @@ class PyFCSApp:
             return
 
         try:
-            self.color_data = copy.deepcopy(self.edit_color_data)
-
-            color_dict = {
-                key: value["positive_prototype"]
-                for key, value in self.color_data.items()
-            }
-
             output_name = self.file_name_entry.get().strip()
             if not output_name:
                 self.custom_warning("Error", "Please enter a valid file name.")
                 return
 
-            # Save always as .fcs the new one
-            self.save_fcs(output_name, self.color_data, color_dict)
+            new_color_data = copy.deepcopy(self.edit_color_data)
 
-            # Update new path
-            self.file_path = os.path.join(
-                UtilsTools.get_base_path(),
-                "fuzzy_color_spaces",
-                f"{output_name}.fcs"
+            color_dict = {
+                key: value["positive_prototype"]
+                for key, value in new_color_data.items()
+            }
+
+            self.save_fcs(
+                output_name,
+                new_color_data,
+                color_dict=color_dict,
+                apply_after_save=True
             )
 
-            self.update_volumes()
-
         except Exception as e:
-            self.custom_warning("Error", f"Changes could not be saved: {e}")
+            self.custom_warning("Error", f"Changes could not be prepared: {e}")
 
 
     def delete_color_space(self):
@@ -3000,44 +3056,89 @@ class PyFCSApp:
 
     def close_all_image(self):
         """
-        Closes all floating windows and cleans up associated resources.
+        Closes all floating windows and cleans up associated UI/window resources.
+
+        Important:
+        - This does NOT clear the persistent image-result caches.
+        - It only removes window-bound state so cached mappings can be reused
+        if the same image is opened again during the session.
         """
-        if hasattr(self, "floating_images"):
-            for window_id in list(self.floating_images.keys()):
-                # Delete rectangle o pixel info
-                try:
-                    self._disable_original_rectangle_sampling(window_id)
-                except Exception:
-                    pass
-        
-                # Close each window
+        if not hasattr(self, "floating_images"):
+            return
+
+        # If any process is running, ask once before cancelling and closing everything
+        if self._has_any_active_job():
+            confirm = messagebox.askyesno(
+                "Processes Running",
+                "There are one or more processes currently running.\n\n"
+                "Do you want to cancel them and close all images?"
+            )
+            if not confirm:
+                return
+
+        for window_id in list(self.floating_images.keys()):
+            # Cancel running job linked to the window
+            try:
+                self._cancel_window_job(window_id)
+            except Exception:
+                pass
+
+            # Remove rectangle / pixel sampling state
+            try:
+                self._disable_original_rectangle_sampling(window_id)
+            except Exception:
+                pass
+
+            # Remove all canvas items with this window tag
+            try:
                 self.image_canvas.delete(window_id)
-                del self.floating_images[window_id]
+            except Exception:
+                pass
 
-                if hasattr(self, "proto_options") and window_id in self.proto_options:
-                    info = self.proto_options.get(window_id)
-                    if info:
-                        frame = info.get("frame")
-                        canvas_item = info.get("canvas_item")
+            # Destroy legend/options UI if present
+            if hasattr(self, "proto_options") and window_id in self.proto_options:
+                info = self.proto_options.get(window_id)
+                if info:
+                    frame = info.get("frame")
+                    canvas_item = info.get("canvas_item")
 
-                        try:
-                            if canvas_item:
-                                self.image_canvas.delete(canvas_item)
-                        except Exception:
-                            pass
+                    try:
+                        if canvas_item:
+                            self.image_canvas.delete(canvas_item)
+                    except Exception:
+                        pass
 
-                        try:
-                            if frame and frame.winfo_exists():
-                                frame.destroy()
-                        except Exception:
-                            pass
+                    try:
+                        if frame and frame.winfo_exists():
+                            frame.destroy()
+                    except Exception:
+                        pass
 
-                        del self.proto_options[window_id]
+                del self.proto_options[window_id]
 
-                if hasattr(self, "load_images_names") and window_id in self.load_images_names:
-                    del self.load_images_names[window_id]
+            # Remove window-bound state only
+            for attr_name in (
+                "floating_images",
+                "pil_images_original",
+                "floating_window_state",
+                "images",
+                "display_pil",
+                "original_images",
+                "image_dimensions",
+                "original_image_dimensions",
+                "_resize_callbacks",
+                "_pixel_click_callbacks",
+                "current_protos",
+                "load_images_names",
+                "window_image_key",
+                "window_mapping_mode",
+            ):
+                if hasattr(self, attr_name):
+                    d = getattr(self, attr_name)
+                    if isinstance(d, dict) and window_id in d:
+                        del d[window_id]
 
-        # Reset dict
+        # Reset leftover per-window dimension dicts if they still exist
         if hasattr(self, "image_dimensions"):
             self.image_dimensions.clear()
         if hasattr(self, "original_image_dimensions"):
@@ -3101,6 +3202,12 @@ class PyFCSApp:
         Creates a floating window with the selected image, a title bar, and a dropdown menu.
         The window is movable (from title bar only), resizable (bottom-right handle),
         and includes options for displaying the original image and color mapping.
+
+        Cache design:
+        - Window UI state is keyed by window_id.
+        - Persistent mapping caches are keyed by:
+            ((abs_path, mtime, size), color_space_key)
+        so cached results survive window close/reopen within the same session.
         """
         if self._has_any_active_job():
             self.custom_warning(
@@ -3138,6 +3245,14 @@ class PyFCSApp:
         if not hasattr(self, "display_pil"):
             self.display_pil = {}
 
+        # Persistent caches by image + color space
+        if not hasattr(self, "window_image_key"):
+            self.window_image_key = {}
+        if not hasattr(self, "cm_cache_by_image"):
+            self.cm_cache_by_image = {}
+        if not hasattr(self, "proto_percentage_cache_by_image"):
+            self.proto_percentage_cache_by_image = {}
+
         # Generate unique ID
         while True:
             window_id = f"floating_{random.randint(1000, 9999)}"
@@ -3145,6 +3260,14 @@ class PyFCSApp:
                 break
 
         self.load_images_names[window_id] = filename
+
+        # Stable cache key for this image during the session
+        image_key = (
+            os.path.abspath(filename),
+            os.path.getmtime(filename),
+            os.path.getsize(filename)
+        )
+        self.window_image_key[window_id] = image_key
 
         # State flags
         self.CAN_APPLY_MAPPING[window_id] = bool(self.COLOR_SPACE)
@@ -3177,7 +3300,7 @@ class PyFCSApp:
         self.floating_images[window_id] = img_tk
         self.original_images[window_id] = img_tk
 
-        # Window paddings (must stay consistent with other methods)
+        # Window paddings
         PAD_X = 30
         PAD_Y = 50
         TITLE_H = 30
@@ -3191,21 +3314,18 @@ class PyFCSApp:
         # ---------------------------
         # Create canvas items
         # ---------------------------
-        # Background
         self.image_canvas.create_rectangle(
             x, y, x + new_width + PAD_X, y + new_height + PAD_Y,
             outline="black", fill="white", width=2,
             tags=(window_id, "floating", f"{window_id}_bg")
         )
 
-        # Title bar
         self.image_canvas.create_rectangle(
             x, y, x + new_width + PAD_X, y + TITLE_H,
             outline="black", fill="gray",
             tags=(window_id, "floating", f"{window_id}_title")
         )
 
-        # Title text
         self.image_canvas.create_text(
             x + 50, y + 15, anchor="w",
             text=os.path.basename(filename),
@@ -3213,7 +3333,6 @@ class PyFCSApp:
             tags=(window_id, "floating", f"{window_id}_title_text")
         )
 
-        # Close button
         self.image_canvas.create_rectangle(
             x + new_width + PAD_X - 5, y + 5,
             x + new_width + PAD_X - 25, y + 25,
@@ -3226,14 +3345,12 @@ class PyFCSApp:
             tags=(window_id, "floating", f"{window_id}_close_button", f"{window_id}_close_text")
         )
 
-        # Arrow button
         self.image_canvas.create_text(
             x + 15, y + 15, text="▼",
             fill="white", font=("Sans", 12),
             tags=(window_id, "floating", f"{window_id}_arrow_button", f"{window_id}_arrow_text")
         )
 
-        # Image item (anchor="nw" avoids coordinate offsets)
         self.image_canvas.create_image(
             x + IMG_LEFT_PAD, y + IMG_TOP_PAD,
             anchor="nw",
@@ -3241,7 +3358,6 @@ class PyFCSApp:
             tags=(window_id, "floating", f"{window_id}_click_image", f"{window_id}_img_item")
         )
 
-        # Percentage text below the image (hidden by default)
         self.image_canvas.create_text(
             x + IMG_LEFT_PAD,
             y + IMG_TOP_PAD + new_height + 10,
@@ -3252,7 +3368,6 @@ class PyFCSApp:
             tags=(window_id, "floating", f"{window_id}_pct_text")
         )
 
-        # Resize handle (bottom-right)
         hx1 = x + new_width + PAD_X - HANDLE_SIZE - 2
         hy1 = y + new_height + PAD_Y - HANDLE_SIZE - 2
         hx2 = x + new_width + PAD_X - 2
@@ -3267,19 +3382,16 @@ class PyFCSApp:
         # Helpers to relayout + resize
         # ---------------------------
         def _relayout(window_id):
-            """Update all canvas item positions based on the stored floating window state."""
+            """Update all canvas item positions based on stored floating window state."""
             st = self.floating_window_state[window_id]
             wx, wy, ww, wh = st["x"], st["y"], st["w"], st["h"]
 
-            # Background and title bar
             self.image_canvas.coords(f"{window_id}_bg", wx, wy, wx + ww + PAD_X, wy + wh + PAD_Y)
             self.image_canvas.coords(f"{window_id}_title", wx, wy, wx + ww + PAD_X, wy + TITLE_H)
 
-            # Title text and arrow
             self.image_canvas.coords(f"{window_id}_title_text", wx + 50, wy + 15)
             self.image_canvas.coords(f"{window_id}_arrow_text", wx + 15, wy + 15)
 
-            # Close button
             self.image_canvas.coords(
                 f"{window_id}_close_rect",
                 wx + ww + PAD_X - 5, wy + 5,
@@ -3287,33 +3399,24 @@ class PyFCSApp:
             )
             self.image_canvas.coords(f"{window_id}_close_text", wx + ww + PAD_X - 15, wy + 15)
 
-            # Image top-left (anchor nw)
-            self.image_canvas.coords(
-                f"{window_id}_img_item",
-                wx + IMG_LEFT_PAD, wy + IMG_TOP_PAD
-            )
+            self.image_canvas.coords(f"{window_id}_img_item", wx + IMG_LEFT_PAD, wy + IMG_TOP_PAD)
 
-            # Resize handle
             hx1 = wx + ww + PAD_X - HANDLE_SIZE - 2
             hy1 = wy + wh + PAD_Y - HANDLE_SIZE - 2
             hx2 = wx + ww + PAD_X - 2
             hy2 = wy + wh + PAD_Y - 2
             self.image_canvas.coords(f"{window_id}_resize_handle", hx1, hy1, hx2, hy2)
 
-            # Reposition proto_options frame if it exists
             self._reposition_proto_options(window_id)
 
-            # Percentage text below the image
             self.image_canvas.coords(
                 f"{window_id}_pct_text",
                 wx + IMG_LEFT_PAD,
                 wy + IMG_TOP_PAD + wh + 10
             )
 
-            # Reposition loading panel if it exists
             self._reposition_window_loading(window_id)
 
-            # Keep original-image rectangle sampling geometry in sync after moves/resizes
             if hasattr(self, "_original_sampling_state") and window_id in self._original_sampling_state:
                 state = self._original_sampling_state[window_id]
                 state["img_x"] = wx + IMG_LEFT_PAD
@@ -3321,20 +3424,17 @@ class PyFCSApp:
                 state["draw_w"] = ww
                 state["draw_h"] = wh
 
-            # Keep this floating window visually focused
             self._focus_floating_window(window_id)
 
         def _update_image_to_size(window_id, target_w, target_h):
             """
-            Resize the displayed image so it fits within target_w/target_h while keeping aspect ratio.
-            Also refresh layout and, if original rectangle sampling is active, keep it synchronized.
+            Resize the displayed image to fit target_w/target_h while preserving aspect ratio.
             """
             pil_original = self.pil_images_original[window_id]
             ow, oh = pil_original.size
 
-            # Keep aspect ratio (fit)
             scale = min(target_w / ow, target_h / oh)
-            new_w = max(30, int(ow * scale))  # Avoid collapsing
+            new_w = max(30, int(ow * scale))
             new_h = max(30, int(oh * scale))
 
             pil_resized = pil_original.resize((new_w, new_h), Image.Resampling.LANCZOS)
@@ -3343,14 +3443,10 @@ class PyFCSApp:
 
             img_tk = ImageTk.PhotoImage(pil_resized)
             self.floating_images[window_id] = img_tk
-
-            # Update displayed PIL image after resizing
             self.display_pil[window_id] = pil_resized
 
-            # Update canvas image item
             self.image_canvas.itemconfig(f"{window_id}_img_item", image=self.floating_images[window_id])
 
-            # Update state size and relayout
             self.floating_window_state[window_id]["w"] = new_w
             self.floating_window_state[window_id]["h"] = new_h
             _relayout(window_id)
@@ -3384,10 +3480,18 @@ class PyFCSApp:
         # ---------------------------
         def close_window(event):
             """Close the floating window and remove all associated data and canvas items."""
-            # Cancel any running process linked to this image
-            self._cancel_window_job(window_id)
 
-            # Make sure rectangle sampling state is cleaned up
+            # Prevent closing while a job is running
+            if self._has_active_job(window_id):
+                confirm = messagebox.askyesno(
+                    "Cancel Process",
+                    "A process is running for this image.\n\nDo you want to cancel it and close the window?"
+                )
+                if not confirm:
+                    return "break"
+
+                self._cancel_window_job(window_id)
+
             try:
                 self._disable_original_rectangle_sampling(window_id)
             except Exception:
@@ -3395,32 +3499,26 @@ class PyFCSApp:
 
             self.image_canvas.delete(window_id)
 
-            if window_id in self.floating_images:
-                del self.floating_images[window_id]
-            if hasattr(self, "pil_images_original") and window_id in self.pil_images_original:
-                del self.pil_images_original[window_id]
-            if hasattr(self, "floating_window_state") and window_id in self.floating_window_state:
-                del self.floating_window_state[window_id]
-            if hasattr(self, "images") and window_id in self.images:
-                del self.images[window_id]
-            if hasattr(self, "display_pil") and window_id in self.display_pil:
-                del self.display_pil[window_id]
-            if hasattr(self, "original_images") and window_id in self.original_images:
-                del self.original_images[window_id]
-            if hasattr(self, "image_dimensions") and window_id in self.image_dimensions:
-                del self.image_dimensions[window_id]
-            if hasattr(self, "original_image_dimensions") and window_id in self.original_image_dimensions:
-                del self.original_image_dimensions[window_id]
-            if hasattr(self, "proto_percentage_cache") and window_id in self.proto_percentage_cache:
-                del self.proto_percentage_cache[window_id]
-            if hasattr(self, "cm_cache") and window_id in self.cm_cache:
-                del self.cm_cache[window_id]
-            if hasattr(self, "_resize_callbacks") and window_id in self._resize_callbacks:
-                del self._resize_callbacks[window_id]
-            if hasattr(self, "_pixel_click_callbacks") and window_id in self._pixel_click_callbacks:
-                del self._pixel_click_callbacks[window_id]
-            if hasattr(self, "current_protos") and window_id in self.current_protos:
-                del self.current_protos[window_id]
+            for attr_name in (
+                "floating_images",
+                "pil_images_original",
+                "floating_window_state",
+                "images",
+                "display_pil",
+                "original_images",
+                "image_dimensions",
+                "original_image_dimensions",
+                "_resize_callbacks",
+                "_pixel_click_callbacks",
+                "current_protos",
+                "load_images_names",
+                "window_image_key",
+                "window_mapping_mode",
+            ):
+                if hasattr(self, attr_name):
+                    d = getattr(self, attr_name)
+                    if isinstance(d, dict) and window_id in d:
+                        del d[window_id]
 
             if hasattr(self, "proto_options") and window_id in self.proto_options:
                 info = self.proto_options.get(window_id)
@@ -3441,9 +3539,6 @@ class PyFCSApp:
                         pass
 
                     del self.proto_options[window_id]
-
-            if hasattr(self, "load_images_names") and window_id in self.load_images_names:
-                del self.load_images_names[window_id]
 
         # ---------------------------
         # Dropdown menu
@@ -3478,13 +3573,12 @@ class PyFCSApp:
             return "break"
 
         # ---------------------------
-        # Move window (title bar only)
+        # Move window
         # ---------------------------
         def start_move(event):
-            """Store the initial mouse position when pressing on the title bar."""
             if self._has_active_job(window_id):
                 return "break"
-            
+
             self._focus_floating_window(window_id)
 
             try:
@@ -3495,15 +3589,12 @@ class PyFCSApp:
             self.last_x, self.last_y = event.x, event.y
 
         def move_window(event):
-            """Move the floating window while dragging from the title bar."""
             if self._has_active_job(window_id):
                 return "break"
-            
+
             self._focus_floating_window(window_id)
 
             dx, dy = event.x - self.last_x, event.y - self.last_y
-
-            # Update stored position
             st = self.floating_window_state[window_id]
             st["x"] += dx
             st["y"] += dy
@@ -3517,7 +3608,6 @@ class PyFCSApp:
         # Resize window
         # ---------------------------
         def start_resize(event):
-            """Store initial state for resizing using the bottom-right handle."""
             if self._has_active_job(window_id):
                 return "break"
 
@@ -3535,7 +3625,6 @@ class PyFCSApp:
             }
 
         def do_resize(event):
-            """Resize the floating window while dragging the bottom-right handle."""
             if self._has_active_job(window_id):
                 return "break"
 
@@ -3549,7 +3638,6 @@ class PyFCSApp:
             dw = mx - start["mx"]
             dh = my - start["my"]
 
-            # Desired image-area size before aspect correction
             desired_w = max(30, int(start["w"] + dw))
             desired_h = max(30, int(start["h"] + dh))
 
@@ -3557,13 +3645,18 @@ class PyFCSApp:
             return "break"
 
         def end_resize(event):
-            """Finish resizing, clear related caches, and remove stale percentage text."""
+            """
+            Finish resizing.
+
+            Important:
+            - We do NOT clear persistent caches here.
+            - Cache keys already include (width, height), so a resize naturally
+            leads to a different cache entry when needed.
+            """
             if self._has_active_job(window_id):
                 return "break"
 
-            # Cancel any running process because the displayed image size has changed
             self._cancel_window_job(window_id)
-
             self._resize_start = None
 
             try:
@@ -3571,16 +3664,6 @@ class PyFCSApp:
             except Exception:
                 pass
 
-            # Clear cached results for this window when resizing ends
-            try:
-                if hasattr(self, "proto_percentage_cache") and window_id in self.proto_percentage_cache:
-                    self.proto_percentage_cache[window_id].clear()
-                if hasattr(self, "cm_cache") and window_id in self.cm_cache:
-                    self.cm_cache[window_id].clear()
-            except Exception:
-                pass
-
-            # Clear coverage text because it may be outdated after resizing
             try:
                 self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
             except Exception:
@@ -3588,16 +3671,14 @@ class PyFCSApp:
 
             return "break"
 
-        # Store resize callbacks so they can be rebound later
         if not hasattr(self, "_resize_callbacks"):
             self._resize_callbacks = {}
         self._resize_callbacks[window_id] = (start_resize, do_resize, end_resize)
 
         # ---------------------------
-        # Pixel picking (single click)
+        # Pixel picking
         # ---------------------------
         def get_pixel_value(event, window_id=window_id):
-            """Get the LAB value of the clicked pixel, accounting for window movement and resizing."""
             if self._has_active_job(window_id):
                 return "break"
 
@@ -3611,7 +3692,6 @@ class PyFCSApp:
             abs_x = self.image_canvas.canvasx(event.x)
             abs_y = self.image_canvas.canvasy(event.y)
 
-            # Top-left corner of the displayed image (anchor="nw")
             st = self.floating_window_state[window_id]
             img_left = st["x"] + IMG_LEFT_PAD
             img_top = st["y"] + IMG_TOP_PAD
@@ -3619,7 +3699,6 @@ class PyFCSApp:
             relative_x = abs_x - img_left
             relative_y = abs_y - img_top
 
-            # Ignore clicks outside the displayed image area
             if not (0 <= relative_x < resized_w and 0 <= relative_y < resized_h):
                 return "break"
 
@@ -3638,8 +3717,6 @@ class PyFCSApp:
 
             return "break"
 
-        # Store the normal click callback so it can be restored after disabling
-        # original-image rectangle sampling
         if not hasattr(self, "_pixel_click_callbacks"):
             self._pixel_click_callbacks = {}
         self._pixel_click_callbacks[window_id] = get_pixel_value
@@ -3647,27 +3724,21 @@ class PyFCSApp:
         # ---------------------------
         # Bindings
         # ---------------------------
-        # Move only from title bar
         self.image_canvas.tag_bind(f"{window_id}_title", "<Button-1>", start_move)
         self.image_canvas.tag_bind(f"{window_id}_title", "<B1-Motion>", move_window)
         self.image_canvas.tag_bind(f"{window_id}_title_text", "<Button-1>", start_move)
         self.image_canvas.tag_bind(f"{window_id}_title_text", "<B1-Motion>", move_window)
 
-        # Close, menu, click
         self.image_canvas.tag_bind(f"{window_id}_close_button", "<Button-1>", close_window)
         self.image_canvas.tag_bind(f"{window_id}_click_image", "<Button-1>", get_pixel_value)
         self.image_canvas.tag_bind(f"{window_id}_arrow_button", "<Button-1>", show_menu_image)
 
-        # Resize handle bindings
         self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<Button-1>", start_resize)
         self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<B1-Motion>", do_resize)
         self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<ButtonRelease-1>", end_resize)
 
-        # Initial relayout to ensure everything stays consistent
         _relayout(window_id)
 
-        # Enable rectangle sampling from the start because a newly opened floating
-        # window is already showing the original image
         try:
             self._enable_original_rectangle_sampling(
                 window_id=window_id,
@@ -3677,75 +3748,7 @@ class PyFCSApp:
         except Exception as e:
             print(f"Warning enabling original rectangle sampling for {window_id}: {e}")
 
-        # Focus the newly created window
         self._focus_floating_window(window_id)
-
-
-
-    def add_new_image_colors(self, popup, colors, threshold, min_samples):
-        """
-        Allows the user to select another image and adds the detected colors to the current list.
-        Ensures that only unique images are selected and handles cases where no images are available.
-        """
-        # Get unique source image IDs from the current colors
-        unique_ids = {color.get("source_image") for color in colors}
-
-        # Check if there are available images to display
-        if not hasattr(self, "load_images_names") or not self.load_images_names:
-            self.custom_warning(message="No images are currently available to display.")
-            return
-
-        # Filter out images that have already been selected
-        available_image_ids = [
-            image_id for image_id in self.images.keys()
-            if image_id not in unique_ids
-        ]
-
-        # If no available images, show a message and return
-        if not available_image_ids:
-            self.custom_warning("No Available Images", "All images have already been selected.")
-            return
-
-        # Get the filenames of the available images
-        available_image_names = [
-            self.load_images_names[image_id] for image_id in available_image_ids
-            if image_id in self.load_images_names
-        ]
-
-        # Create a popup window for selecting another image
-        select_popup, listbox = UtilsTools.create_selection_popup(
-            parent=popup,
-            title="Select Another Image",
-            width=200,
-            height=200,
-            items=[os.path.basename(filename) for filename in available_image_names]
-        )
-
-        # Center the popup window
-        self.center_popup(select_popup, 200, 200)
-
-        # Bind the listbox selection event to handle image selection
-        listbox.bind(
-            "<<ListboxSelect>>",
-            lambda event: UtilsTools.handle_image_selection(
-                event=event,
-                listbox=listbox,
-                popup=select_popup,
-                images_names=self.load_images_names,
-                callback=lambda window_id: [
-                    self.get_fcs_image_merge(window_id, colors, threshold, min_samples),
-                    popup.destroy()
-                ]
-            )
-        )
-
-
-    def addColor_to_image(self, window, colors, update_ui_callback):
-        """
-        Opens a popup window to add a new color by entering LAB values or selecting a color from a color wheel.
-        Returns the color name and LAB values if the user confirms the input.
-        """
-        self.image_manager.addColor_to_image(window, colors, update_ui_callback)
 
 
 
@@ -3902,6 +3905,25 @@ class PyFCSApp:
         return job_id
 
 
+    def _raise_all_loading_panels(self):
+        """
+        Keep every visible loading panel above floating windows and legend panels.
+
+        This prevents a running job's loading overlay from disappearing when another
+        floating window is moved, focused, or closed.
+        """
+        self._ensure_image_jobs()
+
+        for window_id, info in self.image_jobs.items():
+            widgets = info.get("loading_widgets", {})
+            if not widgets:
+                continue
+
+            try:
+                self.image_canvas.tag_raise(f"{window_id}_loading")
+            except Exception:
+                pass
+
 
     def _show_window_loading(self, window_id, text="Processing..."):
         """Creates a canvas-only loading panel linked to a specific floating image/window."""
@@ -3994,6 +4016,9 @@ class PyFCSApp:
                 "panel_w": panel_w,
                 "panel_h": panel_h,
             }
+
+        # Ensure all visible loading panels remain above floating windows
+        self._raise_all_loading_panels()
 
 
 
@@ -4092,6 +4117,10 @@ class PyFCSApp:
                 widgets["cancel_txt"],
                 (btn_x1 + btn_x2) / 2, (btn_y1 + btn_y2) / 2
             )
+
+            # Keep it visible above other windows
+            self.image_canvas.tag_raise(f"{window_id}_loading")
+
         except Exception:
             pass
 
@@ -4161,7 +4190,8 @@ class PyFCSApp:
         Bring one floating image window to the front while keeping auxiliary
         legend/prototype panels behind the active image.
 
-        This makes the image being moved appear above proto_options panels.
+        Loading panels are always kept above all floating windows so a running
+        process remains visible even if other windows are moved or focused.
         """
         try:
             # First, send all legend panels behind floating windows
@@ -4182,19 +4212,13 @@ class PyFCSApp:
                     except Exception:
                         pass
 
-            # Also keep loading panels behind the active floating window
-            try:
-                self.image_canvas.tag_lower("loading")
-            except Exception:
-                pass
-
             # Raise the whole floating window group
             try:
                 self.image_canvas.tag_raise(window_id)
             except Exception:
                 pass
 
-            # Raise specific items explicitly to guarantee order
+            # Raise specific items explicitly to guarantee order inside the window
             for tag in (
                 f"{window_id}_bg",
                 f"{window_id}_title",
@@ -4215,15 +4239,11 @@ class PyFCSApp:
                 except Exception:
                     pass
 
-            # Keep this window loading panel above its own image if it exists
-            try:
-                self.image_canvas.tag_raise(f"{window_id}_loading")
-            except Exception:
-                pass
+            # Finally, keep ALL loading panels above everything else
+            self._raise_all_loading_panels()
 
         except Exception:
             pass
-
 
 
 
@@ -4511,6 +4531,65 @@ class PyFCSApp:
         # Style for buttons
         style = ttk.Style()
         style.configure("Accent.TButton", font=("Helvetica", 8, "bold"), padding=10)
+
+
+
+    def add_new_image_colors(self, popup, colors, threshold, min_samples):
+        """
+        Allows the user to select another image and adds the detected colors to the current list.
+        Ensures that only unique images are selected and handles cases where no images are available.
+        """
+        # Get unique source image IDs from the current colors
+        unique_ids = {color.get("source_image") for color in colors}
+
+        # Check if there are available images to display
+        if not hasattr(self, "load_images_names") or not self.load_images_names:
+            self.custom_warning(message="No images are currently available to display.")
+            return
+
+        # Filter out images that have already been selected
+        available_image_ids = [
+            image_id for image_id in self.images.keys()
+            if image_id not in unique_ids
+        ]
+
+        # If no available images, show a message and return
+        if not available_image_ids:
+            self.custom_warning("No Available Images", "All images have already been selected.")
+            return
+
+        # Get the filenames of the available images
+        available_image_names = [
+            self.load_images_names[image_id] for image_id in available_image_ids
+            if image_id in self.load_images_names
+        ]
+
+        # Create a popup window for selecting another image
+        select_popup, listbox = UtilsTools.create_selection_popup(
+            parent=popup,
+            title="Select Another Image",
+            width=200,
+            height=200,
+            items=[os.path.basename(filename) for filename in available_image_names]
+        )
+
+        # Center the popup window
+        self.center_popup(select_popup, 200, 200)
+
+        # Bind the listbox selection event to handle image selection
+        listbox.bind(
+            "<<ListboxSelect>>",
+            lambda event: UtilsTools.handle_image_selection(
+                event=event,
+                listbox=listbox,
+                popup=select_popup,
+                images_names=self.load_images_names,
+                callback=lambda window_id: [
+                    self.get_fcs_image_merge(window_id, colors, threshold, min_samples),
+                    popup.destroy()
+                ]
+            )
+        )
 
 
 
@@ -5166,6 +5245,15 @@ class PyFCSApp:
 
 
     def get_proto_percentage(self, window_id):
+        """
+        Compute/display the prototype coverage mapping for the currently selected prototype.
+
+        Cache scope:
+            (image_key, color_space_key)
+
+        Cache key inside that scope:
+            (selected_proto_index, displayed_width, displayed_height)
+        """
         if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
             self.custom_warning(
                 "Restore Original Image",
@@ -5177,18 +5265,25 @@ class PyFCSApp:
             self.custom_warning("Error", "No prototype selected for this window.")
             return
 
+        if not hasattr(self, "window_image_key") or window_id not in self.window_image_key:
+            self.custom_warning("Error", "Image cache key not found for this window.")
+            return
+
         selected_proto = self.current_protos[window_id].get()
         pos = self.color_matrix.index(selected_proto)
+
+        image_key = self.window_image_key[window_id]
+        color_space_key = getattr(self, "file_path", None)
+        cache_scope = (image_key, color_space_key)
 
         def run_process(cancel_event, job_id):
             try:
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
 
-                if not hasattr(self, "proto_percentage_cache"):
-                    self.proto_percentage_cache = {}
-                if window_id not in self.proto_percentage_cache:
-                    self.proto_percentage_cache[window_id] = {}
+                if not hasattr(self, "proto_percentage_cache_by_image"):
+                    self.proto_percentage_cache_by_image = {}
+                scope_cache = self.proto_percentage_cache_by_image.setdefault(cache_scope, {})
 
                 if not hasattr(self, "images") or window_id not in self.images:
                     self.image_canvas.after(
@@ -5201,7 +5296,7 @@ class PyFCSApp:
                 w, h = source_img.size
                 cache_key = (pos, w, h)
 
-                cached_entry = self.proto_percentage_cache[window_id].get(cache_key)
+                cached_entry = scope_cache.get(cache_key)
                 if cached_entry is not None:
                     if self._is_job_cancelled(window_id, cancel_event, job_id):
                         return
@@ -5240,7 +5335,7 @@ class PyFCSApp:
 
                     pct = 100.0 * (colored / total) if total else 0.0
 
-                    self.proto_percentage_cache[window_id][cache_key] = {
+                    scope_cache[cache_key] = {
                         "array": grayscale_image_array,
                         "pct": pct,
                         "thresh_used": thresh
@@ -5476,15 +5571,15 @@ class PyFCSApp:
 
     def color_mapping_all(self, window_id):
         """
-        Improved / faster version of the Tkinter "Color Mapping All" operation.
+        Fast Tkinter "Color Mapping All" operation.
 
-        Key optimizations:
-        1) Compute the winner label_map by processing only UNIQUE quantized LAB values.
-        2) Avoid building a full dict(label -> membership) for every pixel.
-        3) Recolor the image in O(H*W) using the cached label_map.
+        Main cache design:
+        - Persistent cache is stored by (image_key, color_space_key)
+        - Inside that scope we cache label_map by:
+            (width, height, prototype_labels)
 
-        Safety behavior:
-        - If a pixel does not match any prototype (best_idx == -1), it is rendered in black.
+        This allows reopening the same image and reusing previously computed results
+        as long as the image identity and color space remain the same.
         """
         items = self.image_canvas.find_withtag(window_id)
         if not items:
@@ -5501,15 +5596,21 @@ class PyFCSApp:
         if not hasattr(self, "window_mapping_mode"):
             self.window_mapping_mode = {}
 
+        if not hasattr(self, "window_image_key") or window_id not in self.window_image_key:
+            self.custom_warning("Error", "Image cache key not found for this window.")
+            return
+
         self.window_mapping_mode[window_id] = "all"
 
-        # Disable original-image rectangle sampling because the view is no longer the original image
+        image_key = self.window_image_key[window_id]
+        color_space_key = getattr(self, "file_path", None)
+        cache_scope = (image_key, color_space_key)
+
         try:
             self._disable_original_rectangle_sampling(window_id)
         except Exception:
             pass
 
-        # Disable resizing while mapping is active
         try:
             self.image_canvas.delete(f"{window_id}_resize_handle")
             self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<Button-1>")
@@ -5518,7 +5619,6 @@ class PyFCSApp:
         except Exception:
             pass
 
-        # Hide per-prototype percentage text for the "all" mapping
         try:
             self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
         except Exception:
@@ -5545,24 +5645,16 @@ class PyFCSApp:
             except Exception:
                 pass
 
-        # -----------------------------
-        # UI-safe progress update helper
-        # -----------------------------
         def update_progress(job_id, current_step, total_steps):
-            """Thread-safe progress update helper."""
             if total_steps <= 0:
                 return
             self._update_window_progress(window_id, job_id, current_step, total_steps)
 
-        # ----------------------------------------
-        # Build legend frame
-        # ----------------------------------------
         def build_legend_frame(prototypes, parent_canvas, palette_uint8):
             """
             Creates and returns the legend frame.
 
-            palette_uint8: (N,3) uint8, where palette_uint8[i] is the display color
-            assigned to prototypes[i].
+            palette_uint8: (N,3) uint8 array with one display color per prototype.
             """
             legend_frame = tk.Frame(parent_canvas, bg="white", relief="solid", bd=1)
 
@@ -5583,18 +5675,15 @@ class PyFCSApp:
             canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
 
             def resize_inner(event):
-                """Keep the inner frame width synchronized with the outer canvas width."""
                 canvas.itemconfig("inner", width=event.width)
 
             canvas.bind("<Configure>", resize_inner)
 
             def on_frame_configure(_event=None):
-                """Update scroll region after legend content changes."""
                 canvas.configure(scrollregion=canvas.bbox("all"))
 
             inner_frame.bind("<Configure>", lambda e: canvas.after_idle(on_frame_configure))
 
-            # Mouse wheel scrolling
             def bind_scroll_events(c):
                 def _on_mousewheel(event):
                     c.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -5610,7 +5699,6 @@ class PyFCSApp:
 
             bind_scroll_events(canvas)
 
-            # One legend row per prototype
             for i, prototype in enumerate(prototypes):
                 rgb = palette_uint8[i].astype(int)
                 color_hex = "#{:02x}{:02x}{:02x}".format(rgb[0], rgb[1], rgb[2])
@@ -5633,9 +5721,6 @@ class PyFCSApp:
 
             return legend_frame
 
-        # -----------------------------
-        # Palette builders
-        # -----------------------------
         def build_original_palette_uint8():
             """Build the original HSV palette in prototype order."""
             cmap = plt.get_cmap("hsv", len(self.prototypes))
@@ -5661,11 +5746,11 @@ class PyFCSApp:
                 alt.append(rgb)
             return np.stack(alt, axis=0).astype(np.uint8)
 
-        # -------------------------------------------------------
-        # Fast recolor: use label_map directly without recomputing memberships
-        # -------------------------------------------------------
         def recolor(window_id):
-            """Switch palette without recomputing memberships."""
+            """
+            Switch displayed palette without recomputing memberships.
+            Reuses cached label_map + palettes from the persistent cache.
+            """
             if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
                 self.custom_warning(
                     "Old Color Space",
@@ -5676,10 +5761,14 @@ class PyFCSApp:
             if not self._window_exists(window_id):
                 return
 
-            if not hasattr(self, "cm_cache") or window_id not in self.cm_cache:
+            if not hasattr(self, "cm_cache_by_image"):
                 return
 
-            cache_pack = self.cm_cache[window_id].get("last_pack")
+            scope_cache = self.cm_cache_by_image.get(cache_scope)
+            if not scope_cache:
+                return
+
+            cache_pack = scope_cache.get("last_pack")
             if not cache_pack:
                 return
 
@@ -5691,18 +5780,16 @@ class PyFCSApp:
 
             palette = palettes[new]
 
-            # Render black where no valid prototype exists
             recolored_image = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
             valid_mask = (label_map >= 0)
             if np.any(valid_mask):
                 recolored_image[valid_mask] = palette[label_map[valid_mask].astype(np.int32)]
 
-            # Replace current legend with a new one using the new palette
-            new_legend_frame = cache_pack.get("legend_frame")
-            if new_legend_frame:
+            old_legend_frame = cache_pack.get("legend_frame")
+            if old_legend_frame:
                 try:
-                    if new_legend_frame.winfo_exists():
-                        new_legend_frame.destroy()
+                    if old_legend_frame.winfo_exists():
+                        old_legend_frame.destroy()
                 except Exception:
                     pass
 
@@ -5711,43 +5798,36 @@ class PyFCSApp:
 
             self.image_canvas.after(0, lambda: update_ui(recolored_image, new_legend_frame))
 
-        # -----------------------------
-        # Main worker thread
-        # -----------------------------
         def run_process(cancel_event, job_id):
             try:
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
 
-                # Ensure the current resized image exists
                 if not hasattr(self, "images") or window_id not in self.images:
-                    self.image_canvas.after(0, lambda: self.custom_warning("Processing Error", "Current image not found for this window."))
+                    self.image_canvas.after(
+                        0,
+                        lambda: self.custom_warning("Processing Error", "Current image not found for this window.")
+                    )
                     return
 
                 source_img = self.images[window_id]
                 w, h = source_img.size
 
-                # Ensure cache structure exists
-                if not hasattr(self, "cm_cache"):
-                    self.cm_cache = {}
-                if window_id not in self.cm_cache:
-                    self.cm_cache[window_id] = {}
+                if not hasattr(self, "cm_cache_by_image"):
+                    self.cm_cache_by_image = {}
+                scope_cache = self.cm_cache_by_image.setdefault(cache_scope, {})
 
-                # Cache key depends on image size and prototype labels
                 proto_labels = tuple([p.label for p in self.prototypes])
                 cache_key = (w, h, proto_labels)
 
-                # Reuse cached label_map if possible
-                label_map = self.cm_cache[window_id].get(cache_key)
+                label_map = scope_cache.get(cache_key)
 
-                # Ensure fuzzy color space fast structures exist
                 self.fuzzy_color_space.precompute_pack()
 
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
 
                 if label_map is None:
-                    # Convert PIL -> RGB float -> LAB
                     img_np = np.array(source_img)
                     if img_np.ndim == 3 and img_np.shape[-1] == 4:
                         img_np = img_np[..., :3]
@@ -5755,15 +5835,12 @@ class PyFCSApp:
                     img01 = img_np.astype(np.float32) / 255.0
                     lab_img = color.rgb2lab(img01)
 
-                    # Quantize LAB values to 0.01
                     lab_q = np.round(lab_img, 2)
                     height, width = lab_q.shape[0], lab_q.shape[1]
 
-                    # Process unique LAB values only
                     lab_int = np.round(lab_q.reshape(-1, 3) * 100.0).astype(np.int32)
                     uniq, inv = np.unique(lab_int, axis=0, return_inverse=True)
 
-                    # int32 is required because -1 means "no prototype found"
                     best_for_uniq = np.empty((uniq.shape[0],), dtype=np.int32)
 
                     total_uniqs = int(uniq.shape[0])
@@ -5774,8 +5851,6 @@ class PyFCSApp:
                             return
 
                         L_i, A_i, B_i = uniq[i].astype(np.float32) / 100.0
-
-                        # Fast argmax with no dict allocations
                         best_idx = self.fuzzy_color_space.best_prototype_index_from_lab((L_i, A_i, B_i))
                         best_for_uniq[i] = int(best_idx)
 
@@ -5784,33 +5859,26 @@ class PyFCSApp:
                             update_progress(job_id, i + 1, total_uniqs)
                             last_update = now
 
-                    # Reconstruct full label_map
                     label_map = best_for_uniq[inv].reshape(height, width).astype(np.int32)
-
-                    # Cache it
-                    self.cm_cache[window_id][cache_key] = label_map
+                    scope_cache[cache_key] = label_map
 
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
 
-                # Build palettes
                 original_palette = build_original_palette_uint8()
                 alt_palette = build_alt_palette_uint8()
 
                 scheme = "original"
                 palette = original_palette
 
-                # Render black where label_map == -1
                 recolored_image = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
                 valid_mask = (label_map >= 0)
                 if np.any(valid_mask):
                     recolored_image[valid_mask] = palette[label_map[valid_mask].astype(np.int32)]
 
-                # Create legend frame
                 new_legend_frame = build_legend_frame(self.prototypes, self.image_canvas, palette)
 
-                # Store everything needed for instant recolor switching
-                self.cm_cache[window_id]["last_pack"] = {
+                scope_cache["last_pack"] = {
                     "label_map": label_map,
                     "palettes": {"original": original_palette, "alt": alt_palette},
                     "scheme": scheme,
@@ -5819,7 +5887,6 @@ class PyFCSApp:
                 }
 
                 def _ui():
-                    """Apply processed result on the main thread."""
                     if not self._is_current_job(window_id, job_id):
                         return
                     if not self._window_exists(window_id):
@@ -5830,13 +5897,16 @@ class PyFCSApp:
 
             except RuntimeError as e:
                 if str(e) != "__JOB_CANCELLED__":
-                    self.image_canvas.after(0, lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}"))
+                    self.image_canvas.after(
+                        0,
+                        lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}")
+                    )
             except Exception as e:
-                self.image_canvas.after(0, lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}"))
+                self.image_canvas.after(
+                    0,
+                    lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}")
+                )
 
-        # -----------------------------
-        # UI update
-        # -----------------------------
         def update_ui(recolored_image, new_legend_frame):
             """Update the UI safely from the main thread."""
             try:
@@ -5889,6 +5959,22 @@ class PyFCSApp:
         job_id = self._start_window_job(window_id, "color_mapping_all", run_process)
         if job_id is not None:
             self._show_window_loading(window_id, "Color Mapping All...")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -6223,42 +6309,43 @@ class PyFCSApp:
         """
         # Create the frame and labels only once
         if not hasattr(self, "lab_value_frame"):
-            self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray")
+            self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray", bd=1, relief="solid")
             self.lab_value_frame.place(relx=0.5, rely=0.97, anchor="s")
 
-            # Left-aligned text container
             text_frame = tk.Frame(self.lab_value_frame, bg="lightgray")
-            text_frame.pack(side="left", padx=10, pady=5, fill="x")
+            text_frame.pack(side="left", padx=8, pady=4)
 
-            bold_font = ("Sans", 12, "bold")
-            normal_font = ("Sans", 12)
+            bold_font = ("Sans", 11, "bold")
+            normal_font = ("Sans", 11)
 
-            coord_label = tk.Label(text_frame, text="Coordinates: ", font=bold_font, bg="lightgray")
-            coord_label.pack(side="left")
+            # Coordinates
+            tk.Label(text_frame, text="Coords:", font=bold_font, bg="lightgray").pack(side="left")
             self.coord_value = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
             self.coord_value.pack(side="left")
 
-            lab_label = tk.Label(text_frame, text="LAB: ", font=bold_font, bg="lightgray")
-            lab_label.pack(side="left")
+            tk.Label(text_frame, text="  |  ", font=bold_font, bg="lightgray").pack(side="left")
+
+            # LAB
+            tk.Label(text_frame, text="LAB:", font=bold_font, bg="lightgray").pack(side="left")
             self.lab_value_print = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
             self.lab_value_print.pack(side="left")
 
-            proto_label = tk.Label(text_frame, text="Selected Prototype: ", font=bold_font, bg="lightgray")
-            proto_label.pack(side="left")
+            tk.Label(text_frame, text="  |  ", font=bold_font, bg="lightgray").pack(side="left")
 
+            # Selected prototype
+            tk.Label(text_frame, text="Prototype:", font=bold_font, bg="lightgray").pack(side="left")
             self.proto_value_text = tk.Label(text_frame, text="", font=normal_font, bg="lightgray", fg="black")
             self.proto_value_text.pack(side="left")
 
-            more_info_button = tk.Button(
+            search_icon = self.load_toolbar_icon("Search.png", (24, 24))
+            more_info_button = tk.Label(
                 self.lab_value_frame,
-                text="🔍",
-                font=("Sans", 9),
-                bg="white",
-                command=self.show_more_info_pixel,
-                relief="flat",
-                borderwidth=0
+                image=search_icon,
+                bg="lightgray",
+                cursor="hand2"
             )
-            more_info_button.pack(side="right", padx=5, pady=2)
+            more_info_button.bind("<Button-1>", lambda e: self.show_more_info_pixel())
+            more_info_button.pack(side="right", padx=6, pady=2)
 
         # ---------------------------
         # Membership computation
@@ -6283,7 +6370,6 @@ class PyFCSApp:
             "lab": pixel_lab,
             "is_average": bool(is_average),
             "selection_info": selection_info,
-
             "winner_label": max_proto if max_proto is not None else "None",
             "winner_mu": winner_mu,
             "top_memberships": top_memberships,
@@ -6298,14 +6384,29 @@ class PyFCSApp:
         else:
             coord_text = f"({x_original}, {y_original})"
 
-        self.coord_value.config(text=f"{coord_text}    |    ")
-        self.lab_value_print.config(text=f"{pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}    |    ")
+        # Limit coordinates length a bit so LAB and prototype remain visible
+        max_coord_len = 28
+        if len(coord_text) > max_coord_len:
+            coord_text = coord_text[:max_coord_len - 1] + "…"
+
+        self.coord_value.config(text=f" {coord_text}")
+        self.lab_value_print.config(text=f" {pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}")
 
         if max_proto is None:
-            self.proto_value_text.config(text="—", fg="black")
+            self.proto_value_text.config(text=" —", fg="black")
         else:
-            self.proto_value_text.config(text=f"{max_proto}", fg="black")
+            self.proto_value_text.config(text=f" {max_proto}", fg="black")
 
+    def _close_more_info_window(self):
+        """Close the 'More Info' window if it is currently open."""
+        if hasattr(self, "_more_info_window") and self._more_info_window is not None:
+            try:
+                if self._more_info_window.winfo_exists():
+                    self._more_info_window.destroy()
+            except Exception:
+                pass
+            finally:
+                self._more_info_window = None
 
 
 
@@ -6316,7 +6417,12 @@ class PyFCSApp:
             messagebox.showinfo("More Info", "Click on an image pixel first.")
             return
 
+        # Close any previous More Info window first
+        self._close_more_info_window()
+
         win = tk.Toplevel(self.root)
+        self._more_info_window = win
+
         win.title("More Info")
 
         WIN_W, WIN_H = 980, 640
@@ -6324,69 +6430,49 @@ class PyFCSApp:
         win.resizable(False, False)
         win.configure(bg="#f2f2f2")
 
-        # ---------------------------
-        # Helpers
-        # ---------------------------
-        def safe_hex_from_rgb(rgb, default="#cccccc"):
-            try:
-                r, g, b = rgb
-                r = max(0, min(255, int(round(r))))
-                g = max(0, min(255, int(round(g))))
-                b = max(0, min(255, int(round(b))))
-                return f"#{r:02x}{g:02x}{b:02x}"
-            except Exception:
-                return default
+        # Ensure reference is released if user closes the window manually
+        win.protocol("WM_DELETE_WINDOW", lambda: self._on_close_more_info_window())
 
-        def get_proto_lab(label):
-            try:
-                proto = self.color_data[label]["positive_prototype"]
-                if isinstance(proto, np.ndarray):
-                    proto = proto.tolist()
-                return tuple(float(v) for v in proto)
-            except Exception:
-                return None
+        ui = self._build_more_info_pixel_window(win, info)
 
-        def get_proto_rgb(label):
-            try:
-                proto_lab = get_proto_lab(label)
-                if proto_lab is None:
-                    return (200, 200, 200)
-                return UtilsTools.lab_to_rgb(proto_lab)
-            except Exception:
-                return (200, 200, 200)
+        # Modal-like behavior
+        win.transient(self.root)
+        win.grab_set()
+        win.focus_set()
 
-        def get_proto_hex(label):
-            return safe_hex_from_rgb(get_proto_rgb(label))
+        win.update_idletasks()
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_w = self.root.winfo_width()
+        root_h = self.root.winfo_height()
 
+        x = root_x + (root_w - WIN_W) // 2
+        y = root_y + (root_h - WIN_H) // 2
+        win.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
+
+
+
+    def _on_close_more_info_window(self):
+        """Handle manual closing of the More Info window."""
+        try:
+            if hasattr(self, "_more_info_window") and self._more_info_window is not None:
+                if self._more_info_window.winfo_exists():
+                    self._more_info_window.destroy()
+        except Exception:
+            pass
+        finally:
+            self._more_info_window = None
+
+
+    def _build_more_info_pixel_window(self, win, info):
+        """
+        Build the full 'More Info' window UI and wire all interactions.
+        Returns a dictionary with relevant UI references.
+        """
         # ---------------------------
         # Base data
         # ---------------------------
-        lab = info.get("lab", (0, 0, 0))
-        selection_info = info.get("selection_info")
-        is_average = bool(info.get("is_average", False))
-
-        if selection_info and selection_info.get("mean_rgb") is not None:
-            sampled_rgb = selection_info["mean_rgb"]
-        else:
-            try:
-                sampled_rgb = UtilsTools.lab_to_rgb(lab)
-            except Exception:
-                sampled_rgb = (200, 200, 200)
-
-        sampled_hex = safe_hex_from_rgb(sampled_rgb)
-        sampled_title = "Mean Color" if is_average else "Selected Color"
-
-        memberships = info.get("all_memberships")
-        if not memberships:
-            memberships = info.get("top_memberships", [])
-
-        winner_label = info.get("winner_label", "None")
-        winner_mu = float(info.get("winner_mu", 0.0))
-
-        selected_label_var = tk.StringVar(value=winner_label if winner_label != "None" else "")
-        selected_rgb_var = tk.StringVar(value="")
-        selected_hex_var = tk.StringVar(value="")
-        selected_lab_var = tk.StringVar(value="")
+        base_data = self._get_more_info_base_data(info)
 
         if not hasattr(self, "threshold_settings"):
             self.threshold_settings = {
@@ -6399,59 +6485,56 @@ class PyFCSApp:
                 "upper": 1.8,
             }
 
-        preset_display_map = {
-            "pt": "Perceptibility Threshold",
-            "at": "Acceptability Threshold",
-            "pt_at": "Perceptibility + Acceptability"
-        }
-        preset_reverse_map = {v: k for k, v in preset_display_map.items()}
+        vars_dict = self._create_more_info_vars(base_data)
 
-        saved_mode = self.threshold_settings.get("mode", "known")
-        display_mode = "default" if saved_mode == "known" else saved_mode
-
-        threshold_metric_var = tk.StringVar(value=self.threshold_settings.get("metric", "CIEDE2000"))
-        threshold_mode_var = tk.StringVar(value=display_mode)
-        threshold_preset_var = tk.StringVar(
-            value=preset_display_map.get(
-                self.threshold_settings.get("preset", "pt_at"),
-                "Perceptibility + Acceptability"
-            )
-        )
-        threshold_lower_var = tk.StringVar(value=str(self.threshold_settings.get("lower", 0.8)))
-        threshold_upper_var = tk.StringVar(value=str(self.threshold_settings.get("upper", 1.8)))
-
-        custom_type_display_map = {
-            "single": "Single threshold",
-            "lower_upper": "Lower and upper thresholds"
-        }
-        custom_type_reverse_map = {v: k for k, v in custom_type_display_map.items()}
-
-        threshold_custom_type_var = tk.StringVar(
-            value=custom_type_display_map.get(
-                self.threshold_settings.get("custom_type", "single"),
-                "Single threshold"
-            )
-        )
-        threshold_single_var = tk.StringVar(value=str(self.threshold_settings.get("single", 1.0)))
-
-        threshold_result_title_var = tk.StringVar(value="")
-        threshold_result_detail_var = tk.StringVar(value="")
-        threshold_result_summary_var = tk.StringVar(value="")
-        threshold_info_var = tk.StringVar(value="")
-        threshold_result_var = tk.StringVar(value="")
-        membership_rows = {}
-
-        # ---------------------------
-        # Main container
-        # ---------------------------
         main = tk.Frame(win, bg="#f2f2f2")
         main.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # ---------------------------
-        # Header
-        # ---------------------------
-        header = tk.Frame(main, bg="white", bd=1, relief="solid")
-        header.pack(fill="x", pady=(0, 10))
+        self._build_more_info_header(main, base_data)
+
+        content_refs = self._build_more_info_content(main, base_data, vars_dict)
+
+        self._populate_more_info_memberships(
+            base_data=base_data,
+            vars_dict=vars_dict,
+            refs=content_refs
+        )
+
+        btns = tk.Frame(main, bg="#f2f2f2")
+        btns.pack(fill="x", pady=(10, 0))
+        tk.Button(btns, text="Close", command=self._on_close_more_info_window, width=12).pack(side="right")
+
+        return {
+            "base_data": base_data,
+            "vars_dict": vars_dict,
+            "refs": content_refs
+        }
+
+
+
+    def _get_more_info_base_data(self, info):
+        """Extract and normalize the base data used by the More Info window."""
+        lab = info.get("lab", (0, 0, 0))
+        selection_info = info.get("selection_info")
+        is_average = bool(info.get("is_average", False))
+
+        if selection_info and selection_info.get("mean_rgb") is not None:
+            sampled_rgb = selection_info["mean_rgb"]
+        else:
+            try:
+                sampled_rgb = UtilsTools.lab_to_rgb(lab)
+            except Exception:
+                sampled_rgb = (200, 200, 200)
+
+        memberships = info.get("all_memberships")
+        if not memberships:
+            memberships = info.get("top_memberships", [])
+
+        winner_label = info.get("winner_label", "None")
+        winner_mu = float(info.get("winner_mu", 0.0))
+
+        sampled_hex = self._safe_hex_from_rgb(sampled_rgb)
+        sampled_title = "Mean Color" if is_average else "Selected Color"
 
         if selection_info and selection_info.get("type") == "roi":
             coord_text = (
@@ -6467,9 +6550,127 @@ class PyFCSApp:
             coord_text = f"Coordinates: ({info.get('x', 0)}, {info.get('y', 0)})"
             roi_text = None
 
+        return {
+            "info": info,
+            "lab": lab,
+            "selection_info": selection_info,
+            "is_average": is_average,
+            "sampled_rgb": sampled_rgb,
+            "sampled_hex": sampled_hex,
+            "sampled_title": sampled_title,
+            "memberships": memberships,
+            "winner_label": winner_label,
+            "winner_mu": winner_mu,
+            "coord_text": coord_text,
+            "roi_text": roi_text,
+        }
+
+
+
+    def _safe_hex_from_rgb(self, rgb, default="#cccccc"):
+        """Convert an RGB tuple into a safe HEX string."""
+        try:
+            r, g, b = rgb
+            r = max(0, min(255, int(round(r))))
+            g = max(0, min(255, int(round(g))))
+            b = max(0, min(255, int(round(b))))
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except Exception:
+            return default
+
+
+    def _get_proto_lab(self, label):
+        """Return the LAB prototype tuple for a given label, or None if unavailable."""
+        try:
+            proto = self.color_data[label]["positive_prototype"]
+            if isinstance(proto, np.ndarray):
+                proto = proto.tolist()
+            return tuple(float(v) for v in proto)
+        except Exception:
+            return None
+
+
+    def _get_proto_rgb(self, label):
+        """Return the RGB prototype tuple for a given label."""
+        try:
+            proto_lab = self._get_proto_lab(label)
+            if proto_lab is None:
+                return (200, 200, 200)
+            return UtilsTools.lab_to_rgb(proto_lab)
+        except Exception:
+            return (200, 200, 200)
+
+
+    def _get_proto_hex(self, label):
+        """Return the HEX color for a given prototype label."""
+        return self._safe_hex_from_rgb(self._get_proto_rgb(label))
+
+
+    def _create_more_info_vars(self, base_data):
+        """Create and return all Tk variables used by the More Info window."""
+        preset_display_map = {
+            "pt": "Perceptibility Threshold",
+            "at": "Acceptability Threshold",
+            "pt_at": "Perceptibility + Acceptability"
+        }
+
+        custom_type_display_map = {
+            "single": "Single threshold",
+            "lower_upper": "Lower and upper thresholds"
+        }
+
+        saved_mode = self.threshold_settings.get("mode", "known")
+        display_mode = "default" if saved_mode == "known" else saved_mode
+
+        return {
+            "selected_label_var": tk.StringVar(
+                value=base_data["winner_label"] if base_data["winner_label"] != "None" else ""
+            ),
+            "selected_rgb_var": tk.StringVar(value=""),
+            "selected_hex_var": tk.StringVar(value=""),
+            "selected_lab_var": tk.StringVar(value=""),
+
+            "threshold_metric_var": tk.StringVar(
+                value=self.threshold_settings.get("metric", "CIEDE2000")
+            ),
+            "threshold_mode_var": tk.StringVar(value=display_mode),
+            "threshold_preset_var": tk.StringVar(
+                value=preset_display_map.get(
+                    self.threshold_settings.get("preset", "pt_at"),
+                    "Perceptibility + Acceptability"
+                )
+            ),
+            "threshold_lower_var": tk.StringVar(
+                value=str(self.threshold_settings.get("lower", 0.8))
+            ),
+            "threshold_upper_var": tk.StringVar(
+                value=str(self.threshold_settings.get("upper", 1.8))
+            ),
+            "threshold_custom_type_var": tk.StringVar(
+                value=custom_type_display_map.get(
+                    self.threshold_settings.get("custom_type", "single"),
+                    "Single threshold"
+                )
+            ),
+            "threshold_single_var": tk.StringVar(
+                value=str(self.threshold_settings.get("single", 1.0))
+            ),
+
+            "threshold_result_title_var": tk.StringVar(value=""),
+            "threshold_result_detail_var": tk.StringVar(value=""),
+            "threshold_result_summary_var": tk.StringVar(value=""),
+            "config_hint_var": tk.StringVar(value=""),
+        }
+
+
+    def _build_more_info_header(self, parent, base_data):
+        """Build the top header section of the More Info window."""
+        header = tk.Frame(parent, bg="white", bd=1, relief="solid")
+        header.pack(fill="x", pady=(0, 10))
+
         tk.Label(
             header,
-            text=coord_text,
+            text=base_data["coord_text"],
             anchor="w",
             bg="white",
             font=("Sans", 11, "bold"),
@@ -6477,16 +6678,20 @@ class PyFCSApp:
             pady=6
         ).pack(fill="x")
 
-        if roi_text:
+        if base_data["roi_text"]:
             tk.Label(
                 header,
-                text=roi_text,
+                text=base_data["roi_text"],
                 anchor="w",
                 bg="white",
                 font=("Sans", 10),
                 padx=12,
                 pady=0
             ).pack(fill="x", pady=(0, 4))
+
+        lab = base_data["lab"]
+        sampled_rgb = base_data["sampled_rgb"]
+        sampled_hex = base_data["sampled_hex"]
 
         lab_text = f"{float(lab[0]):.2f}, {float(lab[1]):.2f}, {float(lab[2]):.2f}"
         rgb_text = f"{int(sampled_rgb[0])}, {int(sampled_rgb[1])}, {int(sampled_rgb[2])}"
@@ -6502,10 +6707,10 @@ class PyFCSApp:
             pady=0
         ).pack(fill="x", pady=(0, 8))
 
-        # ---------------------------
-        # Content area
-        # ---------------------------
-        content = tk.Frame(main, bg="#f2f2f2")
+
+    def _build_more_info_content(self, parent, base_data, vars_dict):
+        """Build the main content area and return references to important widgets."""
+        content = tk.Frame(parent, bg="#f2f2f2")
         content.pack(fill="both", expand=True)
 
         top_content = tk.Frame(content, bg="#f2f2f2")
@@ -6519,11 +6724,25 @@ class PyFCSApp:
         center.pack(side="left", fill="x", expand=True, padx=(6, 0), anchor="n")
         center.pack_propagate(False)
 
-        # ---------------------------
-        # Left: memberships
-        # ---------------------------
+        membership_refs = self._build_more_info_membership_panel(left, base_data)
+        prototype_refs = self._build_more_info_prototype_panel(center, base_data, vars_dict)
+        threshold_refs = self._build_more_info_threshold_panel(content, vars_dict)
+
+        return {
+            "content": content,
+            "left": left,
+            "center": center,
+            "membership_refs": membership_refs,
+            "prototype_refs": prototype_refs,
+            "threshold_refs": threshold_refs,
+        }
+
+
+
+    def _build_more_info_membership_panel(self, parent, base_data):
+        """Build the left memberships panel."""
         tk.Label(
-            left,
+            parent,
             text="Membership Degree (μ)",
             font=("Sans", 11, "bold"),
             anchor="w",
@@ -6533,15 +6752,15 @@ class PyFCSApp:
         ).pack(fill="x")
 
         tk.Label(
-            left,
-            text=f"Winner: {winner_label}    |    μ = {winner_mu:.4f}",
+            parent,
+            text=f"Winner: {base_data['winner_label']}    |    μ = {base_data['winner_mu']:.4f}",
             anchor="w",
             bg="white",
             padx=12
         ).pack(fill="x", pady=(0, 10))
 
         tk.Label(
-            left,
+            parent,
             text="Memberships:",
             font=("Sans", 10, "bold"),
             anchor="w",
@@ -6549,7 +6768,7 @@ class PyFCSApp:
             padx=12
         ).pack(fill="x", pady=(0, 6))
 
-        memberships_box = tk.Frame(left, bg="white", bd=1, relief="solid", height=140)
+        memberships_box = tk.Frame(parent, bg="white", bd=1, relief="solid", height=140)
         memberships_box.pack(fill="x", padx=12, pady=(0, 8))
         memberships_box.pack_propagate(False)
 
@@ -6583,8 +6802,7 @@ class PyFCSApp:
         list_canvas.bind("<Enter>", lambda e: list_canvas.bind_all("<MouseWheel>", _on_membership_mousewheel))
         list_canvas.bind("<Leave>", lambda e: list_canvas.unbind_all("<MouseWheel>"))
 
-        # Info below memberships
-        tip_container = tk.Frame(left, bg="white")
+        tip_container = tk.Frame(parent, bg="white")
         tip_container.pack(fill="x", side="bottom", padx=12, pady=(0, 10))
 
         tk.Frame(tip_container, bg="#d0d0d0", height=1).pack(fill="x", pady=(0, 6))
@@ -6601,9 +6819,17 @@ class PyFCSApp:
             pady=6
         ).pack(fill="x")
 
-        # ---------------------------
-        # Center: selected prototype + selected/mean color side by side
-        # ---------------------------
+        return {
+            "memberships_box": memberships_box,
+            "list_canvas": list_canvas,
+            "list_inner": list_inner,
+            "membership_rows": {},
+        }
+
+
+
+    def _build_more_info_prototype_panel(self, parent, base_data, vars_dict):
+        """Build the center prototype/sample comparison panel."""
         SWATCH_W = 100
         SWATCH_H = 75
         PAD_X = 10
@@ -6612,7 +6838,7 @@ class PyFCSApp:
         canvas_w = SWATCH_W + 2 * PAD_X
         canvas_h = SWATCH_H + 2 * PAD_Y
 
-        top_colors = tk.Frame(center, bg="white")
+        top_colors = tk.Frame(parent, bg="white")
         top_colors.pack(fill="x", pady=(8, 6), padx=10)
 
         left_card = tk.Frame(top_colors, bg="white")
@@ -6621,7 +6847,6 @@ class PyFCSApp:
         right_card = tk.Frame(top_colors, bg="white")
         right_card.pack(side="left", fill="both", expand=True, padx=(8, 0))
 
-        # Selected Prototype
         tk.Label(
             left_card,
             text="Selected Prototype",
@@ -6631,7 +6856,7 @@ class PyFCSApp:
 
         selected_name_label = tk.Label(
             left_card,
-            textvariable=selected_label_var,
+            textvariable=vars_dict["selected_label_var"],
             bg="white",
             font=("Sans", 10, "bold")
         )
@@ -6656,36 +6881,32 @@ class PyFCSApp:
             width=1
         )
 
-        selected_lab_label = tk.Label(
+        tk.Label(
             left_card,
-            textvariable=selected_lab_var,
+            textvariable=vars_dict["selected_lab_var"],
             bg="white",
             font=("Sans", 10),
             justify="center",
             wraplength=240
-        )
-        selected_lab_label.pack()
+        ).pack()
 
-        selected_rgb_label = tk.Label(
+        tk.Label(
             left_card,
-            textvariable=selected_rgb_var,
+            textvariable=vars_dict["selected_rgb_var"],
             bg="white",
             font=("Sans", 10)
-        )
-        selected_rgb_label.pack()
+        ).pack()
 
-        selected_hex_label = tk.Label(
+        tk.Label(
             left_card,
-            textvariable=selected_hex_var,
+            textvariable=vars_dict["selected_hex_var"],
             bg="white",
             font=("Sans", 10)
-        )
-        selected_hex_label.pack(pady=(2, 0))
+        ).pack(pady=(2, 0))
 
-        # Selected / Mean Color
         tk.Label(
             right_card,
-            text=sampled_title,
+            text=base_data["sampled_title"],
             font=("Sans", 11, "bold"),
             bg="white"
         ).pack(fill="x")
@@ -6704,10 +6925,13 @@ class PyFCSApp:
             PAD_Y,
             PAD_X + SWATCH_W,
             PAD_Y + SWATCH_H,
-            fill=sampled_hex,
+            fill=base_data["sampled_hex"],
             outline="#606060",
             width=1
         )
+
+        lab = base_data["lab"]
+        sampled_rgb = base_data["sampled_rgb"]
 
         tk.Label(
             right_card,
@@ -6725,15 +6949,21 @@ class PyFCSApp:
 
         tk.Label(
             right_card,
-            text=f"HEX: {sampled_hex.upper()}",
+            text=f"HEX: {base_data['sampled_hex'].upper()}",
             bg="white",
             font=("Sans", 10)
         ).pack(pady=(2, 0))
 
-        # ---------------------------
-        # Bottom independent block: Threshold
-        # ---------------------------
-        threshold_panel = tk.Frame(content, bg="white", bd=1, relief="solid")
+        return {
+            "selected_proto_canvas": selected_proto_canvas,
+            "selected_proto_rect": selected_proto_rect,
+        }
+
+
+
+    def _build_more_info_threshold_panel(self, parent, vars_dict):
+        """Build the threshold panel and return all relevant controls."""
+        threshold_panel = tk.Frame(parent, bg="white", bd=1, relief="solid")
         threshold_panel.pack(fill="x", pady=(6, 0), anchor="n")
 
         tk.Label(
@@ -6749,7 +6979,6 @@ class PyFCSApp:
         threshold_body = tk.Frame(threshold_panel, bg="white")
         threshold_body.pack(fill="x", padx=12, pady=(0, 10))
 
-        # 3 visual sections
         section_selection = tk.Frame(threshold_body, bg="white")
         section_selection.pack(side="left", fill="y", padx=(0, 12))
 
@@ -6765,9 +6994,6 @@ class PyFCSApp:
         section_result = tk.Frame(threshold_body, bg="white")
         section_result.pack(side="left", fill="both", expand=True)
 
-        # ---------------------------
-        # Section 1: Selection
-        # ---------------------------
         tk.Label(
             section_selection,
             text="Metric",
@@ -6778,7 +7004,7 @@ class PyFCSApp:
 
         metric_combo = ttk.Combobox(
             section_selection,
-            textvariable=threshold_metric_var,
+            textvariable=vars_dict["threshold_metric_var"],
             state="readonly",
             width=18,
             values=["CIEDE2000"]
@@ -6795,16 +7021,13 @@ class PyFCSApp:
 
         mode_combo = ttk.Combobox(
             section_selection,
-            textvariable=threshold_mode_var,
+            textvariable=vars_dict["threshold_mode_var"],
             state="readonly",
             width=18,
             values=["default", "custom"]
         )
         mode_combo.pack(anchor="w")
 
-        # ---------------------------
-        # Section 2: Configuration
-        # ---------------------------
         tk.Label(
             section_config,
             text="Configuration",
@@ -6813,16 +7036,10 @@ class PyFCSApp:
             bg="white"
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
-        preset_label = tk.Label(
-            section_config,
-            text="Default preset:",
-            bg="white",
-            anchor="w"
-        )
-
+        preset_label = tk.Label(section_config, text="Default preset:", bg="white", anchor="w")
         preset_combo = ttk.Combobox(
             section_config,
-            textvariable=threshold_preset_var,
+            textvariable=vars_dict["threshold_preset_var"],
             state="readonly",
             width=28,
             values=[
@@ -6832,16 +7049,10 @@ class PyFCSApp:
             ]
         )
 
-        custom_type_label = tk.Label(
-            section_config,
-            text="Custom mode:",
-            bg="white",
-            anchor="w"
-        )
-
+        custom_type_label = tk.Label(section_config, text="Custom mode:", bg="white", anchor="w")
         custom_type_combo = ttk.Combobox(
             section_config,
-            textvariable=threshold_custom_type_var,
+            textvariable=vars_dict["threshold_custom_type_var"],
             state="readonly",
             width=28,
             values=[
@@ -6850,46 +7061,18 @@ class PyFCSApp:
             ]
         )
 
-        single_label = tk.Label(
-            section_config,
-            text="Threshold:",
-            bg="white",
-            anchor="w"
-        )
-        single_entry = tk.Entry(
-            section_config,
-            textvariable=threshold_single_var,
-            width=10
-        )
+        single_label = tk.Label(section_config, text="Threshold:", bg="white", anchor="w")
+        single_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_single_var"], width=10)
 
-        lower_label = tk.Label(
-            section_config,
-            text="Lower threshold:",
-            bg="white",
-            anchor="w"
-        )
-        lower_entry = tk.Entry(
-            section_config,
-            textvariable=threshold_lower_var,
-            width=10
-        )
+        lower_label = tk.Label(section_config, text="Lower threshold:", bg="white", anchor="w")
+        lower_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_lower_var"], width=10)
 
-        upper_label = tk.Label(
-            section_config,
-            text="Upper threshold:",
-            bg="white",
-            anchor="w"
-        )
-        upper_entry = tk.Entry(
-            section_config,
-            textvariable=threshold_upper_var,
-            width=10
-        )
+        upper_label = tk.Label(section_config, text="Upper threshold:", bg="white", anchor="w")
+        upper_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_upper_var"], width=10)
 
-        config_hint_var = tk.StringVar(value="")
         config_hint_label = tk.Label(
             section_config,
-            textvariable=config_hint_var,
+            textvariable=vars_dict["config_hint_var"],
             bg="white",
             fg="#666666",
             anchor="w",
@@ -6898,9 +7081,6 @@ class PyFCSApp:
             font=("Sans", 9, "italic")
         )
 
-        # ---------------------------
-        # Section 3: Result
-        # ---------------------------
         tk.Label(
             section_result,
             text="Results",
@@ -6909,58 +7089,109 @@ class PyFCSApp:
             bg="white"
         ).pack(anchor="w", pady=(0, 8))
 
-        threshold_result_title_label = tk.Label(
+        tk.Label(
             section_result,
-            textvariable=threshold_result_title_var,
+            textvariable=vars_dict["threshold_result_title_var"],
             anchor="w",
             justify="left",
             bg="white",
             font=("Sans", 10, "bold"),
             wraplength=300
-        )
-        threshold_result_title_label.pack(anchor="w", fill="x", pady=(0, 6))
+        ).pack(anchor="w", fill="x", pady=(0, 6))
 
-        threshold_result_detail_label = tk.Label(
+        tk.Label(
             section_result,
-            textvariable=threshold_result_detail_var,
+            textvariable=vars_dict["threshold_result_detail_var"],
             anchor="w",
             justify="left",
             bg="white",
             wraplength=300
-        )
-        threshold_result_detail_label.pack(anchor="w", fill="x", pady=(0, 6))
+        ).pack(anchor="w", fill="x", pady=(0, 6))
 
-        threshold_result_summary_label = tk.Label(
+        tk.Label(
             section_result,
-            textvariable=threshold_result_summary_var,
+            textvariable=vars_dict["threshold_result_summary_var"],
             anchor="w",
             justify="left",
             bg="white",
             wraplength=300
-        )
-        threshold_result_summary_label.pack(anchor="w", fill="x")
+        ).pack(anchor="w", fill="x")
 
+        return {
+            "metric_combo": metric_combo,
+            "mode_combo": mode_combo,
+            "preset_label": preset_label,
+            "preset_combo": preset_combo,
+            "custom_type_label": custom_type_label,
+            "custom_type_combo": custom_type_combo,
+            "single_label": single_label,
+            "single_entry": single_entry,
+            "lower_label": lower_label,
+            "lower_entry": lower_entry,
+            "upper_label": upper_label,
+            "upper_entry": upper_entry,
+            "config_hint_label": config_hint_label,
+        }
+
+
+
+    def _populate_more_info_memberships(self, base_data, vars_dict, refs):
+        """Populate memberships list and wire row selection + threshold refresh."""
+        membership_refs = refs["membership_refs"]
+        prototype_refs = refs["prototype_refs"]
+        threshold_refs = refs["threshold_refs"]
+
+        membership_rows = membership_refs["membership_rows"]
+        list_inner = membership_refs["list_inner"]
+
+        memberships = base_data["memberships"]
+        lab = base_data["lab"]
+
+        preset_display_map = {
+            "pt": "Perceptibility Threshold",
+            "at": "Acceptability Threshold",
+            "pt_at": "Perceptibility + Acceptability"
+        }
+        preset_reverse_map = {v: k for k, v in preset_display_map.items()}
+
+        custom_type_display_map = {
+            "single": "Single threshold",
+            "lower_upper": "Lower and upper thresholds"
+        }
+        custom_type_reverse_map = {v: k for k, v in custom_type_display_map.items()}
+
+        def highlight_selected_row(active_label):
+            for lbl, row in membership_rows.items():
+                if lbl == active_label:
+                    row.configure(bg="#e8f0ff")
+                    for child in row.winfo_children():
+                        try:
+                            child.configure(bg="#e8f0ff")
+                        except Exception:
+                            pass
+                else:
+                    row.configure(bg="white")
+                    for child in row.winfo_children():
+                        try:
+                            child.configure(bg="white")
+                        except Exception:
+                            pass
 
         def refresh_threshold_section(proto_lab=None):
-            """
-            Refresh threshold controls visibility and result text.
-            If proto_lab is provided, also evaluate the selected prototype.
-            """
-            mode_value = threshold_mode_var.get().strip().lower()
+            mode_value = vars_dict["threshold_mode_var"].get().strip().lower()
             internal_mode = "known" if mode_value == "default" else mode_value
 
-            selected_preset_display = threshold_preset_var.get().strip()
+            selected_preset_display = vars_dict["threshold_preset_var"].get().strip()
             selected_preset_key = preset_reverse_map.get(selected_preset_display, "pt_at")
 
-            selected_custom_type_display = threshold_custom_type_var.get().strip()
+            selected_custom_type_display = vars_dict["threshold_custom_type_var"].get().strip()
             selected_custom_type_key = custom_type_reverse_map.get(selected_custom_type_display, "single")
 
-            single_text = threshold_single_var.get().strip()
-            lower_text = threshold_lower_var.get().strip()
-            upper_text = threshold_upper_var.get().strip()
+            single_text = vars_dict["threshold_single_var"].get().strip()
+            lower_text = vars_dict["threshold_lower_var"].get().strip()
+            upper_text = vars_dict["threshold_upper_var"].get().strip()
 
-            # Save UI state into self.threshold_settings
-            self.threshold_settings["metric"] = threshold_metric_var.get().strip()
+            self.threshold_settings["metric"] = vars_dict["threshold_metric_var"].get().strip()
             self.threshold_settings["mode"] = internal_mode
             self.threshold_settings["preset"] = selected_preset_key
             self.threshold_settings["custom_type"] = selected_custom_type_key
@@ -6969,69 +7200,74 @@ class PyFCSApp:
             self.threshold_settings["lower"] = lower_text if lower_text != "" else None
             self.threshold_settings["upper"] = upper_text if upper_text != "" else None
 
-            # Reset config controls
-            preset_label.grid_remove()
-            preset_combo.grid_remove()
-            custom_type_label.grid_remove()
-            custom_type_combo.grid_remove()
-            single_label.grid_remove()
-            single_entry.grid_remove()
-            lower_label.grid_remove()
-            lower_entry.grid_remove()
-            upper_label.grid_remove()
-            upper_entry.grid_remove()
-            config_hint_label.grid_remove()
+            threshold_refs["preset_label"].grid_remove()
+            threshold_refs["preset_combo"].grid_remove()
+            threshold_refs["custom_type_label"].grid_remove()
+            threshold_refs["custom_type_combo"].grid_remove()
+            threshold_refs["single_label"].grid_remove()
+            threshold_refs["single_entry"].grid_remove()
+            threshold_refs["lower_label"].grid_remove()
+            threshold_refs["lower_entry"].grid_remove()
+            threshold_refs["upper_label"].grid_remove()
+            threshold_refs["upper_entry"].grid_remove()
+            threshold_refs["config_hint_label"].grid_remove()
 
             if mode_value == "default":
-                preset_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
-                preset_combo.grid(row=1, column=1, sticky="w", pady=(0, 6))
+                threshold_refs["preset_label"].grid(row=1, column=0, sticky="w", pady=(0, 6))
+                threshold_refs["preset_combo"].grid(row=1, column=1, sticky="w", pady=(0, 6))
 
-                config_hint_var.set("Use predefined perceptibility and/or acceptability thresholds.")
-                config_hint_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+                vars_dict["config_hint_var"].set(
+                    "Use predefined perceptibility and/or acceptability thresholds."
+                )
+                threshold_refs["config_hint_label"].grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
             elif mode_value == "custom":
-                custom_type_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
-                custom_type_combo.grid(row=1, column=1, sticky="w", pady=(0, 6))
+                threshold_refs["custom_type_label"].grid(row=1, column=0, sticky="w", pady=(0, 6))
+                threshold_refs["custom_type_combo"].grid(row=1, column=1, sticky="w", pady=(0, 6))
 
                 if selected_custom_type_key == "single":
-                    single_label.grid(row=2, column=0, sticky="w", pady=(0, 6))
-                    single_entry.grid(row=2, column=1, sticky="w", pady=(0, 6))
-                    config_hint_var.set("Define one threshold greater than 0.")
+                    threshold_refs["single_label"].grid(row=2, column=0, sticky="w", pady=(0, 6))
+                    threshold_refs["single_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
 
-                    # Optional live validation message
+                    vars_dict["config_hint_var"].set("Define one threshold greater than 0.")
+
                     if single_text == "":
-                        config_hint_var.set("Enter a threshold greater than 0.")
+                        vars_dict["config_hint_var"].set("Enter a threshold greater than 0.")
                     else:
-                        parsed_single, err_single = self._parse_positive_threshold(single_text)
+                        _, err_single = self._parse_positive_threshold(single_text)
                         if err_single:
-                            config_hint_var.set(err_single)
+                            vars_dict["config_hint_var"].set(err_single)
 
-                    config_hint_label.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
+                    threshold_refs["config_hint_label"].grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
-                else:  # lower_upper
-                    lower_label.grid(row=2, column=0, sticky="w", pady=(0, 6))
-                    lower_entry.grid(row=2, column=1, sticky="w", pady=(0, 6))
-                    upper_label.grid(row=3, column=0, sticky="w", pady=(0, 6))
-                    upper_entry.grid(row=3, column=1, sticky="w", pady=(0, 6))
+                else:
+                    threshold_refs["lower_label"].grid(row=2, column=0, sticky="w", pady=(0, 6))
+                    threshold_refs["lower_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
+                    threshold_refs["upper_label"].grid(row=3, column=0, sticky="w", pady=(0, 6))
+                    threshold_refs["upper_entry"].grid(row=3, column=1, sticky="w", pady=(0, 6))
 
-                    config_hint_var.set("Define two thresholds greater than 0, with lower < upper.")
+                    vars_dict["config_hint_var"].set(
+                        "Define two thresholds greater than 0, with lower < upper."
+                    )
 
                     if lower_text == "" or upper_text == "":
-                        config_hint_var.set("Enter both thresholds. Values must be greater than 0.")
+                        vars_dict["config_hint_var"].set(
+                            "Enter both thresholds. Values must be greater than 0."
+                        )
                     else:
                         _, _, err_range = self._validate_custom_range(lower_text, upper_text)
                         if err_range:
-                            config_hint_var.set(err_range)
+                            vars_dict["config_hint_var"].set(err_range)
 
-                    config_hint_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
+                    threshold_refs["config_hint_label"].grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
             else:
-                config_hint_var.set("")
+                vars_dict["config_hint_var"].set("")
 
             if proto_lab is None:
-                threshold_result_title_var.set("Select a prototype to evaluate.")
-                threshold_result_detail_var.set("")
-                threshold_result_summary_var.set("")
+                vars_dict["threshold_result_title_var"].set("Select a prototype to evaluate.")
+                vars_dict["threshold_result_detail_var"].set("")
+                vars_dict["threshold_result_summary_var"].set("")
                 return
 
             evaluation = self.evaluate_color_difference_threshold(
@@ -7043,9 +7279,9 @@ class PyFCSApp:
 
             delta_e_value = evaluation.get("delta_e")
             if delta_e_value is None:
-                threshold_result_title_var.set("ΔE not available")
+                vars_dict["threshold_result_title_var"].set("ΔE not available")
             else:
-                threshold_result_title_var.set(
+                vars_dict["threshold_result_title_var"].set(
                     evaluation.get("evaluation", "No evaluation available")
                 )
 
@@ -7068,106 +7304,62 @@ class PyFCSApp:
             else:
                 detail = f"Mode: {mode_text}"
 
-            threshold_result_detail_var.set(detail)
-            threshold_result_summary_var.set(evaluation.get("summary", ""))
-
-
-        #Bind Controls
-        metric_combo.bind(
-            "<<ComboboxSelected>>",
-            lambda e: refresh_threshold_section(
-                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
-            )
-        )
-
-        mode_combo.bind(
-            "<<ComboboxSelected>>",
-            lambda e: refresh_threshold_section(
-                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
-            )
-        )
-
-        preset_combo.bind(
-            "<<ComboboxSelected>>",
-            lambda e: refresh_threshold_section(
-                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
-            )
-        )
-
-        lower_entry.bind(
-            "<KeyRelease>",
-            lambda e: refresh_threshold_section(
-                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
-            )
-        )
-
-        upper_entry.bind(
-            "<KeyRelease>",
-            lambda e: refresh_threshold_section(
-                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
-            )
-        )
-
-        custom_type_combo.bind(
-            "<<ComboboxSelected>>",
-            lambda e: refresh_threshold_section(
-                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
-            )
-        )
-
-        single_entry.bind(
-            "<KeyRelease>",
-            lambda e: refresh_threshold_section(
-                proto_lab=getattr(self, "_current_threshold_proto_lab", None)
-            )
-        )
-
-        # ---------------------------
-        # Selection / update logic
-        # ---------------------------
-        def highlight_selected_row(active_label):
-            for lbl, row in membership_rows.items():
-                if lbl == active_label:
-                    row.configure(bg="#e8f0ff")
-                    for child in row.winfo_children():
-                        try:
-                            child.configure(bg="#e8f0ff")
-                        except Exception:
-                            pass
-                else:
-                    row.configure(bg="white")
-                    for child in row.winfo_children():
-                        try:
-                            child.configure(bg="white")
-                        except Exception:
-                            pass
+            vars_dict["threshold_result_detail_var"].set(detail)
+            vars_dict["threshold_result_summary_var"].set(evaluation.get("summary", ""))
 
         def select_membership(label, mu):
-            selected_label_var.set(label)
+            vars_dict["selected_label_var"].set(label)
 
-            proto_rgb = get_proto_rgb(label)
-            proto_hex = safe_hex_from_rgb(proto_rgb)
-            proto_lab = get_proto_lab(label)
+            proto_rgb = self._get_proto_rgb(label)
+            proto_hex = self._safe_hex_from_rgb(proto_rgb)
+            proto_lab = self._get_proto_lab(label)
 
-            selected_proto_canvas.itemconfig(selected_proto_rect, fill=proto_hex)
+            prototype_refs["selected_proto_canvas"].itemconfig(
+                prototype_refs["selected_proto_rect"],
+                fill=proto_hex
+            )
 
             if proto_lab is not None:
-                selected_lab_var.set(
+                vars_dict["selected_lab_var"].set(
                     f"LAB: {proto_lab[0]:.2f}, {proto_lab[1]:.2f}, {proto_lab[2]:.2f}"
                 )
             else:
-                selected_lab_var.set("LAB: not available")
+                vars_dict["selected_lab_var"].set("LAB: not available")
 
-            selected_rgb_var.set(f"RGB: {int(proto_rgb[0])}, {int(proto_rgb[1])}, {int(proto_rgb[2])}")
-            selected_hex_var.set(f"HEX: {proto_hex.upper()}")
+            vars_dict["selected_rgb_var"].set(
+                f"RGB: {int(proto_rgb[0])}, {int(proto_rgb[1])}, {int(proto_rgb[2])}"
+            )
+            vars_dict["selected_hex_var"].set(f"HEX: {proto_hex.upper()}")
 
             self._current_threshold_proto_lab = proto_lab
             refresh_threshold_section(proto_lab=proto_lab)
             highlight_selected_row(label)
 
-        # ---------------------------
-        # Populate memberships
-        # ---------------------------
+        for widget in (
+            threshold_refs["metric_combo"],
+            threshold_refs["mode_combo"],
+            threshold_refs["preset_combo"],
+            threshold_refs["custom_type_combo"],
+        ):
+            widget.bind(
+                "<<ComboboxSelected>>",
+                lambda e: refresh_threshold_section(
+                    proto_lab=getattr(self, "_current_threshold_proto_lab", None)
+                )
+            )
+
+        for widget in (
+            threshold_refs["single_entry"],
+            threshold_refs["lower_entry"],
+            threshold_refs["upper_entry"],
+        ):
+            widget.bind(
+                "<KeyRelease>",
+                lambda e: refresh_threshold_section(
+                    proto_lab=getattr(self, "_current_threshold_proto_lab", None)
+                )
+            )
+
         if memberships:
             for lbl, mu in memberships:
                 row = tk.Frame(list_inner, bg="white", cursor="hand2", bd=0, highlightthickness=0)
@@ -7175,28 +7367,16 @@ class PyFCSApp:
 
                 membership_rows[lbl] = row
 
-                proto_hex = get_proto_hex(lbl)
+                proto_hex = self._get_proto_hex(lbl)
 
                 swatch = tk.Canvas(row, width=16, height=16, bg="white", highlightthickness=0)
                 swatch.pack(side="left", padx=(4, 6), pady=2)
                 swatch.create_rectangle(1, 1, 15, 15, fill=proto_hex, outline="#707070")
 
-                lbl_name = tk.Label(
-                    row,
-                    text=str(lbl),
-                    anchor="w",
-                    bg="white",
-                    font=("Sans", 10)
-                )
+                lbl_name = tk.Label(row, text=str(lbl), anchor="w", bg="white", font=("Sans", 10))
                 lbl_name.pack(side="left", fill="x", expand=True)
 
-                lbl_mu = tk.Label(
-                    row,
-                    text=f"μ = {float(mu):.4f}",
-                    anchor="e",
-                    bg="white",
-                    font=("Sans", 10)
-                )
+                lbl_mu = tk.Label(row, text=f"μ = {float(mu):.4f}", anchor="e", bg="white", font=("Sans", 10))
                 lbl_mu.pack(side="right", padx=(6, 4))
 
                 for widget in (row, swatch, lbl_name, lbl_mu):
@@ -7212,9 +7392,8 @@ class PyFCSApp:
                 bg="white"
             ).pack(fill="x")
 
-        # Initial selection = winner
         if memberships:
-            initial_label = winner_label if winner_label not in (None, "None", "") else memberships[0][0]
+            initial_label = base_data["winner_label"] if base_data["winner_label"] not in (None, "None", "") else memberships[0][0]
             initial_mu = None
             for lbl, mu in memberships:
                 if lbl == initial_label:
@@ -7222,31 +7401,8 @@ class PyFCSApp:
                     break
             if initial_mu is None:
                 initial_label, initial_mu = memberships[0]
+
             select_membership(initial_label, initial_mu)
-
-        # ---------------------------
-        # Bottom buttons
-        # ---------------------------
-        btns = tk.Frame(main, bg="#f2f2f2")
-        btns.pack(fill="x", pady=(10, 0))
-        tk.Button(btns, text="Close", command=win.destroy, width=12).pack(side="right")
-
-        # Modal-like behavior
-        win.transient(self.root)
-        win.grab_set()
-        win.focus_set()
-
-        win.update_idletasks()
-        root_x = self.root.winfo_rootx()
-        root_y = self.root.winfo_rooty()
-        root_w = self.root.winfo_width()
-        root_h = self.root.winfo_height()
-
-        x = root_x + (root_w - WIN_W) // 2
-        y = root_y + (root_h - WIN_H) // 2
-        win.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
-
-
 
 
 
@@ -7607,6 +7763,13 @@ class PyFCSApp:
             )
             return
         self.get_umbral_points(0.8, mode="PT")
+
+
+
+    def color_evaluation(self):
+        return
+
+
 
 
 

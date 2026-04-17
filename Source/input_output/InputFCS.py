@@ -9,6 +9,7 @@ from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
 from Source.interface.modules.UtilsTools import get_base_path
 
 import numpy as np
+import tempfile
 import shlex
 import re
 import os
@@ -40,7 +41,9 @@ class InputFCS(Input):
 
         save_path = os.path.join(get_base_path(), "fuzzy_color_spaces")
         os.makedirs(save_path, exist_ok=True)
+
         file_path = os.path.join(save_path, f"{name}.fcs")
+        temp_file_path = None
 
         def safe_vertices(vertices):
             """Return a clean list of 3D vertices, never None."""
@@ -87,155 +90,176 @@ class InputFCS(Input):
 
         # Total Lines for Loading
         total_lines = (
-            3 +  # @name, @colorSpaceLAB, @numberOfColors
-            len(selected_colors_lab) +  # each color
+            3 +
+            len(selected_colors_lab) +
             sum(1 for x in cores_planes if isinstance(x, str)) + count_plane_lines(cores_planes) +
             sum(1 for x in voronoi_planes if isinstance(x, str)) + count_plane_lines(voronoi_planes) +
             sum(1 for x in supports_planes if isinstance(x, str)) + count_plane_lines(supports_planes)
         )
 
-        current_line = 0  # written lines counter
+        current_line = 0
 
-        with open(file_path, "w") as file:
-            file.write(f"@name {name}\n")
-            current_line += 1
-            if progress_callback:
-                progress_callback(current_line, total_lines)
+        try:
+            fd, temp_file_path = tempfile.mkstemp(
+                prefix=f".{name}_",
+                suffix=".fcs.tmp",
+                dir=save_path
+            )
+            os.close(fd)
 
-            file.write("@colorSpaceLAB\n")
-            current_line += 1
-            if progress_callback:
-                progress_callback(current_line, total_lines)
-
-            file.write(f"@numberOfColors {len(prototypes)}\n")
-            current_line += 1
-            if progress_callback:
-                progress_callback(current_line, total_lines)
-
-            for color_name, lab_value in selected_colors_lab.items():
-                safe_name = str(color_name).replace('"', '\\"')
-                file.write(f"\"{safe_name}\" {lab_value[0]} {lab_value[1]} {lab_value[2]}\n")
+            with open(temp_file_path, "w", encoding="utf-8", newline="\n") as file:
+                file.write(f"@name {name}\n")
                 current_line += 1
                 if progress_callback:
                     progress_callback(current_line, total_lines)
 
-            c = vol = s = 0
+                file.write("@colorSpaceLAB\n")
+                current_line += 1
+                if progress_callback:
+                    progress_callback(current_line, total_lines)
 
-            while cores_planes or voronoi_planes or supports_planes:
-                if cores_planes:
-                    file.write("@core\n")
+                file.write(f"@numberOfColors {len(prototypes)}\n")
+                current_line += 1
+                if progress_callback:
+                    progress_callback(current_line, total_lines)
+
+                for color_name, lab_value in selected_colors_lab.items():
+                    safe_name = str(color_name).replace('"', '\\"')
+                    file.write(f"\"{safe_name}\" {lab_value[0]} {lab_value[1]} {lab_value[2]}\n")
                     current_line += 1
                     if progress_callback:
                         progress_callback(current_line, total_lines)
 
-                    c += 1
-                    while c < len(cores_planes) and not isinstance(cores_planes[c], str):
-                        if c + 2 >= len(cores_planes):
-                            break
+                c = vol = s = 0
 
-                        plane = cores_planes[c]
-                        vertices = safe_vertices(cores_planes[c + 2])
-
-                        plane_str = "\t".join(map(str, plane))
-                        num_vertex = len(vertices)
-
-                        file.write(f"{plane_str}\n")
+                while cores_planes or voronoi_planes or supports_planes:
+                    if cores_planes:
+                        file.write("@core\n")
                         current_line += 1
                         if progress_callback:
                             progress_callback(current_line, total_lines)
 
-                        file.write(f"{num_vertex}\n")
-                        current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
+                        c += 1
+                        while c < len(cores_planes) and not isinstance(cores_planes[c], str):
+                            if c + 2 >= len(cores_planes):
+                                break
 
-                        for v in vertices:
-                            file.write(f"{v[0]} {v[1]} {v[2]}\n")
+                            plane = cores_planes[c]
+                            vertices = safe_vertices(cores_planes[c + 2])
+
+                            plane_str = "\t".join(map(str, plane))
+                            num_vertex = len(vertices)
+
+                            file.write(f"{plane_str}\n")
                             current_line += 1
                             if progress_callback:
                                 progress_callback(current_line, total_lines)
 
-                        c += 3
-
-                    del cores_planes[:c]
-                    c = 0
-
-                if voronoi_planes:
-                    file.write("@voronoi\n")
-                    current_line += 1
-                    if progress_callback:
-                        progress_callback(current_line, total_lines)
-
-                    vol += 1
-                    while vol < len(voronoi_planes) and not isinstance(voronoi_planes[vol], str):
-                        if vol + 2 >= len(voronoi_planes):
-                            break
-
-                        plane = voronoi_planes[vol]
-                        vertices = safe_vertices(voronoi_planes[vol + 2])
-
-                        plane_str = "\t".join(map(str, plane))
-                        num_vertex = len(vertices)
-
-                        file.write(f"{plane_str}\n")
-                        current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
-
-                        file.write(f"{num_vertex}\n")
-                        current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
-
-                        for v in vertices:
-                            file.write(f"{v[0]} {v[1]} {v[2]}\n")
+                            file.write(f"{num_vertex}\n")
                             current_line += 1
                             if progress_callback:
                                 progress_callback(current_line, total_lines)
 
-                        vol += 3
+                            for v in vertices:
+                                file.write(f"{v[0]} {v[1]} {v[2]}\n")
+                                current_line += 1
+                                if progress_callback:
+                                    progress_callback(current_line, total_lines)
 
-                    del voronoi_planes[:vol]
-                    vol = 0
+                            c += 3
 
-                if supports_planes:
-                    file.write("@support\n")
-                    current_line += 1
-                    if progress_callback:
-                        progress_callback(current_line, total_lines)
+                        del cores_planes[:c]
+                        c = 0
 
-                    s += 1
-                    while s < len(supports_planes) and not isinstance(supports_planes[s], str):
-                        if s + 2 >= len(supports_planes):
-                            break
-
-                        plane = supports_planes[s]
-                        vertices = safe_vertices(supports_planes[s + 2])
-
-                        plane_str = "\t".join(map(str, plane))
-                        num_vertex = len(vertices)
-
-                        file.write(f"{plane_str}\n")
+                    if voronoi_planes:
+                        file.write("@voronoi\n")
                         current_line += 1
                         if progress_callback:
                             progress_callback(current_line, total_lines)
 
-                        file.write(f"{num_vertex}\n")
-                        current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
+                        vol += 1
+                        while vol < len(voronoi_planes) and not isinstance(voronoi_planes[vol], str):
+                            if vol + 2 >= len(voronoi_planes):
+                                break
 
-                        for v in vertices:
-                            file.write(f"{v[0]} {v[1]} {v[2]}\n")
+                            plane = voronoi_planes[vol]
+                            vertices = safe_vertices(voronoi_planes[vol + 2])
+
+                            plane_str = "\t".join(map(str, plane))
+                            num_vertex = len(vertices)
+
+                            file.write(f"{plane_str}\n")
                             current_line += 1
                             if progress_callback:
                                 progress_callback(current_line, total_lines)
 
-                        s += 3
+                            file.write(f"{num_vertex}\n")
+                            current_line += 1
+                            if progress_callback:
+                                progress_callback(current_line, total_lines)
 
-                    del supports_planes[:s]
-                    s = 0
+                            for v in vertices:
+                                file.write(f"{v[0]} {v[1]} {v[2]}\n")
+                                current_line += 1
+                                if progress_callback:
+                                    progress_callback(current_line, total_lines)
 
+                            vol += 3
+
+                        del voronoi_planes[:vol]
+                        vol = 0
+
+                    if supports_planes:
+                        file.write("@support\n")
+                        current_line += 1
+                        if progress_callback:
+                            progress_callback(current_line, total_lines)
+
+                        s += 1
+                        while s < len(supports_planes) and not isinstance(supports_planes[s], str):
+                            if s + 2 >= len(supports_planes):
+                                break
+
+                            plane = supports_planes[s]
+                            vertices = safe_vertices(supports_planes[s + 2])
+
+                            plane_str = "\t".join(map(str, plane))
+                            num_vertex = len(vertices)
+
+                            file.write(f"{plane_str}\n")
+                            current_line += 1
+                            if progress_callback:
+                                progress_callback(current_line, total_lines)
+
+                            file.write(f"{num_vertex}\n")
+                            current_line += 1
+                            if progress_callback:
+                                progress_callback(current_line, total_lines)
+
+                            for v in vertices:
+                                file.write(f"{v[0]} {v[1]} {v[2]}\n")
+                                current_line += 1
+                                if progress_callback:
+                                    progress_callback(current_line, total_lines)
+
+                            s += 3
+
+                        del supports_planes[:s]
+                        s = 0
+
+                file.flush()
+                os.fsync(file.fileno())
+
+            os.replace(temp_file_path, file_path)
+            return file_path
+
+        except Exception:
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except OSError:
+                    pass
+            raise
 
     
     def _parse_point_line(self, line):
