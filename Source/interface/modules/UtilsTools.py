@@ -161,7 +161,7 @@ def srgb_to_lab(r, g, b):
     return (L, a, bb)
 
 
-def prompt_file_selection(initial_subdir):
+def prompt_file_selection(initial_subdir, parent=None):
     """
     Prompt the user to select a file using a file dialog.
 
@@ -170,6 +170,8 @@ def prompt_file_selection(initial_subdir):
     initial_subdir : str
         Subdirectory (relative to the application base path) used as
         the initial directory in the dialog.
+    parent : tk widget, optional
+        Parent window so the dialog is attached to it.
 
     Returns
     -------
@@ -180,10 +182,12 @@ def prompt_file_selection(initial_subdir):
     initial_directory = os.path.join(base_path, initial_subdir)
 
     filetypes = [("All Files", "*.*")]
+
     return filedialog.askopenfilename(
         title="Select Fuzzy Color Space File",
         initialdir=initial_directory,
-        filetypes=filetypes
+        filetypes=filetypes,
+        parent=parent   
     )
 
 

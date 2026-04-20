@@ -7766,8 +7766,1708 @@ class PyFCSApp:
 
 
 
+
+
     def color_evaluation(self):
-        return
+        """Open a window to study color spaces and threshold configurations."""
+        # Close previous window if already open
+        try:
+            if hasattr(self, "_color_evaluation_window") and self._color_evaluation_window is not None:
+                if self._color_evaluation_window.winfo_exists():
+                    self._color_evaluation_window.lift()
+                    self._color_evaluation_window.focus_force()
+                    return
+        except Exception:
+            pass
+
+        if not hasattr(self, "threshold_settings"):
+            self.threshold_settings = {
+                "metric": "CIEDE2000",
+                "mode": "default",           # default | custom
+                "preset": "pt_at",           # pt | at | pt_at
+                "custom_type": "single",     # single | lower_upper
+                "single": 1.0,
+                "lower": 0.8,
+                "upper": 1.8,
+            }
+
+        win = tk.Toplevel(self.root)
+        self._color_evaluation_window = win
+
+        win.title("Color Space Evaluation")
+        WIN_W, WIN_H = 1080, 760
+        win.geometry(f"{WIN_W}x{WIN_H}")
+        win.minsize(980, 680)
+        win.resizable(True, True)
+
+        win.configure(bg="#f2f2f2")
+        win.protocol("WM_DELETE_WINDOW", self._on_close_color_evaluation_window)
+
+        self._build_color_evaluation_window(win)
+
+        # Quitar transient para permitir maximizar/minimizar normal
+        win.focus_set()
+
+        try:
+            win.state("zoomed")
+        except Exception:
+            pass
+
+        win.after_idle(self._set_color_evaluation_initial_sash)
+
+
+
+
+    def _on_close_color_evaluation_window(self):
+        """Handle manual closing of the Color Evaluation window."""
+        try:
+            if hasattr(self, "_color_evaluation_window") and self._color_evaluation_window is not None:
+                if self._color_evaluation_window.winfo_exists():
+                    self._color_evaluation_window.destroy()
+        except Exception:
+            pass
+        finally:
+            self._color_evaluation_window = None
+            self._color_evaluation_paned = None
+
+
+
+    def _set_color_evaluation_initial_sash(self):
+        """Set the initial PanedWindow split after the window has its final size."""
+        try:
+            paned = getattr(self, "_color_evaluation_paned", None)
+            if paned is None or not paned.winfo_exists():
+                return
+
+            paned.update_idletasks()
+            total_w = paned.winfo_width()
+
+            if total_w <= 1:
+                return
+
+            sash_x = int(total_w * 0.8)  # 75% table | 25% analysis
+            paned.sash_place(0, sash_x, 1)
+        except Exception:
+            pass
+
+
+    def _build_color_evaluation_window(self, win):
+        """Build the full Color Evaluation window."""
+        vars_dict = self._create_color_evaluation_vars()
+
+        main = tk.Frame(win, bg="#f2f2f2")
+        main.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # =========================
+        # Top: Threshold settings
+        # =========================
+        threshold_panel = tk.Frame(main, bg="white", bd=1, relief="solid")
+        threshold_panel.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            threshold_panel,
+            text="Threshold Configuration",
+            font=("Sans", 11, "bold"),
+            anchor="w",
+            bg="white",
+            padx=12,
+            pady=10
+        ).pack(fill="x")
+
+        threshold_body = tk.Frame(threshold_panel, bg="white")
+        threshold_body.pack(fill="x", padx=12, pady=(0, 10))
+
+        section_selection = tk.Frame(threshold_body, bg="white")
+        section_selection.pack(side="left", fill="y", padx=(0, 12))
+
+        sep_1 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=120)
+        sep_1.pack(side="left", fill="y", padx=(0, 12), pady=2)
+
+        section_config = tk.Frame(threshold_body, bg="white")
+        section_config.pack(side="left", fill="both", expand=True, padx=(0, 12))
+
+        sep_2 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=120)
+        sep_2.pack(side="left", fill="y", padx=(0, 12), pady=2)
+
+        section_summary = tk.Frame(threshold_body, bg="white")
+        section_summary.pack(side="left", fill="both", expand=True)
+
+        tk.Label(
+            section_selection,
+            text="Metric",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 4))
+
+        metric_combo = ttk.Combobox(
+            section_selection,
+            textvariable=vars_dict["threshold_metric_var"],
+            state="readonly",
+            width=18,
+            values=["CIEDE2000"]
+        )
+        metric_combo.pack(anchor="w", pady=(0, 10))
+
+        tk.Label(
+            section_selection,
+            text="Threshold Type",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 4))
+
+        mode_combo = ttk.Combobox(
+            section_selection,
+            textvariable=vars_dict["threshold_mode_var"],
+            state="readonly",
+            width=18,
+            values=["default", "custom"]
+        )
+        mode_combo.pack(anchor="w")
+
+        tk.Label(
+            section_config,
+            text="Configuration",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        preset_label = tk.Label(section_config, text="Default preset:", bg="white", anchor="w")
+        preset_combo = ttk.Combobox(
+            section_config,
+            textvariable=vars_dict["threshold_preset_var"],
+            state="readonly",
+            width=28,
+            values=[
+                "Perceptibility Threshold",
+                "Acceptability Threshold",
+                "Perceptibility + Acceptability"
+            ]
+        )
+
+        custom_type_label = tk.Label(section_config, text="Custom mode:", bg="white", anchor="w")
+        custom_type_combo = ttk.Combobox(
+            section_config,
+            textvariable=vars_dict["threshold_custom_type_var"],
+            state="readonly",
+            width=28,
+            values=[
+                "Single threshold",
+                "Lower and upper thresholds"
+            ]
+        )
+
+        single_label = tk.Label(section_config, text="Threshold:", bg="white", anchor="w")
+        single_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_single_var"], width=10)
+
+        lower_label = tk.Label(section_config, text="Lower threshold:", bg="white", anchor="w")
+        lower_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_lower_var"], width=10)
+
+        upper_label = tk.Label(section_config, text="Upper threshold:", bg="white", anchor="w")
+        upper_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_upper_var"], width=10)
+
+        config_hint_label = tk.Label(
+            section_config,
+            textvariable=vars_dict["config_hint_var"],
+            bg="white",
+            fg="#666666",
+            anchor="w",
+            justify="left",
+            wraplength=280,
+            font=("Sans", 9, "italic")
+        )
+
+        tk.Label(
+            section_summary,
+            text="Current Threshold Summary",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 8))
+
+        tk.Label(
+            section_summary,
+            textvariable=vars_dict["threshold_summary_title_var"],
+            anchor="w",
+            justify="left",
+            bg="white",
+            font=("Sans", 10, "bold"),
+            wraplength=300
+        ).pack(anchor="w", fill="x", pady=(0, 6))
+
+        tk.Label(
+            section_summary,
+            textvariable=vars_dict["threshold_summary_detail_var"],
+            anchor="w",
+            justify="left",
+            bg="white",
+            wraplength=300
+        ).pack(anchor="w", fill="x", pady=(0, 6))
+
+        tk.Label(
+            section_summary,
+            textvariable=vars_dict["threshold_summary_extra_var"],
+            anchor="w",
+            justify="left",
+            bg="white",
+            wraplength=300
+        ).pack(anchor="w", fill="x")
+
+        refs = {
+            "metric_combo": metric_combo,
+            "mode_combo": mode_combo,
+            "preset_label": preset_label,
+            "preset_combo": preset_combo,
+            "custom_type_label": custom_type_label,
+            "custom_type_combo": custom_type_combo,
+            "single_label": single_label,
+            "single_entry": single_entry,
+            "lower_label": lower_label,
+            "lower_entry": lower_entry,
+            "upper_label": upper_label,
+            "upper_entry": upper_entry,
+            "config_hint_label": config_hint_label,
+        }
+
+        # =========================
+        # Color Space Data block
+        # =========================
+        table_panel = tk.Frame(main, bg="white", bd=1, relief="solid")
+        table_panel.pack(fill="both", expand=True)
+
+        # Header row
+        header_container = tk.Frame(table_panel, bg="white", height=42)
+        header_container.pack(fill="x", padx=12, pady=(4, 2))
+        header_container.pack_propagate(False)
+
+        # Title on the left
+        tk.Label(
+            header_container,
+            text="Color Space Data",
+            font=("Sans", 11, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(side="left")
+
+        # Centered buttons, independent from title width
+        buttons_row = tk.Frame(header_container, bg="white")
+        buttons_row.place(relx=0.5, rely=0.0, anchor="n")
+
+        tk.Button(
+            buttons_row,
+            text="Use loaded color space",
+            width=22,
+            command=lambda: self._load_current_color_space_for_evaluation(vars_dict)
+        ).pack(side="left", padx=(0, 6))
+
+        tk.Button(
+            buttons_row,
+            text="Load new color space",
+            width=22,
+            command=lambda: self._load_external_color_space_for_evaluation(vars_dict)
+        ).pack(side="left")
+
+        # Summary stays on its own row, centered
+        summary_row = tk.Frame(table_panel, bg="white")
+        summary_row.pack(anchor="center", pady=(0, 0))
+
+        tk.Label(
+            summary_row,
+            text="Color space:",
+            font=("Sans", 10, "bold"),
+            bg="white"
+        ).pack(side="left", padx=(0, 4))
+
+        tk.Label(
+            summary_row,
+            textvariable=vars_dict["space_name_var"],
+            font=("Sans", 10),
+            bg="white"
+        ).pack(side="left", padx=(0, 20))
+
+        tk.Label(
+            summary_row,
+            text="Prototypes:",
+            font=("Sans", 10, "bold"),
+            bg="white"
+        ).pack(side="left", padx=(0, 4))
+
+        tk.Label(
+            summary_row,
+            textvariable=vars_dict["space_count_var"],
+            font=("Sans", 10),
+            bg="white"
+        ).pack(side="left")
+
+        # =========================
+        # PanedWindow real
+        # =========================
+        paned = tk.PanedWindow(
+            table_panel,
+            orient="horizontal",
+            sashwidth=8,
+            sashrelief="raised",
+            bd=0,
+            bg="white"
+        )
+        paned.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        left_panel = tk.Frame(paned, bg="white", bd=1, relief="solid")
+        right_panel = tk.Frame(paned, bg="white", bd=1, relief="solid")
+
+        paned.add(left_panel, minsize=620)
+        paned.add(right_panel, minsize=360)
+
+        # Save reference to paned window so sash can be positioned after final window sizing
+        self._color_evaluation_paned = paned
+
+        # -------------------------
+        # Left panel
+        # -------------------------
+        list_header = tk.Frame(left_panel, bg="#f4f4f4")
+        list_header.pack(fill="x", padx=1, pady=(1, 0))
+
+        # Columnas fijas + filler
+        list_header.grid_columnconfigure(0, minsize=110)  # swatch
+        list_header.grid_columnconfigure(1, minsize=190)  # label
+        list_header.grid_columnconfigure(2, minsize=170)  # lab
+        list_header.grid_columnconfigure(3, minsize=135)  # rgb
+        list_header.grid_columnconfigure(4, minsize=105)  # hex
+        list_header.grid_columnconfigure(5, weight=1)     # filler
+
+        header_font = ("Sans", 10, "bold")
+
+        tk.Label(list_header, text="", bg="#f4f4f4", font=header_font).grid(
+            row=0, column=0, sticky="w", padx=(8, 4), pady=8
+        )
+        tk.Label(list_header, text="Label", bg="#f4f4f4", font=header_font, anchor="w").grid(
+            row=0, column=1, sticky="w", padx=(2, 2), pady=8
+        )
+        tk.Label(list_header, text="LAB", bg="#f4f4f4", font=header_font, anchor="center").grid(
+            row=0, column=2, sticky="ew", padx=(2, 2), pady=8
+        )
+        tk.Label(list_header, text="RGB", bg="#f4f4f4", font=header_font, anchor="center").grid(
+            row=0, column=3, sticky="ew", padx=(2, 2), pady=8
+        )
+        tk.Label(list_header, text="HEX", bg="#f4f4f4", font=header_font, anchor="center").grid(
+            row=0, column=4, sticky="ew", padx=(2, 6), pady=8
+        )
+        tk.Label(list_header, text="", bg="#f4f4f4", font=header_font).grid(
+            row=0, column=5, sticky="ew", padx=0, pady=8
+        )
+
+        tk.Frame(left_panel, bg="#d8d8d8", height=1).pack(fill="x", padx=1)
+
+        rows_canvas = tk.Canvas(
+            left_panel,
+            bg="white",
+            highlightthickness=0,
+            bd=0
+        )
+        rows_scroll = ttk.Scrollbar(
+            left_panel,
+            orient="vertical",
+            command=rows_canvas.yview
+        )
+        rows_inner = tk.Frame(rows_canvas, bg="white")
+
+        rows_inner.bind(
+            "<Configure>",
+            lambda e: rows_canvas.configure(scrollregion=rows_canvas.bbox("all"))
+        )
+
+        rows_canvas.create_window((0, 0), window=rows_inner, anchor="nw")
+        rows_canvas.configure(yscrollcommand=rows_scroll.set)
+
+        rows_canvas.pack(side="left", fill="both", expand=True)
+        rows_scroll.pack(side="right", fill="y")
+
+        # -------------------------
+        # Right panel
+        # -------------------------
+        tk.Label(
+            right_panel,
+            text="Threshold Analysis",
+            font=("Sans", 11, "bold"),
+            anchor="w",
+            bg="white",
+            padx=12,
+            pady=10
+        ).pack(fill="x")
+
+        analysis_actions = tk.Frame(right_panel, bg="white")
+        analysis_actions.pack(fill="x", padx=12, pady=(0, 8))
+
+        tk.Button(
+            analysis_actions,
+            text="Compare with another color",
+            command=lambda: self._enable_color_evaluation_comparison_mode(vars_dict)
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        tk.Button(
+            analysis_actions,
+            text="Clear comparison",
+            command=lambda: self._clear_color_evaluation_comparison(vars_dict)
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        tk.Button(
+            analysis_actions,
+            text="Evaluate custom color",
+            command=lambda: self._open_custom_color_input_dialog(vars_dict)
+        ).pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            right_panel,
+            textvariable=vars_dict["analysis_mode_var"],
+            anchor="w",
+            bg="white",
+            fg="#555555",
+            font=("Sans", 9, "italic"),
+            padx=12
+        ).pack(fill="x", pady=(0, 8))
+
+        analysis_body = tk.Frame(right_panel, bg="white")
+        analysis_body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+
+        colors_row = tk.Frame(analysis_body, bg="white")
+        colors_row.pack(fill="x", pady=(0, 8))
+
+        selected_block = tk.Frame(colors_row, bg="white")
+        selected_block.pack(side="left", fill="both", expand=True, padx=(0, 8))
+
+        comparison_block = tk.Frame(colors_row, bg="white")
+        comparison_block.pack(side="left", fill="both", expand=True, padx=(8, 0))
+
+        tk.Label(
+            selected_block,
+            text="Selected color",
+            font=("Sans", 10, "bold"),
+            anchor="center",
+            bg="white"
+        ).pack(fill="x", pady=(0, 6))
+
+        primary_swatch = tk.Canvas(
+            selected_block,
+            width=120,
+            height=80,
+            bg="white",
+            highlightthickness=0
+        )
+        primary_swatch.pack(anchor="center", pady=(0, 8))
+
+        primary_rect = primary_swatch.create_rectangle(
+            10, 10, 110, 70,
+            fill="#cccccc",
+            outline="#606060",
+            width=1
+        )
+
+        tk.Label(
+            selected_block,
+            textvariable=vars_dict["primary_name_var"],
+            font=("Sans", 10, "bold"),
+            anchor="center",
+            bg="white"
+        ).pack(fill="x", pady=(0, 6))
+
+        tk.Label(
+            comparison_block,
+            text="Comparison color",
+            font=("Sans", 10, "bold"),
+            anchor="center",
+            bg="white"
+        ).pack(fill="x", pady=(0, 6))
+
+        secondary_swatch = tk.Canvas(
+            comparison_block,
+            width=120,
+            height=80,
+            bg="white",
+            highlightthickness=0
+        )
+        secondary_swatch.pack(anchor="center", pady=(0, 8))
+
+        secondary_rect = secondary_swatch.create_rectangle(
+            10, 10, 110, 70,
+            fill="#f0f0f0",
+            outline="#606060",
+            width=1
+        )
+
+        tk.Label(
+            comparison_block,
+            textvariable=vars_dict["secondary_name_var"],
+            font=("Sans", 10, "bold"),
+            anchor="center",
+            bg="white"
+        ).pack(fill="x", pady=(0, 6))
+
+        tk.Frame(analysis_body, bg="#d8d8d8", height=1).pack(fill="x", pady=(6, 6))
+
+        results_block = tk.Frame(analysis_body, bg="white")
+        results_block.pack(fill="both", expand=True)
+
+        tk.Label(
+            results_block,
+            text="Results",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 8))
+
+        tk.Label(
+            results_block,
+            textvariable=vars_dict["selected_result_var"],
+            anchor="w",
+            justify="left",
+            wraplength=360,
+            bg="white",
+            font=("Sans", 10, "bold")
+        ).pack(fill="x", pady=(0, 6))
+
+        tk.Label(
+            results_block,
+            textvariable=vars_dict["selected_summary_var"],
+            anchor="w",
+            justify="left",
+            wraplength=360,
+            bg="white"
+        ).pack(fill="x")
+
+        vars_dict["rows_canvas"] = rows_canvas
+        vars_dict["rows_inner"] = rows_inner
+        vars_dict["primary_swatch"] = primary_swatch
+        vars_dict["primary_rect"] = primary_rect
+        vars_dict["secondary_swatch"] = secondary_swatch
+        vars_dict["secondary_rect"] = secondary_rect
+        vars_dict["color_row_refs"] = {}
+        vars_dict["primary_label"] = None
+        vars_dict["secondary_label"] = None
+        vars_dict["comparison_mode"] = False
+
+        for widget in (
+            metric_combo,
+            mode_combo,
+            preset_combo,
+            custom_type_combo,
+        ):
+            widget.bind(
+                "<<ComboboxSelected>>",
+                lambda e: self._refresh_color_evaluation_threshold_ui(vars_dict, refs)
+            )
+
+        for widget in (
+            single_entry,
+            lower_entry,
+            upper_entry,
+        ):
+            widget.bind(
+                "<KeyRelease>",
+                lambda e: self._refresh_color_evaluation_threshold_ui(vars_dict, refs)
+            )
+
+        self._refresh_color_evaluation_threshold_ui(vars_dict, refs)
+        self._load_current_color_space_for_evaluation(vars_dict)
+
+
+
+    def _load_color_space_for_evaluation_from_file(self, filename):
+        """
+        Load a color space file for evaluation purposes without replacing
+        the application's main active color space.
+        """
+        data = self.fuzzy_manager.load_color_file(filename)
+
+        result = {
+            "file_path": filename,
+            "space_name": os.path.splitext(os.path.basename(filename))[0],
+            "type": data.get("type"),
+            "color_data": data.get("color_data", {}),
+            "fuzzy_color_space": None,
+            "cores": None,
+            "supports": None,
+            "prototypes": None,
+        }
+
+        if data.get("type") == "fcs":
+            fuzzy_cs = data.get("fuzzy_color_space")
+            if fuzzy_cs is not None:
+                try:
+                    fuzzy_cs.precompute_pack()
+                except Exception:
+                    pass
+
+                result["fuzzy_color_space"] = fuzzy_cs
+                result["cores"] = getattr(fuzzy_cs, "cores", None)
+                result["supports"] = getattr(fuzzy_cs, "supports", None)
+                result["prototypes"] = getattr(fuzzy_cs, "prototypes", None)
+
+        return result
+    
+
+    def _get_current_color_space_for_evaluation(self):
+        """
+        Return the currently active application color space in a format
+        suitable for the Color Space Evaluation window.
+        """
+        data_source = getattr(self, "color_data", None)
+        if not data_source:
+            data_source = getattr(self, "edit_color_data", None)
+
+        if not data_source:
+            return None
+
+        fuzzy_cs = getattr(self, "fuzzy_color_space", None)
+
+        return {
+            "file_path": getattr(self, "file_path", None),
+            "space_name": getattr(self, "file_base_name", "Current loaded color space"),
+            "type": "fcs" if fuzzy_cs is not None else "cns",
+            "color_data": data_source,
+            "fuzzy_color_space": fuzzy_cs,
+            "cores": getattr(self, "cores", None),
+            "supports": getattr(self, "supports", None),
+            "prototypes": getattr(self, "prototypes", None),
+        }
+
+
+
+    def _create_color_evaluation_vars(self):
+        """Create and return all Tk variables used by the Color Evaluation window."""
+        preset_display_map = {
+            "pt": "Perceptibility Threshold",
+            "at": "Acceptability Threshold",
+            "pt_at": "Perceptibility + Acceptability"
+        }
+
+        custom_type_display_map = {
+            "single": "Single threshold",
+            "lower_upper": "Lower and upper thresholds"
+        }
+
+        saved_mode = self.threshold_settings.get("mode", "default")
+        if saved_mode == "known":
+            saved_mode = "default"
+
+        return {
+            "threshold_metric_var": tk.StringVar(
+                value=self.threshold_settings.get("metric", "CIEDE2000")
+            ),
+            "threshold_mode_var": tk.StringVar(value=saved_mode),
+            "threshold_preset_var": tk.StringVar(
+                value=preset_display_map.get(
+                    self.threshold_settings.get("preset", "pt_at"),
+                    "Perceptibility + Acceptability"
+                )
+            ),
+            "threshold_custom_type_var": tk.StringVar(
+                value=custom_type_display_map.get(
+                    self.threshold_settings.get("custom_type", "single"),
+                    "Single threshold"
+                )
+            ),
+            "threshold_single_var": tk.StringVar(
+                value=str(self.threshold_settings.get("single", 1.0))
+            ),
+            "threshold_lower_var": tk.StringVar(
+                value=str(self.threshold_settings.get("lower", 0.8))
+            ),
+            "threshold_upper_var": tk.StringVar(
+                value=str(self.threshold_settings.get("upper", 1.8))
+            ),
+
+            "threshold_summary_title_var": tk.StringVar(value=""),
+            "threshold_summary_detail_var": tk.StringVar(value=""),
+            "threshold_summary_extra_var": tk.StringVar(value=""),
+            "config_hint_var": tk.StringVar(value=""),
+
+            "space_name_var": tk.StringVar(value="None"),
+            "space_count_var": tk.StringVar(value="0"),
+
+            "analysis_mode_var": tk.StringVar(value="Select a color from the list."),
+            "primary_name_var": tk.StringVar(value="None"),
+
+            "secondary_name_var": tk.StringVar(value="None"),
+
+            "selected_result_var": tk.StringVar(value="Select a prototype from the list."),
+            "selected_summary_var": tk.StringVar(value=""),
+
+            "loaded_space_data": None,
+            "loaded_space_name": "",
+            "loaded_space_type": None,
+            "loaded_fuzzy_color_space": None,
+            "loaded_cores": None,
+            "loaded_supports": None,
+            "loaded_prototypes": None,
+            "loaded_file_path": None,
+        }
+
+
+
+
+    def _refresh_color_evaluation_threshold_ui(self, vars_dict, refs):
+        """Refresh threshold controls, validate inputs, and update summary."""
+        preset_display_map = {
+            "pt": "Perceptibility Threshold",
+            "at": "Acceptability Threshold",
+            "pt_at": "Perceptibility + Acceptability"
+        }
+        preset_reverse_map = {v: k for k, v in preset_display_map.items()}
+
+        custom_type_display_map = {
+            "single": "Single threshold",
+            "lower_upper": "Lower and upper thresholds"
+        }
+        custom_type_reverse_map = {v: k for k, v in custom_type_display_map.items()}
+
+        mode_value = vars_dict["threshold_mode_var"].get().strip().lower()
+        selected_preset_display = vars_dict["threshold_preset_var"].get().strip()
+        selected_custom_type_display = vars_dict["threshold_custom_type_var"].get().strip()
+
+        single_text = vars_dict["threshold_single_var"].get().strip()
+        lower_text = vars_dict["threshold_lower_var"].get().strip()
+        upper_text = vars_dict["threshold_upper_var"].get().strip()
+
+        self.threshold_settings["metric"] = vars_dict["threshold_metric_var"].get().strip()
+        self.threshold_settings["mode"] = mode_value
+        self.threshold_settings["preset"] = preset_reverse_map.get(selected_preset_display, "pt_at")
+        self.threshold_settings["custom_type"] = custom_type_reverse_map.get(selected_custom_type_display, "single")
+        self.threshold_settings["single"] = single_text if single_text != "" else None
+        self.threshold_settings["lower"] = lower_text if lower_text != "" else None
+        self.threshold_settings["upper"] = upper_text if upper_text != "" else None
+
+        refs["preset_label"].grid_remove()
+        refs["preset_combo"].grid_remove()
+        refs["custom_type_label"].grid_remove()
+        refs["custom_type_combo"].grid_remove()
+        refs["single_label"].grid_remove()
+        refs["single_entry"].grid_remove()
+        refs["lower_label"].grid_remove()
+        refs["lower_entry"].grid_remove()
+        refs["upper_label"].grid_remove()
+        refs["upper_entry"].grid_remove()
+        refs["config_hint_label"].grid_remove()
+
+        if mode_value == "default":
+            refs["preset_label"].grid(row=1, column=0, sticky="w", pady=(0, 6))
+            refs["preset_combo"].grid(row=1, column=1, sticky="w", pady=(0, 6))
+
+            vars_dict["config_hint_var"].set(
+                "Use predefined perceptibility and/or acceptability thresholds."
+            )
+            refs["config_hint_label"].grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+            preset_key = self.threshold_settings.get("preset", "pt_at")
+            if preset_key == "pt":
+                vars_dict["threshold_summary_title_var"].set("Default mode")
+                vars_dict["threshold_summary_detail_var"].set("Preset: Perceptibility Threshold")
+                vars_dict["threshold_summary_extra_var"].set("PT = 0.800")
+            elif preset_key == "at":
+                vars_dict["threshold_summary_title_var"].set("Default mode")
+                vars_dict["threshold_summary_detail_var"].set("Preset: Acceptability Threshold")
+                vars_dict["threshold_summary_extra_var"].set("AT = 1.800")
+            else:
+                vars_dict["threshold_summary_title_var"].set("Default mode")
+                vars_dict["threshold_summary_detail_var"].set("Preset: Perceptibility + Acceptability")
+                vars_dict["threshold_summary_extra_var"].set("PT = 0.800 | AT = 1.800")
+
+        elif mode_value == "custom":
+            refs["custom_type_label"].grid(row=1, column=0, sticky="w", pady=(0, 6))
+            refs["custom_type_combo"].grid(row=1, column=1, sticky="w", pady=(0, 6))
+
+            custom_type = self.threshold_settings.get("custom_type", "single")
+
+            if custom_type == "single":
+                refs["single_label"].grid(row=2, column=0, sticky="w", pady=(0, 6))
+                refs["single_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
+
+                vars_dict["threshold_summary_title_var"].set("Custom mode")
+                vars_dict["threshold_summary_detail_var"].set("Configuration: Single threshold")
+
+                if single_text == "":
+                    vars_dict["config_hint_var"].set("Enter a threshold greater than 0.")
+                    vars_dict["threshold_summary_extra_var"].set("Threshold not defined yet.")
+                else:
+                    parsed, err = self._parse_positive_threshold(single_text)
+                    if err:
+                        vars_dict["config_hint_var"].set(err)
+                        vars_dict["threshold_summary_extra_var"].set("Invalid threshold value.")
+                    else:
+                        vars_dict["config_hint_var"].set("Define one threshold greater than 0.")
+                        vars_dict["threshold_summary_extra_var"].set(f"Threshold = {parsed:.3f}")
+
+                refs["config_hint_label"].grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+            else:
+                refs["lower_label"].grid(row=2, column=0, sticky="w", pady=(0, 6))
+                refs["lower_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
+                refs["upper_label"].grid(row=3, column=0, sticky="w", pady=(0, 6))
+                refs["upper_entry"].grid(row=3, column=1, sticky="w", pady=(0, 6))
+
+                vars_dict["threshold_summary_title_var"].set("Custom mode")
+                vars_dict["threshold_summary_detail_var"].set("Configuration: Lower and upper thresholds")
+
+                if lower_text == "" or upper_text == "":
+                    vars_dict["config_hint_var"].set("Enter both thresholds. Values must be greater than 0.")
+                    vars_dict["threshold_summary_extra_var"].set("Thresholds not fully defined yet.")
+                else:
+                    lower, upper, err = self._validate_custom_range(lower_text, upper_text)
+                    if err:
+                        vars_dict["config_hint_var"].set(err)
+                        vars_dict["threshold_summary_extra_var"].set("Invalid threshold range.")
+                    else:
+                        vars_dict["config_hint_var"].set(
+                            "Define two thresholds greater than 0, with lower < upper."
+                        )
+                        vars_dict["threshold_summary_extra_var"].set(
+                            f"Lower = {lower:.3f} | Upper = {upper:.3f}"
+                        )
+
+                refs["config_hint_label"].grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+        else:
+            vars_dict["threshold_summary_title_var"].set("Unknown mode")
+            vars_dict["threshold_summary_detail_var"].set("")
+            vars_dict["threshold_summary_extra_var"].set("")
+            vars_dict["config_hint_var"].set("")
+
+        self._refresh_color_evaluation_comparison(vars_dict)
+
+
+
+
+    def _get_color_evaluation_threshold_description(self):
+        """Return a compact textual description of the active threshold settings."""
+        metric = self.threshold_settings.get("metric", "CIEDE2000")
+        mode = self.threshold_settings.get("mode", "default")
+
+        if mode == "known":
+            mode = "default"
+
+        if mode == "default":
+            preset = self.threshold_settings.get("preset", "pt_at")
+            if preset == "pt":
+                return f"Thresholds -> Metric: {metric} | Mode: default | PT = 0.800"
+            elif preset == "at":
+                return f"Thresholds -> Metric: {metric} | Mode: default | AT = 1.800"
+            return f"Thresholds -> Metric: {metric} | Mode: default | PT = 0.800 | AT = 1.800"
+
+        if mode == "custom":
+            custom_type = self.threshold_settings.get("custom_type", "single")
+            if custom_type == "single":
+                val = self.threshold_settings.get("single")
+                parsed, err = self._parse_positive_threshold(val)
+                if err:
+                    return f"Thresholds -> Metric: {metric} | Mode: custom | Single threshold: invalid"
+                return f"Thresholds -> Metric: {metric} | Mode: custom | Threshold = {parsed:.3f}"
+
+            lower, upper, err = self._validate_custom_range(
+                self.threshold_settings.get("lower"),
+                self.threshold_settings.get("upper")
+            )
+            if err:
+                return f"Thresholds -> Metric: {metric} | Mode: custom | Lower/Upper thresholds: invalid"
+            return f"Thresholds -> Metric: {metric} | Mode: custom | Lower = {lower:.3f} | Upper = {upper:.3f}"
+
+        return f"Thresholds -> Metric: {metric} | Mode: {mode}"
+
+
+
+    def _load_current_color_space_for_evaluation(self, vars_dict):
+        """Load the currently active color space into the evaluation window."""
+        loaded = self._get_current_color_space_for_evaluation()
+
+        if not loaded or not loaded.get("color_data"):
+            vars_dict["space_name_var"].set("None")
+            vars_dict["space_count_var"].set("0")
+
+            vars_dict["loaded_space_data"] = None
+            vars_dict["loaded_space_name"] = ""
+            vars_dict["loaded_space_type"] = None
+            vars_dict["loaded_fuzzy_color_space"] = None
+            vars_dict["loaded_cores"] = None
+            vars_dict["loaded_supports"] = None
+            vars_dict["loaded_prototypes"] = None
+            vars_dict["loaded_file_path"] = None
+
+            self._render_color_evaluation_cards(vars_dict, {})
+            return
+
+        vars_dict["loaded_space_data"] = loaded["color_data"]
+        vars_dict["loaded_space_name"] = loaded["space_name"]
+        vars_dict["loaded_space_type"] = loaded["type"]
+        vars_dict["loaded_fuzzy_color_space"] = loaded["fuzzy_color_space"]
+        vars_dict["loaded_cores"] = loaded["cores"]
+        vars_dict["loaded_supports"] = loaded["supports"]
+        vars_dict["loaded_prototypes"] = loaded["prototypes"]
+        vars_dict["loaded_file_path"] = loaded["file_path"]
+
+        self._update_color_evaluation_space_summary(vars_dict)
+        self._render_color_evaluation_cards(vars_dict, loaded["color_data"])
+
+
+
+    def _load_external_color_space_for_evaluation(self, vars_dict):
+        """Load another color space from disk for inspection/evaluation only."""
+        try:
+            if self._color_evaluation_window is not None and self._color_evaluation_window.winfo_exists():
+                self._color_evaluation_window.lift()
+                self._color_evaluation_window.focus_force()
+        except Exception:
+            pass
+
+        filename = UtilsTools.prompt_file_selection(
+            "fuzzy_color_spaces/",
+            parent=self._color_evaluation_window
+        )
+        if not filename:
+            return
+
+        try:
+            loaded = self._load_color_space_for_evaluation_from_file(filename)
+        except Exception:
+            loaded = None
+
+        if not loaded or not isinstance(loaded.get("color_data"), dict):
+            vars_dict["space_name_var"].set("Invalid file")
+            vars_dict["space_count_var"].set("0")
+
+            vars_dict["loaded_space_data"] = None
+            vars_dict["loaded_space_name"] = ""
+            vars_dict["loaded_space_type"] = None
+            vars_dict["loaded_fuzzy_color_space"] = None
+            vars_dict["loaded_cores"] = None
+            vars_dict["loaded_supports"] = None
+            vars_dict["loaded_prototypes"] = None
+            vars_dict["loaded_file_path"] = None
+
+            self._render_color_evaluation_cards(vars_dict, {})
+            return
+
+        vars_dict["loaded_space_data"] = loaded["color_data"]
+        vars_dict["loaded_space_name"] = loaded["space_name"]
+        vars_dict["loaded_space_type"] = loaded["type"]
+        vars_dict["loaded_fuzzy_color_space"] = loaded["fuzzy_color_space"]
+        vars_dict["loaded_cores"] = loaded["cores"]
+        vars_dict["loaded_supports"] = loaded["supports"]
+        vars_dict["loaded_prototypes"] = loaded["prototypes"]
+        vars_dict["loaded_file_path"] = loaded["file_path"]
+
+        self._update_color_evaluation_space_summary(vars_dict)
+        self._render_color_evaluation_cards(vars_dict, loaded["color_data"])
+
+
+
+    def _calculate_evaluation_memberships(self, vars_dict, sample_lab):
+        """
+        Calculate membership degrees using the color space currently loaded
+        in the Color Space Evaluation window.
+        """
+        fuzzy_cs = vars_dict.get("loaded_fuzzy_color_space")
+
+        if fuzzy_cs is None:
+            return []
+
+        try:
+            membership_degrees = fuzzy_cs.calculate_membership(sample_lab)
+        except Exception:
+            return []
+
+        if not membership_degrees:
+            return []
+
+        return sorted(
+            membership_degrees.items(),
+            key=lambda kv: kv[1],
+            reverse=True
+        )
+
+
+    def _update_color_evaluation_space_summary(self, vars_dict):
+        data_source = vars_dict.get("loaded_space_data") or {}
+        space_name = vars_dict.get("loaded_space_name", "Unnamed color space")
+
+        valid_rows = self._extract_color_space_rows(data_source)
+
+        vars_dict["space_name_var"].set(space_name)
+        vars_dict["space_count_var"].set(str(len(valid_rows)))
+        
+
+    def _extract_color_space_rows(self, data_source):
+        """Return normalized rows [(label, lab_array), ...] from a color space dict."""
+        rows = []
+
+        if not isinstance(data_source, dict):
+            return rows
+
+        for color_name, color_value in data_source.items():
+            if not isinstance(color_value, dict):
+                continue
+
+            lab = None
+            if "positive_prototype" in color_value:
+                lab = color_value["positive_prototype"]
+            elif "Color" in color_value:
+                lab = color_value["Color"]
+
+            if lab is None:
+                continue
+
+            try:
+                lab_arr = np.array(lab, dtype=float)
+                if lab_arr.shape[0] < 3:
+                    continue
+                rows.append((color_name, lab_arr))
+            except Exception:
+                continue
+
+        return rows
+        
+
+
+    def _render_color_evaluation_cards(self, vars_dict, data_source):
+        """Render color prototypes as selectable rows aligned with the header."""
+        rows_inner = vars_dict["rows_inner"]
+
+        for child in rows_inner.winfo_children():
+            child.destroy()
+
+        vars_dict["color_row_refs"] = {}
+        vars_dict["primary_label"] = None
+        vars_dict["secondary_label"] = None
+        vars_dict["comparison_mode"] = False
+        vars_dict["analysis_mode_var"].set("Select a color from the list.")
+
+        rows = self._extract_color_space_rows(data_source)
+
+        if not rows:
+            tk.Label(
+                rows_inner,
+                text="No color space data available.",
+                anchor="w",
+                bg="white",
+                font=("Sans", 10)
+            ).pack(fill="x", padx=12, pady=12)
+
+            self._clear_color_evaluation_analysis(vars_dict)
+            return
+
+        def _highlight_rows():
+            primary = vars_dict.get("primary_label")
+            secondary = vars_dict.get("secondary_label")
+
+            for label, refs in vars_dict["color_row_refs"].items():
+                if label == primary and label == secondary:
+                    bg = "#dfeeff"
+                elif label == primary:
+                    bg = "#e8f0ff"
+                elif label == secondary:
+                    bg = "#fff4dd"
+                else:
+                    bg = "white"
+
+                refs["frame"].configure(bg=bg)
+                refs["content"].configure(bg=bg)
+
+                for widget in refs["widgets"]:
+                    try:
+                        widget.configure(bg=bg)
+                    except Exception:
+                        pass
+
+        def _on_select_row(label):
+            refs_map = vars_dict["color_row_refs"]
+            if label not in refs_map:
+                return
+
+            if vars_dict.get("comparison_mode", False):
+                primary = vars_dict.get("primary_label")
+
+                if primary is None:
+                    vars_dict["primary_label"] = label
+                    vars_dict["secondary_label"] = None
+                    vars_dict["analysis_mode_var"].set(
+                        "Primary color selected. Choose another color to compare."
+                    )
+                else:
+                    if label == primary:
+                        vars_dict["analysis_mode_var"].set(
+                            "Comparison mode active. Choose a different color than the selected one."
+                        )
+                        self._refresh_color_evaluation_comparison(vars_dict)
+                        _highlight_rows()
+                        return
+
+                    vars_dict["secondary_label"] = label
+                    vars_dict["analysis_mode_var"].set(
+                        "Comparison mode active. Click another color to update the comparison or clear it to exit."
+                    )
+            else:
+                vars_dict["primary_label"] = label
+                vars_dict["secondary_label"] = None
+                vars_dict["analysis_mode_var"].set("Single color selected.")
+
+            self._refresh_color_evaluation_comparison(vars_dict)
+            _highlight_rows()
+
+        for label, lab in rows:
+            try:
+                rgb_float = color.lab2rgb([lab])[0]
+                rgb = tuple(max(0, min(255, int(v * 255))) for v in rgb_float)
+            except Exception:
+                rgb = (200, 200, 200)
+
+            hex_color = self._safe_hex_from_rgb(rgb)
+
+            row = tk.Frame(rows_inner, bg="white", bd=1, relief="solid", cursor="hand2")
+            row.pack(fill="x", padx=8, pady=3)
+
+            content = tk.Frame(row, bg="white")
+            content.pack(fill="x", padx=8, pady=7)
+
+            content.grid_columnconfigure(0, minsize=110)
+            content.grid_columnconfigure(1, minsize=190)
+            content.grid_columnconfigure(2, minsize=170)
+            content.grid_columnconfigure(3, minsize=135)
+            content.grid_columnconfigure(4, minsize=105)
+            content.grid_columnconfigure(5, weight=1)
+
+            swatch = tk.Canvas(
+                content,
+                width=90,
+                height=42,
+                bg="white",
+                highlightthickness=0
+            )
+            swatch.grid(row=0, column=0, sticky="w", padx=(8, 4), pady=6)
+            swatch.create_rectangle(
+                6, 6, 84, 36,
+                fill=hex_color,
+                outline="#404040",
+                width=1
+            )
+
+            lbl_name = tk.Label(
+                content,
+                text=label,
+                anchor="w",
+                justify="left",
+                bg="white",
+                font=("Sans", 10, "bold")
+            )
+            lbl_name.grid(row=0, column=1, sticky="w", padx=(2, 2))
+
+            lbl_lab = tk.Label(
+                content,
+                text=f"{lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
+                anchor="center",
+                justify="center",
+                bg="white",
+                font=("Sans", 10)
+            )
+            lbl_lab.grid(row=0, column=2, sticky="ew", padx=(2, 2))
+
+            lbl_rgb = tk.Label(
+                content,
+                text=f"{int(rgb[0])}, {int(rgb[1])}, {int(rgb[2])}",
+                anchor="center",
+                justify="center",
+                bg="white",
+                font=("Sans", 10)
+            )
+            lbl_rgb.grid(row=0, column=3, sticky="ew", padx=(2, 2))
+
+            lbl_hex = tk.Label(
+                content,
+                text=hex_color.upper(),
+                anchor="center",
+                justify="center",
+                bg="white",
+                font=("Sans", 10)
+            )
+            lbl_hex.grid(row=0, column=4, sticky="ew", padx=(2, 6))
+
+            filler = tk.Label(content, text="", bg="white")
+            filler.grid(row=0, column=5, sticky="ew")
+
+            widgets = [swatch, lbl_name, lbl_lab, lbl_rgb, lbl_hex, filler]
+
+            vars_dict["color_row_refs"][label] = {
+                "frame": row,
+                "content": content,
+                "widgets": widgets,
+                "lab": lab,
+                "rgb": rgb,
+                "hex": hex_color,
+            }
+
+            for widget in [row, content, *widgets]:
+                widget.bind("<Button-1>", lambda e, lbl=label: _on_select_row(lbl))
+
+        if rows:
+            first_label = rows[0][0]
+            vars_dict["primary_label"] = first_label
+            vars_dict["secondary_label"] = None
+            vars_dict["analysis_mode_var"].set("Single color selected.")
+            self._refresh_color_evaluation_comparison(vars_dict)
+            _highlight_rows()
+
+
+
+    def _clear_color_evaluation_analysis(self, vars_dict):
+        """Reset the analysis panel."""
+        vars_dict["primary_name_var"].set("None")
+
+        vars_dict["secondary_name_var"].set("None")
+
+        vars_dict["selected_result_var"].set("Select a prototype from the list.")
+        vars_dict["selected_summary_var"].set("")
+
+        vars_dict["primary_swatch"].itemconfig(vars_dict["primary_rect"], fill="#cccccc")
+        vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
+
+
+
+    def _enable_color_evaluation_comparison_mode(self, vars_dict):
+        """Enable comparison mode so clicked colors become comparison colors."""
+        primary = vars_dict.get("primary_label")
+
+        if primary is None:
+            vars_dict["comparison_mode"] = False
+            vars_dict["analysis_mode_var"].set("Select a primary color first.")
+            return
+
+        vars_dict["comparison_mode"] = True
+        vars_dict["analysis_mode_var"].set(
+            "Comparison mode enabled. Click another color to compare against the selected one."
+        )
+
+
+    def _clear_color_evaluation_comparison(self, vars_dict):
+        """Clear the comparison color and return to single-color analysis."""
+        vars_dict["comparison_mode"] = False
+        vars_dict["secondary_label"] = None
+
+        if vars_dict.get("primary_label"):
+            vars_dict["analysis_mode_var"].set("Single color selected.")
+        else:
+            vars_dict["analysis_mode_var"].set("Select a color from the list.")
+
+        self._refresh_color_evaluation_comparison(vars_dict)
+
+        for label, refs in vars_dict.get("color_row_refs", {}).items():
+            bg = "#e8f0ff" if label == vars_dict.get("primary_label") else "white"
+
+            refs["frame"].configure(bg=bg)
+            refs["content"].configure(bg=bg)
+
+            for widget in refs["widgets"]:
+                try:
+                    widget.configure(bg=bg)
+                except Exception:
+                    pass
+
+
+    def _refresh_color_evaluation_comparison(self, vars_dict):
+        """Refresh the right-side analysis panel for single or comparison mode."""
+        refs_map = vars_dict.get("color_row_refs", {})
+        primary_label = vars_dict.get("primary_label")
+        secondary_label = vars_dict.get("secondary_label")
+
+        primary_refs = refs_map.get(primary_label)
+        secondary_refs = refs_map.get(secondary_label)
+
+        if not primary_refs:
+            self._clear_color_evaluation_analysis(vars_dict)
+            return
+
+        p_lab = primary_refs["lab"]
+        p_hex = primary_refs["hex"]
+
+        vars_dict["primary_name_var"].set(primary_label)
+        vars_dict["primary_swatch"].itemconfig(vars_dict["primary_rect"], fill=p_hex)
+
+        if not secondary_refs:
+            vars_dict["secondary_name_var"].set("None")
+            vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
+
+            vars_dict["selected_result_var"].set("Single color selected. Comparison not active.")
+            vars_dict["selected_summary_var"].set(
+                "Use 'Compare with another color' to evaluate the selected color against a second prototype.\n"
+                + self._get_color_evaluation_threshold_description()
+            )
+            return
+
+        s_lab = secondary_refs["lab"]
+        s_hex = secondary_refs["hex"]
+
+        vars_dict["secondary_name_var"].set(secondary_label)
+        vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill=s_hex)
+
+        evaluation = self.evaluate_color_difference_threshold(
+            sample_lab=p_lab,
+            prototype_lab=s_lab,
+            metric=self.threshold_settings.get("metric", "CIEDE2000"),
+            threshold_settings=self.threshold_settings
+        )
+
+        vars_dict["selected_result_var"].set(
+            evaluation.get("evaluation", "No evaluation available")
+        )
+        vars_dict["selected_summary_var"].set(
+            evaluation.get("summary", "")
+        )
+
+
+
+
+
+
+
+
+
+
+
+    def _open_custom_color_input_dialog(self, vars_dict):
+        """Open a dialog to input a custom color in RGB, LAB, or HEX."""
+        data_source = vars_dict.get("loaded_space_data") or {}
+        if not self._extract_color_space_rows(data_source):
+            self.custom_warning(
+                "No Color Space Loaded",
+                "Load a valid color space before evaluating a custom color."
+            )
+            return
+
+        parent = getattr(self, "_color_evaluation_window", self.root)
+
+        dialog = tk.Toplevel(parent)
+        dialog.title("Evaluate Custom Color")
+        dialog.geometry("420x240")
+        dialog.resizable(False, False)
+        dialog.configure(bg="#f2f2f2")
+        dialog.transient(parent)
+        dialog.grab_set()
+
+        input_vars = {
+            "mode_var": tk.StringVar(value="RGB"),
+            "v1_var": tk.StringVar(value=""),
+            "v2_var": tk.StringVar(value=""),
+            "v3_var": tk.StringVar(value=""),
+            "hex_var": tk.StringVar(value=""),
+            "status_var": tk.StringVar(value="Enter a color value."),
+        }
+
+        main = tk.Frame(dialog, bg="#f2f2f2")
+        main.pack(fill="both", expand=True, padx=12, pady=12)
+
+        panel = tk.Frame(main, bg="white", bd=1, relief="solid")
+        panel.pack(fill="both", expand=True)
+
+        tk.Label(
+            panel,
+            text="Custom Color Input",
+            font=("Sans", 11, "bold"),
+            bg="white",
+            anchor="w",
+            padx=12,
+            pady=10
+        ).pack(fill="x")
+
+        body = tk.Frame(panel, bg="white")
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+
+        tk.Label(body, text="Input mode", bg="white").grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        mode_combo = ttk.Combobox(
+            body,
+            textvariable=input_vars["mode_var"],
+            state="readonly",
+            width=12,
+            values=["RGB", "LAB", "HEX"]
+        )
+        mode_combo.grid(row=0, column=1, sticky="w", pady=(0, 8))
+
+        lbl1 = tk.Label(body, text="R:", bg="white")
+        lbl1.grid(row=1, column=0, sticky="w", pady=4)
+        entry1 = tk.Entry(body, textvariable=input_vars["v1_var"], width=12)
+        entry1.grid(row=1, column=1, sticky="w", pady=4)
+
+        lbl2 = tk.Label(body, text="G:", bg="white")
+        lbl2.grid(row=2, column=0, sticky="w", pady=4)
+        entry2 = tk.Entry(body, textvariable=input_vars["v2_var"], width=12)
+        entry2.grid(row=2, column=1, sticky="w", pady=4)
+
+        lbl3 = tk.Label(body, text="B:", bg="white")
+        lbl3.grid(row=3, column=0, sticky="w", pady=4)
+        entry3 = tk.Entry(body, textvariable=input_vars["v3_var"], width=12)
+        entry3.grid(row=3, column=1, sticky="w", pady=4)
+
+        hex_label = tk.Label(body, text="HEX:", bg="white")
+        hex_entry = tk.Entry(body, textvariable=input_vars["hex_var"], width=16)
+
+        def refresh_inputs(*_):
+            mode = input_vars["mode_var"].get().strip().upper()
+
+            lbl1.grid_remove()
+            entry1.grid_remove()
+            lbl2.grid_remove()
+            entry2.grid_remove()
+            lbl3.grid_remove()
+            entry3.grid_remove()
+            hex_label.grid_remove()
+            hex_entry.grid_remove()
+
+            if mode == "RGB":
+                lbl1.config(text="R:")
+                lbl2.config(text="G:")
+                lbl3.config(text="B:")
+                lbl1.grid(row=1, column=0, sticky="w", pady=4)
+                entry1.grid(row=1, column=1, sticky="w", pady=4)
+                lbl2.grid(row=2, column=0, sticky="w", pady=4)
+                entry2.grid(row=2, column=1, sticky="w", pady=4)
+                lbl3.grid(row=3, column=0, sticky="w", pady=4)
+                entry3.grid(row=3, column=1, sticky="w", pady=4)
+
+            elif mode == "LAB":
+                lbl1.config(text="L:")
+                lbl2.config(text="a:")
+                lbl3.config(text="b:")
+                lbl1.grid(row=1, column=0, sticky="w", pady=4)
+                entry1.grid(row=1, column=1, sticky="w", pady=4)
+                lbl2.grid(row=2, column=0, sticky="w", pady=4)
+                entry2.grid(row=2, column=1, sticky="w", pady=4)
+                lbl3.grid(row=3, column=0, sticky="w", pady=4)
+                entry3.grid(row=3, column=1, sticky="w", pady=4)
+
+            else:
+                hex_label.grid(row=1, column=0, sticky="w", pady=4)
+                hex_entry.grid(row=1, column=1, sticky="w", pady=4)
+
+        mode_combo.bind("<<ComboboxSelected>>", refresh_inputs)
+        refresh_inputs()
+
+        tk.Label(
+            body,
+            textvariable=input_vars["status_var"],
+            bg="white",
+            fg="#666666",
+            anchor="w",
+            justify="left",
+            wraplength=340,
+            font=("Sans", 9, "italic")
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        buttons = tk.Frame(panel, bg="white")
+        buttons.pack(fill="x", padx=12, pady=(0, 10))
+
+        tk.Button(
+            buttons,
+            text="Cancel",
+            width=12,
+            command=dialog.destroy
+        ).pack(side="right")
+
+        tk.Button(
+            buttons,
+            text="Evaluate",
+            width=12,
+            command=lambda: self._submit_custom_color_input(vars_dict, input_vars, dialog)
+        ).pack(side="right", padx=(0, 6))
+
+
+
+    def _submit_custom_color_input(self, vars_dict, input_vars, dialog):
+        """Validate the custom color input and open the result window."""
+        try:
+            sample_lab, sample_rgb, sample_hex = self._normalize_custom_color_input(
+                input_mode=input_vars["mode_var"].get(),
+                value_1=input_vars["v1_var"].get(),
+                value_2=input_vars["v2_var"].get(),
+                value_3=input_vars["v3_var"].get(),
+                hex_value=input_vars["hex_var"].get()
+            )
+        except ValueError as exc:
+            input_vars["status_var"].set(str(exc))
+            return
+
+        dialog.destroy()
+
+        base_data = self._get_custom_color_base_data(
+            vars_dict=vars_dict,
+            sample_lab=sample_lab,
+            sample_rgb=sample_rgb,
+            sample_hex=sample_hex
+        )
+
+        self._open_custom_color_result_window(vars_dict, base_data)
+
+
+
+    def _normalize_custom_color_input(self, input_mode, value_1="", value_2="", value_3="", hex_value=""):
+        """
+        Normalize a user-entered color into LAB, RGB, and HEX.
+
+        Parameters
+        ----------
+        input_mode : str
+            One of: RGB, LAB, HEX
+        value_1, value_2, value_3 : str
+            Numeric channel values for RGB or LAB.
+        hex_value : str
+            Hexadecimal color string for HEX mode.
+
+        Returns
+        -------
+        tuple
+            (sample_lab, sample_rgb, sample_hex)
+
+        Raises
+        ------
+        ValueError
+            If the input is invalid.
+        """
+        mode = str(input_mode).strip().upper()
+
+        if mode == "RGB":
+            try:
+                r = int(str(value_1).strip())
+                g = int(str(value_2).strip())
+                b = int(str(value_3).strip())
+            except Exception:
+                raise ValueError("RGB values must be valid integers.")
+
+            if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
+                raise ValueError("RGB values must be between 0 and 255.")
+
+            sample_rgb = (r, g, b)
+            sample_lab = UtilsTools.srgb_to_lab(r, g, b)
+            sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
+
+            return sample_lab, sample_rgb, sample_hex
+
+        elif mode == "LAB":
+            try:
+                L = float(str(value_1).strip())
+                a = float(str(value_2).strip())
+                b = float(str(value_3).strip())
+            except Exception:
+                raise ValueError("LAB values must be valid numbers.")
+
+            sample_lab = (L, a, b)
+            sample_rgb = UtilsTools.lab_to_rgb(sample_lab)
+            sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
+
+            return sample_lab, sample_rgb, sample_hex
+
+        elif mode == "HEX":
+            hex_text = str(hex_value).strip().upper()
+
+            if hex_text.startswith("#"):
+                hex_text = hex_text[1:]
+
+            if len(hex_text) != 6:
+                raise ValueError("HEX value must contain exactly 6 hexadecimal characters.")
+
+            try:
+                r = int(hex_text[0:2], 16)
+                g = int(hex_text[2:4], 16)
+                b = int(hex_text[4:6], 16)
+            except Exception:
+                raise ValueError("HEX value is not valid.")
+
+            sample_rgb = (r, g, b)
+            sample_lab = UtilsTools.srgb_to_lab(r, g, b)
+            sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
+
+            return sample_lab, sample_rgb, sample_hex
+
+        raise ValueError("Unsupported input mode.")
+
+
+
+    def _get_custom_color_base_data(self, vars_dict, sample_lab, sample_rgb, sample_hex):
+        """Build the base data dictionary for a custom user-entered color."""
+        top_memberships = self._calculate_evaluation_memberships(vars_dict, sample_lab)
+
+        if top_memberships:
+            winner_label = top_memberships[0][0]
+            winner_mu = float(top_memberships[0][1])
+        else:
+            winner_label = "None"
+            winner_mu = 0.0
+
+        return {
+            "info": None,
+            "lab": sample_lab,
+            "selection_info": None,
+            "is_average": False,
+            "sampled_rgb": sample_rgb,
+            "sampled_hex": sample_hex,
+            "sampled_title": "Custom Color",
+            "memberships": top_memberships,
+            "winner_label": winner_label,
+            "winner_mu": winner_mu,
+            "coord_text": "Custom color input",
+            "roi_text": None,
+        }
+
+
+    def _open_custom_color_result_window(self, vars_dict, base_data):
+        """Open a result window for a manually entered custom color."""
+        parent = getattr(self, "_color_evaluation_window", self.root)
+
+        win = tk.Toplevel(parent)
+        win.title("Custom Color Evaluation")
+
+        WIN_W, WIN_H = 980, 640
+        win.geometry(f"{WIN_W}x{WIN_H}")
+        win.resizable(False, False)
+        win.configure(bg="#f2f2f2")
+        win.transient(parent)
+        win.grab_set()
+        win.focus_set()
+
+        result_vars = self._create_more_info_vars(base_data)
+
+        main = tk.Frame(win, bg="#f2f2f2")
+        main.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self._build_more_info_header(main, base_data)
+
+        content_refs = self._build_more_info_content(main, base_data, result_vars)
+
+        self._populate_more_info_memberships(
+            base_data=base_data,
+            vars_dict=result_vars,
+            refs=content_refs
+        )
+
+        btns = tk.Frame(main, bg="#f2f2f2")
+        btns.pack(fill="x", pady=(10, 0))
+
+        tk.Button(
+            btns,
+            text="Use another color",
+            width=16,
+            command=lambda: (win.destroy(), self._open_custom_color_input_dialog(vars_dict))
+        ).pack(side="right", padx=(6, 0))
+
+        tk.Button(
+            btns,
+            text="Close",
+            width=12,
+            command=win.destroy
+        ).pack(side="right")
+
+
+
+
+
+
+
+
 
 
 
