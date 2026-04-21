@@ -5985,6 +5985,140 @@ class PyFCSApp:
 
 
 
+    # ============================================================================================================================================================
+    #  FUNCTIONS AT and PT
+    # ============================================================================================================================================================
+    def get_umbral_points(self, threshold, mode=None):
+        """
+        Filter points inside the selected fuzzy volumes using the given threshold
+        and update the embedded 3D view.
+        """
+        # Ensure a color space is available before running the evaluation.
+        if not hasattr(self, "COLOR_SPACE") or not self.COLOR_SPACE:
+            self.custom_warning("No Color Space", "Please load a fuzzy color space before deploying AT or PT.")
+            return
+
+        selected_options = [key for key, var in self.model_3d_options.items() if var.get()]
+        if selected_options == ["Representative"]:
+            return
+        else:
+            self.show_loading()
+
+        def update_progress(current_step, total_steps):
+            """
+            Update the loading progress bar.
+            """
+            progress_percentage = (current_step / total_steps) * 100
+            self.progress["value"] = progress_percentage
+            self.load_window.update_idletasks()
+
+        def run_threshold_process():
+            """
+            Run the threshold filtering in a background thread and refresh the 3D plot
+            on the main Tkinter thread when the computation finishes.
+            """
+            try:
+                # Define the volume priority used for threshold filtering.
+                priority_map = {
+                    "Support": self.selected_core,
+                    "0.5-cut": self.selected_alpha,
+                    "Core": self.selected_support,
+                }
+
+                selected_option = next(
+                    (opt for opt in ["Support", "0.5-cut", "Core"] if opt in selected_options),
+                    None,
+                )
+                selected_volume = priority_map[selected_option]
+
+                # Step 1: filter the LAB points inside the selected volume.
+                update_progress(1, 3)
+                self.filtered_points, volume_limits = self.color_manager.filter_points_with_threshold(
+                    selected_volume,
+                    threshold,
+                    step=0.25,
+                )
+
+                # Save the computed ranges as CSV.
+                csv_path = self.color_manager.create_csv(self.file_base_name, volume_limits, mode)
+                print(f"CSV saved in test_results/: {csv_path}")
+
+                # Step 2: prepare the plot refresh.
+                update_progress(2, 3)
+
+                def redraw_filtered_plot():
+                    """
+                    Refresh the existing embedded 3D figure with the filtered points.
+                    """
+                    self._init_3d_canvas()
+
+                    VisualManager.plot_combined_3D(
+                        self.ax_3d,
+                        self.file_base_name,
+                        self.selected_centroids,
+                        self.selected_core,
+                        self.selected_alpha,
+                        self.selected_support,
+                        self.volume_limits,
+                        self.hex_color,
+                        selected_options,
+                        self.filtered_points,
+                    )
+
+                    self.graph_widget.draw()
+
+                    if hasattr(self, "lab_value_frame"):
+                        self.lab_value_frame.lift()
+
+                # Step 3: redraw the figure on the Tkinter main thread.
+                update_progress(3, 3)
+                self.root.after(0, redraw_filtered_plot)
+
+            except Exception as e:
+                self.root.after(
+                    0,
+                    lambda: self.custom_warning("Error", f"An error occurred while filtering points: {e}")
+                )
+            finally:
+                self.root.after(0, self.hide_loading)
+
+        # Run the expensive filtering process in a background thread.
+        threading.Thread(target=run_threshold_process, daemon=True).start()
+
+
+
+    def deploy_at(self):
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
+            )
+            return
+        self.get_umbral_points(1.8, mode="AT")
+
+    def deploy_pt(self):
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
+            )
+            return
+        self.get_umbral_points(0.8, mode="PT")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -5994,6 +6128,770 @@ class PyFCSApp:
     # ============================================================================================================================================================
     #  FUNCTIONS DISPLAY PIXEL INFO
     # ============================================================================================================================================================
+    def _ensure_threshold_settings(self):
+        """Ensure the shared threshold configuration exists."""
+        if not hasattr(self, "threshold_settings"):
+            self.threshold_settings = {
+                "metric": "CIEDE2000",
+                "mode": "default",           # default | custom
+                "preset": "pt_at",           # pt | at | pt_at
+                "custom_type": "single",     # single | lower_upper
+                "single": 1.0,
+                "lower": 0.8,
+                "upper": 1.8,
+            }
+
+
+    def _apply_color_evaluation_result_style(self, vars_dict, status):
+        """Apply the shared threshold result visual style to the Color Evaluation result card."""
+        refs = vars_dict.get("analysis_result_refs")
+        if not refs:
+            return
+
+        self._apply_threshold_result_style(refs, status)
+
+
+    def _update_color_evaluation_result_card(self, vars_dict, title, detail="", summary="", status="neutral"):
+        """Update the styled result card used in the Color Evaluation panel."""
+        vars_dict["selected_result_var"].set(title)
+        vars_dict["selected_detail_var"].set(detail)
+        vars_dict["selected_summary_var"].set(summary)
+
+        self._apply_color_evaluation_result_style(vars_dict, status)
+
+
+    def _get_threshold_display_maps(self):
+        """Return display maps used by all threshold UIs."""
+        preset_display_map = {
+            "pt": "Perceptibility Threshold",
+            "at": "Acceptability Threshold",
+            "pt_at": "Perceptibility + Acceptability"
+        }
+        custom_type_display_map = {
+            "single": "Single threshold",
+            "lower_upper": "Lower and upper thresholds"
+        }
+        return preset_display_map, custom_type_display_map
+
+
+    def _get_threshold_reverse_maps(self):
+        """Return reverse display maps used by all threshold UIs."""
+        preset_display_map, custom_type_display_map = self._get_threshold_display_maps()
+        return (
+            {v: k for k, v in preset_display_map.items()},
+            {v: k for k, v in custom_type_display_map.items()}
+        )
+
+
+    def _create_shared_threshold_vars(self):
+        """Create the threshold-related Tk variables shared by all windows."""
+        self._ensure_threshold_settings()
+
+        preset_display_map, custom_type_display_map = self._get_threshold_display_maps()
+
+        saved_mode = self.threshold_settings.get("mode", "default")
+        if saved_mode == "known":
+            saved_mode = "default"
+
+        return {
+            "threshold_metric_var": tk.StringVar(
+                value=self.threshold_settings.get("metric", "CIEDE2000")
+            ),
+            "threshold_mode_var": tk.StringVar(value=saved_mode),
+            "threshold_preset_var": tk.StringVar(
+                value=preset_display_map.get(
+                    self.threshold_settings.get("preset", "pt_at"),
+                    "Perceptibility + Acceptability"
+                )
+            ),
+            "threshold_custom_type_var": tk.StringVar(
+                value=custom_type_display_map.get(
+                    self.threshold_settings.get("custom_type", "single"),
+                    "Single threshold"
+                )
+            ),
+            "threshold_single_var": tk.StringVar(
+                value="" if self.threshold_settings.get("single") is None
+                else str(self.threshold_settings.get("single"))
+            ),
+            "threshold_lower_var": tk.StringVar(
+                value="" if self.threshold_settings.get("lower") is None
+                else str(self.threshold_settings.get("lower"))
+            ),
+            "threshold_upper_var": tk.StringVar(
+                value="" if self.threshold_settings.get("upper") is None
+                else str(self.threshold_settings.get("upper"))
+            ),
+            "config_hint_var": tk.StringVar(value=""),
+
+            # Result-style block
+            "threshold_result_title_var": tk.StringVar(value=""),
+            "threshold_result_detail_var": tk.StringVar(value=""),
+            "threshold_result_summary_var": tk.StringVar(value=""),
+
+            # Summary-style block
+            "threshold_summary_title_var": tk.StringVar(value=""),
+            "threshold_summary_detail_var": tk.StringVar(value=""),
+            "threshold_summary_extra_var": tk.StringVar(value=""),
+        }
+
+
+    def _merge_threshold_vars(self, target_dict):
+        """Inject shared threshold vars into an existing vars dict."""
+        shared = self._create_shared_threshold_vars()
+        target_dict.update(shared)
+        return target_dict
+
+
+    def _sync_threshold_settings_from_vars(self, vars_dict):
+        """Persist threshold UI values into self.threshold_settings."""
+        preset_reverse_map, custom_type_reverse_map = self._get_threshold_reverse_maps()
+
+        mode_value = vars_dict["threshold_mode_var"].get().strip().lower()
+        if mode_value == "known":
+            mode_value = "default"
+
+        selected_preset_display = vars_dict["threshold_preset_var"].get().strip()
+        selected_custom_type_display = vars_dict["threshold_custom_type_var"].get().strip()
+
+        single_text = vars_dict["threshold_single_var"].get().strip()
+        lower_text = vars_dict["threshold_lower_var"].get().strip()
+        upper_text = vars_dict["threshold_upper_var"].get().strip()
+
+        self.threshold_settings["metric"] = vars_dict["threshold_metric_var"].get().strip()
+        self.threshold_settings["mode"] = mode_value
+        self.threshold_settings["preset"] = preset_reverse_map.get(selected_preset_display, "pt_at")
+        self.threshold_settings["custom_type"] = custom_type_reverse_map.get(selected_custom_type_display, "single")
+        self.threshold_settings["single"] = single_text if single_text != "" else None
+        self.threshold_settings["lower"] = lower_text if lower_text != "" else None
+        self.threshold_settings["upper"] = upper_text if upper_text != "" else None
+
+
+    def _hide_threshold_config_controls(self, refs):
+        """Hide all threshold config widgets before rebuilding the visible subset."""
+        for key in (
+            "preset_label", "preset_combo",
+            "custom_type_label", "custom_type_combo",
+            "single_label", "single_entry",
+            "lower_label", "lower_entry",
+            "upper_label", "upper_entry",
+            "config_hint_label",
+        ):
+            try:
+                refs[key].grid_remove()
+            except Exception:
+                pass
+
+
+    def _apply_threshold_result_style(self, threshold_refs, status):
+        """Apply the shared visual style used by threshold result cards."""
+        styles = {
+            "red": {
+                "body_bg": "#f8f2f2",
+                "header_bg": "#f2dede",
+                "border": "#b94a48",
+                "accent": "#b30000",
+                "separator": "#e7b6b6",
+            },
+            "yellow": {
+                "body_bg": "#fffaf0",
+                "header_bg": "#fcf8e3",
+                "border": "#c09853",
+                "accent": "#9a6b00",
+                "separator": "#ecd9a3",
+            },
+            "green": {
+                "body_bg": "#f3faf3",
+                "header_bg": "#dff0d8",
+                "border": "#468847",
+                "accent": "#2d6a2d",
+                "separator": "#b9d8b1",
+            },
+            "neutral": {
+                "body_bg": "#f7f7f7",
+                "header_bg": "#eeeeee",
+                "border": "#bdbdbd",
+                "accent": "#666666",
+                "separator": "#dddddd",
+            }
+        }
+
+        status_to_theme = {
+            "below_pt": "green",
+            "below_at": "green",
+            "below_custom": "green",
+            "below_lower": "green",
+            "between_pt_at": "yellow",
+            "between_custom": "yellow",
+            "above_pt": "red",
+            "above_at": "red",
+            "above_custom": "red",
+            "above_upper": "red",
+            "invalid": "neutral",
+            "unavailable": "neutral",
+            "unsupported_metric": "neutral",
+            "unknown_mode": "neutral",
+        }
+
+        theme_key = status_to_theme.get(status, "neutral")
+        theme = styles[theme_key]
+
+        if "result_card" not in threshold_refs:
+            return
+
+        try:
+            threshold_refs["result_card"].configure(
+                bg=theme["body_bg"],
+                highlightbackground=theme["border"],
+                highlightcolor=theme["border"]
+            )
+            threshold_refs["result_header"].configure(bg=theme["header_bg"])
+            threshold_refs["result_status_dot"].configure(bg=theme["header_bg"])
+            threshold_refs["result_title_label"].configure(bg=theme["header_bg"])
+            threshold_refs["result_value_label"].configure(bg=theme["body_bg"], fg=theme["accent"])
+            threshold_refs["result_separator"].configure(bg=theme["separator"])
+            threshold_refs["result_summary_row"].configure(bg=theme["body_bg"])
+            threshold_refs["result_summary_icon"].configure(bg=theme["body_bg"])
+            threshold_refs["result_body"].configure(bg=theme["body_bg"])
+            threshold_refs["result_summary_label"].configure(bg=theme["body_bg"])
+
+            threshold_refs["result_summary_icon"].itemconfig(
+                threshold_refs["result_summary_icon_circle"],
+                outline=theme["accent"]
+            )
+            threshold_refs["result_summary_icon"].itemconfig(
+                threshold_refs["result_summary_icon_text"],
+                fill=theme["accent"]
+            )
+            threshold_refs["result_status_dot"].itemconfig(
+                threshold_refs["result_status_dot_oval"],
+                fill=theme["border"],
+                outline=theme["border"]
+            )
+        except Exception:
+            pass
+
+
+    def _update_threshold_summary_text(self, vars_dict):
+        """Update the compact textual summary for threshold configuration."""
+        mode = self.threshold_settings.get("mode", "default")
+        if mode == "known":
+            mode = "default"
+
+        if mode == "default":
+            preset = self.threshold_settings.get("preset", "pt_at")
+            vars_dict["threshold_summary_title_var"].set("Default mode")
+
+            if preset == "pt":
+                vars_dict["threshold_summary_detail_var"].set("Preset: Perceptibility Threshold")
+                vars_dict["threshold_summary_extra_var"].set("PT = 0.800")
+            elif preset == "at":
+                vars_dict["threshold_summary_detail_var"].set("Preset: Acceptability Threshold")
+                vars_dict["threshold_summary_extra_var"].set("AT = 1.800")
+            else:
+                vars_dict["threshold_summary_detail_var"].set("Preset: Perceptibility + Acceptability")
+                vars_dict["threshold_summary_extra_var"].set("PT = 0.800 | AT = 1.800")
+            return
+
+        if mode == "custom":
+            custom_type = self.threshold_settings.get("custom_type", "single")
+            vars_dict["threshold_summary_title_var"].set("Custom mode")
+
+            if custom_type == "single":
+                vars_dict["threshold_summary_detail_var"].set("Configuration: Single threshold")
+                parsed, err = self._parse_positive_threshold(self.threshold_settings.get("single"))
+                if err:
+                    vars_dict["threshold_summary_extra_var"].set("Invalid threshold value.")
+                else:
+                    vars_dict["threshold_summary_extra_var"].set(f"Threshold = {parsed:.3f}")
+            else:
+                vars_dict["threshold_summary_detail_var"].set("Configuration: Lower and upper thresholds")
+                lower, upper, err = self._validate_custom_range(
+                    self.threshold_settings.get("lower"),
+                    self.threshold_settings.get("upper")
+                )
+                if err:
+                    vars_dict["threshold_summary_extra_var"].set("Invalid threshold range.")
+                else:
+                    vars_dict["threshold_summary_extra_var"].set(
+                        f"Lower = {lower:.3f} | Upper = {upper:.3f}"
+                    )
+            return
+
+        vars_dict["threshold_summary_title_var"].set("Unknown mode")
+        vars_dict["threshold_summary_detail_var"].set("")
+        vars_dict["threshold_summary_extra_var"].set("")
+
+
+    def _build_shared_threshold_panel(self, parent, vars_dict, title="Threshold", variant="result"):
+        """
+        Shared threshold UI builder.
+
+        variant:
+            - 'result'  -> like More Info (config + colored result card)
+            - 'summary' -> like Color Evaluation top block (config + textual summary)
+        """
+        threshold_panel = tk.Frame(parent, bg="white", bd=1, relief="solid")
+        threshold_panel.pack(fill="x", pady=(6, 0), anchor="n")
+
+        tk.Label(
+            threshold_panel,
+            text=title,
+            font=("Sans", 11, "bold"),
+            anchor="w",
+            bg="white",
+            padx=12,
+            pady=10
+        ).pack(fill="x")
+
+        threshold_body = tk.Frame(threshold_panel, bg="white")
+        threshold_body.pack(fill="x", padx=12, pady=(0, 10))
+
+        if variant == "result":
+            selection_w = 140
+            config_w = 370
+            result_w = 380
+
+            threshold_body.grid_columnconfigure(0, minsize=selection_w, weight=0)
+            threshold_body.grid_columnconfigure(1, minsize=1, weight=0)
+            threshold_body.grid_columnconfigure(2, minsize=config_w, weight=0)
+            threshold_body.grid_columnconfigure(3, minsize=1, weight=0)
+            threshold_body.grid_columnconfigure(4, minsize=result_w, weight=0)
+
+            section_selection = tk.Frame(threshold_body, bg="white", width=selection_w)
+            section_selection.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+            section_selection.grid_propagate(False)
+
+            tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=165).grid(
+                row=0, column=1, sticky="ns", padx=(0, 12), pady=2
+            )
+
+            section_config = tk.Frame(threshold_body, bg="white", width=config_w)
+            section_config.grid(row=0, column=2, sticky="nsw", padx=(0, 12))
+            section_config.grid_propagate(False)
+
+            tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=165).grid(
+                row=0, column=3, sticky="ns", padx=(0, 12), pady=2
+            )
+
+            section_output = tk.Frame(threshold_body, bg="white", width=result_w)
+            section_output.grid(row=0, column=4, sticky="nsw")
+            section_output.grid_propagate(False)
+            section_output.grid_columnconfigure(0, weight=1)
+            section_output.grid_rowconfigure(1, weight=1)
+
+        else:
+            selection_w = 160
+            config_w = 420
+
+            threshold_body.grid_columnconfigure(0, minsize=selection_w, weight=0)
+            threshold_body.grid_columnconfigure(1, minsize=1, weight=0)
+            threshold_body.grid_columnconfigure(2, minsize=config_w, weight=1)
+            threshold_body.grid_columnconfigure(3, minsize=1, weight=0)
+            threshold_body.grid_columnconfigure(4, weight=1)
+
+            section_selection = tk.Frame(threshold_body, bg="white", width=selection_w)
+            section_selection.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+            section_selection.grid_propagate(False)
+
+            tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=140).grid(
+                row=0, column=1, sticky="ns", padx=(0, 12), pady=2
+            )
+
+            section_config = tk.Frame(threshold_body, bg="white", width=config_w)
+            section_config.grid(row=0, column=2, sticky="nsew", padx=(0, 12))
+            section_config.grid_propagate(False)
+
+            tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=140).grid(
+                row=0, column=3, sticky="ns", padx=(0, 12), pady=2
+            )
+
+            section_output = tk.Frame(threshold_body, bg="white")
+            section_output.grid(row=0, column=4, sticky="nsew")
+
+        # Left: selection
+        tk.Label(
+            section_selection,
+            text="Metric",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 4))
+
+        metric_combo = ttk.Combobox(
+            section_selection,
+            textvariable=vars_dict["threshold_metric_var"],
+            state="readonly",
+            width=16 if variant == "result" else 18,
+            values=["CIEDE2000"]
+        )
+        metric_combo.pack(anchor="w", pady=(0, 10))
+
+        tk.Label(
+            section_selection,
+            text="Threshold Type",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 4))
+
+        mode_combo = ttk.Combobox(
+            section_selection,
+            textvariable=vars_dict["threshold_mode_var"],
+            state="readonly",
+            width=16 if variant == "result" else 18,
+            values=["default", "custom"]
+        )
+        mode_combo.pack(anchor="w")
+
+        # Center: config
+        tk.Label(
+            section_config,
+            text="Configuration",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        section_config.grid_columnconfigure(0, minsize=135, weight=0)
+        section_config.grid_columnconfigure(1, weight=1)
+
+        preset_label = tk.Label(section_config, text="Default preset:", bg="white", anchor="w")
+        preset_combo = ttk.Combobox(
+            section_config,
+            textvariable=vars_dict["threshold_preset_var"],
+            state="readonly",
+            width=34 if variant == "result" else 30,
+            values=[
+                "Perceptibility Threshold",
+                "Acceptability Threshold",
+                "Perceptibility + Acceptability"
+            ]
+        )
+
+        custom_type_label = tk.Label(section_config, text="Custom mode:", bg="white", anchor="w")
+        custom_type_combo = ttk.Combobox(
+            section_config,
+            textvariable=vars_dict["threshold_custom_type_var"],
+            state="readonly",
+            width=34 if variant == "result" else 30,
+            values=[
+                "Single threshold",
+                "Lower and upper thresholds"
+            ]
+        )
+
+        single_label = tk.Label(section_config, text="Threshold:", bg="white", anchor="w")
+        single_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_single_var"], width=12)
+
+        lower_label = tk.Label(section_config, text="Lower threshold:", bg="white", anchor="w")
+        lower_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_lower_var"], width=12)
+
+        upper_label = tk.Label(section_config, text="Upper threshold:", bg="white", anchor="w")
+        upper_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_upper_var"], width=12)
+
+        config_hint_label = tk.Label(
+            section_config,
+            textvariable=vars_dict["config_hint_var"],
+            bg="white",
+            fg="#666666",
+            anchor="w",
+            justify="left",
+            wraplength=340 if variant == "result" else 300,
+            font=("Sans", 9, "italic")
+        )
+
+        refs = {
+            "metric_combo": metric_combo,
+            "mode_combo": mode_combo,
+            "preset_label": preset_label,
+            "preset_combo": preset_combo,
+            "custom_type_label": custom_type_label,
+            "custom_type_combo": custom_type_combo,
+            "single_label": single_label,
+            "single_entry": single_entry,
+            "lower_label": lower_label,
+            "lower_entry": lower_entry,
+            "upper_label": upper_label,
+            "upper_entry": upper_entry,
+            "config_hint_label": config_hint_label,
+            "variant": variant,
+        }
+
+        # Right: output
+        if variant == "result":
+            results_title = tk.Label(
+                section_output,
+                text="Results",
+                font=("Sans", 10, "bold"),
+                anchor="w",
+                bg="white"
+            )
+            results_title.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+
+            result_card = tk.Frame(
+                section_output,
+                bg="#f7f7f7",
+                bd=0,
+                relief="flat",
+                highlightthickness=2,
+                highlightbackground="#bdbdbd",
+                highlightcolor="#bdbdbd"
+            )
+            result_card.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(0, 2))
+
+            result_header = tk.Frame(result_card, bg="#eeeeee")
+            result_header.pack(fill="x")
+
+            result_status_dot = tk.Canvas(
+                result_header,
+                width=18,
+                height=18,
+                bg="#eeeeee",
+                highlightthickness=0,
+                bd=0
+            )
+            result_status_dot.pack(side="left", padx=(10, 6), pady=8)
+            result_status_dot_oval = result_status_dot.create_oval(
+                3, 3, 15, 15, fill="#bdbdbd", outline="#bdbdbd"
+            )
+
+            result_title_label = tk.Label(
+                result_header,
+                textvariable=vars_dict["threshold_result_title_var"],
+                anchor="w",
+                justify="left",
+                bg="#eeeeee",
+                font=("Sans", 10, "bold"),
+                wraplength=300
+            )
+            result_title_label.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=8)
+
+            result_body = tk.Frame(result_card, bg="#f7f7f7")
+            result_body.pack(fill="x", padx=12, pady=(10, 12))
+
+            result_value_label = tk.Label(
+                result_body,
+                textvariable=vars_dict["threshold_result_detail_var"],
+                anchor="w",
+                justify="left",
+                bg="#f7f7f7",
+                fg="#666666",
+                font=("Sans", 9, "bold")
+            )
+            result_value_label.pack(anchor="w", fill="x", pady=(0, 12))
+
+            result_separator = tk.Frame(result_body, bg="#dddddd", height=2)
+            result_separator.pack(fill="x", padx=6, pady=(0, 10))
+
+            result_summary_row = tk.Frame(result_body, bg="#f7f7f7")
+            result_summary_row.pack(fill="x")
+
+            result_summary_icon = tk.Canvas(
+                result_summary_row,
+                width=20,
+                height=20,
+                bg="#f7f7f7",
+                highlightthickness=0,
+                bd=0
+            )
+            result_summary_icon.pack(side="left", padx=(0, 8), anchor="n")
+
+            icon_circle = result_summary_icon.create_oval(2, 2, 18, 18, outline="#666666", width=2)
+            icon_text = result_summary_icon.create_text(10, 10, text="!", fill="#666666", font=("Sans", 9, "bold"))
+
+            result_text_container = tk.Frame(result_summary_row, bg="#f7f7f7")
+            result_text_container.pack(side="left", fill="both", expand=True)
+
+            result_summary_label = tk.Label(
+                result_text_container,
+                textvariable=vars_dict["threshold_result_summary_var"],
+                anchor="w",
+                justify="left",
+                bg="#f7f7f7",
+                wraplength=260,
+                font=("Sans", 8)
+            )
+            result_summary_label.pack(anchor="w", fill="x")
+
+            def _update_result_wrap(event=None):
+                try:
+                    result_width = max(section_output.winfo_width() - 30, 180)
+                    title_wrap = max(result_width - 55, 120)
+                    summary_wrap = max(result_width - 70, 120)
+                    result_title_label.config(wraplength=title_wrap)
+                    result_summary_label.config(wraplength=summary_wrap)
+                except Exception:
+                    pass
+
+            section_output.bind("<Configure>", _update_result_wrap)
+
+            refs.update({
+                "result_card": result_card,
+                "result_header": result_header,
+                "result_status_dot": result_status_dot,
+                "result_status_dot_oval": result_status_dot_oval,
+                "result_title_label": result_title_label,
+                "result_body": result_body,
+                "result_value_label": result_value_label,
+                "result_separator": result_separator,
+                "result_summary_row": result_summary_row,
+                "result_summary_icon": result_summary_icon,
+                "result_summary_icon_circle": icon_circle,
+                "result_summary_icon_text": icon_text,
+                "result_summary_label": result_summary_label,
+            })
+
+        else:
+            tk.Label(
+                section_output,
+                text="Current Threshold Summary",
+                font=("Sans", 10, "bold"),
+                anchor="w",
+                bg="white"
+            ).pack(anchor="w", pady=(0, 8))
+
+            tk.Label(
+                section_output,
+                textvariable=vars_dict["threshold_summary_title_var"],
+                anchor="w",
+                justify="left",
+                bg="white",
+                font=("Sans", 10, "bold"),
+                wraplength=320
+            ).pack(anchor="w", fill="x", pady=(0, 6))
+
+            tk.Label(
+                section_output,
+                textvariable=vars_dict["threshold_summary_detail_var"],
+                anchor="w",
+                justify="left",
+                bg="white",
+                wraplength=320
+            ).pack(anchor="w", fill="x", pady=(0, 6))
+
+            tk.Label(
+                section_output,
+                textvariable=vars_dict["threshold_summary_extra_var"],
+                anchor="w",
+                justify="left",
+                bg="white",
+                wraplength=320
+            ).pack(anchor="w", fill="x")
+
+        return refs
+
+
+    def _refresh_shared_threshold_ui(self, vars_dict, refs, proto_lab=None, sample_lab=None):
+        """
+        Shared refresh for threshold controls.
+
+        - For variant='summary': updates the summary texts only.
+        - For variant='result': updates config + evaluation result card.
+        """
+        self._sync_threshold_settings_from_vars(vars_dict)
+        self._hide_threshold_config_controls(refs)
+
+        mode_value = self.threshold_settings.get("mode", "default")
+        custom_type = self.threshold_settings.get("custom_type", "single")
+
+        single_text = vars_dict["threshold_single_var"].get().strip()
+        lower_text = vars_dict["threshold_lower_var"].get().strip()
+        upper_text = vars_dict["threshold_upper_var"].get().strip()
+
+        if mode_value == "default":
+            refs["preset_label"].grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+            refs["preset_combo"].grid(row=1, column=1, sticky="ew", pady=(0, 6))
+
+            vars_dict["config_hint_var"].set(
+                "Use predefined perceptibility and/or acceptability thresholds."
+            )
+            refs["config_hint_label"].grid(
+                row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0)
+            )
+
+        elif mode_value == "custom":
+            refs["custom_type_label"].grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+            refs["custom_type_combo"].grid(row=1, column=1, sticky="ew", pady=(0, 6))
+
+            if custom_type == "single":
+                refs["single_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+                refs["single_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
+
+                vars_dict["config_hint_var"].set("Define one threshold greater than 0.")
+                if single_text == "":
+                    vars_dict["config_hint_var"].set("Enter a threshold greater than 0.")
+                else:
+                    _, err_single = self._parse_positive_threshold(single_text)
+                    if err_single:
+                        vars_dict["config_hint_var"].set(err_single)
+
+                refs["config_hint_label"].grid(
+                    row=3, column=0, columnspan=2, sticky="ew", pady=(2, 0)
+                )
+
+            else:
+                refs["lower_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+                refs["lower_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
+                refs["upper_label"].grid(row=3, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+                refs["upper_entry"].grid(row=3, column=1, sticky="w", pady=(0, 6))
+
+                vars_dict["config_hint_var"].set(
+                    "Define two thresholds greater than 0, with lower < upper."
+                )
+                if lower_text == "" or upper_text == "":
+                    vars_dict["config_hint_var"].set(
+                        "Enter both thresholds. Values must be greater than 0."
+                    )
+                else:
+                    _, _, err_range = self._validate_custom_range(lower_text, upper_text)
+                    if err_range:
+                        vars_dict["config_hint_var"].set(err_range)
+
+                refs["config_hint_label"].grid(
+                    row=4, column=0, columnspan=2, sticky="ew", pady=(2, 0)
+                )
+        else:
+            vars_dict["config_hint_var"].set("")
+
+        if refs.get("variant") == "summary":
+            self._update_threshold_summary_text(vars_dict)
+            return
+
+        if proto_lab is None or sample_lab is None:
+            vars_dict["threshold_result_title_var"].set("Select a prototype to evaluate")
+            vars_dict["threshold_result_detail_var"].set("")
+            vars_dict["threshold_result_summary_var"].set("")
+            self._apply_threshold_result_style(refs, "unavailable")
+            return
+
+        evaluation = self.evaluate_color_difference_threshold(
+            sample_lab=sample_lab,
+            prototype_lab=proto_lab,
+            metric=self.threshold_settings.get("metric", "CIEDE2000"),
+            threshold_settings=self.threshold_settings
+        )
+
+        delta_e_value = evaluation.get("delta_e")
+        status = evaluation.get("status", "unavailable")
+
+        if delta_e_value is None:
+            vars_dict["threshold_result_title_var"].set("ΔE not available")
+            vars_dict["threshold_result_detail_var"].set("Unable to compute color difference")
+            vars_dict["threshold_result_summary_var"].set(evaluation.get("summary", ""))
+            self._apply_threshold_result_style(refs, status)
+            return
+
+        vars_dict["threshold_result_title_var"].set(
+            evaluation.get("evaluation", "No evaluation available")
+        )
+        vars_dict["threshold_result_detail_var"].set(f"ΔE00 = {delta_e_value:.3f}")
+        vars_dict["threshold_result_summary_var"].set(
+            evaluation.get("summary_visual", evaluation.get("summary", ""))
+        )
+        self._apply_threshold_result_style(refs, status)
+
+
 
     def _enable_original_rectangle_sampling(self, window_id, target_w, target_h):
         """
@@ -6417,6 +7315,8 @@ class PyFCSApp:
             messagebox.showinfo("More Info", "Click on an image pixel first.")
             return
 
+        self._ensure_threshold_settings()
+
         # Close any previous More Info window first
         self._close_more_info_window()
 
@@ -6469,21 +7369,8 @@ class PyFCSApp:
         Build the full 'More Info' window UI and wire all interactions.
         Returns a dictionary with relevant UI references.
         """
-        # ---------------------------
-        # Base data
-        # ---------------------------
         base_data = self._get_more_info_base_data(info)
-
-        if not hasattr(self, "threshold_settings"):
-            self.threshold_settings = {
-                "metric": "CIEDE2000",
-                "mode": "default",                   # default | custom
-                "preset": "pt_at",                   # pt | at | pt_at
-                "custom_type": "single",             # single | lower_upper
-                "single": 1.0,
-                "lower": 0.8,
-                "upper": 1.8,
-            }
+        self._ensure_threshold_settings()
 
         vars_dict = self._create_more_info_vars(base_data)
 
@@ -6608,59 +7495,16 @@ class PyFCSApp:
 
     def _create_more_info_vars(self, base_data):
         """Create and return all Tk variables used by the More Info window."""
-        preset_display_map = {
-            "pt": "Perceptibility Threshold",
-            "at": "Acceptability Threshold",
-            "pt_at": "Perceptibility + Acceptability"
-        }
-
-        custom_type_display_map = {
-            "single": "Single threshold",
-            "lower_upper": "Lower and upper thresholds"
-        }
-
-        saved_mode = self.threshold_settings.get("mode", "known")
-        display_mode = "default" if saved_mode == "known" else saved_mode
-
-        return {
+        vars_dict = {
             "selected_label_var": tk.StringVar(
                 value=base_data["winner_label"] if base_data["winner_label"] != "None" else ""
             ),
             "selected_rgb_var": tk.StringVar(value=""),
             "selected_hex_var": tk.StringVar(value=""),
             "selected_lab_var": tk.StringVar(value=""),
-
-            "threshold_metric_var": tk.StringVar(
-                value=self.threshold_settings.get("metric", "CIEDE2000")
-            ),
-            "threshold_mode_var": tk.StringVar(value=display_mode),
-            "threshold_preset_var": tk.StringVar(
-                value=preset_display_map.get(
-                    self.threshold_settings.get("preset", "pt_at"),
-                    "Perceptibility + Acceptability"
-                )
-            ),
-            "threshold_lower_var": tk.StringVar(
-                value=str(self.threshold_settings.get("lower", 0.8))
-            ),
-            "threshold_upper_var": tk.StringVar(
-                value=str(self.threshold_settings.get("upper", 1.8))
-            ),
-            "threshold_custom_type_var": tk.StringVar(
-                value=custom_type_display_map.get(
-                    self.threshold_settings.get("custom_type", "single"),
-                    "Single threshold"
-                )
-            ),
-            "threshold_single_var": tk.StringVar(
-                value=str(self.threshold_settings.get("single", 1.0))
-            ),
-
-            "threshold_result_title_var": tk.StringVar(value=""),
-            "threshold_result_detail_var": tk.StringVar(value=""),
-            "threshold_result_summary_var": tk.StringVar(value=""),
-            "config_hint_var": tk.StringVar(value=""),
         }
+
+        return self._merge_threshold_vars(vars_dict)
 
 
     def _build_more_info_header(self, parent, base_data):
@@ -6962,301 +7806,18 @@ class PyFCSApp:
 
 
     def _build_more_info_threshold_panel(self, parent, vars_dict):
-        """Build the threshold panel and return all relevant controls."""
-        threshold_panel = tk.Frame(parent, bg="white", bd=1, relief="solid")
-        threshold_panel.pack(fill="x", pady=(6, 0), anchor="n")
-
-        tk.Label(
-            threshold_panel,
-            text="Threshold",
-            font=("Sans", 11, "bold"),
-            anchor="w",
-            bg="white",
-            padx=12,
-            pady=10
-        ).pack(fill="x")
-
-        threshold_body = tk.Frame(threshold_panel, bg="white")
-        threshold_body.pack(fill="x", padx=12, pady=(0, 10))
-
-        # =========================================================
-        # Fixed layout widths
-        # =========================================================
-        selection_w = 140
-        config_w = 370
-        result_w = 380
-
-        threshold_body.grid_columnconfigure(0, minsize=selection_w, weight=0)
-        threshold_body.grid_columnconfigure(1, minsize=1, weight=0)
-        threshold_body.grid_columnconfigure(2, minsize=config_w, weight=0)
-        threshold_body.grid_columnconfigure(3, minsize=1, weight=0)
-        threshold_body.grid_columnconfigure(4, minsize=result_w, weight=0)
-
-        # ---------------------------
-        # Left: selection
-        # ---------------------------
-        section_selection = tk.Frame(threshold_body, bg="white", width=selection_w)
-        section_selection.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
-        section_selection.grid_propagate(False)
-
-        sep_1 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=165)
-        sep_1.grid(row=0, column=1, sticky="ns", padx=(0, 12), pady=2)
-
-        # ---------------------------
-        # Center: configuration
-        # ---------------------------
-        section_config = tk.Frame(threshold_body, bg="white", width=config_w)
-        section_config.grid(row=0, column=2, sticky="nsw", padx=(0, 12))
-        section_config.grid_propagate(False)
-
-        sep_2 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=165)
-        sep_2.grid(row=0, column=3, sticky="ns", padx=(0, 12), pady=2)
-
-        # ---------------------------
-        # Right: results
-        # ---------------------------
-        section_result = tk.Frame(threshold_body, bg="white", width=result_w)
-        section_result.grid(row=0, column=4, sticky="nsw")
-        section_result.grid_propagate(False)
-        section_result.grid_columnconfigure(0, weight=1)
-        section_result.grid_rowconfigure(1, weight=1)
-
-        # ===== Selection =====
-        tk.Label(
-            section_selection,
-            text="Metric",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white"
-        ).pack(anchor="w", pady=(0, 4))
-
-        metric_combo = ttk.Combobox(
-            section_selection,
-            textvariable=vars_dict["threshold_metric_var"],
-            state="readonly",
-            width=16,
-            values=["CIEDE2000"]
+        """Build the shared threshold panel for More Info."""
+        return self._build_shared_threshold_panel(
+            parent=parent,
+            vars_dict=vars_dict,
+            title="Threshold",
+            variant="result"
         )
-        metric_combo.pack(anchor="w", pady=(0, 10))
-
-        tk.Label(
-            section_selection,
-            text="Threshold Type",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white"
-        ).pack(anchor="w", pady=(0, 4))
-
-        mode_combo = ttk.Combobox(
-            section_selection,
-            textvariable=vars_dict["threshold_mode_var"],
-            state="readonly",
-            width=16,
-            values=["default", "custom"]
-        )
-        mode_combo.pack(anchor="w")
-
-        # ===== Configuration =====
-        tk.Label(
-            section_config,
-            text="Configuration",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white"
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-
-        section_config.grid_columnconfigure(0, minsize=135, weight=0)
-        section_config.grid_columnconfigure(1, minsize=config_w - 155, weight=0)
-
-        preset_label = tk.Label(section_config, text="Default preset:", bg="white", anchor="w")
-        preset_combo = ttk.Combobox(
-            section_config,
-            textvariable=vars_dict["threshold_preset_var"],
-            state="readonly",
-            width=34,
-            values=[
-                "Perceptibility Threshold",
-                "Acceptability Threshold",
-                "Perceptibility + Acceptability"
-            ]
-        )
-
-        custom_type_label = tk.Label(section_config, text="Custom mode:", bg="white", anchor="w")
-        custom_type_combo = ttk.Combobox(
-            section_config,
-            textvariable=vars_dict["threshold_custom_type_var"],
-            state="readonly",
-            width=34,
-            values=[
-                "Single threshold",
-                "Lower and upper thresholds"
-            ]
-        )
-
-        single_label = tk.Label(section_config, text="Threshold:", bg="white", anchor="w")
-        single_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_single_var"], width=12)
-
-        lower_label = tk.Label(section_config, text="Lower threshold:", bg="white", anchor="w")
-        lower_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_lower_var"], width=12)
-
-        upper_label = tk.Label(section_config, text="Upper threshold:", bg="white", anchor="w")
-        upper_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_upper_var"], width=12)
-
-        config_hint_label = tk.Label(
-            section_config,
-            textvariable=vars_dict["config_hint_var"],
-            bg="white",
-            fg="#666666",
-            anchor="w",
-            justify="left",
-            wraplength=config_w - 20,
-            font=("Sans", 9, "italic")
-        )
-
-        # ===== Results =====
-        results_title = tk.Label(
-            section_result,
-            text="Results",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white"
-        )
-        results_title.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-
-        result_card = tk.Frame(
-            section_result,
-            bg="#f8f2f2",
-            bd=0,
-            relief="flat",
-            highlightthickness=2,
-            highlightbackground="#b94a48",
-            highlightcolor="#b94a48"
-        )
-        result_card.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(0, 2))
-
-        result_header = tk.Frame(result_card, bg="#f2dede")
-        result_header.pack(fill="x")
-
-        result_status_dot = tk.Canvas(
-            result_header,
-            width=18,
-            height=18,
-            bg="#f2dede",
-            highlightthickness=0,
-            bd=0
-        )
-        result_status_dot.pack(side="left", padx=(10, 6), pady=8)
-        result_status_dot_oval = result_status_dot.create_oval(3, 3, 15, 15, fill="#b94a48", outline="#b94a48")
-
-        result_title_label = tk.Label(
-            result_header,
-            textvariable=vars_dict["threshold_result_title_var"],
-            anchor="w",
-            justify="left",
-            bg="#f2dede",
-            font=("Sans", 10, "bold"),
-            wraplength=result_w - 65
-        )
-        result_title_label.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=8)
-
-        result_body = tk.Frame(result_card, bg="#f8f2f2")
-        result_body.pack(fill="x", padx=12, pady=(10, 12))
-
-        result_value_label = tk.Label(
-            result_body,
-            textvariable=vars_dict["threshold_result_detail_var"],
-            anchor="w",
-            justify="left",
-            bg="#f8f2f2",
-            fg="#b30000",
-            font=("Sans", 9, "bold")
-        )
-        result_value_label.pack(anchor="w", fill="x", pady=(0, 12))
-
-        result_separator = tk.Frame(
-            result_body,
-            bg="#e7b6b6",
-            height=2
-        )
-        result_separator.pack(fill="x", padx=6, pady=(0, 10))
-
-        result_summary_row = tk.Frame(result_body, bg="#f8f2f2")
-        result_summary_row.pack(fill="x")
-
-        result_summary_icon = tk.Canvas(
-            result_summary_row,
-            width=20,
-            height=20,
-            bg="#f8f2f2",
-            highlightthickness=0,
-            bd=0
-        )
-        result_summary_icon.pack(side="left", padx=(0, 8), anchor="n")
-
-        icon_circle = result_summary_icon.create_oval(2, 2, 18, 18, outline="#b30000", width=2)
-        icon_text = result_summary_icon.create_text(10, 10, text="!", fill="#b30000", font=("Sans", 9, "bold"))
-
-        result_text_container = tk.Frame(result_summary_row, bg="#f8f2f2")
-        result_text_container.pack(side="left", fill="both", expand=True)
-
-        result_summary_label = tk.Label(
-            result_text_container,
-            textvariable=vars_dict["threshold_result_summary_var"],
-            anchor="w",
-            justify="left",
-            bg="#f8f2f2",
-            wraplength=260,
-            font=("Sans", 8)
-        )
-        result_summary_label.pack(anchor="w", fill="x")
-
-        def _update_result_wrap(event=None):
-            try:
-                result_width = max(section_result.winfo_width() - 30, 180)
-                title_wrap = max(result_width - 55, 120)
-                summary_wrap = max(result_width - 70, 120)
-
-                result_title_label.config(wraplength=title_wrap)
-                result_summary_label.config(wraplength=summary_wrap)
-            except Exception:
-                pass
-
-        section_result.bind("<Configure>", _update_result_wrap)
-
-        return {
-            "metric_combo": metric_combo,
-            "mode_combo": mode_combo,
-            "preset_label": preset_label,
-            "preset_combo": preset_combo,
-            "custom_type_label": custom_type_label,
-            "custom_type_combo": custom_type_combo,
-            "single_label": single_label,
-            "single_entry": single_entry,
-            "lower_label": lower_label,
-            "lower_entry": lower_entry,
-            "upper_label": upper_label,
-            "upper_entry": upper_entry,
-            "config_hint_label": config_hint_label,
-
-            "result_card": result_card,
-            "result_header": result_header,
-            "result_status_dot": result_status_dot,
-            "result_status_dot_oval": result_status_dot_oval,
-            "result_title_label": result_title_label,
-            "result_body": result_body,
-            "result_value_label": result_value_label,
-            "result_separator": result_separator,
-            "result_summary_row": result_summary_row,
-            "result_summary_icon": result_summary_icon,
-            "result_summary_icon_circle": icon_circle,
-            "result_summary_icon_text": icon_text,
-            "result_summary_label": result_summary_label,
-        }
 
 
 
     def _populate_more_info_memberships(self, base_data, vars_dict, refs):
-        """Populate memberships list and wire row selection + threshold refresh."""
+        """Populate memberships list and wire row selection + shared threshold refresh."""
         membership_refs = refs["membership_refs"]
         prototype_refs = refs["prototype_refs"]
         threshold_refs = refs["threshold_refs"]
@@ -7265,255 +7826,27 @@ class PyFCSApp:
         list_inner = membership_refs["list_inner"]
 
         memberships = base_data["memberships"]
-        lab = base_data["lab"]
-
-        preset_display_map = {
-            "pt": "Perceptibility Threshold",
-            "at": "Acceptability Threshold",
-            "pt_at": "Perceptibility + Acceptability"
-        }
-        preset_reverse_map = {v: k for k, v in preset_display_map.items()}
-
-        custom_type_display_map = {
-            "single": "Single threshold",
-            "lower_upper": "Lower and upper thresholds"
-        }
-        custom_type_reverse_map = {v: k for k, v in custom_type_display_map.items()}
+        sample_lab = base_data["lab"]
 
         def highlight_selected_row(active_label):
             for lbl, row in membership_rows.items():
-                if lbl == active_label:
-                    row.configure(bg="#e8f0ff")
-                    for child in row.winfo_children():
-                        try:
-                            child.configure(bg="#e8f0ff")
-                        except Exception:
-                            pass
-                else:
-                    row.configure(bg="white")
-                    for child in row.winfo_children():
-                        try:
-                            child.configure(bg="white")
-                        except Exception:
-                            pass
-
-        def apply_result_style(status):
-            styles = {
-                "red": {
-                    "body_bg": "#f8f2f2",
-                    "header_bg": "#f2dede",
-                    "border": "#b94a48",
-                    "accent": "#b30000",
-                    "separator": "#e7b6b6",
-                },
-                "yellow": {
-                    "body_bg": "#fffaf0",
-                    "header_bg": "#fcf8e3",
-                    "border": "#c09853",
-                    "accent": "#9a6b00",
-                    "separator": "#ecd9a3",
-                },
-                "green": {
-                    "body_bg": "#f3faf3",
-                    "header_bg": "#dff0d8",
-                    "border": "#468847",
-                    "accent": "#2d6a2d",
-                    "separator": "#b9d8b1",
-                },
-                "neutral": {
-                    "body_bg": "#f7f7f7",
-                    "header_bg": "#eeeeee",
-                    "border": "#bdbdbd",
-                    "accent": "#666666",
-                    "separator": "#dddddd",
-                }
-            }
-
-            status_to_theme = {
-                "below_pt": "green",
-                "below_at": "green",
-                "below_custom": "green",
-                "below_lower": "green",
-
-                "between_pt_at": "yellow",
-                "between_custom": "yellow",
-
-                "above_pt": "red",
-                "above_at": "red",
-                "above_custom": "red",
-                "above_upper": "red",
-
-                "invalid": "neutral",
-                "unavailable": "neutral",
-                "unsupported_metric": "neutral",
-                "unknown_mode": "neutral",
-            }
-
-            theme_key = status_to_theme.get(status, "neutral")
-            theme = styles[theme_key]
-
-            try:
-                threshold_refs["result_card"].configure(
-                    bg=theme["body_bg"],
-                    highlightbackground=theme["border"],
-                    highlightcolor=theme["border"]
-                )
-                threshold_refs["result_header"].configure(bg=theme["header_bg"])
-                threshold_refs["result_status_dot"].configure(bg=theme["header_bg"])
-                threshold_refs["result_title_label"].configure(bg=theme["header_bg"])
-                threshold_refs["result_value_label"].configure(bg=theme["body_bg"], fg=theme["accent"])
-                threshold_refs["result_separator"].configure(bg=theme["separator"])
-                threshold_refs["result_summary_row"].configure(bg=theme["body_bg"])
-                threshold_refs["result_summary_icon"].configure(bg=theme["body_bg"])
-                threshold_refs["result_body"].configure(bg=theme["body_bg"])
-                threshold_refs["result_summary_icon"].itemconfig(
-                    threshold_refs["result_summary_icon_circle"],
-                    outline=theme["accent"]
-                )
-                threshold_refs["result_summary_icon"].itemconfig(
-                    threshold_refs["result_summary_icon_text"],
-                    fill=theme["accent"]
-                )
-                threshold_refs["result_summary_label"].configure(bg=theme["body_bg"])
-
-                threshold_refs["result_status_dot"].itemconfig(
-                    threshold_refs["result_status_dot_oval"],
-                    fill=theme["border"],
-                    outline=theme["border"]
-                )
-            except Exception:
-                pass
+                bg = "#e8f0ff" if lbl == active_label else "white"
+                row.configure(bg=bg)
+                for child in row.winfo_children():
+                    try:
+                        child.configure(bg=bg)
+                    except Exception:
+                        pass
 
         def refresh_threshold_section(proto_lab=None):
-            mode_value = vars_dict["threshold_mode_var"].get().strip().lower()
-            internal_mode = "known" if mode_value == "default" else mode_value
-
-            selected_preset_display = vars_dict["threshold_preset_var"].get().strip()
-            selected_preset_key = preset_reverse_map.get(selected_preset_display, "pt_at")
-
-            selected_custom_type_display = vars_dict["threshold_custom_type_var"].get().strip()
-            selected_custom_type_key = custom_type_reverse_map.get(selected_custom_type_display, "single")
-
-            single_text = vars_dict["threshold_single_var"].get().strip()
-            lower_text = vars_dict["threshold_lower_var"].get().strip()
-            upper_text = vars_dict["threshold_upper_var"].get().strip()
-
-            self.threshold_settings["metric"] = vars_dict["threshold_metric_var"].get().strip()
-            self.threshold_settings["mode"] = internal_mode
-            self.threshold_settings["preset"] = selected_preset_key
-            self.threshold_settings["custom_type"] = selected_custom_type_key
-
-            self.threshold_settings["single"] = single_text if single_text != "" else None
-            self.threshold_settings["lower"] = lower_text if lower_text != "" else None
-            self.threshold_settings["upper"] = upper_text if upper_text != "" else None
-
-            threshold_refs["preset_label"].grid_remove()
-            threshold_refs["preset_combo"].grid_remove()
-            threshold_refs["custom_type_label"].grid_remove()
-            threshold_refs["custom_type_combo"].grid_remove()
-            threshold_refs["single_label"].grid_remove()
-            threshold_refs["single_entry"].grid_remove()
-            threshold_refs["lower_label"].grid_remove()
-            threshold_refs["lower_entry"].grid_remove()
-            threshold_refs["upper_label"].grid_remove()
-            threshold_refs["upper_entry"].grid_remove()
-            threshold_refs["config_hint_label"].grid_remove()
-
-            if mode_value == "default":
-                threshold_refs["preset_label"].grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-                threshold_refs["preset_combo"].grid(row=1, column=1, sticky="ew", pady=(0, 6))
-
-                vars_dict["config_hint_var"].set(
-                    "Use predefined perceptibility and/or acceptability thresholds."
-                )
-                threshold_refs["config_hint_label"].grid(
-                    row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0)
-                )
-
-            elif mode_value == "custom":
-                threshold_refs["custom_type_label"].grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-                threshold_refs["custom_type_combo"].grid(row=1, column=1, sticky="ew", pady=(0, 6))
-
-                if selected_custom_type_key == "single":
-                    threshold_refs["single_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-                    threshold_refs["single_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
-
-                    vars_dict["config_hint_var"].set("Define one threshold greater than 0.")
-
-                    if single_text == "":
-                        vars_dict["config_hint_var"].set("Enter a threshold greater than 0.")
-                    else:
-                        _, err_single = self._parse_positive_threshold(single_text)
-                        if err_single:
-                            vars_dict["config_hint_var"].set(err_single)
-
-                    threshold_refs["config_hint_label"].grid(
-                        row=3, column=0, columnspan=2, sticky="ew", pady=(2, 0)
-                    )
-
-                else:
-                    threshold_refs["lower_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-                    threshold_refs["lower_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
-                    threshold_refs["upper_label"].grid(row=3, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-                    threshold_refs["upper_entry"].grid(row=3, column=1, sticky="w", pady=(0, 6))
-
-                    vars_dict["config_hint_var"].set(
-                        "Define two thresholds greater than 0, with lower < upper."
-                    )
-
-                    if lower_text == "" or upper_text == "":
-                        vars_dict["config_hint_var"].set(
-                            "Enter both thresholds. Values must be greater than 0."
-                        )
-                    else:
-                        _, _, err_range = self._validate_custom_range(lower_text, upper_text)
-                        if err_range:
-                            vars_dict["config_hint_var"].set(err_range)
-
-                    threshold_refs["config_hint_label"].grid(
-                        row=4, column=0, columnspan=2, sticky="ew", pady=(2, 0)
-                    )
-
-            else:
-                vars_dict["config_hint_var"].set("")
-
-            if proto_lab is None:
-                vars_dict["threshold_result_title_var"].set("Select a prototype to evaluate")
-                vars_dict["threshold_result_detail_var"].set("")
-                vars_dict["threshold_result_summary_var"].set("")
-                apply_result_style("unavailable")
-                return
-
-            evaluation = self.evaluate_color_difference_threshold(
-                sample_lab=lab,
-                prototype_lab=proto_lab,
-                metric=self.threshold_settings.get("metric", "CIEDE2000"),
-                threshold_settings=self.threshold_settings
+            self._refresh_shared_threshold_ui(
+                vars_dict=vars_dict,
+                refs=threshold_refs,
+                proto_lab=proto_lab,
+                sample_lab=sample_lab
             )
 
-            delta_e_value = evaluation.get("delta_e")
-            status = evaluation.get("status", "unavailable")
-
-            if delta_e_value is None:
-                vars_dict["threshold_result_title_var"].set("ΔE not available")
-                vars_dict["threshold_result_detail_var"].set("Unable to compute color difference")
-                vars_dict["threshold_result_summary_var"].set(
-                    evaluation.get("summary", "")
-                )
-                apply_result_style(status)
-                return
-
-            vars_dict["threshold_result_title_var"].set(
-                evaluation.get("evaluation", "No evaluation available")
-            )
-            vars_dict["threshold_result_detail_var"].set(f"ΔE00 = {delta_e_value:.3f}")
-            vars_dict["threshold_result_summary_var"].set(
-                evaluation.get("summary_visual", evaluation.get("summary", ""))
-            )
-
-            apply_result_style(status)
-
-        def select_membership(label, mu):
+        def select_membership(label):
             vars_dict["selected_label_var"].set(label)
 
             proto_rgb = self._get_proto_rgb(label)
@@ -7588,7 +7921,7 @@ class PyFCSApp:
                 for widget in (row, swatch, lbl_name, lbl_mu):
                     widget.bind(
                         "<Button-1>",
-                        lambda e, label=lbl, mu_value=mu: select_membership(label, mu_value)
+                        lambda e, label=lbl: select_membership(label)
                     )
         else:
             tk.Label(
@@ -7599,31 +7932,60 @@ class PyFCSApp:
             ).pack(fill="x")
 
         if memberships:
-            initial_label = base_data["winner_label"] if base_data["winner_label"] not in (None, "None", "") else memberships[0][0]
-            initial_mu = None
-            for lbl, mu in memberships:
-                if lbl == initial_label:
-                    initial_mu = mu
-                    break
-            if initial_mu is None:
-                initial_label, initial_mu = memberships[0]
+            initial_label = (
+                base_data["winner_label"]
+                if base_data["winner_label"] not in (None, "None", "")
+                else memberships[0][0]
+            )
+            if initial_label not in dict(memberships):
+                initial_label = memberships[0][0]
 
-            select_membership(initial_label, initial_mu)
+            select_membership(initial_label)
+        else:
+            refresh_threshold_section(proto_lab=None)
 
 
 
     def _parse_positive_threshold(self, value):
+        """
+        Safely parse a positive threshold value.
+
+        Never raises an exception.
+        Returns:
+            (parsed_float, None) if valid
+            (None, error_message) if invalid
+        """
         if value is None:
             return None, "Threshold cannot be empty."
 
         text = str(value).strip()
+
         if text == "":
             return None, "Threshold cannot be empty."
 
+        # Allow decimal comma
+        text = text.replace(",", ".")
+
+        # Reject invalid characters before float conversion
+        allowed_chars = set("0123456789.")
+        if any(ch not in allowed_chars for ch in text):
+            return None, "Threshold must be a valid number."
+
+        # Reject malformed decimal patterns like 4.9. or 1..2
+        if text.count(".") > 1:
+            return None, "Threshold must be a valid number."
+
+        # Reject strings that are just a dot
+        if text == ".":
+            return None, "Threshold must be a valid number."
+
         try:
             parsed = float(text)
-        except Exception:
+        except (TypeError, ValueError):
             return None, "Threshold must be a valid number."
+
+        if not np.isfinite(parsed):
+            return None, "Threshold must be a finite number."
 
         if parsed <= 0:
             return None, "Threshold must be greater than 0."
@@ -7852,130 +8214,8 @@ class PyFCSApp:
     # ============================================================================================================================================================
     #  COLOR EVALUATION FUNCTIONS
     # ============================================================================================================================================================
-    def get_umbral_points(self, threshold, mode=None):
-        """
-        Filter points inside the selected fuzzy volumes using the given threshold
-        and update the embedded 3D view.
-        """
-        # Ensure a color space is available before running the evaluation.
-        if not hasattr(self, "COLOR_SPACE") or not self.COLOR_SPACE:
-            self.custom_warning("No Color Space", "Please load a fuzzy color space before deploying AT or PT.")
-            return
-
-        selected_options = [key for key, var in self.model_3d_options.items() if var.get()]
-        if selected_options == ["Representative"]:
-            return
-        else:
-            self.show_loading()
-
-        def update_progress(current_step, total_steps):
-            """
-            Update the loading progress bar.
-            """
-            progress_percentage = (current_step / total_steps) * 100
-            self.progress["value"] = progress_percentage
-            self.load_window.update_idletasks()
-
-        def run_threshold_process():
-            """
-            Run the threshold filtering in a background thread and refresh the 3D plot
-            on the main Tkinter thread when the computation finishes.
-            """
-            try:
-                # Define the volume priority used for threshold filtering.
-                priority_map = {
-                    "Support": self.selected_core,
-                    "0.5-cut": self.selected_alpha,
-                    "Core": self.selected_support,
-                }
-
-                selected_option = next(
-                    (opt for opt in ["Support", "0.5-cut", "Core"] if opt in selected_options),
-                    None,
-                )
-                selected_volume = priority_map[selected_option]
-
-                # Step 1: filter the LAB points inside the selected volume.
-                update_progress(1, 3)
-                self.filtered_points, volume_limits = self.color_manager.filter_points_with_threshold(
-                    selected_volume,
-                    threshold,
-                    step=0.25,
-                )
-
-                # Save the computed ranges as CSV.
-                csv_path = self.color_manager.create_csv(self.file_base_name, volume_limits, mode)
-                print(f"CSV saved in test_results/: {csv_path}")
-
-                # Step 2: prepare the plot refresh.
-                update_progress(2, 3)
-
-                def redraw_filtered_plot():
-                    """
-                    Refresh the existing embedded 3D figure with the filtered points.
-                    """
-                    self._init_3d_canvas()
-
-                    VisualManager.plot_combined_3D(
-                        self.ax_3d,
-                        self.file_base_name,
-                        self.selected_centroids,
-                        self.selected_core,
-                        self.selected_alpha,
-                        self.selected_support,
-                        self.volume_limits,
-                        self.hex_color,
-                        selected_options,
-                        self.filtered_points,
-                    )
-
-                    self.graph_widget.draw()
-
-                    if hasattr(self, "lab_value_frame"):
-                        self.lab_value_frame.lift()
-
-                # Step 3: redraw the figure on the Tkinter main thread.
-                update_progress(3, 3)
-                self.root.after(0, redraw_filtered_plot)
-
-            except Exception as e:
-                self.root.after(
-                    0,
-                    lambda: self.custom_warning("Error", f"An error occurred while filtering points: {e}")
-                )
-            finally:
-                self.root.after(0, self.hide_loading)
-
-        # Run the expensive filtering process in a background thread.
-        threading.Thread(target=run_threshold_process, daemon=True).start()
-
-
-
-    def deploy_at(self):
-        if self._has_any_active_job():
-            self.custom_warning(
-                "Process Running",
-                "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
-            )
-            return
-        self.get_umbral_points(1.8, mode="AT")
-
-    def deploy_pt(self):
-        if self._has_any_active_job():
-            self.custom_warning(
-                "Process Running",
-                "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
-            )
-            return
-        self.get_umbral_points(0.8, mode="PT")
-
-
-
-
-
     def color_evaluation(self):
         """Open a window to study color spaces and threshold configurations."""
-        # Close previous window if already open
         try:
             if hasattr(self, "_color_evaluation_window") and self._color_evaluation_window is not None:
                 if self._color_evaluation_window.winfo_exists():
@@ -7985,16 +8225,7 @@ class PyFCSApp:
         except Exception:
             pass
 
-        if not hasattr(self, "threshold_settings"):
-            self.threshold_settings = {
-                "metric": "CIEDE2000",
-                "mode": "default",           # default | custom
-                "preset": "pt_at",           # pt | at | pt_at
-                "custom_type": "single",     # single | lower_upper
-                "single": 1.0,
-                "lower": 0.8,
-                "upper": 1.8,
-            }
+        self._ensure_threshold_settings()
 
         win = tk.Toplevel(self.root)
         self._color_evaluation_window = win
@@ -8010,7 +8241,6 @@ class PyFCSApp:
 
         self._build_color_evaluation_window(win)
 
-        # Quitar transient para permitir maximizar/minimizar normal
         win.focus_set()
 
         try:
@@ -8066,175 +8296,12 @@ class PyFCSApp:
         # =========================
         # Top: Threshold settings
         # =========================
-        threshold_panel = tk.Frame(main, bg="white", bd=1, relief="solid")
-        threshold_panel.pack(fill="x", pady=(0, 10))
-
-        tk.Label(
-            threshold_panel,
-            text="Threshold Configuration",
-            font=("Sans", 11, "bold"),
-            anchor="w",
-            bg="white",
-            padx=12,
-            pady=10
-        ).pack(fill="x")
-
-        threshold_body = tk.Frame(threshold_panel, bg="white")
-        threshold_body.pack(fill="x", padx=12, pady=(0, 10))
-
-        section_selection = tk.Frame(threshold_body, bg="white")
-        section_selection.pack(side="left", fill="y", padx=(0, 12))
-
-        sep_1 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=120)
-        sep_1.pack(side="left", fill="y", padx=(0, 12), pady=2)
-
-        section_config = tk.Frame(threshold_body, bg="white")
-        section_config.pack(side="left", fill="both", expand=True, padx=(0, 12))
-
-        sep_2 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=120)
-        sep_2.pack(side="left", fill="y", padx=(0, 12), pady=2)
-
-        section_summary = tk.Frame(threshold_body, bg="white")
-        section_summary.pack(side="left", fill="both", expand=True)
-
-        tk.Label(
-            section_selection,
-            text="Metric",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white"
-        ).pack(anchor="w", pady=(0, 4))
-
-        metric_combo = ttk.Combobox(
-            section_selection,
-            textvariable=vars_dict["threshold_metric_var"],
-            state="readonly",
-            width=18,
-            values=["CIEDE2000"]
+        refs = self._build_shared_threshold_panel(
+            parent=main,
+            vars_dict=vars_dict,
+            title="Threshold Configuration",
+            variant="summary"
         )
-        metric_combo.pack(anchor="w", pady=(0, 10))
-
-        tk.Label(
-            section_selection,
-            text="Threshold Type",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white"
-        ).pack(anchor="w", pady=(0, 4))
-
-        mode_combo = ttk.Combobox(
-            section_selection,
-            textvariable=vars_dict["threshold_mode_var"],
-            state="readonly",
-            width=18,
-            values=["default", "custom"]
-        )
-        mode_combo.pack(anchor="w")
-
-        tk.Label(
-            section_config,
-            text="Configuration",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white"
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-
-        preset_label = tk.Label(section_config, text="Default preset:", bg="white", anchor="w")
-        preset_combo = ttk.Combobox(
-            section_config,
-            textvariable=vars_dict["threshold_preset_var"],
-            state="readonly",
-            width=28,
-            values=[
-                "Perceptibility Threshold",
-                "Acceptability Threshold",
-                "Perceptibility + Acceptability"
-            ]
-        )
-
-        custom_type_label = tk.Label(section_config, text="Custom mode:", bg="white", anchor="w")
-        custom_type_combo = ttk.Combobox(
-            section_config,
-            textvariable=vars_dict["threshold_custom_type_var"],
-            state="readonly",
-            width=28,
-            values=[
-                "Single threshold",
-                "Lower and upper thresholds"
-            ]
-        )
-
-        single_label = tk.Label(section_config, text="Threshold:", bg="white", anchor="w")
-        single_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_single_var"], width=10)
-
-        lower_label = tk.Label(section_config, text="Lower threshold:", bg="white", anchor="w")
-        lower_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_lower_var"], width=10)
-
-        upper_label = tk.Label(section_config, text="Upper threshold:", bg="white", anchor="w")
-        upper_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_upper_var"], width=10)
-
-        config_hint_label = tk.Label(
-            section_config,
-            textvariable=vars_dict["config_hint_var"],
-            bg="white",
-            fg="#666666",
-            anchor="w",
-            justify="left",
-            wraplength=280,
-            font=("Sans", 9, "italic")
-        )
-
-        tk.Label(
-            section_summary,
-            text="Current Threshold Summary",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white"
-        ).pack(anchor="w", pady=(0, 8))
-
-        tk.Label(
-            section_summary,
-            textvariable=vars_dict["threshold_summary_title_var"],
-            anchor="w",
-            justify="left",
-            bg="white",
-            font=("Sans", 10, "bold"),
-            wraplength=300
-        ).pack(anchor="w", fill="x", pady=(0, 6))
-
-        tk.Label(
-            section_summary,
-            textvariable=vars_dict["threshold_summary_detail_var"],
-            anchor="w",
-            justify="left",
-            bg="white",
-            wraplength=300
-        ).pack(anchor="w", fill="x", pady=(0, 6))
-
-        tk.Label(
-            section_summary,
-            textvariable=vars_dict["threshold_summary_extra_var"],
-            anchor="w",
-            justify="left",
-            bg="white",
-            wraplength=300
-        ).pack(anchor="w", fill="x")
-
-        refs = {
-            "metric_combo": metric_combo,
-            "mode_combo": mode_combo,
-            "preset_label": preset_label,
-            "preset_combo": preset_combo,
-            "custom_type_label": custom_type_label,
-            "custom_type_combo": custom_type_combo,
-            "single_label": single_label,
-            "single_entry": single_entry,
-            "lower_label": lower_label,
-            "lower_entry": lower_entry,
-            "upper_label": upper_label,
-            "upper_entry": upper_entry,
-            "config_hint_label": config_hint_label,
-        }
 
         # =========================
         # Color Space Data block
@@ -8522,24 +8589,123 @@ class PyFCSApp:
             bg="white"
         ).pack(anchor="w", pady=(0, 8))
 
-        tk.Label(
+        result_card = tk.Frame(
             results_block,
+            bg="#f7f7f7",
+            bd=0,
+            relief="flat",
+            highlightthickness=2,
+            highlightbackground="#bdbdbd",
+            highlightcolor="#bdbdbd"
+        )
+        result_card.pack(fill="x", pady=(0, 2))
+
+        result_header = tk.Frame(result_card, bg="#eeeeee")
+        result_header.pack(fill="x")
+
+        result_status_dot = tk.Canvas(
+            result_header,
+            width=18,
+            height=18,
+            bg="#eeeeee",
+            highlightthickness=0,
+            bd=0
+        )
+        result_status_dot.pack(side="left", padx=(10, 6), pady=8)
+        result_status_dot_oval = result_status_dot.create_oval(
+            3, 3, 15, 15, fill="#bdbdbd", outline="#bdbdbd"
+        )
+
+        result_title_label = tk.Label(
+            result_header,
             textvariable=vars_dict["selected_result_var"],
             anchor="w",
             justify="left",
-            wraplength=360,
-            bg="white",
-            font=("Sans", 10, "bold")
-        ).pack(fill="x", pady=(0, 6))
+            bg="#eeeeee",
+            font=("Sans", 10, "bold"),
+            wraplength=300
+        )
+        result_title_label.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=8)
 
-        tk.Label(
-            results_block,
+        result_body = tk.Frame(result_card, bg="#f7f7f7")
+        result_body.pack(fill="x", padx=12, pady=(10, 12))
+
+        result_value_label = tk.Label(
+            result_body,
+            textvariable=vars_dict["selected_detail_var"],
+            anchor="w",
+            justify="left",
+            bg="#f7f7f7",
+            fg="#666666",
+            font=("Sans", 9, "bold")
+        )
+        result_value_label.pack(anchor="w", fill="x", pady=(0, 12))
+
+        result_separator = tk.Frame(result_body, bg="#dddddd", height=2)
+        result_separator.pack(fill="x", padx=6, pady=(0, 10))
+
+        result_summary_row = tk.Frame(result_body, bg="#f7f7f7")
+        result_summary_row.pack(fill="x")
+
+        result_summary_icon = tk.Canvas(
+            result_summary_row,
+            width=20,
+            height=20,
+            bg="#f7f7f7",
+            highlightthickness=0,
+            bd=0
+        )
+        result_summary_icon.pack(side="left", padx=(0, 8), anchor="n")
+
+        result_summary_icon_circle = result_summary_icon.create_oval(
+            2, 2, 18, 18, outline="#666666", width=2
+        )
+        result_summary_icon_text = result_summary_icon.create_text(
+            10, 10, text="!", fill="#666666", font=("Sans", 9, "bold")
+        )
+
+        result_text_container = tk.Frame(result_summary_row, bg="#f7f7f7")
+        result_text_container.pack(side="left", fill="both", expand=True)
+
+        result_summary_label = tk.Label(
+            result_text_container,
             textvariable=vars_dict["selected_summary_var"],
             anchor="w",
             justify="left",
-            wraplength=360,
-            bg="white"
-        ).pack(fill="x")
+            bg="#f7f7f7",
+            wraplength=300,
+            font=("Sans", 8)
+        )
+        result_summary_label.pack(anchor="w", fill="x")
+
+        vars_dict["analysis_result_refs"] = {
+            "result_card": result_card,
+            "result_header": result_header,
+            "result_status_dot": result_status_dot,
+            "result_status_dot_oval": result_status_dot_oval,
+            "result_title_label": result_title_label,
+            "result_body": result_body,
+            "result_value_label": result_value_label,
+            "result_separator": result_separator,
+            "result_summary_row": result_summary_row,
+            "result_summary_icon": result_summary_icon,
+            "result_summary_icon_circle": result_summary_icon_circle,
+            "result_summary_icon_text": result_summary_icon_text,
+            "result_summary_label": result_summary_label,
+        }
+
+        def _update_analysis_result_wrap(event=None):
+            try:
+                result_width = max(results_block.winfo_width() - 24, 200)
+                title_wrap = max(result_width - 55, 140)
+                summary_wrap = max(result_width - 70, 140)
+
+                result_title_label.config(wraplength=title_wrap)
+                result_summary_label.config(wraplength=summary_wrap)
+            except Exception:
+                pass
+
+        results_block.bind("<Configure>", _update_analysis_result_wrap)
 
         vars_dict["rows_canvas"] = rows_canvas
         vars_dict["rows_inner"] = rows_inner
@@ -8553,10 +8719,10 @@ class PyFCSApp:
         vars_dict["comparison_mode"] = False
 
         for widget in (
-            metric_combo,
-            mode_combo,
-            preset_combo,
-            custom_type_combo,
+            refs["metric_combo"],
+            refs["mode_combo"],
+            refs["preset_combo"],
+            refs["custom_type_combo"],
         ):
             widget.bind(
                 "<<ComboboxSelected>>",
@@ -8564,9 +8730,9 @@ class PyFCSApp:
             )
 
         for widget in (
-            single_entry,
-            lower_entry,
-            upper_entry,
+            refs["single_entry"],
+            refs["lower_entry"],
+            refs["upper_entry"],
         ):
             widget.bind(
                 "<KeyRelease>",
@@ -8641,62 +8807,16 @@ class PyFCSApp:
 
     def _create_color_evaluation_vars(self):
         """Create and return all Tk variables used by the Color Evaluation window."""
-        preset_display_map = {
-            "pt": "Perceptibility Threshold",
-            "at": "Acceptability Threshold",
-            "pt_at": "Perceptibility + Acceptability"
-        }
-
-        custom_type_display_map = {
-            "single": "Single threshold",
-            "lower_upper": "Lower and upper thresholds"
-        }
-
-        saved_mode = self.threshold_settings.get("mode", "default")
-        if saved_mode == "known":
-            saved_mode = "default"
-
-        return {
-            "threshold_metric_var": tk.StringVar(
-                value=self.threshold_settings.get("metric", "CIEDE2000")
-            ),
-            "threshold_mode_var": tk.StringVar(value=saved_mode),
-            "threshold_preset_var": tk.StringVar(
-                value=preset_display_map.get(
-                    self.threshold_settings.get("preset", "pt_at"),
-                    "Perceptibility + Acceptability"
-                )
-            ),
-            "threshold_custom_type_var": tk.StringVar(
-                value=custom_type_display_map.get(
-                    self.threshold_settings.get("custom_type", "single"),
-                    "Single threshold"
-                )
-            ),
-            "threshold_single_var": tk.StringVar(
-                value=str(self.threshold_settings.get("single", 1.0))
-            ),
-            "threshold_lower_var": tk.StringVar(
-                value=str(self.threshold_settings.get("lower", 0.8))
-            ),
-            "threshold_upper_var": tk.StringVar(
-                value=str(self.threshold_settings.get("upper", 1.8))
-            ),
-
-            "threshold_summary_title_var": tk.StringVar(value=""),
-            "threshold_summary_detail_var": tk.StringVar(value=""),
-            "threshold_summary_extra_var": tk.StringVar(value=""),
-            "config_hint_var": tk.StringVar(value=""),
-
+        vars_dict = {
             "space_name_var": tk.StringVar(value="None"),
             "space_count_var": tk.StringVar(value="0"),
 
             "analysis_mode_var": tk.StringVar(value="Select a color from the list."),
             "primary_name_var": tk.StringVar(value="None"),
-
             "secondary_name_var": tk.StringVar(value="None"),
 
             "selected_result_var": tk.StringVar(value="Select a prototype from the list."),
+            "selected_detail_var": tk.StringVar(value=""),
             "selected_summary_var": tk.StringVar(value=""),
 
             "loaded_space_data": None,
@@ -8709,135 +8829,19 @@ class PyFCSApp:
             "loaded_file_path": None,
         }
 
+        return self._merge_threshold_vars(vars_dict)
+
 
 
 
     def _refresh_color_evaluation_threshold_ui(self, vars_dict, refs):
         """Refresh threshold controls, validate inputs, and update summary."""
-        preset_display_map = {
-            "pt": "Perceptibility Threshold",
-            "at": "Acceptability Threshold",
-            "pt_at": "Perceptibility + Acceptability"
-        }
-        preset_reverse_map = {v: k for k, v in preset_display_map.items()}
-
-        custom_type_display_map = {
-            "single": "Single threshold",
-            "lower_upper": "Lower and upper thresholds"
-        }
-        custom_type_reverse_map = {v: k for k, v in custom_type_display_map.items()}
-
-        mode_value = vars_dict["threshold_mode_var"].get().strip().lower()
-        selected_preset_display = vars_dict["threshold_preset_var"].get().strip()
-        selected_custom_type_display = vars_dict["threshold_custom_type_var"].get().strip()
-
-        single_text = vars_dict["threshold_single_var"].get().strip()
-        lower_text = vars_dict["threshold_lower_var"].get().strip()
-        upper_text = vars_dict["threshold_upper_var"].get().strip()
-
-        self.threshold_settings["metric"] = vars_dict["threshold_metric_var"].get().strip()
-        self.threshold_settings["mode"] = mode_value
-        self.threshold_settings["preset"] = preset_reverse_map.get(selected_preset_display, "pt_at")
-        self.threshold_settings["custom_type"] = custom_type_reverse_map.get(selected_custom_type_display, "single")
-        self.threshold_settings["single"] = single_text if single_text != "" else None
-        self.threshold_settings["lower"] = lower_text if lower_text != "" else None
-        self.threshold_settings["upper"] = upper_text if upper_text != "" else None
-
-        refs["preset_label"].grid_remove()
-        refs["preset_combo"].grid_remove()
-        refs["custom_type_label"].grid_remove()
-        refs["custom_type_combo"].grid_remove()
-        refs["single_label"].grid_remove()
-        refs["single_entry"].grid_remove()
-        refs["lower_label"].grid_remove()
-        refs["lower_entry"].grid_remove()
-        refs["upper_label"].grid_remove()
-        refs["upper_entry"].grid_remove()
-        refs["config_hint_label"].grid_remove()
-
-        if mode_value == "default":
-            refs["preset_label"].grid(row=1, column=0, sticky="w", pady=(0, 6))
-            refs["preset_combo"].grid(row=1, column=1, sticky="w", pady=(0, 6))
-
-            vars_dict["config_hint_var"].set(
-                "Use predefined perceptibility and/or acceptability thresholds."
-            )
-            refs["config_hint_label"].grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
-
-            preset_key = self.threshold_settings.get("preset", "pt_at")
-            if preset_key == "pt":
-                vars_dict["threshold_summary_title_var"].set("Default mode")
-                vars_dict["threshold_summary_detail_var"].set("Preset: Perceptibility Threshold")
-                vars_dict["threshold_summary_extra_var"].set("PT = 0.800")
-            elif preset_key == "at":
-                vars_dict["threshold_summary_title_var"].set("Default mode")
-                vars_dict["threshold_summary_detail_var"].set("Preset: Acceptability Threshold")
-                vars_dict["threshold_summary_extra_var"].set("AT = 1.800")
-            else:
-                vars_dict["threshold_summary_title_var"].set("Default mode")
-                vars_dict["threshold_summary_detail_var"].set("Preset: Perceptibility + Acceptability")
-                vars_dict["threshold_summary_extra_var"].set("PT = 0.800 | AT = 1.800")
-
-        elif mode_value == "custom":
-            refs["custom_type_label"].grid(row=1, column=0, sticky="w", pady=(0, 6))
-            refs["custom_type_combo"].grid(row=1, column=1, sticky="w", pady=(0, 6))
-
-            custom_type = self.threshold_settings.get("custom_type", "single")
-
-            if custom_type == "single":
-                refs["single_label"].grid(row=2, column=0, sticky="w", pady=(0, 6))
-                refs["single_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
-
-                vars_dict["threshold_summary_title_var"].set("Custom mode")
-                vars_dict["threshold_summary_detail_var"].set("Configuration: Single threshold")
-
-                if single_text == "":
-                    vars_dict["config_hint_var"].set("Enter a threshold greater than 0.")
-                    vars_dict["threshold_summary_extra_var"].set("Threshold not defined yet.")
-                else:
-                    parsed, err = self._parse_positive_threshold(single_text)
-                    if err:
-                        vars_dict["config_hint_var"].set(err)
-                        vars_dict["threshold_summary_extra_var"].set("Invalid threshold value.")
-                    else:
-                        vars_dict["config_hint_var"].set("Define one threshold greater than 0.")
-                        vars_dict["threshold_summary_extra_var"].set(f"Threshold = {parsed:.3f}")
-
-                refs["config_hint_label"].grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
-
-            else:
-                refs["lower_label"].grid(row=2, column=0, sticky="w", pady=(0, 6))
-                refs["lower_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
-                refs["upper_label"].grid(row=3, column=0, sticky="w", pady=(0, 6))
-                refs["upper_entry"].grid(row=3, column=1, sticky="w", pady=(0, 6))
-
-                vars_dict["threshold_summary_title_var"].set("Custom mode")
-                vars_dict["threshold_summary_detail_var"].set("Configuration: Lower and upper thresholds")
-
-                if lower_text == "" or upper_text == "":
-                    vars_dict["config_hint_var"].set("Enter both thresholds. Values must be greater than 0.")
-                    vars_dict["threshold_summary_extra_var"].set("Thresholds not fully defined yet.")
-                else:
-                    lower, upper, err = self._validate_custom_range(lower_text, upper_text)
-                    if err:
-                        vars_dict["config_hint_var"].set(err)
-                        vars_dict["threshold_summary_extra_var"].set("Invalid threshold range.")
-                    else:
-                        vars_dict["config_hint_var"].set(
-                            "Define two thresholds greater than 0, with lower < upper."
-                        )
-                        vars_dict["threshold_summary_extra_var"].set(
-                            f"Lower = {lower:.3f} | Upper = {upper:.3f}"
-                        )
-
-                refs["config_hint_label"].grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
-
-        else:
-            vars_dict["threshold_summary_title_var"].set("Unknown mode")
-            vars_dict["threshold_summary_detail_var"].set("")
-            vars_dict["threshold_summary_extra_var"].set("")
-            vars_dict["config_hint_var"].set("")
-
+        self._refresh_shared_threshold_ui(
+            vars_dict=vars_dict,
+            refs=refs,
+            proto_lab=None,
+            sample_lab=None
+        )
         self._refresh_color_evaluation_comparison(vars_dict)
 
 
@@ -8845,6 +8849,8 @@ class PyFCSApp:
 
     def _get_color_evaluation_threshold_description(self):
         """Return a compact textual description of the active threshold settings."""
+        self._ensure_threshold_settings()
+
         metric = self.threshold_settings.get("metric", "CIEDE2000")
         mode = self.threshold_settings.get("mode", "default")
 
@@ -8862,8 +8868,7 @@ class PyFCSApp:
         if mode == "custom":
             custom_type = self.threshold_settings.get("custom_type", "single")
             if custom_type == "single":
-                val = self.threshold_settings.get("single")
-                parsed, err = self._parse_positive_threshold(val)
+                parsed, err = self._parse_positive_threshold(self.threshold_settings.get("single"))
                 if err:
                     return f"Thresholds -> Metric: {metric} | Mode: custom | Single threshold: invalid"
                 return f"Thresholds -> Metric: {metric} | Mode: custom | Threshold = {parsed:.3f}"
@@ -9224,14 +9229,18 @@ class PyFCSApp:
     def _clear_color_evaluation_analysis(self, vars_dict):
         """Reset the analysis panel."""
         vars_dict["primary_name_var"].set("None")
-
         vars_dict["secondary_name_var"].set("None")
-
-        vars_dict["selected_result_var"].set("Select a prototype from the list.")
-        vars_dict["selected_summary_var"].set("")
 
         vars_dict["primary_swatch"].itemconfig(vars_dict["primary_rect"], fill="#cccccc")
         vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
+
+        self._update_color_evaluation_result_card(
+            vars_dict=vars_dict,
+            title="Select a prototype to evaluate.",
+            detail="",
+            summary="",
+            status="unavailable"
+        )
 
 
 
@@ -9298,10 +9307,15 @@ class PyFCSApp:
             vars_dict["secondary_name_var"].set("None")
             vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
 
-            vars_dict["selected_result_var"].set("Single color selected. Comparison not active.")
-            vars_dict["selected_summary_var"].set(
-                "Use 'Compare with another color' to evaluate the selected color against a second prototype.\n"
-                + self._get_color_evaluation_threshold_description()
+            self._update_color_evaluation_result_card(
+                vars_dict=vars_dict,
+                title="Single color selected. Comparison not active.",
+                detail="",
+                summary=(
+                    "Use 'Compare with another color' to evaluate the selected color "
+                    "against a second prototype.\n" + self._get_color_evaluation_threshold_description()
+                ),
+                status="unavailable"
             )
             return
 
@@ -9318,11 +9332,25 @@ class PyFCSApp:
             threshold_settings=self.threshold_settings
         )
 
-        vars_dict["selected_result_var"].set(
-            evaluation.get("evaluation", "No evaluation available")
-        )
-        vars_dict["selected_summary_var"].set(
-            evaluation.get("summary", "")
+        delta_e_value = evaluation.get("delta_e")
+        status = evaluation.get("status", "unavailable")
+
+        if delta_e_value is None:
+            self._update_color_evaluation_result_card(
+                vars_dict=vars_dict,
+                title=evaluation.get("evaluation", "ΔE not available"),
+                detail="Unable to compute color difference",
+                summary=evaluation.get("summary_visual", evaluation.get("summary", "")),
+                status=status
+            )
+            return
+
+        self._update_color_evaluation_result_card(
+            vars_dict=vars_dict,
+            title=evaluation.get("evaluation", "No evaluation available"),
+            detail=f"ΔE00 = {delta_e_value:.3f}",
+            summary=evaluation.get("summary_visual", evaluation.get("summary", "")),
+            status=status
         )
 
 
