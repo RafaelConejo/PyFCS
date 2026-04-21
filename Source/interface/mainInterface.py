@@ -6716,11 +6716,11 @@ class PyFCSApp:
         top_content = tk.Frame(content, bg="#f2f2f2")
         top_content.pack(fill="x", anchor="n")
 
-        left = tk.Frame(top_content, bg="white", bd=1, relief="solid", width=320, height=285)
+        left = tk.Frame(top_content, bg="white", bd=1, relief="solid", width=320, height=280)
         left.pack(side="left", fill="y", padx=(0, 6), anchor="n")
         left.pack_propagate(False)
 
-        center = tk.Frame(top_content, bg="white", bd=1, relief="solid", height=285)
+        center = tk.Frame(top_content, bg="white", bd=1, relief="solid", height=270)
         center.pack(side="left", fill="x", expand=True, padx=(6, 0), anchor="n")
         center.pack_propagate(False)
 
@@ -6979,21 +6979,49 @@ class PyFCSApp:
         threshold_body = tk.Frame(threshold_panel, bg="white")
         threshold_body.pack(fill="x", padx=12, pady=(0, 10))
 
-        section_selection = tk.Frame(threshold_body, bg="white")
-        section_selection.pack(side="left", fill="y", padx=(0, 12))
+        # =========================================================
+        # Fixed layout widths
+        # =========================================================
+        selection_w = 140
+        config_w = 370
+        result_w = 380
 
-        sep_1 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=120)
-        sep_1.pack(side="left", fill="y", padx=(0, 12), pady=2)
+        threshold_body.grid_columnconfigure(0, minsize=selection_w, weight=0)
+        threshold_body.grid_columnconfigure(1, minsize=1, weight=0)
+        threshold_body.grid_columnconfigure(2, minsize=config_w, weight=0)
+        threshold_body.grid_columnconfigure(3, minsize=1, weight=0)
+        threshold_body.grid_columnconfigure(4, minsize=result_w, weight=0)
 
-        section_config = tk.Frame(threshold_body, bg="white")
-        section_config.pack(side="left", fill="both", expand=True, padx=(0, 12))
+        # ---------------------------
+        # Left: selection
+        # ---------------------------
+        section_selection = tk.Frame(threshold_body, bg="white", width=selection_w)
+        section_selection.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+        section_selection.grid_propagate(False)
 
-        sep_2 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=120)
-        sep_2.pack(side="left", fill="y", padx=(0, 12), pady=2)
+        sep_1 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=165)
+        sep_1.grid(row=0, column=1, sticky="ns", padx=(0, 12), pady=2)
 
-        section_result = tk.Frame(threshold_body, bg="white")
-        section_result.pack(side="left", fill="both", expand=True)
+        # ---------------------------
+        # Center: configuration
+        # ---------------------------
+        section_config = tk.Frame(threshold_body, bg="white", width=config_w)
+        section_config.grid(row=0, column=2, sticky="nsw", padx=(0, 12))
+        section_config.grid_propagate(False)
 
+        sep_2 = tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=165)
+        sep_2.grid(row=0, column=3, sticky="ns", padx=(0, 12), pady=2)
+
+        # ---------------------------
+        # Right: results
+        # ---------------------------
+        section_result = tk.Frame(threshold_body, bg="white", width=result_w)
+        section_result.grid(row=0, column=4, sticky="nsw")
+        section_result.grid_propagate(False)
+        section_result.grid_columnconfigure(0, weight=1)
+        section_result.grid_rowconfigure(1, weight=1)
+
+        # ===== Selection =====
         tk.Label(
             section_selection,
             text="Metric",
@@ -7006,7 +7034,7 @@ class PyFCSApp:
             section_selection,
             textvariable=vars_dict["threshold_metric_var"],
             state="readonly",
-            width=18,
+            width=16,
             values=["CIEDE2000"]
         )
         metric_combo.pack(anchor="w", pady=(0, 10))
@@ -7023,11 +7051,12 @@ class PyFCSApp:
             section_selection,
             textvariable=vars_dict["threshold_mode_var"],
             state="readonly",
-            width=18,
+            width=16,
             values=["default", "custom"]
         )
         mode_combo.pack(anchor="w")
 
+        # ===== Configuration =====
         tk.Label(
             section_config,
             text="Configuration",
@@ -7036,12 +7065,15 @@ class PyFCSApp:
             bg="white"
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
+        section_config.grid_columnconfigure(0, minsize=135, weight=0)
+        section_config.grid_columnconfigure(1, minsize=config_w - 155, weight=0)
+
         preset_label = tk.Label(section_config, text="Default preset:", bg="white", anchor="w")
         preset_combo = ttk.Combobox(
             section_config,
             textvariable=vars_dict["threshold_preset_var"],
             state="readonly",
-            width=28,
+            width=34,
             values=[
                 "Perceptibility Threshold",
                 "Acceptability Threshold",
@@ -7054,7 +7086,7 @@ class PyFCSApp:
             section_config,
             textvariable=vars_dict["threshold_custom_type_var"],
             state="readonly",
-            width=28,
+            width=34,
             values=[
                 "Single threshold",
                 "Lower and upper thresholds"
@@ -7062,13 +7094,13 @@ class PyFCSApp:
         )
 
         single_label = tk.Label(section_config, text="Threshold:", bg="white", anchor="w")
-        single_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_single_var"], width=10)
+        single_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_single_var"], width=12)
 
         lower_label = tk.Label(section_config, text="Lower threshold:", bg="white", anchor="w")
-        lower_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_lower_var"], width=10)
+        lower_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_lower_var"], width=12)
 
         upper_label = tk.Label(section_config, text="Upper threshold:", bg="white", anchor="w")
-        upper_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_upper_var"], width=10)
+        upper_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_upper_var"], width=12)
 
         config_hint_label = tk.Label(
             section_config,
@@ -7077,45 +7109,119 @@ class PyFCSApp:
             fg="#666666",
             anchor="w",
             justify="left",
-            wraplength=260,
+            wraplength=config_w - 20,
             font=("Sans", 9, "italic")
         )
 
-        tk.Label(
+        # ===== Results =====
+        results_title = tk.Label(
             section_result,
             text="Results",
             font=("Sans", 10, "bold"),
             anchor="w",
             bg="white"
-        ).pack(anchor="w", pady=(0, 8))
+        )
+        results_title.grid(row=0, column=0, sticky="ew", pady=(0, 8))
 
-        tk.Label(
+        result_card = tk.Frame(
             section_result,
+            bg="#f8f2f2",
+            bd=0,
+            relief="flat",
+            highlightthickness=2,
+            highlightbackground="#b94a48",
+            highlightcolor="#b94a48"
+        )
+        result_card.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(0, 2))
+
+        result_header = tk.Frame(result_card, bg="#f2dede")
+        result_header.pack(fill="x")
+
+        result_status_dot = tk.Canvas(
+            result_header,
+            width=18,
+            height=18,
+            bg="#f2dede",
+            highlightthickness=0,
+            bd=0
+        )
+        result_status_dot.pack(side="left", padx=(10, 6), pady=8)
+        result_status_dot_oval = result_status_dot.create_oval(3, 3, 15, 15, fill="#b94a48", outline="#b94a48")
+
+        result_title_label = tk.Label(
+            result_header,
             textvariable=vars_dict["threshold_result_title_var"],
             anchor="w",
             justify="left",
-            bg="white",
+            bg="#f2dede",
             font=("Sans", 10, "bold"),
-            wraplength=300
-        ).pack(anchor="w", fill="x", pady=(0, 6))
+            wraplength=result_w - 65
+        )
+        result_title_label.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=8)
 
-        tk.Label(
-            section_result,
+        result_body = tk.Frame(result_card, bg="#f8f2f2")
+        result_body.pack(fill="x", padx=12, pady=(10, 12))
+
+        result_value_label = tk.Label(
+            result_body,
             textvariable=vars_dict["threshold_result_detail_var"],
             anchor="w",
             justify="left",
-            bg="white",
-            wraplength=300
-        ).pack(anchor="w", fill="x", pady=(0, 6))
+            bg="#f8f2f2",
+            fg="#b30000",
+            font=("Sans", 9, "bold")
+        )
+        result_value_label.pack(anchor="w", fill="x", pady=(0, 12))
 
-        tk.Label(
-            section_result,
+        result_separator = tk.Frame(
+            result_body,
+            bg="#e7b6b6",
+            height=2
+        )
+        result_separator.pack(fill="x", padx=6, pady=(0, 10))
+
+        result_summary_row = tk.Frame(result_body, bg="#f8f2f2")
+        result_summary_row.pack(fill="x")
+
+        result_summary_icon = tk.Canvas(
+            result_summary_row,
+            width=20,
+            height=20,
+            bg="#f8f2f2",
+            highlightthickness=0,
+            bd=0
+        )
+        result_summary_icon.pack(side="left", padx=(0, 8), anchor="n")
+
+        icon_circle = result_summary_icon.create_oval(2, 2, 18, 18, outline="#b30000", width=2)
+        icon_text = result_summary_icon.create_text(10, 10, text="!", fill="#b30000", font=("Sans", 9, "bold"))
+
+        result_text_container = tk.Frame(result_summary_row, bg="#f8f2f2")
+        result_text_container.pack(side="left", fill="both", expand=True)
+
+        result_summary_label = tk.Label(
+            result_text_container,
             textvariable=vars_dict["threshold_result_summary_var"],
             anchor="w",
             justify="left",
-            bg="white",
-            wraplength=300
-        ).pack(anchor="w", fill="x")
+            bg="#f8f2f2",
+            wraplength=260,
+            font=("Sans", 8)
+        )
+        result_summary_label.pack(anchor="w", fill="x")
+
+        def _update_result_wrap(event=None):
+            try:
+                result_width = max(section_result.winfo_width() - 30, 180)
+                title_wrap = max(result_width - 55, 120)
+                summary_wrap = max(result_width - 70, 120)
+
+                result_title_label.config(wraplength=title_wrap)
+                result_summary_label.config(wraplength=summary_wrap)
+            except Exception:
+                pass
+
+        section_result.bind("<Configure>", _update_result_wrap)
 
         return {
             "metric_combo": metric_combo,
@@ -7131,6 +7237,20 @@ class PyFCSApp:
             "upper_label": upper_label,
             "upper_entry": upper_entry,
             "config_hint_label": config_hint_label,
+
+            "result_card": result_card,
+            "result_header": result_header,
+            "result_status_dot": result_status_dot,
+            "result_status_dot_oval": result_status_dot_oval,
+            "result_title_label": result_title_label,
+            "result_body": result_body,
+            "result_value_label": result_value_label,
+            "result_separator": result_separator,
+            "result_summary_row": result_summary_row,
+            "result_summary_icon": result_summary_icon,
+            "result_summary_icon_circle": icon_circle,
+            "result_summary_icon_text": icon_text,
+            "result_summary_label": result_summary_label,
         }
 
 
@@ -7177,6 +7297,93 @@ class PyFCSApp:
                         except Exception:
                             pass
 
+        def apply_result_style(status):
+            styles = {
+                "red": {
+                    "body_bg": "#f8f2f2",
+                    "header_bg": "#f2dede",
+                    "border": "#b94a48",
+                    "accent": "#b30000",
+                    "separator": "#e7b6b6",
+                },
+                "yellow": {
+                    "body_bg": "#fffaf0",
+                    "header_bg": "#fcf8e3",
+                    "border": "#c09853",
+                    "accent": "#9a6b00",
+                    "separator": "#ecd9a3",
+                },
+                "green": {
+                    "body_bg": "#f3faf3",
+                    "header_bg": "#dff0d8",
+                    "border": "#468847",
+                    "accent": "#2d6a2d",
+                    "separator": "#b9d8b1",
+                },
+                "neutral": {
+                    "body_bg": "#f7f7f7",
+                    "header_bg": "#eeeeee",
+                    "border": "#bdbdbd",
+                    "accent": "#666666",
+                    "separator": "#dddddd",
+                }
+            }
+
+            status_to_theme = {
+                "below_pt": "green",
+                "below_at": "green",
+                "below_custom": "green",
+                "below_lower": "green",
+
+                "between_pt_at": "yellow",
+                "between_custom": "yellow",
+
+                "above_pt": "red",
+                "above_at": "red",
+                "above_custom": "red",
+                "above_upper": "red",
+
+                "invalid": "neutral",
+                "unavailable": "neutral",
+                "unsupported_metric": "neutral",
+                "unknown_mode": "neutral",
+            }
+
+            theme_key = status_to_theme.get(status, "neutral")
+            theme = styles[theme_key]
+
+            try:
+                threshold_refs["result_card"].configure(
+                    bg=theme["body_bg"],
+                    highlightbackground=theme["border"],
+                    highlightcolor=theme["border"]
+                )
+                threshold_refs["result_header"].configure(bg=theme["header_bg"])
+                threshold_refs["result_status_dot"].configure(bg=theme["header_bg"])
+                threshold_refs["result_title_label"].configure(bg=theme["header_bg"])
+                threshold_refs["result_value_label"].configure(bg=theme["body_bg"], fg=theme["accent"])
+                threshold_refs["result_separator"].configure(bg=theme["separator"])
+                threshold_refs["result_summary_row"].configure(bg=theme["body_bg"])
+                threshold_refs["result_summary_icon"].configure(bg=theme["body_bg"])
+                threshold_refs["result_body"].configure(bg=theme["body_bg"])
+                threshold_refs["result_summary_icon"].itemconfig(
+                    threshold_refs["result_summary_icon_circle"],
+                    outline=theme["accent"]
+                )
+                threshold_refs["result_summary_icon"].itemconfig(
+                    threshold_refs["result_summary_icon_text"],
+                    fill=theme["accent"]
+                )
+                threshold_refs["result_summary_label"].configure(bg=theme["body_bg"])
+
+                threshold_refs["result_status_dot"].itemconfig(
+                    threshold_refs["result_status_dot_oval"],
+                    fill=theme["border"],
+                    outline=theme["border"]
+                )
+            except Exception:
+                pass
+
         def refresh_threshold_section(proto_lab=None):
             mode_value = vars_dict["threshold_mode_var"].get().strip().lower()
             internal_mode = "known" if mode_value == "default" else mode_value
@@ -7213,20 +7420,22 @@ class PyFCSApp:
             threshold_refs["config_hint_label"].grid_remove()
 
             if mode_value == "default":
-                threshold_refs["preset_label"].grid(row=1, column=0, sticky="w", pady=(0, 6))
-                threshold_refs["preset_combo"].grid(row=1, column=1, sticky="w", pady=(0, 6))
+                threshold_refs["preset_label"].grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+                threshold_refs["preset_combo"].grid(row=1, column=1, sticky="ew", pady=(0, 6))
 
                 vars_dict["config_hint_var"].set(
                     "Use predefined perceptibility and/or acceptability thresholds."
                 )
-                threshold_refs["config_hint_label"].grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+                threshold_refs["config_hint_label"].grid(
+                    row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0)
+                )
 
             elif mode_value == "custom":
-                threshold_refs["custom_type_label"].grid(row=1, column=0, sticky="w", pady=(0, 6))
-                threshold_refs["custom_type_combo"].grid(row=1, column=1, sticky="w", pady=(0, 6))
+                threshold_refs["custom_type_label"].grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+                threshold_refs["custom_type_combo"].grid(row=1, column=1, sticky="ew", pady=(0, 6))
 
                 if selected_custom_type_key == "single":
-                    threshold_refs["single_label"].grid(row=2, column=0, sticky="w", pady=(0, 6))
+                    threshold_refs["single_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
                     threshold_refs["single_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
 
                     vars_dict["config_hint_var"].set("Define one threshold greater than 0.")
@@ -7238,12 +7447,14 @@ class PyFCSApp:
                         if err_single:
                             vars_dict["config_hint_var"].set(err_single)
 
-                    threshold_refs["config_hint_label"].grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
+                    threshold_refs["config_hint_label"].grid(
+                        row=3, column=0, columnspan=2, sticky="ew", pady=(2, 0)
+                    )
 
                 else:
-                    threshold_refs["lower_label"].grid(row=2, column=0, sticky="w", pady=(0, 6))
+                    threshold_refs["lower_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
                     threshold_refs["lower_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
-                    threshold_refs["upper_label"].grid(row=3, column=0, sticky="w", pady=(0, 6))
+                    threshold_refs["upper_label"].grid(row=3, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
                     threshold_refs["upper_entry"].grid(row=3, column=1, sticky="w", pady=(0, 6))
 
                     vars_dict["config_hint_var"].set(
@@ -7259,15 +7470,18 @@ class PyFCSApp:
                         if err_range:
                             vars_dict["config_hint_var"].set(err_range)
 
-                    threshold_refs["config_hint_label"].grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
+                    threshold_refs["config_hint_label"].grid(
+                        row=4, column=0, columnspan=2, sticky="ew", pady=(2, 0)
+                    )
 
             else:
                 vars_dict["config_hint_var"].set("")
 
             if proto_lab is None:
-                vars_dict["threshold_result_title_var"].set("Select a prototype to evaluate.")
+                vars_dict["threshold_result_title_var"].set("Select a prototype to evaluate")
                 vars_dict["threshold_result_detail_var"].set("")
                 vars_dict["threshold_result_summary_var"].set("")
+                apply_result_style("unavailable")
                 return
 
             evaluation = self.evaluate_color_difference_threshold(
@@ -7278,34 +7492,26 @@ class PyFCSApp:
             )
 
             delta_e_value = evaluation.get("delta_e")
+            status = evaluation.get("status", "unavailable")
+
             if delta_e_value is None:
                 vars_dict["threshold_result_title_var"].set("ΔE not available")
-            else:
-                vars_dict["threshold_result_title_var"].set(
-                    evaluation.get("evaluation", "No evaluation available")
+                vars_dict["threshold_result_detail_var"].set("Unable to compute color difference")
+                vars_dict["threshold_result_summary_var"].set(
+                    evaluation.get("summary", "")
                 )
+                apply_result_style(status)
+                return
 
-            mode_text = evaluation.get("mode", "")
-            preset_text = evaluation.get("preset", "")
-            custom_type_text = evaluation.get("custom_type", "")
+            vars_dict["threshold_result_title_var"].set(
+                evaluation.get("evaluation", "No evaluation available")
+            )
+            vars_dict["threshold_result_detail_var"].set(f"ΔE00 = {delta_e_value:.3f}")
+            vars_dict["threshold_result_summary_var"].set(
+                evaluation.get("summary_visual", evaluation.get("summary", ""))
+            )
 
-            if mode_text == "default":
-                if preset_text == "pt":
-                    detail = "Default preset: Perceptibility Threshold"
-                elif preset_text == "at":
-                    detail = "Default preset: Acceptability Threshold"
-                else:
-                    detail = "Default preset: Perceptibility + Acceptability"
-            elif mode_text == "custom":
-                if custom_type_text == "single":
-                    detail = "Custom mode: Single threshold"
-                else:
-                    detail = "Custom mode: Lower and upper thresholds"
-            else:
-                detail = f"Mode: {mode_text}"
-
-            vars_dict["threshold_result_detail_var"].set(detail)
-            vars_dict["threshold_result_summary_var"].set(evaluation.get("summary", ""))
+            apply_result_style(status)
 
         def select_membership(label, mu):
             vars_dict["selected_label_var"].set(label)
@@ -7435,7 +7641,7 @@ class PyFCSApp:
             return None, None, f"Upper threshold: {err_upper}"
 
         if lower >= upper:
-            return None, None, "Lower threshold must be smaller than upper threshold."
+            return None, None, "Lower thr. must be smaller than upper thr."
 
         return lower, upper, None
 
@@ -7462,7 +7668,7 @@ class PyFCSApp:
             threshold_settings = merged
 
         mode = threshold_settings.get("mode", "default")
-        if mode == "known":  
+        if mode == "known":
             mode = "default"
 
         result = {
@@ -7474,12 +7680,10 @@ class PyFCSApp:
             "upper": None,
             "status": "unavailable",
             "evaluation": "Color difference could not be computed.",
-            "summary": "ΔE: not available"
+            "summary": "ΔE: not available",
+            "summary_visual": "No threshold result available."
         }
 
-        # ---------------------------
-        # Compute metric
-        # ---------------------------
         try:
             if metric == "CIEDE2000":
                 delta_e_value = float(self.color_manager.delta_e_ciede2000(prototype_lab, sample_lab))
@@ -7487,20 +7691,12 @@ class PyFCSApp:
                 result["status"] = "unsupported_metric"
                 result["evaluation"] = f"Metric '{metric}' is not supported yet."
                 result["summary"] = f"Metric: {metric} (not supported)"
+                result["summary_visual"] = "This metric is not supported yet."
                 return result
         except Exception:
             return result
 
         result["delta_e"] = delta_e_value
-
-        # ---------------------------
-        # RAW MODE
-        # ---------------------------
-        if mode == "raw":
-            result["status"] = "raw"
-            result["evaluation"] = "Raw color difference only."
-            result["summary"] = f"ΔE = {delta_e_value:.3f}"
-            return result
 
         # ---------------------------
         # DEFAULT MODE
@@ -7511,36 +7707,34 @@ class PyFCSApp:
 
             if preset == "pt":
                 lower = 0.8
-                upper = None
-
                 result["lower"] = lower
-                result["upper"] = upper
 
                 if delta_e_value <= lower:
                     result["status"] = "below_pt"
-                    result["evaluation"] = "Below perceptibility threshold."
+                    result["evaluation"] = "Within perceptibility threshold."
+                    result["summary_visual"] = "The sampled color is within the perceptibility threshold."
                 else:
                     result["status"] = "above_pt"
-                    result["evaluation"] = "Above perceptibility threshold."
+                    result["evaluation"] = "Outside perceptibility threshold."
+                    result["summary_visual"] = "The sampled color exceeds the perceptibility threshold."
 
                 result["summary"] = f"ΔE = {delta_e_value:.3f} | PT = {lower:.3f}"
                 return result
 
             elif preset == "at":
-                lower = 1.8
-                upper = None
-
-                result["lower"] = lower
+                upper = 1.8
                 result["upper"] = upper
 
-                if delta_e_value <= lower:
+                if delta_e_value <= upper:
                     result["status"] = "below_at"
-                    result["evaluation"] = "Below acceptability threshold."
+                    result["evaluation"] = "Within acceptability threshold."
+                    result["summary_visual"] = "The sampled color is within the acceptability threshold."
                 else:
                     result["status"] = "above_at"
-                    result["evaluation"] = "Above acceptability threshold."
+                    result["evaluation"] = "Outside acceptability threshold."
+                    result["summary_visual"] = "The sampled color exceeds the acceptability threshold."
 
-                result["summary"] = f"ΔE = {delta_e_value:.3f} | AT = {lower:.3f}"
+                result["summary"] = f"ΔE = {delta_e_value:.3f} | AT = {upper:.3f}"
                 return result
 
             else:  # pt_at
@@ -7553,12 +7747,15 @@ class PyFCSApp:
                 if delta_e_value <= lower:
                     result["status"] = "below_pt"
                     result["evaluation"] = "Below perceptibility threshold."
+                    result["summary_visual"] = "The sampled color is below the perceptibility threshold."
                 elif delta_e_value <= upper:
                     result["status"] = "between_pt_at"
                     result["evaluation"] = "Between perceptibility and acceptability thresholds."
+                    result["summary_visual"] = "The sampled color is perceptible, but still within the acceptability range."
                 else:
                     result["status"] = "above_at"
                     result["evaluation"] = "Above acceptability threshold."
+                    result["summary_visual"] = "The sampled color exceeds the acceptability threshold."
 
                 result["summary"] = f"ΔE = {delta_e_value:.3f} | PT = {lower:.3f} | AT = {upper:.3f}"
                 return result
@@ -7580,14 +7777,17 @@ class PyFCSApp:
                     result["status"] = "invalid"
                     result["evaluation"] = err_single
                     result["summary"] = f"ΔE = {delta_e_value:.3f}"
+                    result["summary_visual"] = "Please enter a valid custom threshold."
                     return result
 
                 if delta_e_value <= single:
                     result["status"] = "below_custom"
-                    result["evaluation"] = "Below custom threshold."
+                    result["evaluation"] = "Within custom threshold."
+                    result["summary_visual"] = "The sampled color is within the selected custom threshold."
                 else:
                     result["status"] = "above_custom"
-                    result["evaluation"] = "Above custom threshold."
+                    result["evaluation"] = "Outside custom threshold."
+                    result["summary_visual"] = "The sampled color exceeds the selected custom threshold."
 
                 result["summary"] = f"ΔE = {delta_e_value:.3f} | threshold = {single:.3f}"
                 return result
@@ -7605,17 +7805,21 @@ class PyFCSApp:
                     result["status"] = "invalid"
                     result["evaluation"] = err_range
                     result["summary"] = f"ΔE = {delta_e_value:.3f}"
+                    result["summary_visual"] = "Please enter a valid lower and upper threshold."
                     return result
 
                 if delta_e_value <= lower:
                     result["status"] = "below_lower"
                     result["evaluation"] = "Below lower threshold."
+                    result["summary_visual"] = "The sampled color is below the lower threshold."
                 elif delta_e_value <= upper:
                     result["status"] = "between_custom"
                     result["evaluation"] = "Between lower and upper thresholds."
+                    result["summary_visual"] = "The sampled color falls between the lower and upper thresholds."
                 else:
                     result["status"] = "above_upper"
                     result["evaluation"] = "Above upper threshold."
+                    result["summary_visual"] = "The sampled color exceeds the upper threshold."
 
                 result["summary"] = f"ΔE = {delta_e_value:.3f} | lower = {lower:.3f} | upper = {upper:.3f}"
                 return result
@@ -7623,6 +7827,7 @@ class PyFCSApp:
         result["status"] = "unknown_mode"
         result["evaluation"] = f"Unknown threshold mode: {mode}"
         result["summary"] = f"ΔE = {delta_e_value:.3f}"
+        result["summary_visual"] = "The threshold mode could not be interpreted."
         return result
 
 
@@ -9421,7 +9626,7 @@ class PyFCSApp:
         win = tk.Toplevel(parent)
         win.title("Custom Color Evaluation")
 
-        WIN_W, WIN_H = 980, 640
+        WIN_W, WIN_H = 980, 650
         win.geometry(f"{WIN_W}x{WIN_H}")
         win.resizable(False, False)
         win.configure(bg="#f2f2f2")
