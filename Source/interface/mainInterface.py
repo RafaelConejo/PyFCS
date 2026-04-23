@@ -677,36 +677,53 @@ class PyFCSApp:
 
 
 
-    def custom_warning(self, title="Warning", message="Warning"):
+    def custom_warning(self, title="Warning", message="Warning", parent=None):
         """Creates a custom, aesthetic warning message window with gray tones."""
-        warning_win = tk.Toplevel(self.root)
-        warning_win.title(title)
-        warning_win.configure(bg="#f5f5f5")  # Light gray background
 
-        # Warning text
-        label = tk.Label(warning_win, text=message, font=("Sans", 11, "bold"), 
-                        fg="#333333", bg="#f5f5f5", wraplength=350)
+        parent_win = self._get_active_dialog_parent(parent)
+
+        warning_win = tk.Toplevel(parent_win)
+        warning_win.title(title)
+        warning_win.configure(bg="#f5f5f5")
+
+        # Texto
+        label = tk.Label(
+            warning_win,
+            text=message,
+            font=("Sans", 11, "bold"),
+            fg="#333333",
+            bg="#f5f5f5",
+            wraplength=350
+        )
         label.pack(pady=15, padx=20)
 
-        # Stylized close button
-        btn_ok = tk.Button(warning_win, text="OK", font=("Sans", 11, "bold"), 
-                        bg="#999999", fg="white", bd=0, padx=10, pady=0, 
-                        relief="flat", activebackground="#8c8c8c", 
-                        command=warning_win.destroy)
+        # Botón
+        btn_ok = tk.Button(
+            warning_win,
+            text="OK",
+            font=("Sans", 11, "bold"),
+            bg="#999999",
+            fg="white",
+            bd=0,
+            padx=10,
+            pady=0,
+            relief="flat",
+            activebackground="#8c8c8c",
+            command=warning_win.destroy
+        )
         btn_ok.pack(pady=5)
 
-        # Bind keyboard keys to close the warning (Enter and Escape)
+        # Teclas
         warning_win.bind("<Return>", lambda event: warning_win.destroy())
         warning_win.bind("<Escape>", lambda event: warning_win.destroy())
 
-        # Optionally focus on the button so Enter works immediately
         btn_ok.focus_set()
-        
-        # Center the window
+
+        # Centrado respecto al parent correcto
         self.center_popup(warning_win, 400, 100)
 
-        # Keep the window on top of the main one
-        warning_win.transient(self.root)
+        # Use corrent parent
+        warning_win.transient(parent_win)
         warning_win.grab_set()
 
 
@@ -884,6 +901,51 @@ class PyFCSApp:
                 screen_width = popup.winfo_screenwidth()
                 screen_height = popup.winfo_screenheight()
 
+                popup_x = (screen_width - width) // 2
+                popup_y = (screen_height - height) // 2
+
+        popup.geometry(f"{width}x{height}+{popup_x}+{popup_y}")
+
+
+
+    def center_popup_to_parent(self, popup, width, height, parent=None):
+        """
+        Center a popup relative to the given parent window when possible.
+        Falls back to the screen center if the parent is unavailable.
+        """
+        try:
+            popup.update_idletasks()
+        except Exception:
+            pass
+
+        parent_win = self._get_active_dialog_parent(parent)
+
+        try:
+            parent_win.update_idletasks()
+            parent_state = parent_win.state()
+        except Exception:
+            parent_state = None
+
+        if parent_state in ("iconic", "withdrawn"):
+            screen_width = popup.winfo_screenwidth()
+            screen_height = popup.winfo_screenheight()
+            popup_x = (screen_width - width) // 2
+            popup_y = (screen_height - height) // 2
+        else:
+            try:
+                parent_x = parent_win.winfo_rootx()
+                parent_y = parent_win.winfo_rooty()
+                parent_width = parent_win.winfo_width()
+                parent_height = parent_win.winfo_height()
+
+                if parent_width <= 1 or parent_height <= 1:
+                    raise ValueError("Parent geometry is not usable.")
+
+                popup_x = parent_x + (parent_width - width) // 2
+                popup_y = parent_y + (parent_height - height) // 2
+            except Exception:
+                screen_width = popup.winfo_screenwidth()
+                screen_height = popup.winfo_screenheight()
                 popup_x = (screen_width - width) // 2
                 popup_y = (screen_height - height) // 2
 
@@ -1091,7 +1153,10 @@ class PyFCSApp:
         self._close_more_info_window()
 
         if filename is None:
-            filename = UtilsTools.prompt_file_selection("fuzzy_color_spaces/")
+            filename = UtilsTools.prompt_file_selection(
+                        "fuzzy_color_spaces/",
+                        parent=self._get_active_dialog_parent(self._color_evaluation_window)
+                    )
         if not filename:
             return
 
@@ -7312,7 +7377,11 @@ class PyFCSApp:
         """Show detailed info for the last clicked pixel/ROI with clickable prototype preview."""
         info = getattr(self, "_last_pixel_info", None)
         if not info:
-            messagebox.showinfo("More Info", "Click on an image pixel first.")
+            messagebox.showinfo(
+                "More Info",
+                "Click on an image pixel first.",
+                parent=self._get_active_dialog_parent()
+            )
             return
 
         self._ensure_threshold_settings()
@@ -8252,6 +8321,28 @@ class PyFCSApp:
 
 
 
+    def _get_active_dialog_parent(self, fallback=None):
+        """
+        Return the best parent window for dialogs so they appear above the
+        currently active tool window instead of the main root.
+        """
+        candidates = [
+            getattr(self, "_more_info_window", None),
+            getattr(self, "_color_evaluation_window", None),
+            fallback,
+            self.root,
+        ]
+
+        for win in candidates:
+            try:
+                if win is not None and win.winfo_exists():
+                    return win
+            except Exception:
+                pass
+
+        return self.root
+
+
 
     def _on_close_color_evaluation_window(self):
         """Handle manual closing of the Color Evaluation window."""
@@ -8480,15 +8571,16 @@ class PyFCSApp:
 
         tk.Button(
             analysis_actions,
-            text="Clear comparison",
-            command=lambda: self._clear_color_evaluation_comparison(vars_dict)
+            text="Evaluate custom color",
+            command=lambda: self._open_custom_color_input_dialog(vars_dict)
         ).pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         tk.Button(
             analysis_actions,
-            text="Evaluate custom color",
-            command=lambda: self._open_custom_color_input_dialog(vars_dict)
+            text="Clear comparison",
+            command=lambda: self._clear_color_evaluation_comparison(vars_dict)
         ).pack(side="left", fill="x", expand=True)
+
 
         tk.Label(
             right_panel,
@@ -8827,6 +8919,13 @@ class PyFCSApp:
             "loaded_supports": None,
             "loaded_prototypes": None,
             "loaded_file_path": None,
+
+            # Comparison state
+            "secondary_mode": None,          # None | "row" | "custom"
+            "secondary_custom_lab": None,
+            "secondary_custom_rgb": None,
+            "secondary_custom_hex": None,
+            "secondary_custom_name": "Custom Color",
         }
 
         return self._merge_threshold_vars(vars_dict)
@@ -9034,7 +9133,43 @@ class PyFCSApp:
                 continue
 
         return rows
-        
+
+
+
+    def _set_custom_color_as_evaluation_comparison(self, vars_dict, sample_lab, sample_rgb, sample_hex):
+        """Set a manually entered custom color as the active comparison color."""
+        vars_dict["comparison_mode"] = False
+        vars_dict["secondary_label"] = None
+
+        vars_dict["secondary_mode"] = "custom"
+        vars_dict["secondary_custom_lab"] = tuple(float(v) for v in sample_lab)
+        vars_dict["secondary_custom_rgb"] = tuple(int(round(v)) for v in sample_rgb)
+        vars_dict["secondary_custom_hex"] = str(sample_hex)
+        vars_dict["secondary_custom_name"] = "Custom Color"
+
+        if vars_dict.get("primary_label"):
+            vars_dict["analysis_mode_var"].set(
+                "Custom comparison active. Click different selected colors to compare against the custom color."
+            )
+        else:
+            vars_dict["analysis_mode_var"].set(
+                "Custom comparison loaded. Select a color from the list to evaluate it."
+            )
+
+        self._refresh_color_evaluation_comparison(vars_dict)
+
+        # Repaint row highlights so only primary stays highlighted
+        for label, refs in vars_dict.get("color_row_refs", {}).items():
+            bg = "#e8f0ff" if label == vars_dict.get("primary_label") else "white"
+
+            refs["frame"].configure(bg=bg)
+            refs["content"].configure(bg=bg)
+
+            for widget in refs["widgets"]:
+                try:
+                    widget.configure(bg=bg)
+                except Exception:
+                    pass
 
 
     def _render_color_evaluation_cards(self, vars_dict, data_source):
@@ -9048,6 +9183,13 @@ class PyFCSApp:
         vars_dict["primary_label"] = None
         vars_dict["secondary_label"] = None
         vars_dict["comparison_mode"] = False
+
+        vars_dict["secondary_mode"] = None
+        vars_dict["secondary_custom_lab"] = None
+        vars_dict["secondary_custom_rgb"] = None
+        vars_dict["secondary_custom_hex"] = None
+        vars_dict["secondary_custom_name"] = "Custom Color"
+
         vars_dict["analysis_mode_var"].set("Select a color from the list.")
 
         rows = self._extract_color_space_rows(data_source)
@@ -9098,6 +9240,12 @@ class PyFCSApp:
                 if primary is None:
                     vars_dict["primary_label"] = label
                     vars_dict["secondary_label"] = None
+
+                    vars_dict["secondary_mode"] = None
+                    vars_dict["secondary_custom_lab"] = None
+                    vars_dict["secondary_custom_rgb"] = None
+                    vars_dict["secondary_custom_hex"] = None
+
                     vars_dict["analysis_mode_var"].set(
                         "Primary color selected. Choose another color to compare."
                     )
@@ -9111,13 +9259,27 @@ class PyFCSApp:
                         return
 
                     vars_dict["secondary_label"] = label
+                    vars_dict["secondary_mode"] = "row"
+
+                    # Clear custom comparison if a row comparison is chosen
+                    vars_dict["secondary_custom_lab"] = None
+                    vars_dict["secondary_custom_rgb"] = None
+                    vars_dict["secondary_custom_hex"] = None
+
                     vars_dict["analysis_mode_var"].set(
                         "Comparison mode active. Click another color to update the comparison or clear it to exit."
                     )
             else:
                 vars_dict["primary_label"] = label
                 vars_dict["secondary_label"] = None
-                vars_dict["analysis_mode_var"].set("Single color selected.")
+
+                # Keep custom comparison if it exists
+                if vars_dict.get("secondary_mode") == "custom" and vars_dict.get("secondary_custom_lab") is not None:
+                    vars_dict["analysis_mode_var"].set(
+                        "Custom comparison active. Click different selected colors to compare against the custom color."
+                    )
+                else:
+                    vars_dict["analysis_mode_var"].set("Single color selected.")
 
             self._refresh_color_evaluation_comparison(vars_dict)
             _highlight_rows()
@@ -9234,6 +9396,12 @@ class PyFCSApp:
         vars_dict["primary_swatch"].itemconfig(vars_dict["primary_rect"], fill="#cccccc")
         vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
 
+        vars_dict["secondary_mode"] = None
+        vars_dict["secondary_custom_lab"] = None
+        vars_dict["secondary_custom_rgb"] = None
+        vars_dict["secondary_custom_hex"] = None
+        vars_dict["secondary_custom_name"] = "Custom Color"
+
         self._update_color_evaluation_result_card(
             vars_dict=vars_dict,
             title="Select a prototype to evaluate.",
@@ -9259,10 +9427,17 @@ class PyFCSApp:
         )
 
 
-    def _clear_color_evaluation_comparison(self, vars_dict):
+    def _clear_color_evaluation_comparison(self, vars_dict, clear_custom=True):
         """Clear the comparison color and return to single-color analysis."""
         vars_dict["comparison_mode"] = False
         vars_dict["secondary_label"] = None
+        vars_dict["secondary_mode"] = None
+
+        if clear_custom:
+            vars_dict["secondary_custom_lab"] = None
+            vars_dict["secondary_custom_rgb"] = None
+            vars_dict["secondary_custom_hex"] = None
+            vars_dict["secondary_custom_name"] = "Custom Color"
 
         if vars_dict.get("primary_label"):
             vars_dict["analysis_mode_var"].set("Single color selected.")
@@ -9285,10 +9460,11 @@ class PyFCSApp:
 
 
     def _refresh_color_evaluation_comparison(self, vars_dict):
-        """Refresh the right-side analysis panel for single or comparison mode."""
+        """Refresh the right-side analysis panel for single, row-comparison, or custom-comparison mode."""
         refs_map = vars_dict.get("color_row_refs", {})
         primary_label = vars_dict.get("primary_label")
         secondary_label = vars_dict.get("secondary_label")
+        secondary_mode = vars_dict.get("secondary_mode")
 
         primary_refs = refs_map.get(primary_label)
         secondary_refs = refs_map.get(secondary_label)
@@ -9303,7 +9479,10 @@ class PyFCSApp:
         vars_dict["primary_name_var"].set(primary_label)
         vars_dict["primary_swatch"].itemconfig(vars_dict["primary_rect"], fill=p_hex)
 
-        if not secondary_refs:
+        # --------------------------------------------------
+        # No comparison active
+        # --------------------------------------------------
+        if secondary_mode not in ("row", "custom"):
             vars_dict["secondary_name_var"].set("None")
             vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
 
@@ -9313,16 +9492,59 @@ class PyFCSApp:
                 detail="",
                 summary=(
                     "Use 'Compare with another color' to evaluate the selected color "
-                    "against a second prototype.\n" + self._get_color_evaluation_threshold_description()
+                    "against a second prototype, or 'Evaluate custom color' to compare it "
+                    "against a manually entered color.\n" +
+                    self._get_color_evaluation_threshold_description()
                 ),
                 status="unavailable"
             )
             return
 
-        s_lab = secondary_refs["lab"]
-        s_hex = secondary_refs["hex"]
+        # --------------------------------------------------
+        # Row comparison
+        # --------------------------------------------------
+        if secondary_mode == "row":
+            if not secondary_refs:
+                vars_dict["secondary_name_var"].set("None")
+                vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
 
-        vars_dict["secondary_name_var"].set(secondary_label)
+                self._update_color_evaluation_result_card(
+                    vars_dict=vars_dict,
+                    title="Comparison color not available.",
+                    detail="",
+                    summary="Select another color from the list or clear the comparison.",
+                    status="unavailable"
+                )
+                return
+
+            s_lab = secondary_refs["lab"]
+            s_hex = secondary_refs["hex"]
+            secondary_display_name = secondary_label
+
+        # --------------------------------------------------
+        # Custom comparison
+        # --------------------------------------------------
+        else:
+            s_lab = vars_dict.get("secondary_custom_lab")
+            s_rgb = vars_dict.get("secondary_custom_rgb")
+            s_hex = vars_dict.get("secondary_custom_hex")
+
+            if s_lab is None or s_rgb is None or s_hex is None:
+                vars_dict["secondary_name_var"].set("None")
+                vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
+
+                self._update_color_evaluation_result_card(
+                    vars_dict=vars_dict,
+                    title="Custom comparison color not available.",
+                    detail="",
+                    summary="Enter a valid custom color or clear the comparison.",
+                    status="unavailable"
+                )
+                return
+
+            secondary_display_name = vars_dict.get("secondary_custom_name", "Custom Color")
+
+        vars_dict["secondary_name_var"].set(secondary_display_name)
         vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill=s_hex)
 
         evaluation = self.evaluate_color_difference_threshold(
@@ -9361,15 +9583,41 @@ class PyFCSApp:
 
 
 
+    def _get_custom_color_input_mode_help(self, mode):
+        """Return labels, limits and examples for the selected custom color input mode."""
+        mode = str(mode).strip().upper()
+
+        if mode == "RGB":
+            return {
+                "labels": ("R", "G", "B"),
+                "limits": "Valid range: R, G, B ∈ [0, 255] (integers)",
+                "example": "Example: 120, 85, 200",
+            }
+
+        if mode == "LAB":
+            return {
+                "labels": ("L", "a", "b"),
+                "limits": "Typical range: L ∈ [0, 100], a ≈ [-128, 127], b ≈ [-128, 127]",
+                "example": "Example: 54.2, 18.5, -32.1",
+            }
+
+        return {
+            "labels": ("HEX", "", ""),
+            "limits": "Valid format: #RRGGBB or RRGGBB",
+            "example": "Example: #7A4FD9",
+        }
+
+
 
 
     def _open_custom_color_input_dialog(self, vars_dict):
-        """Open a dialog to input a custom color in RGB, LAB, or HEX."""
+        """Open a styled dialog to input a custom color in RGB, LAB, or HEX."""
         data_source = vars_dict.get("loaded_space_data") or {}
         if not self._extract_color_space_rows(data_source):
             self.custom_warning(
                 "No Color Space Loaded",
-                "Load a valid color space before evaluating a custom color."
+                "Load a valid color space before evaluating a custom color.",
+                parent=getattr(self, "_color_evaluation_window", None)
             )
             return
 
@@ -9377,11 +9625,13 @@ class PyFCSApp:
 
         dialog = tk.Toplevel(parent)
         dialog.title("Evaluate Custom Color")
-        dialog.geometry("420x240")
         dialog.resizable(False, False)
         dialog.configure(bg="#f2f2f2")
         dialog.transient(parent)
         dialog.grab_set()
+
+        WIN_W, WIN_H = 620, 355
+        self.center_popup_to_parent(dialog, WIN_W, WIN_H, parent=parent)
 
         input_vars = {
             "mode_var": tk.StringVar(value="RGB"),
@@ -9390,7 +9640,30 @@ class PyFCSApp:
             "v3_var": tk.StringVar(value=""),
             "hex_var": tk.StringVar(value=""),
             "status_var": tk.StringVar(value="Enter a color value."),
+            "limits_var": tk.StringVar(value=""),
+            "example_var": tk.StringVar(value=""),
+            "preview_hex_var": tk.StringVar(value="#D9D9D9"),
         }
+
+        mode_ui_map = {
+            "RGB": {
+                "labels": ("R", "G", "B"),
+                "limits": "Valid range: R, G, B ∈ [0, 255] (integers)",
+                "example": "Example: 120, 85, 200",
+            },
+            "LAB": {
+                "labels": ("L", "a", "b"),
+                "limits": "Valid range: L ∈ [0, 100], a ∈ [-128, 127], b ∈ [-128, 127]",
+                "example": "Example: 54.2, 18.5, -32.1",
+            },
+            "HEX": {
+                "labels": ("HEX", "", ""),
+                "limits": "Valid format: #RRGGBB or RRGGBB",
+                "example": "Example: #7A4FD9",
+            }
+        }
+
+        state = {"suspend_validation": False}
 
         main = tk.Frame(dialog, bg="#f2f2f2")
         main.pack(fill="both", expand=True, padx=12, pady=12)
@@ -9398,226 +9671,447 @@ class PyFCSApp:
         panel = tk.Frame(main, bg="white", bd=1, relief="solid")
         panel.pack(fill="both", expand=True)
 
+        header = tk.Frame(panel, bg="#f7f7f7", height=50)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+
         tk.Label(
-            panel,
+            header,
             text="Custom Color Input",
-            font=("Sans", 11, "bold"),
+            font=("Sans", 12, "bold"),
+            bg="#f7f7f7",
+            anchor="w",
+            padx=14
+        ).pack(side="left", fill="y")
+
+        tk.Label(
+            header,
+            text="RGB, LAB or HEX",
+            font=("Sans", 10, "italic"),
+            fg="#666666",
+            bg="#f7f7f7",
+            padx=14
+        ).pack(side="right", fill="y")
+
+        body = tk.Frame(panel, bg="white")
+        body.pack(fill="both", expand=True, padx=16, pady=14)
+
+        body.grid_columnconfigure(0, weight=1, minsize=270)
+        body.grid_columnconfigure(1, weight=0, minsize=24)
+        body.grid_columnconfigure(2, weight=0, minsize=270)
+
+        # =========================
+        # Left side: inputs
+        # =========================
+        left_panel = tk.Frame(body, bg="white")
+        left_panel.grid(row=0, column=0, sticky="nsew")
+
+        left_panel.grid_columnconfigure(0, minsize=110, weight=0)
+        left_panel.grid_columnconfigure(1, minsize=155, weight=0)
+        left_panel.grid_columnconfigure(2, weight=1)
+
+        tk.Label(
+            left_panel,
+            text="Input mode",
             bg="white",
+            anchor="w",
+            font=("Sans", 10, "bold")
+        ).grid(row=0, column=0, sticky="w", pady=(2, 12))
+
+        mode_combo = ttk.Combobox(
+            left_panel,
+            textvariable=input_vars["mode_var"],
+            state="readonly",
+            width=16,
+            values=["RGB", "LAB", "HEX"]
+        )
+        mode_combo.grid(row=0, column=1, sticky="w", pady=(2, 12))
+
+        lbl1 = tk.Label(left_panel, text="R:", bg="white", anchor="w", font=("Sans", 10))
+        entry1 = tk.Entry(left_panel, textvariable=input_vars["v1_var"], width=18, font=("Sans", 10))
+
+        lbl2 = tk.Label(left_panel, text="G:", bg="white", anchor="w", font=("Sans", 10))
+        entry2 = tk.Entry(left_panel, textvariable=input_vars["v2_var"], width=18, font=("Sans", 10))
+
+        lbl3 = tk.Label(left_panel, text="B:", bg="white", anchor="w", font=("Sans", 10))
+        entry3 = tk.Entry(left_panel, textvariable=input_vars["v3_var"], width=18, font=("Sans", 10))
+
+        hex_label = tk.Label(left_panel, text="HEX:", bg="white", anchor="w", font=("Sans", 10))
+        hex_entry = tk.Entry(left_panel, textvariable=input_vars["hex_var"], width=20, font=("Sans", 10))
+
+        # =========================
+        # Right side
+        # =========================
+        right_panel = tk.Frame(body, bg="white")
+        right_panel.grid(row=0, column=2, sticky="nsew")
+
+        # Guide top
+        guide_card = tk.Frame(right_panel, bg="#fafafa", bd=1, relief="solid")
+        guide_card.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            guide_card,
+            text="Input Guide",
+            bg="#fafafa",
+            font=("Sans", 10, "bold"),
             anchor="w",
             padx=12,
             pady=10
         ).pack(fill="x")
 
-        body = tk.Frame(panel, bg="white")
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
-
-        tk.Label(body, text="Input mode", bg="white").grid(row=0, column=0, sticky="w", pady=(0, 8))
-
-        mode_combo = ttk.Combobox(
-            body,
-            textvariable=input_vars["mode_var"],
-            state="readonly",
-            width=12,
-            values=["RGB", "LAB", "HEX"]
-        )
-        mode_combo.grid(row=0, column=1, sticky="w", pady=(0, 8))
-
-        lbl1 = tk.Label(body, text="R:", bg="white")
-        lbl1.grid(row=1, column=0, sticky="w", pady=4)
-        entry1 = tk.Entry(body, textvariable=input_vars["v1_var"], width=12)
-        entry1.grid(row=1, column=1, sticky="w", pady=4)
-
-        lbl2 = tk.Label(body, text="G:", bg="white")
-        lbl2.grid(row=2, column=0, sticky="w", pady=4)
-        entry2 = tk.Entry(body, textvariable=input_vars["v2_var"], width=12)
-        entry2.grid(row=2, column=1, sticky="w", pady=4)
-
-        lbl3 = tk.Label(body, text="B:", bg="white")
-        lbl3.grid(row=3, column=0, sticky="w", pady=4)
-        entry3 = tk.Entry(body, textvariable=input_vars["v3_var"], width=12)
-        entry3.grid(row=3, column=1, sticky="w", pady=4)
-
-        hex_label = tk.Label(body, text="HEX:", bg="white")
-        hex_entry = tk.Entry(body, textvariable=input_vars["hex_var"], width=16)
-
-        def refresh_inputs(*_):
-            mode = input_vars["mode_var"].get().strip().upper()
-
-            lbl1.grid_remove()
-            entry1.grid_remove()
-            lbl2.grid_remove()
-            entry2.grid_remove()
-            lbl3.grid_remove()
-            entry3.grid_remove()
-            hex_label.grid_remove()
-            hex_entry.grid_remove()
-
-            if mode == "RGB":
-                lbl1.config(text="R:")
-                lbl2.config(text="G:")
-                lbl3.config(text="B:")
-                lbl1.grid(row=1, column=0, sticky="w", pady=4)
-                entry1.grid(row=1, column=1, sticky="w", pady=4)
-                lbl2.grid(row=2, column=0, sticky="w", pady=4)
-                entry2.grid(row=2, column=1, sticky="w", pady=4)
-                lbl3.grid(row=3, column=0, sticky="w", pady=4)
-                entry3.grid(row=3, column=1, sticky="w", pady=4)
-
-            elif mode == "LAB":
-                lbl1.config(text="L:")
-                lbl2.config(text="a:")
-                lbl3.config(text="b:")
-                lbl1.grid(row=1, column=0, sticky="w", pady=4)
-                entry1.grid(row=1, column=1, sticky="w", pady=4)
-                lbl2.grid(row=2, column=0, sticky="w", pady=4)
-                entry2.grid(row=2, column=1, sticky="w", pady=4)
-                lbl3.grid(row=3, column=0, sticky="w", pady=4)
-                entry3.grid(row=3, column=1, sticky="w", pady=4)
-
-            else:
-                hex_label.grid(row=1, column=0, sticky="w", pady=4)
-                hex_entry.grid(row=1, column=1, sticky="w", pady=4)
-
-        mode_combo.bind("<<ComboboxSelected>>", refresh_inputs)
-        refresh_inputs()
+        tk.Label(
+            guide_card,
+            textvariable=input_vars["limits_var"],
+            bg="#fafafa",
+            justify="left",
+            anchor="w",
+            wraplength=235,
+            padx=12
+        ).pack(fill="x", pady=(0, 6))
 
         tk.Label(
-            body,
+            guide_card,
+            textvariable=input_vars["example_var"],
+            bg="#fafafa",
+            fg="#666666",
+            justify="left",
+            anchor="w",
+            wraplength=235,
+            font=("Sans", 9, "italic"),
+            padx=12
+        ).pack(fill="x", pady=(0, 10))
+
+        # Bottom row: preview + buttons
+        bottom_right = tk.Frame(right_panel, bg="white")
+        bottom_right.pack(fill="both", expand=True)
+
+        preview_card = tk.Frame(bottom_right, bg="#fafafa", bd=1, relief="solid")
+        preview_card.pack(side="left", fill="y", padx=(0, 12))
+
+        tk.Label(
+            preview_card,
+            text="Preview",
+            bg="#fafafa",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            padx=12,
+            pady=10
+        ).pack(fill="x")
+
+        preview_canvas = tk.Canvas(
+            preview_card,
+            width=130,
+            height=90,
+            bg="#fafafa",
+            highlightthickness=0,
+            bd=0
+        )
+        preview_canvas.pack(padx=12, pady=(0, 8))
+
+        preview_rect = preview_canvas.create_rectangle(
+            10, 10, 120, 80,
+            fill="#d9d9d9",
+            outline="#606060",
+            width=1
+        )
+
+        tk.Label(
+            preview_card,
+            textvariable=input_vars["preview_hex_var"],
+            bg="#fafafa",
+            font=("Sans", 9),
+            pady=2
+        ).pack(pady=(0, 10))
+
+        buttons_card = tk.Frame(bottom_right, bg="white")
+        buttons_card.pack(side="left", fill="y", anchor="s")
+
+        btn_evaluate = tk.Button(
+            buttons_card,
+            text="Evaluate",
+            width=14,
+            state="disabled",
+            command=lambda: self._submit_custom_color_input(vars_dict, input_vars, dialog)
+        )
+        btn_evaluate.pack(anchor="n", pady=(36, 8))
+
+        btn_cancel = tk.Button(
+            buttons_card,
+            text="Cancel",
+            width=14,
+            command=dialog.destroy
+        )
+        btn_cancel.pack(anchor="n")
+
+        status_label = tk.Label(
+            panel,
             textvariable=input_vars["status_var"],
             bg="white",
             fg="#666666",
             anchor="w",
             justify="left",
-            wraplength=340,
-            font=("Sans", 9, "italic")
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            wraplength=570,
+            font=("Sans", 9, "italic"),
+            padx=16,
+            pady=10
+        )
+        status_label.pack(fill="x")
 
-        buttons = tk.Frame(panel, bg="white")
-        buttons.pack(fill="x", padx=12, pady=(0, 10))
+        def _clear_numeric_fields():
+            input_vars["v1_var"].set("")
+            input_vars["v2_var"].set("")
+            input_vars["v3_var"].set("")
 
-        tk.Button(
-            buttons,
-            text="Cancel",
-            width=12,
-            command=dialog.destroy
-        ).pack(side="right")
+        def _clear_hex_field():
+            input_vars["hex_var"].set("")
 
-        tk.Button(
-            buttons,
-            text="Evaluate",
-            width=12,
-            command=lambda: self._submit_custom_color_input(vars_dict, input_vars, dialog)
-        ).pack(side="right", padx=(0, 6))
+        def _set_status(message, ok=False):
+            input_vars["status_var"].set(message)
+            status_label.configure(fg="#2d6a2d" if ok else "#8a4f00")
 
+        def _reset_preview():
+            preview_canvas.itemconfig(preview_rect, fill="#d9d9d9")
+            input_vars["preview_hex_var"].set("#D9D9D9")
 
+        def _validate_live(*_):
+            if state["suspend_validation"]:
+                return
 
-    def _submit_custom_color_input(self, vars_dict, input_vars, dialog):
-        """Validate the custom color input and open the result window."""
-        try:
-            sample_lab, sample_rgb, sample_hex = self._normalize_custom_color_input(
-                input_mode=input_vars["mode_var"].get(),
+            mode = input_vars["mode_var"].get().strip().upper()
+
+            ok, message, _, sample_rgb, _ = self._normalize_custom_color_input(
+                input_mode=mode,
                 value_1=input_vars["v1_var"].get(),
                 value_2=input_vars["v2_var"].get(),
                 value_3=input_vars["v3_var"].get(),
                 hex_value=input_vars["hex_var"].get()
             )
-        except ValueError as exc:
-            input_vars["status_var"].set(str(exc))
+
+            if ok and sample_rgb is not None:
+                preview_hex = self._safe_hex_from_rgb(sample_rgb)
+                preview_canvas.itemconfig(preview_rect, fill=preview_hex)
+                input_vars["preview_hex_var"].set(preview_hex.upper())
+
+                _set_status(message or "Valid color input.", ok=True)
+                btn_evaluate.config(state="normal")
+            else:
+                _reset_preview()
+                _set_status(message or "Enter a valid color value.", ok=False)
+                btn_evaluate.config(state="disabled")
+
+        def refresh_inputs(*_):
+            state["suspend_validation"] = True
+            try:
+                mode = input_vars["mode_var"].get().strip().upper()
+                help_data = mode_ui_map.get(mode, mode_ui_map["RGB"])
+
+                input_vars["limits_var"].set(help_data["limits"])
+                input_vars["example_var"].set(help_data["example"])
+
+                for widget in (lbl1, entry1, lbl2, entry2, lbl3, entry3, hex_label, hex_entry):
+                    try:
+                        widget.grid_remove()
+                    except Exception:
+                        pass
+
+                if mode in ("RGB", "LAB"):
+                    lbl1.config(text=f"{help_data['labels'][0]}:")
+                    lbl2.config(text=f"{help_data['labels'][1]}:")
+                    lbl3.config(text=f"{help_data['labels'][2]}:")
+
+                    lbl1.grid(row=1, column=0, sticky="w", pady=7)
+                    entry1.grid(row=1, column=1, sticky="w", pady=7)
+
+                    lbl2.grid(row=2, column=0, sticky="w", pady=7)
+                    entry2.grid(row=2, column=1, sticky="w", pady=7)
+
+                    lbl3.grid(row=3, column=0, sticky="w", pady=7)
+                    entry3.grid(row=3, column=1, sticky="w", pady=7)
+
+                    _clear_hex_field()
+                    _reset_preview()
+                    _set_status("Enter a color value.", ok=False)
+                    btn_evaluate.config(state="disabled")
+
+                    dialog.after_idle(entry1.focus_set)
+
+                else:
+                    hex_label.grid(row=1, column=0, sticky="w", pady=7)
+                    hex_entry.grid(row=1, column=1, sticky="w", pady=7)
+
+                    _clear_numeric_fields()
+                    _reset_preview()
+                    _set_status("Enter a color value.", ok=False)
+                    btn_evaluate.config(state="disabled")
+
+                    dialog.after_idle(hex_entry.focus_set)
+
+            finally:
+                state["suspend_validation"] = False
+                dialog.after_idle(_validate_live)
+
+        mode_combo.bind("<<ComboboxSelected>>", refresh_inputs)
+
+        for var_name in ("v1_var", "v2_var", "v3_var", "hex_var"):
+            input_vars[var_name].trace_add("write", _validate_live)
+
+        dialog.bind(
+            "<Return>",
+            lambda e: btn_evaluate.invoke() if str(btn_evaluate["state"]) == "normal" else None
+        )
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+        refresh_inputs()
+
+
+
+    def _submit_custom_color_input(self, vars_dict, input_vars, dialog):
+        """Validate the custom color input and use it as comparison color."""
+        ok, message, sample_lab, sample_rgb, sample_hex = self._normalize_custom_color_input(
+            input_mode=input_vars["mode_var"].get(),
+            value_1=input_vars["v1_var"].get(),
+            value_2=input_vars["v2_var"].get(),
+            value_3=input_vars["v3_var"].get(),
+            hex_value=input_vars["hex_var"].get()
+        )
+
+        if not ok:
+            input_vars["status_var"].set(message)
+
+            self.custom_warning(
+                "Invalid Custom Color",
+                message,
+                parent=dialog
+            )
             return
 
         dialog.destroy()
 
-        base_data = self._get_custom_color_base_data(
+        self._set_custom_color_as_evaluation_comparison(
             vars_dict=vars_dict,
             sample_lab=sample_lab,
             sample_rgb=sample_rgb,
             sample_hex=sample_hex
         )
 
-        self._open_custom_color_result_window(vars_dict, base_data)
-
 
 
     def _normalize_custom_color_input(self, input_mode, value_1="", value_2="", value_3="", hex_value=""):
         """
-        Normalize a user-entered color into LAB, RGB, and HEX.
-
-        Parameters
-        ----------
-        input_mode : str
-            One of: RGB, LAB, HEX
-        value_1, value_2, value_3 : str
-            Numeric channel values for RGB or LAB.
-        hex_value : str
-            Hexadecimal color string for HEX mode.
+        Normalize and validate a user-entered color into LAB, RGB, and HEX.
 
         Returns
         -------
         tuple
-            (sample_lab, sample_rgb, sample_hex)
-
-        Raises
-        ------
-        ValueError
-            If the input is invalid.
+            (ok, message, sample_lab, sample_rgb, sample_hex)
         """
         mode = str(input_mode).strip().upper()
 
+        # =========================
+        # RGB
+        # =========================
         if mode == "RGB":
+            t1 = str(value_1).strip()
+            t2 = str(value_2).strip()
+            t3 = str(value_3).strip()
+
+            if not t1 or not t2 or not t3:
+                return False, "Enter all RGB values.", None, None, None
+
             try:
-                r = int(str(value_1).strip())
-                g = int(str(value_2).strip())
-                b = int(str(value_3).strip())
+                r = int(t1)
+                g = int(t2)
+                b = int(t3)
             except Exception:
-                raise ValueError("RGB values must be valid integers.")
+                return False, "RGB values must be valid integers.", None, None, None
 
             if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
-                raise ValueError("RGB values must be between 0 and 255.")
+                return False, "RGB values must be between 0 and 255.", None, None, None
 
-            sample_rgb = (r, g, b)
-            sample_lab = UtilsTools.srgb_to_lab(r, g, b)
-            sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
-
-            return sample_lab, sample_rgb, sample_hex
-
-        elif mode == "LAB":
             try:
-                L = float(str(value_1).strip())
-                a = float(str(value_2).strip())
-                b = float(str(value_3).strip())
+                sample_rgb = (r, g, b)
+                sample_lab = UtilsTools.srgb_to_lab(r, g, b)
+                sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
             except Exception:
-                raise ValueError("LAB values must be valid numbers.")
+                return False, "Unable to convert RGB color.", None, None, None
 
-            sample_lab = (L, a, b)
-            sample_rgb = UtilsTools.lab_to_rgb(sample_lab)
-            sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
+            return True, "Valid RGB color.", sample_lab, sample_rgb, sample_hex
 
-            return sample_lab, sample_rgb, sample_hex
+        # =========================
+        # LAB
+        # =========================
+        elif mode == "LAB":
+            t1 = str(value_1).strip().replace(",", ".")
+            t2 = str(value_2).strip().replace(",", ".")
+            t3 = str(value_3).strip().replace(",", ".")
 
+            if not t1 or not t2 or not t3:
+                return False, "Enter all LAB values.", None, None, None
+
+            try:
+                L = float(t1)
+                a = float(t2)
+                b = float(t3)
+            except Exception:
+                return False, "LAB values must be valid numbers.", None, None, None
+
+            if not np.isfinite(L) or not np.isfinite(a) or not np.isfinite(b):
+                return False, "LAB values must be finite numbers.", None, None, None
+
+            if not (0 <= L <= 100):
+                return False, "L must be between 0 and 100.", None, None, None
+
+            if not (-128 <= a <= 127):
+                return False, "a must be between -128 and 127.", None, None, None
+
+            if not (-128 <= b <= 127):
+                return False, "b must be between -128 and 127.", None, None, None
+
+            try:
+                sample_lab = (L, a, b)
+                sample_rgb = UtilsTools.lab_to_rgb(sample_lab)
+                sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
+            except Exception:
+                return False, "Unable to convert LAB color.", None, None, None
+
+            return True, "Valid LAB color.", sample_lab, sample_rgb, sample_hex
+
+        # =========================
+        # HEX
+        # =========================
         elif mode == "HEX":
             hex_text = str(hex_value).strip().upper()
+
+            if not hex_text:
+                return False, "Enter a HEX value.", None, None, None
 
             if hex_text.startswith("#"):
                 hex_text = hex_text[1:]
 
             if len(hex_text) != 6:
-                raise ValueError("HEX value must contain exactly 6 hexadecimal characters.")
+                return False, "HEX value must contain exactly 6 hexadecimal characters.", None, None, None
+
+            allowed = set("0123456789ABCDEF")
+            if any(ch not in allowed for ch in hex_text):
+                return False, "HEX value is not valid.", None, None, None
 
             try:
                 r = int(hex_text[0:2], 16)
                 g = int(hex_text[2:4], 16)
                 b = int(hex_text[4:6], 16)
             except Exception:
-                raise ValueError("HEX value is not valid.")
+                return False, "HEX value is not valid.", None, None, None
 
-            sample_rgb = (r, g, b)
-            sample_lab = UtilsTools.srgb_to_lab(r, g, b)
-            sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
+            try:
+                sample_rgb = (r, g, b)
+                sample_lab = UtilsTools.srgb_to_lab(r, g, b)
+                sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
+            except Exception:
+                return False, "Unable to convert HEX color.", None, None, None
 
-            return sample_lab, sample_rgb, sample_hex
+            return True, "Valid HEX color.", sample_lab, sample_rgb, sample_hex
 
-        raise ValueError("Unsupported input mode.")
-
+        return False, "Unsupported input mode.", None, None, None
 
 
     def _get_custom_color_base_data(self, vars_dict, sample_lab, sample_rgb, sample_hex):
@@ -9645,55 +10139,6 @@ class PyFCSApp:
             "coord_text": "Custom color input",
             "roi_text": None,
         }
-
-
-    def _open_custom_color_result_window(self, vars_dict, base_data):
-        """Open a result window for a manually entered custom color."""
-        parent = getattr(self, "_color_evaluation_window", self.root)
-
-        win = tk.Toplevel(parent)
-        win.title("Custom Color Evaluation")
-
-        WIN_W, WIN_H = 980, 650
-        win.geometry(f"{WIN_W}x{WIN_H}")
-        win.resizable(False, False)
-        win.configure(bg="#f2f2f2")
-        win.transient(parent)
-        win.grab_set()
-        win.focus_set()
-
-        result_vars = self._create_more_info_vars(base_data)
-
-        main = tk.Frame(win, bg="#f2f2f2")
-        main.pack(fill="both", expand=True, padx=10, pady=10)
-
-        self._build_more_info_header(main, base_data)
-
-        content_refs = self._build_more_info_content(main, base_data, result_vars)
-
-        self._populate_more_info_memberships(
-            base_data=base_data,
-            vars_dict=result_vars,
-            refs=content_refs
-        )
-
-        btns = tk.Frame(main, bg="#f2f2f2")
-        btns.pack(fill="x", pady=(10, 0))
-
-        tk.Button(
-            btns,
-            text="Use another color",
-            width=16,
-            command=lambda: (win.destroy(), self._open_custom_color_input_dialog(vars_dict))
-        ).pack(side="right", padx=(6, 0))
-
-        tk.Button(
-            btns,
-            text="Close",
-            width=12,
-            command=win.destroy
-        ).pack(side="right")
-
 
 
 
