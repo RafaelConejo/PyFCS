@@ -1154,9 +1154,11 @@ class PyFCSApp:
 
         if filename is None:
             filename = UtilsTools.prompt_file_selection(
-                        "fuzzy_color_spaces/",
-                        parent=self._get_active_dialog_parent(self._color_evaluation_window)
-                    )
+                "fuzzy_color_spaces/",
+                parent=self._get_active_dialog_parent(
+                    getattr(self, "_color_evaluation_window", None)
+                )
+            )
         if not filename:
             return
 
