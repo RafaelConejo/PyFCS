@@ -8675,8 +8675,17 @@ class PyFCSApp:
         results_block = tk.Frame(analysis_body, bg="white")
         results_block.pack(fill="both", expand=True)
 
+        results_columns = tk.Frame(results_block, bg="white")
+        results_columns.pack(fill="both", expand=True)
+
+        result_left = tk.Frame(results_columns, bg="white")
+        result_left.pack(side="left", fill="both", expand=True, padx=(0, 8))
+
+        membership_right = tk.Frame(results_columns, bg="white", bd=1, relief="solid", width=250)
+        membership_right.pack_propagate(False)
+
         tk.Label(
-            results_block,
+            result_left,
             text="Results",
             font=("Sans", 10, "bold"),
             anchor="w",
@@ -8692,7 +8701,7 @@ class PyFCSApp:
             highlightbackground="#bdbdbd",
             highlightcolor="#bdbdbd"
         )
-        result_card.pack(fill="x", pady=(0, 2))
+        result_card.pack(fill="x", pady=(0, 2), in_=result_left)
 
         result_header = tk.Frame(result_card, bg="#eeeeee")
         result_header.pack(fill="x")
@@ -8772,6 +8781,54 @@ class PyFCSApp:
         )
         result_summary_label.pack(anchor="w", fill="x")
 
+        tk.Label(
+            membership_right,
+            text="Membership Degree (μ)",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white",
+            padx=10,
+            pady=8
+        ).pack(fill="x")
+
+        membership_list_canvas = tk.Canvas(
+            membership_right,
+            bg="white",
+            highlightthickness=0,
+            bd=0
+        )
+        membership_list_scroll = ttk.Scrollbar(
+            membership_right,
+            orient="vertical",
+            command=membership_list_canvas.yview
+        )
+        membership_list_inner = tk.Frame(membership_list_canvas, bg="white")
+
+        membership_list_inner.bind(
+            "<Configure>",
+            lambda e: membership_list_canvas.configure(
+                scrollregion=membership_list_canvas.bbox("all")
+            )
+        )
+
+        membership_list_canvas.create_window((0, 0), window=membership_list_inner, anchor="nw")
+        membership_list_canvas.configure(yscrollcommand=membership_list_scroll.set)
+
+        membership_list_canvas.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+        membership_list_scroll.pack(side="right", fill="y", padx=(0, 8), pady=(0, 10))
+
+        def _on_membership_mousewheel(event):
+            membership_list_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        membership_list_canvas.bind(
+            "<Enter>",
+            lambda e: membership_list_canvas.bind_all("<MouseWheel>", _on_membership_mousewheel)
+        )
+        membership_list_canvas.bind(
+            "<Leave>",
+            lambda e: membership_list_canvas.unbind_all("<MouseWheel>")
+        )
+
         vars_dict["analysis_result_refs"] = {
             "result_card": result_card,
             "result_header": result_header,
@@ -8786,6 +8843,8 @@ class PyFCSApp:
             "result_summary_icon_circle": result_summary_icon_circle,
             "result_summary_icon_text": result_summary_icon_text,
             "result_summary_label": result_summary_label,
+            "membership_right": membership_right,
+            "membership_list_inner": membership_list_inner,
         }
 
         def _update_analysis_result_wrap(event=None):
@@ -8836,6 +8895,98 @@ class PyFCSApp:
         self._refresh_color_evaluation_threshold_ui(vars_dict, refs)
         self._load_current_color_space_for_evaluation(vars_dict)
 
+
+    def _get_evaluation_proto_hex(self, vars_dict, label):
+        """Return HEX color for a prototype in the Color Evaluation loaded space."""
+        refs_map = vars_dict.get("color_row_refs", {})
+
+        if label in refs_map:
+            return refs_map[label].get("hex", "#cccccc")
+
+        data_source = vars_dict.get("loaded_space_data") or {}
+
+        try:
+            color_value = data_source[label]
+
+            lab = None
+            if isinstance(color_value, dict):
+                if "positive_prototype" in color_value:
+                    lab = color_value["positive_prototype"]
+                elif "Color" in color_value:
+                    lab = color_value["Color"]
+
+            if lab is None:
+                return "#cccccc"
+
+            lab_arr = np.array(lab, dtype=float)
+            rgb = UtilsTools.lab_to_rgb(lab_arr)
+            return self._safe_hex_from_rgb(rgb)
+
+        except Exception:
+            return "#cccccc"
+
+
+    def _update_color_evaluation_membership_panel(self, vars_dict, sample_lab=None):
+        refs = vars_dict.get("analysis_result_refs", {})
+        membership_right = refs.get("membership_right")
+        list_inner = refs.get("membership_list_inner")
+
+        if membership_right is None or list_inner is None:
+            return
+
+        if sample_lab is None:
+            membership_right.pack_forget()
+            return
+
+        try:
+            if not membership_right.winfo_ismapped():
+                membership_right.pack(side="left", fill="both", padx=(8, 0))
+        except Exception:
+            pass
+
+        for child in list_inner.winfo_children():
+            child.destroy()
+
+        memberships = self._calculate_evaluation_memberships(vars_dict, sample_lab)
+
+        if not memberships:
+            tk.Label(
+                list_inner,
+                text="The loaded color space has no fuzzy membership data available.",
+                bg="white",
+                fg="#777777",
+                anchor="w",
+                justify="left",
+                wraplength=210,
+                font=("Sans", 9, "italic")
+            ).pack(fill="x", padx=4, pady=4)
+            return
+
+        for label, mu in memberships:
+            row = tk.Frame(list_inner, bg="white")
+            row.pack(fill="x", padx=4, pady=2)
+
+            proto_hex = self._get_evaluation_proto_hex(vars_dict, label)
+
+            swatch = tk.Canvas(row, width=16, height=16, bg="white", highlightthickness=0)
+            swatch.pack(side="left", padx=(0, 6))
+            swatch.create_rectangle(1, 1, 15, 15, fill=proto_hex, outline="#707070")
+
+            tk.Label(
+                row,
+                text=str(label),
+                bg="white",
+                anchor="w",
+                font=("Sans", 9)
+            ).pack(side="left", fill="x", expand=True)
+
+            tk.Label(
+                row,
+                text=f"μ = {float(mu):.4f}",
+                bg="white",
+                anchor="e",
+                font=("Sans", 9)
+            ).pack(side="right")
 
 
     def _load_color_space_for_evaluation_from_file(self, filename):
@@ -9500,6 +9651,8 @@ class PyFCSApp:
                 ),
                 status="unavailable"
             )
+
+            self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
             return
 
         # --------------------------------------------------
@@ -9545,9 +9698,15 @@ class PyFCSApp:
                 return
 
             secondary_display_name = vars_dict.get("secondary_custom_name", "Custom Color")
+            
 
         vars_dict["secondary_name_var"].set(secondary_display_name)
         vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill=s_hex)
+
+        if secondary_mode == "custom":
+            self._update_color_evaluation_membership_panel(vars_dict, sample_lab=s_lab)
+        else:
+            self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
 
         evaluation = self.evaluate_color_difference_threshold(
             sample_lab=p_lab,
