@@ -1,6 +1,7 @@
 from tkinter import ttk
 import tkinter as tk
 import os
+import numpy as np
 
 ### my libraries ###
 from Source.input_output.Input import Input
@@ -75,252 +76,213 @@ class FuzzyColorSpaceManager:
             }
 
     def create_color_display_frame(
-        self,
-        parent,
-        color_name,
-        rgb,
-        lab,
-        color_checks,
-        selected=False,
-        on_toggle=None
+    self,
+    parent,
+    color_name,
+    rgb,
+    lab,
+    color_checks,
+    selected=False,
+    on_toggle=None,
+    editable_name=False,
+    on_name_change=None
     ):
         """
-        Create a styled UI row to display a color with:
+        Create a UI row to display a color with:
         - color swatch
-        - color name
-        - RGB/HEX preview
+        - editable or fixed color name
         - LAB values
         - checkbox
 
         Parameters
         ----------
-        parent : widget
-            Parent container.
-        color_name : str
-            Display name of the color.
-        rgb : tuple/list
-            RGB values.
-        lab : tuple/list or dict
-            LAB values.
-        color_checks : dict
-            Selection state dictionary.
-        selected : bool
-            Initial checkbox state.
-        on_toggle : callable
-            Optional callback after checkbox changes.
+        editable_name : bool
+            If True, the color name is shown in an Entry.
+        on_name_change : callable
+            Callback called as:
+                final_name = on_name_change(old_name, new_name)
         """
+        MAX_NAME_CHARS = 18
 
-        def _lab_to_tuple(lab_value):
-            if isinstance(lab_value, dict):
-                return (
-                    float(lab_value.get("L", 0.0)),
-                    float(lab_value.get("A", lab_value.get("a", 0.0))),
-                    float(lab_value.get("B", lab_value.get("b", 0.0)))
-                )
-
-            return (
-                float(lab_value[0]),
-                float(lab_value[1]),
-                float(lab_value[2])
-            )
-
-        L, A, B = _lab_to_tuple(lab)
-
+        # ------------------------------------------------------------------
+        # Normalize LAB
+        # ------------------------------------------------------------------
         try:
-            rgb_tuple = tuple(int(round(v)) for v in rgb)
-            color_hex = UtilsTools.rgb_to_hex(rgb_tuple)
+            if isinstance(lab, dict):
+                lab_display = (
+                    float(lab.get("L", 0.0)),
+                    float(lab.get("A", lab.get("a", 0.0))),
+                    float(lab.get("B", lab.get("b", 0.0)))
+                )
+            else:
+                lab_arr = np.array(lab, dtype=float).reshape(-1)
+                lab_display = (
+                    float(lab_arr[0]),
+                    float(lab_arr[1]),
+                    float(lab_arr[2])
+                )
         except Exception:
-            rgb_tuple = UtilsTools.lab_to_rgb((L, A, B))
-            color_hex = UtilsTools.rgb_to_hex(rgb_tuple)
+            lab_display = (0.0, 0.0, 0.0)
 
         # ------------------------------------------------------------------
-        # Outer card
+        # Normalize RGB / HEX
         # ------------------------------------------------------------------
-        row = tk.Frame(
+        try:
+            if hasattr(rgb, "tolist"):
+                rgb = rgb.tolist()
+
+            if isinstance(rgb, list) and len(rgb) == 1 and isinstance(rgb[0], (list, tuple, np.ndarray)):
+                rgb = rgb[0]
+
+            rgb = tuple(int(v) for v in rgb[:3])
+            hex_color = UtilsTools.rgb_to_hex(rgb)
+        except Exception:
+            rgb = (217, 217, 217)
+            hex_color = "#d9d9d9"
+
+        # ------------------------------------------------------------------
+        # Outer row/card
+        # ------------------------------------------------------------------
+        row_card = tk.Frame(
             parent,
-            bg="white",
+            bg="#f4f4f4",
             bd=1,
-            relief="solid",
-            highlightthickness=0
+            relief="solid"
         )
-        row.pack(fill="x", expand=True, padx=10, pady=6)
+        row_card.pack(fill="x", expand=True, pady=6, padx=12)
 
-        inner = tk.Frame(row, bg="white")
-        inner.pack(fill="x", expand=True, padx=10, pady=8)
+        inner = tk.Frame(row_card, bg="#f4f4f4")
+        inner.pack(fill="x", padx=10, pady=8)
 
         # ------------------------------------------------------------------
         # Swatch
         # ------------------------------------------------------------------
-        swatch_outer = tk.Frame(
-            inner,
-            bg="#e6e6e6",
-            width=46,
-            height=34
-        )
-        swatch_outer.pack(side="left", padx=(0, 12))
-        swatch_outer.pack_propagate(False)
+        swatch_container = tk.Frame(inner, bg="#f4f4f4", width=54)
+        swatch_container.pack(side="left", fill="y")
+        swatch_container.pack_propagate(False)
 
         color_box = tk.Label(
-            swatch_outer,
-            bg=color_hex,
-            relief="solid",
-            bd=1
-        )
-        color_box.pack(fill="both", expand=True, padx=2, pady=2)
-
-        # ------------------------------------------------------------------
-        # Text block
-        # ------------------------------------------------------------------
-        text_block = tk.Frame(inner, bg="white")
-        text_block.pack(side="left", fill="x", expand=True)
-
-        MAX_NAME_CHARS = 22
-        shown_name = str(color_name)
-        if len(shown_name) > MAX_NAME_CHARS:
-            shown_name = shown_name[:MAX_NAME_CHARS - 1] + "…"
-
-        name_row = tk.Frame(text_block, bg="white")
-        name_row.pack(fill="x")
-
-        tk.Label(
-            name_row,
-            text=shown_name,
-            bg="white",
-            fg="#222222",
-            font=("Helvetica", 11, "bold"),
-            anchor="w"
-        ).pack(side="left")
-
-        tk.Label(
-            name_row,
-            text=color_hex.upper(),
-            bg="white",
-            fg="#777777",
-            font=("Consolas", 9),
-            anchor="e"
-        ).pack(side="right", padx=(8, 0))
-
-        detail_row = tk.Frame(text_block, bg="white")
-        detail_row.pack(fill="x", pady=(4, 0))
-
-        rgb_text = f"RGB: {rgb_tuple[0]}, {rgb_tuple[1]}, {rgb_tuple[2]}"
-        lab_text = f"L: {L:.1f}, A: {A:.1f}, B: {B:.1f}"
-
-        tk.Label(
-            detail_row,
-            text=rgb_text,
-            bg="white",
-            fg="#666666",
-            font=("Helvetica", 9),
-            anchor="w"
-        ).pack(side="left")
-
-        tk.Label(
-            detail_row,
-            text=lab_text,
-            bg="white",
-            fg="#666666",
-            font=("Helvetica", 9, "italic"),
-            anchor="e"
-        ).pack(side="right", padx=(8, 0))
-
-        # ------------------------------------------------------------------
-        # Checkbox
-        # ------------------------------------------------------------------
-        var = tk.BooleanVar(value=bool(selected))
-
-        def _on_check():
-            if callable(on_toggle):
-                on_toggle()
-
-        color_checks[color_name] = {
-            "var": var,
-            "lab": (L, A, B)
-        }
-
-        check = ttk.Checkbutton(
-            inner,
-            variable=var,
-            command=_on_check
-        )
-        check.pack(side="right", padx=(12, 0))
-
-        # ------------------------------------------------------------------
-        # Optional: click anywhere on row toggles checkbox
-        # ------------------------------------------------------------------
-        def _toggle_from_row(event=None):
-            var.set(not var.get())
-            _on_check()
-
-        for widget in (row, inner, swatch_outer, color_box, text_block, name_row, detail_row):
-            widget.bind("<Button-1>", _toggle_from_row)
-
-        return row
-
-
-    def create_color_display_frame_add(self, parent, color_name, lab, color_checks):
-        """
-        Create a UI row to display a color being added/previewed where:
-        - LAB is always visible (right)
-        - name has a fixed maximum width and can be truncated with an ellipsis
-          to avoid pushing LAB off-screen
-        - checkbox is fixed on the far right
-        - swatch is derived from LAB via UtilsTools.lab_to_rgb()
-
-        Parameters
-        ----------
-        parent : ttk.Widget
-            Container where the row will be added.
-        color_name : str
-            Proposed/display name of the color.
-        lab : dict
-            LAB dictionary with keys 'L', 'A', 'B' (used for display and stored).
-        color_checks : dict
-            Dictionary used to store selection state and associated LAB data.
-        """
-        # Outer row container
-        frame = ttk.Frame(parent)
-        frame.pack(fill="x", expand=True, pady=8, padx=20)
-
-        # Convert LAB to RGB for the swatch preview
-        rgb = UtilsTools.lab_to_rgb(lab)
-
-        # --- Color swatch (fixed size) ---
-        color_box = tk.Label(
-            frame,
-            bg=UtilsTools.rgb_to_hex(rgb),
-            width=5,
+            swatch_container,
+            bg=hex_color,
+            width=4,
             height=2,
             relief="solid",
             bd=1
         )
-        color_box.pack(side="left", padx=(10, 10))
+        color_box.pack(anchor="center", pady=2)
 
-        # --- Checkbox (fixed to the far right) ---
-        var = tk.BooleanVar()
-        color_checks[color_name] = {"var": var, "lab": lab}
-        ttk.Checkbutton(frame, variable=var).pack(side="right", padx=(10, 10))
+        # ------------------------------------------------------------------
+        # Name + LAB block
+        # ------------------------------------------------------------------
+        content = tk.Frame(inner, bg="#f4f4f4")
+        content.pack(side="left", fill="x", expand=True, padx=(10, 10))
 
-        # --- Middle content (expands) ---
-        text_frame = ttk.Frame(frame)
-        text_frame.pack(side="left", fill="x", expand=True, padx=20)
+        top_line = tk.Frame(content, bg="#f4f4f4")
+        top_line.pack(fill="x")
 
-        # ---- Name (fixed width so it never steals LAB space) ----
-        MAX_NAME_CHARS = 10  # "round name" limit for display
-        shown_name = color_name
-        if len(shown_name) > MAX_NAME_CHARS:
-            shown_name = shown_name[:MAX_NAME_CHARS - 1] + "…"
+        current_name = {"value": str(color_name)}
 
-        name_lbl = ttk.Label(
-            text_frame,
-            text=shown_name,
-            font=("Helvetica", 11),
-            width=MAX_NAME_CHARS,
+        # ----- Editable name -----
+        if editable_name:
+            def _validate_name_length(proposed_text):
+                try:
+                    return len(proposed_text) <= MAX_NAME_CHARS
+                except Exception:
+                    return False
+
+            vcmd = (parent.register(_validate_name_length), "%P")
+
+            name_var = tk.StringVar(value=str(color_name)[:MAX_NAME_CHARS])
+
+            name_entry = tk.Entry(
+                top_line,
+                textvariable=name_var,
+                font=("Helvetica", 10),
+                width=18,
+                relief="solid",
+                bd=1,
+                bg="white",
+                validate="key",
+                validatecommand=vcmd
+            )
+            name_entry.pack(side="left", padx=(0, 14), ipady=2)
+
+            def _commit_name(event=None):
+                old_name = current_name["value"]
+
+                try:
+                    requested_name = name_var.get().strip()
+                except Exception:
+                    requested_name = old_name
+
+                if len(requested_name) > MAX_NAME_CHARS:
+                    requested_name = requested_name[:MAX_NAME_CHARS]
+
+                if callable(on_name_change):
+                    final_name = on_name_change(old_name, requested_name)
+                else:
+                    final_name = requested_name or old_name
+
+                if not final_name:
+                    final_name = old_name
+
+                final_name = str(final_name).strip()[:MAX_NAME_CHARS]
+
+                current_name["value"] = final_name
+                name_var.set(final_name)
+
+            name_entry.bind("<Return>", _commit_name)
+            name_entry.bind("<FocusOut>", _commit_name)
+
+        # ----- Fixed name -----
+        else:
+            shown_name = str(color_name)
+            if len(shown_name) > MAX_NAME_CHARS:
+                shown_name = shown_name[:MAX_NAME_CHARS - 1] + "…"
+
+            tk.Label(
+                top_line,
+                text=shown_name,
+                font=("Helvetica", 10, "bold"),
+                bg="#f4f4f4",
+                fg="#222222",
+                anchor="w",
+                width=18
+            ).pack(side="left", padx=(0, 14))
+
+        # ----- LAB values -----
+        lab_text = f"L: {lab_display[0]:.1f}, A: {lab_display[1]:.1f}, B: {lab_display[2]:.1f}"
+
+        tk.Label(
+            top_line,
+            text=lab_text,
+            font=("Helvetica", 10, "italic"),
+            bg="#f4f4f4",
+            fg="#444444",
             anchor="w"
-        )
-        name_lbl.pack(side="left", padx=(0, 20))
+        ).pack(side="left", fill="x", expand=True)
 
-        # ---- LAB (always visible on the right) ----
-        lab_values = f"L: {lab['L']:.1f}, A: {lab['A']:.1f}, B: {lab['B']:.1f}"
-        lab_lbl = ttk.Label(text_frame, text=lab_values, font=("Helvetica", 10, "italic"))
-        lab_lbl.pack(side="right", padx=(20, 0))
+        # ------------------------------------------------------------------
+        # Checkbox block
+        # ------------------------------------------------------------------
+        var = tk.BooleanVar(value=selected)
+        color_checks[color_name] = {"var": var, "lab": lab}
+
+        def _notify_toggle():
+            if callable(on_toggle):
+                on_toggle()
+
+        check_container = tk.Frame(inner, bg="#f4f4f4", width=34)
+        check_container.pack(side="right", fill="y")
+        check_container.pack_propagate(False)
+
+        check = tk.Checkbutton(
+            check_container,
+            variable=var,
+            command=_notify_toggle,
+            bg="#f4f4f4",
+            activebackground="#f4f4f4",
+            bd=0,
+            highlightthickness=0
+        )
+        check.pack(anchor="center")
