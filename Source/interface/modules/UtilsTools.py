@@ -395,3 +395,57 @@ def handle_image_selection(event, listbox, popup, images_names, callback):
 
     # Trigger callback with the selected image ID
     callback(selected_img_id)
+
+
+@staticmethod
+def _get_alpha_mask_from_pil(pil_img):
+    """
+    Returns a boolean mask where True means valid visible pixel.
+    If the image has no alpha channel, all pixels are valid.
+    """
+    if pil_img.mode == "RGBA":
+        alpha = np.array(pil_img.getchannel("A"))
+        return alpha > 0
+
+    return np.ones((pil_img.height, pil_img.width), dtype=bool)
+
+@staticmethod
+def _pil_rgb_for_processing(pil_img):
+    """
+    Returns an RGB version for LAB processing.
+    Transparent pixels are kept as RGB but will be ignored using the alpha mask.
+    """
+    if pil_img.mode == "RGBA":
+        return pil_img.convert("RGB")
+    return pil_img.convert("RGB")
+
+@staticmethod
+def _apply_alpha_to_gray_array(gray_array, valid_mask):
+    """
+    Converts a grayscale array into RGBA, using valid_mask as alpha.
+    Transparent pixels get alpha 0.
+    """
+    gray = gray_array.astype(np.uint8)
+
+    rgba = np.zeros((gray.shape[0], gray.shape[1], 4), dtype=np.uint8)
+    rgba[..., 0] = gray
+    rgba[..., 1] = gray
+    rgba[..., 2] = gray
+    rgba[..., 3] = np.where(valid_mask, 255, 0).astype(np.uint8)
+
+    return rgba
+
+@staticmethod
+def _apply_alpha_to_rgb_array(rgb_array, valid_mask):
+    """
+    Converts an RGB array into RGBA, using valid_mask as alpha.
+    Transparent pixels get alpha 0.
+    """
+    rgb = rgb_array.astype(np.uint8)
+
+    rgba = np.zeros((rgb.shape[0], rgb.shape[1], 4), dtype=np.uint8)
+    rgba[..., :3] = rgb
+    rgba[..., 3] = np.where(valid_mask, 255, 0).astype(np.uint8)
+
+    return rgba
+

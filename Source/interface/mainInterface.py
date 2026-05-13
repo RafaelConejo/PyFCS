@@ -5412,7 +5412,7 @@ class PyFCSApp:
         # ---------------------------
         # Load images
         # ---------------------------
-        pil_original = Image.open(filename).convert("RGB")
+        pil_original = Image.open(filename).convert("RGBA")
         original_width, original_height = pil_original.size
         self.pil_images_original[window_id] = pil_original
         self.original_image_dimensions[window_id] = (original_width, original_height)
@@ -5845,7 +5845,19 @@ class PyFCSApp:
             y_original = int(relative_y * scale_y)
 
             pixel_value = pil_original.getpixel((x_original, y_original))
-            pixel_rgb_np = np.array([[pixel_value]], dtype=np.uint8)
+
+            # If image has transparency, ignore fully transparent pixels
+            if len(pixel_value) == 4:
+                r, g, b, a = pixel_value
+
+                if a == 0:
+                    return "break"
+
+                pixel_rgb = (r, g, b)
+            else:
+                pixel_rgb = pixel_value
+
+            pixel_rgb_np = np.array([[pixel_rgb]], dtype=np.uint8)
             pixel_lab = color.rgb2lab(pixel_rgb_np)[0][0]
 
             if self.COLOR_SPACE:
@@ -6399,6 +6411,10 @@ class PyFCSApp:
 
 
 
+
+
+
+
     # ============================================================================================================================================================
     #  FUNCTIONS IMAGE UTILS 
     # ============================================================================================================================================================
@@ -6612,6 +6628,10 @@ class PyFCSApp:
 
                 source_img = self.images[window_id]
                 w, h = source_img.size
+
+                valid_mask = UtilsTools._get_alpha_mask_from_pil(source_img)
+                processing_img = UtilsTools._pil_rgb_for_processing(source_img)
+
                 cache_key = (pos, w, h)
 
                 cached_entry = scope_cache.get(cache_key)
@@ -6628,12 +6648,16 @@ class PyFCSApp:
 
                     grayscale_image_array = self.image_manager.get_proto_percentage(
                         prototypes=self.prototypes,
-                        image=source_img,
+                        image=processing_img,
                         fuzzy_color_space=self.fuzzy_color_space,
                         selected_option=pos,
                         progress_callback=update_progress,
                         cancel_callback=lambda: cancel_event.is_set()
                     )
+
+                    # Force transparent/background pixels to 0 in the grayscale map
+                    if grayscale_image_array.ndim == 2:
+                        grayscale_image_array[~valid_mask] = 0
 
                     if self._is_job_cancelled(window_id, cancel_event, job_id):
                         return
@@ -6645,11 +6669,13 @@ class PyFCSApp:
                         thresh = 128
 
                     if grayscale_image_array.ndim == 2:
-                        colored = np.count_nonzero(grayscale_image_array >= thresh)
-                        total = grayscale_image_array.size
+                        valid_total = np.count_nonzero(valid_mask)
+                        colored = np.count_nonzero((grayscale_image_array >= thresh) & valid_mask)
+                        total = valid_total
                     else:
-                        colored = np.count_nonzero(np.any(grayscale_image_array != 0, axis=-1))
-                        total = grayscale_image_array.shape[0] * grayscale_image_array.shape[1]
+                        valid_total = np.count_nonzero(valid_mask)
+                        colored = np.count_nonzero(np.any(grayscale_image_array != 0, axis=-1) & valid_mask)
+                        total = valid_total
 
                     pct = 100.0 * (colored / total) if total else 0.0
 
@@ -6684,38 +6710,44 @@ class PyFCSApp:
 
 
     def display_color_mapping(self, grayscale_image_array, window_id):
-        """Displays the generated grayscale image in the graphical interface (resized only for display)."""
+        """Displays the generated grayscale image in the graphical interface, preserving transparency."""
         try:
-            # Disable original-image rectangle sampling because the view is no longer the original image
             try:
                 self._disable_original_rectangle_sampling(window_id)
             except Exception:
                 pass
 
-            # Store the ORIGINAL result (do not store the resized display version)
             self.modified_image[window_id] = grayscale_image_array
 
-            # Convert numpy array to PIL image with the correct mode
-            if grayscale_image_array.ndim == 2:
-                grayscale_image = Image.fromarray(grayscale_image_array.astype(np.uint8), mode="L")
+            # Get alpha mask from the current source image
+            source_img = self.images.get(window_id)
+            if source_img is not None:
+                valid_mask = UtilsTools._get_alpha_mask_from_pil(source_img)
             else:
-                grayscale_image = Image.fromarray(grayscale_image_array.astype(np.uint8))
+                valid_mask = np.ones(grayscale_image_array.shape[:2], dtype=bool)
 
-            # Resize only for display to match the current window dimensions
+            # Convert numpy array to PIL image with transparency
+            if grayscale_image_array.ndim == 2:
+                rgba_array = UtilsTools._apply_alpha_to_gray_array(grayscale_image_array, valid_mask)
+                grayscale_image = Image.fromarray(rgba_array.astype(np.uint8), mode="RGBA")
+            else:
+                # If the returned image is RGB, preserve transparency too
+                rgba_array = UtilsTools._apply_alpha_to_rgb_array(grayscale_image_array, valid_mask)
+                grayscale_image = Image.fromarray(rgba_array.astype(np.uint8), mode="RGBA")
+
+            # Resize only for display
             new_width, new_height = self.image_dimensions[window_id]
-            grayscale_image_display = grayscale_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            grayscale_image_display = grayscale_image.resize(
+                (new_width, new_height),
+                Image.Resampling.LANCZOS
+            )
 
-            # Store the exact PIL image currently displayed
             if hasattr(self, "display_pil"):
                 self.display_pil[window_id] = grayscale_image_display
 
-            # Convert to PhotoImage for Tkinter
             img_tk = ImageTk.PhotoImage(grayscale_image_display)
-
-            # Keep a reference to prevent garbage collection
             self.floating_images[window_id] = img_tk
 
-            # Update canvas image item
             image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
             if image_items:
                 self.image_canvas.itemconfig(image_items[0], image=img_tk)
@@ -7068,6 +7100,7 @@ class PyFCSApp:
             """
             Switch displayed palette without recomputing memberships.
             Reuses cached label_map + palettes from the persistent cache.
+            Preserves transparency for pixels outside the tooth mask.
             """
             if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
                 self.custom_warning(
@@ -7093,15 +7126,23 @@ class PyFCSApp:
             label_map = cache_pack["label_map"]
             palettes = cache_pack["palettes"]
             current = cache_pack["scheme"]
-            new = "alt" if current == "original" else "original"
+
+            # Toggle between representative colors and high-contrast colors
+            new = "original" if current == "alt" else "alt"
             cache_pack["scheme"] = new
 
             palette = palettes[new]
 
-            recolored_image = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
-            valid_mask = (label_map >= 0)
-            if np.any(valid_mask):
-                recolored_image[valid_mask] = palette[label_map[valid_mask].astype(np.int32)]
+            recolored_rgb = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
+
+            # Only valid tooth pixels are recolored.
+            # Invalid/background pixels are label_map == -1 and remain transparent.
+            valid_label_mask = (label_map >= 0)
+
+            if np.any(valid_label_mask):
+                recolored_rgb[valid_label_mask] = palette[label_map[valid_label_mask].astype(np.int32)]
+
+            recolored_image = UtilsTools._apply_alpha_to_rgb_array(recolored_rgb, valid_label_mask)
 
             old_legend_frame = cache_pack.get("legend_frame")
             if old_legend_frame:
@@ -7131,6 +7172,9 @@ class PyFCSApp:
                 source_img = self.images[window_id]
                 w, h = source_img.size
 
+                valid_mask = UtilsTools._get_alpha_mask_from_pil(source_img)
+                processing_img = UtilsTools._pil_rgb_for_processing(source_img)
+
                 if not hasattr(self, "cm_cache_by_image"):
                     self.cm_cache_by_image = {}
                 scope_cache = self.cm_cache_by_image.setdefault(cache_scope, {})
@@ -7146,9 +7190,7 @@ class PyFCSApp:
                     return
 
                 if label_map is None:
-                    img_np = np.array(source_img)
-                    if img_np.ndim == 3 and img_np.shape[-1] == 4:
-                        img_np = img_np[..., :3]
+                    img_np = np.array(processing_img)
 
                     img01 = img_np.astype(np.float32) / 255.0
                     lab_img = color.rgb2lab(img01)
@@ -7178,21 +7220,28 @@ class PyFCSApp:
                             last_update = now
 
                     label_map = best_for_uniq[inv].reshape(height, width).astype(np.int32)
+
+                    # Transparent pixels are not assigned to any prototype
+                    label_map[~valid_mask] = -1
                     scope_cache[cache_key] = label_map
 
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
 
-                original_palette = build_original_palette_uint8()
-                alt_palette = build_alt_palette_uint8()
+                original_palette = build_original_palette_uint8()  # high-contrast HSV colors
+                alt_palette = build_alt_palette_uint8()            # representative color-space colors
 
-                scheme = "original"
-                palette = original_palette
+                # Show representative color-space colors first
+                scheme = "alt"
+                palette = alt_palette
 
-                recolored_image = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
-                valid_mask = (label_map >= 0)
-                if np.any(valid_mask):
-                    recolored_image[valid_mask] = palette[label_map[valid_mask].astype(np.int32)]
+                recolored_rgb = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
+                valid_label_mask = (label_map >= 0)
+
+                if np.any(valid_label_mask):
+                    recolored_rgb[valid_label_mask] = palette[label_map[valid_label_mask].astype(np.int32)]
+
+                recolored_image = UtilsTools._apply_alpha_to_rgb_array(recolored_rgb, valid_label_mask)
 
                 new_legend_frame = build_legend_frame(self.prototypes, self.image_canvas, palette)
 
@@ -7230,7 +7279,11 @@ class PyFCSApp:
             try:
                 self.modified_image[window_id] = recolored_image
 
-                pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGB")
+                if recolored_image.ndim == 3 and recolored_image.shape[-1] == 4:
+                    pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGBA")
+                else:
+                    pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGB")
+
                 img_tk = ImageTk.PhotoImage(pil_to_show)
                 self.floating_images[window_id] = img_tk
 
@@ -7259,9 +7312,21 @@ class PyFCSApp:
                     tags=(f"{window_id}_legend", "legend")
                 )
 
+                current_scheme = "alt"
+
+                try:
+                    scope_cache = self.cm_cache_by_image.get(cache_scope, {})
+                    cache_pack = scope_cache.get("last_pack", {})
+                    current_scheme = cache_pack.get("scheme", "alt")
+                except Exception:
+                    pass
+
+                #button_text = "High-contrast Colors" if current_scheme == "alt" else "Representative Colors"
+                button_text = "Alt. Colors"
+
                 btn = tk.Button(
                     new_legend_frame,
-                    text="Alt. Colors",
+                    text=button_text,
                     command=lambda: recolor(window_id)
                 )
                 btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
@@ -7277,6 +7342,10 @@ class PyFCSApp:
         job_id = self._start_window_job(window_id, "color_mapping_all", run_process)
         if job_id is not None:
             self._show_window_loading(window_id, "Color Mapping All...")
+
+
+
+
 
 
 
