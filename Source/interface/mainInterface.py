@@ -7072,15 +7072,54 @@ class PyFCSApp:
             return legend_frame
 
         def build_original_palette_uint8():
-            """Build the original HSV palette in prototype order."""
-            cmap = plt.get_cmap("hsv", len(self.prototypes))
+            """
+            Build a dynamic high-contrast palette in prototype order.
+
+            The palette is intended only for visualization. It supports any number
+            of prototypes by combining several qualitative Matplotlib colormaps and,
+            if needed, falling back to HSV only after the qualitative colors are used.
+            """
+            n = len(self.prototypes)
+
+            qualitative_cmaps = ["tab20", "tab20b", "tab20c", "Set3", "Dark2", "Accent"]
+            colors = []
+
+            for cmap_name in qualitative_cmaps:
+                cmap = plt.get_cmap(cmap_name)
+                cmap_size = cmap.N
+
+                for i in range(cmap_size):
+                    rgb01 = np.array(cmap(i)[:3], dtype=float)
+                    rgb255 = (np.clip(rgb01, 0, 1) * 255).astype(np.uint8)
+                    colors.append(rgb255)
+
+                    if len(colors) >= n:
+                        break
+
+                if len(colors) >= n:
+                    break
+
+            # Fallback if there are more prototypes than qualitative colors
+            if len(colors) < n:
+                remaining = n - len(colors)
+                hsv = plt.get_cmap("hsv", remaining)
+
+                for i in range(remaining):
+                    rgb01 = np.array(hsv(i)[:3], dtype=float)
+                    rgb255 = (np.clip(rgb01, 0, 1) * 255).astype(np.uint8)
+                    colors.append(rgb255)
+
             palette = []
+
             for i, p in enumerate(self.prototypes):
-                rgb01 = np.array(cmap(i)[:3], dtype=float)
-                rgb255 = (np.clip(rgb01, 0, 1) * 255).astype(np.uint8)
-                if p.label.lower() == "black":
+                rgb255 = colors[i].copy()
+
+                # Optional: preserve black if a black prototype still exists in old color spaces
+                if getattr(p, "label", "").lower() == "black":
                     rgb255 = np.array([0, 0, 0], dtype=np.uint8)
+
                 palette.append(rgb255)
+
             return np.stack(palette, axis=0).astype(np.uint8)
 
         def build_alt_palette_uint8():
