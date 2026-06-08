@@ -16,13 +16,16 @@ if BASE_PATH not in sys.path:
 import math
 import time
 import copy
+import uuid
 import random
 import platform
 import colorsys
 import itertools
 import threading
+import webbrowser
 import numpy as np
 import tkinter as tk
+from pathlib import Path
 from skimage import color
 import tkinter.font as tkFont
 import matplotlib.pyplot as plt
@@ -85,11 +88,10 @@ class PyFCSApp:
         # Additional runtime state
         self.rgb_data = []
         self.graph_widget = None
-        self.app_qt = None
-        self.more_graph_window = None
 
         # Centralized image/icon references to avoid garbage collection
         self.ui_icons = {}
+
         
         # ---------------------------------------------------------------------
         # Main window configuration
@@ -1208,6 +1210,18 @@ class PyFCSApp:
             pass
 
 
+    def _close_manual_picker_window(self):
+        """Close the manual/custom color picker dialog if it is currently open."""
+        try:
+            if hasattr(self, "_manual_picker_window") and self._manual_picker_window is not None:
+                if self._manual_picker_window.winfo_exists():
+                    self._manual_picker_window.destroy()
+        except Exception:
+            pass
+        finally:
+            self._manual_picker_window = None
+
+
     def _close_creation_windows(self):
         """Close all creation-related windows and reset workflow state."""
         self._ensure_creation_state()
@@ -1277,6 +1291,65 @@ class PyFCSApp:
             pass
 
         self.get_fcs_image_recalculate(colors, threshold, min_samples, popup=None)
+
+
+    def _open_plotly_figure_in_browser(self, fig, filename_prefix="plotly_figure"):
+        """
+        Save a Plotly figure as an HTML file and open it in the default browser.
+
+        A unique filename is used every time so several plots can remain open
+        independently without overwriting each other.
+        """
+        try:
+            output_dir = os.path.abspath(
+                os.path.join(BASE_PATH, "Source", "external", "plots")
+            )
+            os.makedirs(output_dir, exist_ok=True)
+
+            unique_id = uuid.uuid4().hex[:8]
+            filename = f"{filename_prefix}_{unique_id}.html"
+
+            file_path = os.path.abspath(os.path.join(output_dir, filename))
+
+            fig.write_html(file_path)
+
+            url = Path(file_path).resolve().as_uri()
+            webbrowser.open_new_tab(url)
+
+        except Exception as e:
+            self.custom_warning(
+                "Plot Error",
+                f"The figure could not be opened in the browser:\n{e}",
+                parent=self._get_active_dialog_parent(
+                    getattr(self, "_color_evaluation_window", None)
+                )
+            )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -3970,46 +4043,8 @@ class PyFCSApp:
 
     def on_add_graph(self, selected_options):
         """
-        Generate the interactive Plotly figure and show it in a PyQt window.
+        Generate the interactive Plotly figure and open it in the default browser.
         """
-
-        def rebuild_menu():
-            """
-            Rebuild the Tk menu bar to prevent UI glitches after using PyQt.
-            """
-            self.menubar.destroy()
-            self.menubar = Menu(self.root)
-            self.root.config(menu=self.menubar)
-
-            menu_font = tkFont.Font(family="Sans", size=11)
-
-            file_menu = Menu(self.menubar, tearoff=0)
-            file_menu.add_command(label="Exit", command=self.exit_app, font=menu_font)
-            self.menubar.add_cascade(label="File", menu=file_menu)
-
-            img_menu = Menu(self.menubar, tearoff=0)
-            img_menu.add_command(label="Open Image", command=self.open_image, font=menu_font)
-            img_menu.add_command(label="Save Image", command=self.save_image, font=menu_font)
-            img_menu.add_command(label="Close All", command=self.close_all_image, font=menu_font)
-            self.menubar.add_cascade(label="Image Manager", menu=img_menu)
-
-            fuzzy_menu = Menu(self.menubar, tearoff=0)
-            fuzzy_menu.add_command(label="New Color Space", command=self.show_menu_create_fcs, font=menu_font)
-            fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space, font=menu_font)
-            self.menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
-
-            help_menu = Menu(self.menubar, tearoff=0)
-            help_menu.add_command(label="About", command=self.about_info, font=menu_font)
-            self.menubar.add_cascade(label="Help", menu=help_menu)
-
-        def close_event(event):
-            """
-            Release the PyQt window reference when the interactive window is closed.
-            """
-            self.more_graph_window = None
-            rebuild_menu()
-            event.accept()
-
         fig = VisualManager.plot_more_combined_3D(
             self.file_base_name,
             self.selected_centroids,
@@ -4025,44 +4060,10 @@ class PyFCSApp:
         if hasattr(self, "lab_value_frame"):
             self.lab_value_frame.lift()
 
-        file_path = os.path.abspath(os.path.join(BASE_PATH, "Source", "external", "temp_plot.html"))
-        fig.write_html(file_path)
-        file_path = file_path.replace("\\", "/")
-
-        if self.app_qt is None:
-            self.app_qt = QApplication(sys.argv)
-
-        if self.more_graph_window is None or not self.more_graph_window.isVisible():
-            self.more_graph_window = QMainWindow()
-            self.more_graph_window.setWindowTitle("Interactive 3D Figure")
-            self.more_graph_window.setGeometry(100, 100, 800, 600)
-
-            webview = QWebEngineView()
-            webview.setUrl(QUrl(f"file:///{file_path}"))
-
-            layout = QVBoxLayout()
-            layout.addWidget(webview)
-
-            central_widget = QWidget()
-            central_widget.setLayout(layout)
-            self.more_graph_window.setCentralWidget(central_widget)
-
-            cursor_pos = QApplication.desktop().cursor().pos()
-            screen_number = QApplication.desktop().screenNumber(cursor_pos)
-            screen_geom = QApplication.desktop().screenGeometry(screen_number)
-
-            width = 800
-            height = 600
-            popup_x = screen_geom.x() + (screen_geom.width() - width) // 2
-            popup_y = screen_geom.y() + (screen_geom.height() - height) // 2
-
-            self.more_graph_window.setGeometry(popup_x, popup_y, width, height)
-            self.more_graph_window.show()
-            self.more_graph_window.closeEvent = close_event
-
-        loop = QEventLoop()
-        self.more_graph_window.destroyed.connect(loop.quit)
-        loop.exec_()
+        self._open_plotly_figure_in_browser(
+            fig,
+            filename_prefix="pyfcs_3d_plot"
+        )
 
 
     def select_all_color(self):
@@ -4551,10 +4552,8 @@ class PyFCSApp:
             color_width = col_widths["Color"]
 
             try:
-                rgb_float = color.lab2rgb([lab])[0]
-                rgb_float = np.clip(rgb_float, 0, 1)
-                rgb_data = tuple(int(round(x * 255)) for x in rgb_float)
-                hex_color = "#{:02x}{:02x}{:02x}".format(*rgb_data)
+                rgb_data = UtilsTools.lab_to_rgb(lab)
+                hex_color = UtilsTools.rgb_to_hex(rgb_data)
             except Exception:
                 rgb_data = (217, 217, 217)
                 hex_color = "#d9d9d9"
@@ -9641,6 +9640,14 @@ class PyFCSApp:
 
 
 
+
+
+
+
+
+
+
+
     # ============================================================================================================================================================
     #  COLOR EVALUATION FUNCTIONS
     # ============================================================================================================================================================
@@ -9766,7 +9773,6 @@ class PyFCSApp:
         header_container.pack(fill="x", padx=12, pady=(4, 2))
         header_container.pack_propagate(False)
 
-        # Title on the left
         tk.Label(
             header_container,
             text="Color Space Data",
@@ -9775,7 +9781,6 @@ class PyFCSApp:
             bg="white"
         ).pack(side="left")
 
-        # Centered buttons, independent from title width
         buttons_row = tk.Frame(header_container, bg="white")
         buttons_row.place(relx=0.5, rely=0.0, anchor="n")
 
@@ -9793,7 +9798,6 @@ class PyFCSApp:
             command=lambda: self._load_external_color_space_for_evaluation(vars_dict)
         ).pack(side="left")
 
-        # Summary stays on its own row, centered
         summary_row = tk.Frame(table_panel, bg="white")
         summary_row.pack(anchor="center", pady=(0, 0))
 
@@ -9841,10 +9845,9 @@ class PyFCSApp:
         left_panel = tk.Frame(paned, bg="white", bd=1, relief="solid")
         right_panel = tk.Frame(paned, bg="white", bd=1, relief="solid")
 
-        paned.add(left_panel, minsize=620)
-        paned.add(right_panel, minsize=360)
+        paned.add(left_panel, minsize=430)
+        paned.add(right_panel, minsize=520)
 
-        # Save reference to paned window so sash can be positioned after final window sizing
         self._color_evaluation_paned = paned
 
         # -------------------------
@@ -9853,13 +9856,12 @@ class PyFCSApp:
         list_header = tk.Frame(left_panel, bg="#f4f4f4")
         list_header.pack(fill="x", padx=1, pady=(1, 0))
 
-        # Columnas fijas + filler
-        list_header.grid_columnconfigure(0, minsize=110)  # swatch
-        list_header.grid_columnconfigure(1, minsize=190)  # label
-        list_header.grid_columnconfigure(2, minsize=170)  # lab
-        list_header.grid_columnconfigure(3, minsize=135)  # rgb
-        list_header.grid_columnconfigure(4, minsize=105)  # hex
-        list_header.grid_columnconfigure(5, weight=1)     # filler
+        list_header.grid_columnconfigure(0, minsize=110)
+        list_header.grid_columnconfigure(1, minsize=190)
+        list_header.grid_columnconfigure(2, minsize=170)
+        list_header.grid_columnconfigure(3, minsize=135)
+        list_header.grid_columnconfigure(4, minsize=105)
+        list_header.grid_columnconfigure(5, weight=1)
 
         header_font = ("Sans", 10, "bold")
 
@@ -9890,11 +9892,13 @@ class PyFCSApp:
             highlightthickness=0,
             bd=0
         )
+
         rows_scroll = ttk.Scrollbar(
             left_panel,
             orient="vertical",
             command=rows_canvas.yview
         )
+
         rows_inner = tk.Frame(rows_canvas, bg="white")
 
         rows_inner.bind(
@@ -9922,7 +9926,7 @@ class PyFCSApp:
         ).pack(fill="x")
 
         analysis_actions = tk.Frame(right_panel, bg="white")
-        analysis_actions.pack(fill="x", padx=12, pady=(0, 8))
+        analysis_actions.pack(fill="x", padx=12, pady=(0, 6))
 
         tk.Button(
             analysis_actions,
@@ -9938,10 +9942,25 @@ class PyFCSApp:
 
         tk.Button(
             analysis_actions,
+            text="Sample from image",
+            command=lambda: self._open_color_evaluation_image_sampler(vars_dict)
+        ).pack(side="left", fill="x", expand=True)
+
+
+        analysis_extra_actions = tk.Frame(right_panel, bg="white")
+        analysis_extra_actions.pack(fill="x", padx=12, pady=(0, 8))
+
+        tk.Button(
+            analysis_extra_actions,
+            text="Find closest prototype",
+            command=lambda: self._show_color_evaluation_closest_prototypes(vars_dict)
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        tk.Button(
+            analysis_extra_actions,
             text="Clear comparison",
             command=lambda: self._clear_color_evaluation_comparison(vars_dict)
         ).pack(side="left", fill="x", expand=True)
-
 
         tk.Label(
             right_panel,
@@ -9953,9 +9972,72 @@ class PyFCSApp:
             padx=12
         ).pack(fill="x", pady=(0, 8))
 
-        analysis_body = tk.Frame(right_panel, bg="white")
-        analysis_body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        # ------------------------------------------------------------------
+        # Scrollable analysis body
+        # ------------------------------------------------------------------
+        analysis_scroll_container = tk.Frame(right_panel, bg="white")
+        analysis_scroll_container.pack(fill="both", expand=True, padx=12, pady=(0, 10))
 
+        analysis_canvas = tk.Canvas(
+            analysis_scroll_container,
+            bg="white",
+            highlightthickness=0,
+            bd=0
+        )
+
+        analysis_scrollbar = ttk.Scrollbar(
+            analysis_scroll_container,
+            orient="vertical",
+            command=analysis_canvas.yview
+        )
+
+        analysis_body = tk.Frame(analysis_canvas, bg="white")
+
+        analysis_body_window = analysis_canvas.create_window(
+            (0, 0),
+            window=analysis_body,
+            anchor="nw"
+        )
+
+        analysis_canvas.configure(yscrollcommand=analysis_scrollbar.set)
+
+        analysis_canvas.pack(side="left", fill="both", expand=True)
+        analysis_scrollbar.pack(side="right", fill="y")
+
+        def _update_analysis_scroll_region(event=None):
+            try:
+                analysis_canvas.configure(scrollregion=analysis_canvas.bbox("all"))
+            except Exception:
+                pass
+
+        def _update_analysis_body_width(event=None):
+            try:
+                canvas_width = analysis_canvas.winfo_width()
+                analysis_canvas.itemconfig(analysis_body_window, width=canvas_width)
+            except Exception:
+                pass
+
+        analysis_body.bind("<Configure>", _update_analysis_scroll_region)
+        analysis_canvas.bind("<Configure>", _update_analysis_body_width)
+
+        def _on_analysis_mousewheel(event):
+            try:
+                analysis_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
+
+        analysis_canvas.bind(
+            "<Enter>",
+            lambda e: analysis_canvas.bind_all("<MouseWheel>", _on_analysis_mousewheel)
+        )
+        analysis_canvas.bind(
+            "<Leave>",
+            lambda e: analysis_canvas.unbind_all("<MouseWheel>")
+        )
+
+        # ------------------------------------------------------------------
+        # Selected/comparison color preview
+        # ------------------------------------------------------------------
         colors_row = tk.Frame(analysis_body, bg="white")
         colors_row.pack(fill="x", pady=(0, 8))
 
@@ -10031,6 +10113,9 @@ class PyFCSApp:
 
         tk.Frame(analysis_body, bg="#d8d8d8", height=1).pack(fill="x", pady=(6, 6))
 
+        # ------------------------------------------------------------------
+        # Results + Membership column
+        # ------------------------------------------------------------------
         results_block = tk.Frame(analysis_body, bg="white")
         results_block.pack(fill="both", expand=True)
 
@@ -10040,9 +10125,194 @@ class PyFCSApp:
         result_left = tk.Frame(results_columns, bg="white")
         result_left.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
-        membership_right = tk.Frame(results_columns, bg="white", bd=1, relief="solid", width=250)
+        # --------------------------------------------------
+        # Right side column: Membership panel + Graph buttons
+        # Hidden by default; shown only when a custom/sample color exists.
+        # --------------------------------------------------
+        right_side_column = tk.Frame(results_columns, bg="white", width=250)
+        right_side_column.pack_propagate(False)
+
+        # Graphs first with side="bottom" so it always reserves its height.
+        graph_buttons_card = tk.Frame(
+            right_side_column,
+            bg="#fafafa",
+            bd=1,
+            relief="solid"
+        )
+        graph_buttons_card.pack(
+            side="bottom",
+            fill="x",
+            pady=(8, 0)
+        )
+
+        tk.Label(
+            graph_buttons_card,
+            text="Graphs",
+            font=("Sans", 9, "bold"),
+            anchor="w",
+            bg="#fafafa",
+            padx=8,
+            pady=4
+        ).pack(fill="x")
+
+        graph_buttons_body = tk.Frame(
+            graph_buttons_card,
+            bg="#fafafa"
+        )
+        graph_buttons_body.pack(
+            fill="x",
+            padx=8,
+            pady=(0, 8)
+        )
+
+        graph_row_1 = tk.Frame(graph_buttons_body, bg="#fafafa")
+        graph_row_1.pack(fill="x", pady=(0, 4))
+
+        graph_row_2 = tk.Frame(graph_buttons_body, bg="#fafafa")
+        graph_row_2.pack(fill="x")
+
+        tk.Button(
+            graph_row_1,
+            text="3D LAB",
+            command=lambda: self._open_color_evaluation_3d_plot(vars_dict)
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        tk.Button(
+            graph_row_1,
+            text="a*b*",
+            command=lambda: self._open_color_evaluation_ab_plot(vars_dict)
+        ).pack(side="left", fill="x", expand=True)
+
+        tk.Button(
+            graph_row_2,
+            text="Top 7",
+            command=lambda: self._open_color_evaluation_top7_plot(vars_dict)
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        tk.Button(
+            graph_row_2,
+            text="Memberships",
+            command=lambda: self._open_color_evaluation_membership_plot(vars_dict)
+        ).pack(side="left", fill="x", expand=True)
+
+        # Membership panel remains scrollable.
+        membership_right = tk.Frame(
+            right_side_column,
+            bg="white",
+            bd=1,
+            relief="solid",
+            width=250
+        )
+        membership_right.pack(
+            side="top",
+            fill="both",
+            expand=True
+        )
         membership_right.pack_propagate(False)
 
+        tk.Label(
+            membership_right,
+            text="Membership Degree (μ)",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white",
+            padx=10,
+            pady=8
+        ).pack(fill="x")
+
+        membership_list_canvas = tk.Canvas(
+            membership_right,
+            bg="white",
+            highlightthickness=0,
+            bd=0
+        )
+
+        membership_list_scroll = ttk.Scrollbar(
+            membership_right,
+            orient="vertical",
+            command=membership_list_canvas.yview
+        )
+
+        membership_list_inner = tk.Frame(
+            membership_list_canvas,
+            bg="white"
+        )
+
+        membership_list_window = membership_list_canvas.create_window(
+            (0, 0),
+            window=membership_list_inner,
+            anchor="nw"
+        )
+
+        membership_list_canvas.configure(
+            yscrollcommand=membership_list_scroll.set
+        )
+
+        def _update_membership_list_scroll_region(event=None):
+            try:
+                membership_list_canvas.configure(
+                    scrollregion=membership_list_canvas.bbox("all")
+                )
+            except Exception:
+                pass
+
+        def _update_membership_list_width(event=None):
+            try:
+                canvas_width = membership_list_canvas.winfo_width()
+                membership_list_canvas.itemconfig(
+                    membership_list_window,
+                    width=max(canvas_width - 2, 1)
+                )
+            except Exception:
+                pass
+
+        membership_list_inner.bind(
+            "<Configure>",
+            _update_membership_list_scroll_region
+        )
+
+        membership_list_canvas.bind(
+            "<Configure>",
+            _update_membership_list_width
+        )
+
+        membership_list_canvas.pack(
+            side="left",
+            fill="both",
+            expand=True,
+            padx=(10, 0),
+            pady=(0, 10)
+        )
+
+        membership_list_scroll.pack(
+            side="right",
+            fill="y",
+            padx=(0, 8),
+            pady=(0, 10)
+        )
+
+        def _on_membership_mousewheel(event):
+            try:
+                membership_list_canvas.yview_scroll(
+                    int(-1 * (event.delta / 120)),
+                    "units"
+                )
+            except Exception:
+                pass
+
+        membership_list_canvas.bind(
+            "<Enter>",
+            lambda e: membership_list_canvas.bind_all("<MouseWheel>", _on_membership_mousewheel)
+        )
+
+        membership_list_canvas.bind(
+            "<Leave>",
+            lambda e: membership_list_canvas.unbind_all("<MouseWheel>")
+        )
+
+        # ------------------------------------------------------------------
+        # Results card
+        # ------------------------------------------------------------------
         tk.Label(
             result_left,
             text="Results",
@@ -10052,7 +10322,7 @@ class PyFCSApp:
         ).pack(anchor="w", pady=(0, 8))
 
         result_card = tk.Frame(
-            results_block,
+            result_left,
             bg="#f7f7f7",
             bd=0,
             relief="flat",
@@ -10060,7 +10330,7 @@ class PyFCSApp:
             highlightbackground="#bdbdbd",
             highlightcolor="#bdbdbd"
         )
-        result_card.pack(fill="x", pady=(0, 2), in_=result_left)
+        result_card.pack(fill="x", pady=(0, 2))
 
         result_header = tk.Frame(result_card, bg="#eeeeee")
         result_header.pack(fill="x")
@@ -10074,8 +10344,11 @@ class PyFCSApp:
             bd=0
         )
         result_status_dot.pack(side="left", padx=(10, 6), pady=8)
+
         result_status_dot_oval = result_status_dot.create_oval(
-            3, 3, 15, 15, fill="#bdbdbd", outline="#bdbdbd"
+            3, 3, 15, 15,
+            fill="#bdbdbd",
+            outline="#bdbdbd"
         )
 
         result_title_label = tk.Label(
@@ -10120,10 +10393,16 @@ class PyFCSApp:
         result_summary_icon.pack(side="left", padx=(0, 8), anchor="n")
 
         result_summary_icon_circle = result_summary_icon.create_oval(
-            2, 2, 18, 18, outline="#666666", width=2
+            2, 2, 18, 18,
+            outline="#666666",
+            width=2
         )
+
         result_summary_icon_text = result_summary_icon.create_text(
-            10, 10, text="!", fill="#666666", font=("Sans", 9, "bold")
+            10, 10,
+            text="!",
+            fill="#666666",
+            font=("Sans", 9, "bold")
         )
 
         result_text_container = tk.Frame(result_summary_row, bg="#f7f7f7")
@@ -10136,58 +10415,77 @@ class PyFCSApp:
             justify="left",
             bg="#f7f7f7",
             wraplength=300,
-            font=("Sans", 8)
+            font=("Consolas", 8)
         )
         result_summary_label.pack(anchor="w", fill="x")
 
+        # ------------------------------------------------------------------
+        # Conversion inspector
+        # ------------------------------------------------------------------
+        inspector_card = tk.Frame(
+            result_left,
+            bg="#fafafa",
+            bd=0,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#bdbdbd",
+            highlightcolor="#bdbdbd"
+        )
+        inspector_card.pack(fill="x", pady=(8, 0))
+
+        inspector_header = tk.Frame(inspector_card, bg="#f3f3f3")
+        inspector_header.pack(fill="x")
+
         tk.Label(
-            membership_right,
-            text="Membership Degree (μ)",
-            font=("Sans", 10, "bold"),
+            inspector_header,
+            textvariable=vars_dict["inspector_title_var"],
+            font=("Sans", 9),
             anchor="w",
-            bg="white",
+            bg="#f3f3f3",
             padx=10,
-            pady=8
+            pady=5
+        ).pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            inspector_header,
+            textvariable=vars_dict["inspector_source_var"],
+            font=("Sans", 8, "italic"),
+            anchor="e",
+            bg="#f3f3f3",
+            fg="#666666",
+            padx=10
+        ).pack(side="right")
+
+        inspector_values = tk.Frame(inspector_card, bg="#fafafa")
+        inspector_values.pack(fill="x", padx=10, pady=(6, 8))
+
+        tk.Label(
+            inspector_values,
+            textvariable=vars_dict["inspector_rgb_var"],
+            bg="#fafafa",
+            anchor="w",
+            font=("Consolas", 9)
         ).pack(fill="x")
 
-        membership_list_canvas = tk.Canvas(
-            membership_right,
-            bg="white",
-            highlightthickness=0,
-            bd=0
-        )
-        membership_list_scroll = ttk.Scrollbar(
-            membership_right,
-            orient="vertical",
-            command=membership_list_canvas.yview
-        )
-        membership_list_inner = tk.Frame(membership_list_canvas, bg="white")
+        tk.Label(
+            inspector_values,
+            textvariable=vars_dict["inspector_lab_var"],
+            bg="#fafafa",
+            anchor="w",
+            font=("Consolas", 9)
+        ).pack(fill="x", pady=(2, 0))
 
-        membership_list_inner.bind(
-            "<Configure>",
-            lambda e: membership_list_canvas.configure(
-                scrollregion=membership_list_canvas.bbox("all")
-            )
-        )
+        tk.Label(
+            inspector_values,
+            textvariable=vars_dict["inspector_hex_var"],
+            bg="#fafafa",
+            anchor="w",
+            font=("Consolas", 9)
+        ).pack(fill="x", pady=(2, 0))
 
-        membership_list_canvas.create_window((0, 0), window=membership_list_inner, anchor="nw")
-        membership_list_canvas.configure(yscrollcommand=membership_list_scroll.set)
-
-        membership_list_canvas.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
-        membership_list_scroll.pack(side="right", fill="y", padx=(0, 8), pady=(0, 10))
-
-        def _on_membership_mousewheel(event):
-            membership_list_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        membership_list_canvas.bind(
-            "<Enter>",
-            lambda e: membership_list_canvas.bind_all("<MouseWheel>", _on_membership_mousewheel)
-        )
-        membership_list_canvas.bind(
-            "<Leave>",
-            lambda e: membership_list_canvas.unbind_all("<MouseWheel>")
-        )
-
+        # ------------------------------------------------------------------
+        # Store references
+        # ------------------------------------------------------------------
         vars_dict["analysis_result_refs"] = {
             "result_card": result_card,
             "result_header": result_header,
@@ -10202,7 +10500,11 @@ class PyFCSApp:
             "result_summary_icon_circle": result_summary_icon_circle,
             "result_summary_icon_text": result_summary_icon_text,
             "result_summary_label": result_summary_label,
+
+            # Right-side Membership + Graphs column
+            "right_side_column": right_side_column,
             "membership_right": membership_right,
+            "membership_list_canvas": membership_list_canvas,
             "membership_list_inner": membership_list_inner,
         }
 
@@ -10286,20 +10588,28 @@ class PyFCSApp:
 
 
     def _update_color_evaluation_membership_panel(self, vars_dict, sample_lab=None):
+        """
+        Update the membership list shown on the right side of the Color Evaluation window.
+        """
         refs = vars_dict.get("analysis_result_refs", {})
-        membership_right = refs.get("membership_right")
+
+        right_side_column = refs.get("right_side_column")
+        membership_list_canvas = refs.get("membership_list_canvas")
         list_inner = refs.get("membership_list_inner")
 
-        if membership_right is None or list_inner is None:
+        if right_side_column is None or membership_list_canvas is None or list_inner is None:
             return
 
         if sample_lab is None:
-            membership_right.pack_forget()
+            try:
+                right_side_column.pack_forget()
+            except Exception:
+                pass
             return
 
         try:
-            if not membership_right.winfo_ismapped():
-                membership_right.pack(side="left", fill="both", padx=(8, 0))
+            if not right_side_column.winfo_ismapped():
+                right_side_column.pack(side="left", fill="both", padx=(8, 0))
         except Exception:
             pass
 
@@ -10311,41 +10621,95 @@ class PyFCSApp:
         if not memberships:
             tk.Label(
                 list_inner,
-                text="The loaded color space has no fuzzy membership data available.",
+                text="No fuzzy membership data available.",
                 bg="white",
                 fg="#777777",
-                anchor="w",
+                anchor="nw",
                 justify="left",
                 wraplength=210,
                 font=("Sans", 9, "italic")
             ).pack(fill="x", padx=4, pady=4)
+
+            try:
+                membership_list_canvas.update_idletasks()
+                membership_list_canvas.configure(
+                    scrollregion=membership_list_canvas.bbox("all")
+                )
+                membership_list_canvas.yview_moveto(0)
+            except Exception:
+                pass
+
             return
 
-        for label, mu in memberships:
+        visible_memberships = [
+            (label, mu)
+            for label, mu in memberships
+            if float(mu) > 0
+        ]
+
+        if not visible_memberships:
+            tk.Label(
+                list_inner,
+                text="All membership degrees are 0.0000 for this color.",
+                bg="white",
+                fg="#777777",
+                anchor="nw",
+                justify="left",
+                wraplength=210,
+                font=("Sans", 9, "italic")
+            ).pack(fill="x", padx=4, pady=4)
+
+            try:
+                membership_list_canvas.update_idletasks()
+                membership_list_canvas.configure(
+                    scrollregion=membership_list_canvas.bbox("all")
+                )
+                membership_list_canvas.yview_moveto(0)
+            except Exception:
+                pass
+
+            return
+
+        for label, mu in visible_memberships:
             row = tk.Frame(list_inner, bg="white")
             row.pack(fill="x", padx=4, pady=2)
 
             proto_hex = self._get_evaluation_proto_hex(vars_dict, label)
 
-            swatch = tk.Canvas(row, width=16, height=16, bg="white", highlightthickness=0)
-            swatch.pack(side="left", padx=(0, 6))
-            swatch.create_rectangle(1, 1, 15, 15, fill=proto_hex, outline="#707070")
+            swatch = tk.Canvas(
+                row,
+                width=16,
+                height=16,
+                bg="white",
+                highlightthickness=0,
+                bd=0
+            )
+            swatch.pack(side="left", padx=(0, 6), pady=1)
+
+            swatch.create_rectangle(
+                1, 1, 15, 15,
+                fill=proto_hex,
+                outline="#707070"
+            )
 
             tk.Label(
                 row,
-                text=str(label),
+                text=f"{label}   μ = {float(mu):.4f}",
                 bg="white",
                 anchor="w",
-                font=("Sans", 9)
+                justify="left",
+                font=("Sans", 9),
+                wraplength=185
             ).pack(side="left", fill="x", expand=True)
 
-            tk.Label(
-                row,
-                text=f"μ = {float(mu):.4f}",
-                bg="white",
-                anchor="e",
-                font=("Sans", 9)
-            ).pack(side="right")
+        try:
+            membership_list_canvas.update_idletasks()
+            membership_list_canvas.configure(
+                scrollregion=membership_list_canvas.bbox("all")
+            )
+            membership_list_canvas.yview_moveto(0)
+        except Exception:
+            pass
 
 
     def _load_color_space_for_evaluation_from_file(self, filename):
@@ -10377,7 +10741,7 @@ class PyFCSApp:
                 result["fuzzy_color_space"] = fuzzy_cs
                 result["cores"] = getattr(fuzzy_cs, "cores", None)
                 result["supports"] = getattr(fuzzy_cs, "supports", None)
-                result["prototypes"] = getattr(fuzzy_cs, "prototypes", None)
+                result["prototypes"] = getattr(fuzzy_cs, "prototypes", None) # Used as 0.5-cut in plots
 
         return result
     
@@ -10423,6 +10787,13 @@ class PyFCSApp:
             "selected_detail_var": tk.StringVar(value=""),
             "selected_summary_var": tk.StringVar(value=""),
 
+            # Conversion inspector
+            "inspector_title_var": tk.StringVar(value="Conversion inspector"),
+            "inspector_source_var": tk.StringVar(value="Source: -"),
+            "inspector_rgb_var": tk.StringVar(value="RGB: -"),
+            "inspector_lab_var": tk.StringVar(value="LAB: -"),
+            "inspector_hex_var": tk.StringVar(value="HEX: -"),
+
             "loaded_space_data": None,
             "loaded_space_name": "",
             "loaded_space_type": None,
@@ -10438,6 +10809,13 @@ class PyFCSApp:
             "secondary_custom_rgb": None,
             "secondary_custom_hex": None,
             "secondary_custom_name": "Custom Color",
+
+            "analysis_view_mode": "comparison",   # "comparison" | "closest"
+
+            # Closest ranking cache
+            "closest_ranking": [],
+            "closest_best": None,
+            "closest_metric": None,
         }
 
         return self._merge_threshold_vars(vars_dict)
@@ -10446,14 +10824,26 @@ class PyFCSApp:
 
 
     def _refresh_color_evaluation_threshold_ui(self, vars_dict, refs):
-        """Refresh threshold controls, validate inputs, and update summary."""
+        """
+        Refresh threshold controls, validate inputs, update summary,
+        and preserve the active analysis view.
+        """
         self._refresh_shared_threshold_ui(
             vars_dict=vars_dict,
             refs=refs,
             proto_lab=None,
             sample_lab=None
         )
-        self._refresh_color_evaluation_comparison(vars_dict)
+
+        # Clear cached ranking because metric or thresholds may have changed.
+        vars_dict["closest_ranking"] = []
+        vars_dict["closest_best"] = None
+        vars_dict["closest_metric"] = None
+
+        if vars_dict.get("analysis_view_mode") == "closest":
+            self._show_color_evaluation_closest_prototypes(vars_dict)
+        else:
+            self._refresh_color_evaluation_comparison(vars_dict)
 
 
 
@@ -10659,13 +11049,17 @@ class PyFCSApp:
         vars_dict["secondary_custom_hex"] = str(sample_hex)
         vars_dict["secondary_custom_name"] = "Custom Color"
 
+        vars_dict["closest_ranking"] = []
+        vars_dict["closest_best"] = None
+        vars_dict["closest_metric"] = None
+
         if vars_dict.get("primary_label"):
             vars_dict["analysis_mode_var"].set(
-                "Custom comparison active. Click different selected colors to compare against the custom color."
+                "Custom color active. Select prototypes to compare manually or use 'Find closest prototype'."
             )
         else:
             vars_dict["analysis_mode_var"].set(
-                "Custom comparison loaded. Select a color from the list to evaluate it."
+                "Custom color loaded. Use 'Find closest prototype' or select a prototype."
             )
 
         self._refresh_color_evaluation_comparison(vars_dict)
@@ -10695,6 +11089,7 @@ class PyFCSApp:
         vars_dict["primary_label"] = None
         vars_dict["secondary_label"] = None
         vars_dict["comparison_mode"] = False
+        vars_dict["analysis_view_mode"] = "comparison"
 
         vars_dict["secondary_mode"] = None
         vars_dict["secondary_custom_lab"] = None
@@ -10798,8 +11193,8 @@ class PyFCSApp:
 
         for label, lab in rows:
             try:
-                rgb_float = color.lab2rgb([lab])[0]
-                rgb = tuple(max(0, min(255, int(v * 255))) for v in rgb_float)
+                rgb = UtilsTools.lab_to_rgb(lab)
+                rgb = tuple(max(0, min(255, int(round(v)))) for v in rgb)
             except Exception:
                 rgb = (200, 200, 200)
 
@@ -10922,6 +11317,9 @@ class PyFCSApp:
             status="unavailable"
         )
 
+        self._update_color_evaluation_conversion_inspector(vars_dict)
+        self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
+
 
 
     def _enable_color_evaluation_comparison_mode(self, vars_dict):
@@ -10941,6 +11339,8 @@ class PyFCSApp:
 
     def _clear_color_evaluation_comparison(self, vars_dict, clear_custom=True):
         """Clear the comparison color and return to single-color analysis."""
+        vars_dict["analysis_view_mode"] = "comparison"
+
         vars_dict["comparison_mode"] = False
         vars_dict["secondary_label"] = None
         vars_dict["secondary_mode"] = None
@@ -10973,6 +11373,8 @@ class PyFCSApp:
 
     def _refresh_color_evaluation_comparison(self, vars_dict):
         """Refresh the right-side analysis panel for single, row-comparison, or custom-comparison mode."""
+        vars_dict["analysis_view_mode"] = "comparison"
+
         refs_map = vars_dict.get("color_row_refs", {})
         primary_label = vars_dict.get("primary_label")
         secondary_label = vars_dict.get("secondary_label")
@@ -10986,10 +11388,20 @@ class PyFCSApp:
             return
 
         p_lab = primary_refs["lab"]
+        p_rgb = primary_refs.get("rgb")
         p_hex = primary_refs["hex"]
 
         vars_dict["primary_name_var"].set(primary_label)
         vars_dict["primary_swatch"].itemconfig(vars_dict["primary_rect"], fill=p_hex)
+
+        self._update_color_evaluation_conversion_inspector(
+            vars_dict=vars_dict,
+            lab=p_lab,
+            rgb=p_rgb,
+            hex_color=p_hex,
+            name=primary_label,
+            source="prototype"
+        )
 
         # --------------------------------------------------
         # No comparison active
@@ -11010,6 +11422,20 @@ class PyFCSApp:
                 ),
                 status="unavailable"
             )
+
+            if (
+                vars_dict.get("secondary_custom_lab") is not None
+                and vars_dict.get("secondary_custom_rgb") is not None
+                and vars_dict.get("secondary_custom_hex") is not None
+            ):
+                self._update_color_evaluation_conversion_inspector(
+                    vars_dict=vars_dict,
+                    lab=vars_dict.get("secondary_custom_lab"),
+                    rgb=vars_dict.get("secondary_custom_rgb"),
+                    hex_color=vars_dict.get("secondary_custom_hex"),
+                    name=vars_dict.get("secondary_custom_name", "Custom Color"),
+                    source="custom"
+                )
 
             self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
             return
@@ -11057,6 +11483,15 @@ class PyFCSApp:
                 return
 
             secondary_display_name = vars_dict.get("secondary_custom_name", "Custom Color")
+
+            self._update_color_evaluation_conversion_inspector(
+                vars_dict=vars_dict,
+                lab=s_lab,
+                rgb=s_rgb,
+                hex_color=s_hex,
+                name=secondary_display_name,
+                source="custom"
+            )
             
 
         vars_dict["secondary_name_var"].set(secondary_display_name)
@@ -11097,6 +11532,526 @@ class PyFCSApp:
 
 
 
+
+    def _open_color_evaluation_image_sampler(self, vars_dict):
+        """
+        Open a compact image sampler for the Color Evaluation window.
+
+        It allows:
+        - selecting one loaded image;
+        - clicking one pixel;
+        - dragging a rectangle to sample the average RGB;
+        - sending the sampled color as the custom comparison color.
+        """
+        if not hasattr(self, "load_images_names") or not self.load_images_names:
+            self.custom_warning(
+                "No Images Available",
+                "No images are currently loaded.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return
+
+        if not hasattr(self, "images") or not self.images:
+            self.custom_warning(
+                "No Images Available",
+                "Image data are not available.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return
+
+        parent = getattr(self, "_color_evaluation_window", self.root)
+
+        popup = tk.Toplevel(parent)
+        popup.title("Sample Color from Image")
+        popup.configure(bg="#eeeeee")
+        popup.resizable(True, True)
+        popup.transient(parent)
+        popup.grab_set()
+
+        WIN_W, WIN_H = 660, 710
+        popup.minsize(620, 620)
+
+        try:
+            self.center_popup_to_parent(popup, WIN_W, WIN_H, parent=parent)
+        except Exception:
+            self.center_popup(popup, WIN_W, WIN_H)
+
+        state = {
+            "window_id": None,
+            "pil_img": None,
+            "photo": None,
+            "display_w": 560,
+            "display_h": 340,
+            "scale": 1.0,
+            "offset_x": 0,
+            "offset_y": 0,
+            "drag_start": None,
+            "rect_id": None,
+            "sample_rgb": None,
+            "sample_lab": None,
+            "sample_hex": None,
+        }
+
+        # =====================================================================
+        # Main shell
+        # =====================================================================
+        outer = tk.Frame(popup, bg="#eeeeee")
+        outer.pack(fill="both", expand=True, padx=12, pady=12)
+
+        panel = tk.Frame(outer, bg="white", bd=1, relief="solid")
+        panel.pack(fill="both", expand=True)
+
+        header = tk.Frame(panel, bg="#f6f6f6", height=54)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+
+        tk.Label(
+            header,
+            text="Sample Color from Image",
+            font=("Sans", 13, "bold"),
+            bg="#f6f6f6",
+            fg="#222222",
+            anchor="w",
+            padx=16
+        ).pack(side="left", fill="y")
+
+        tk.Label(
+            header,
+            text="Click pixel or drag ROI",
+            font=("Sans", 9, "italic"),
+            bg="#f6f6f6",
+            fg="#666666",
+            padx=16
+        ).pack(side="right", fill="y")
+
+        body = tk.Frame(panel, bg="white")
+        body.pack(fill="both", expand=True, padx=14, pady=10)
+
+        # =====================================================================
+        # Image selector
+        # =====================================================================
+        selector_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
+        selector_card.pack(fill="x", pady=(0, 8))
+
+        selector_row = tk.Frame(selector_card, bg="#fafafa")
+        selector_row.pack(fill="x", padx=12, pady=8)
+
+        tk.Label(
+            selector_row,
+            text="Image:",
+            bg="#fafafa",
+            font=("Sans", 10, "bold")
+        ).pack(side="left", padx=(0, 8))
+
+        image_ids = []
+        image_names = []
+
+        for wid, path in self.load_images_names.items():
+            image_ids.append(wid)
+            image_names.append(os.path.basename(path))
+
+        selected_image_var = tk.StringVar(value=image_names[0] if image_names else "")
+
+        image_combo = ttk.Combobox(
+            selector_row,
+            textvariable=selected_image_var,
+            state="readonly",
+            values=image_names,
+            width=55
+        )
+        image_combo.pack(side="left", fill="x", expand=True)
+
+        # =====================================================================
+        # Image preview
+        # =====================================================================
+        image_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
+        image_card.pack(fill="both", expand=True, pady=(0, 8))
+
+        tk.Label(
+            image_card,
+            text="Image preview",
+            bg="#fafafa",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            padx=12,
+            pady=7
+        ).pack(fill="x")
+
+        canvas = tk.Canvas(
+            image_card,
+            width=state["display_w"],
+            height=state["display_h"],
+            bg="white",
+            highlightthickness=0,
+            bd=0
+        )
+        canvas.pack(padx=12, pady=(0, 6))
+
+        tip_var = tk.StringVar(
+            value="Click to sample one pixel, or drag to sample the average color of a region."
+        )
+
+        tk.Label(
+            image_card,
+            textvariable=tip_var,
+            bg="#fafafa",
+            fg="#666666",
+            font=("Sans", 9, "italic"),
+            wraplength=570,
+            justify="left",
+            padx=12,
+            pady=0
+        ).pack(fill="x", pady=(0, 8))
+
+        # =====================================================================
+        # Sampled color panel
+        # =====================================================================
+        sample_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
+        sample_card.pack(fill="x", pady=(0, 0))
+
+        tk.Label(
+            sample_card,
+            text="Sampled color",
+            bg="#fafafa",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            padx=12,
+            pady=7
+        ).pack(fill="x")
+
+        sample_row = tk.Frame(sample_card, bg="#fafafa")
+        sample_row.pack(fill="x", padx=12, pady=(0, 10))
+
+        values_frame = tk.Frame(sample_row, bg="#fafafa")
+        values_frame.pack(side="left", fill="x", expand=True)
+
+        rgb_var = tk.StringVar(value="RGB: -")
+        lab_var = tk.StringVar(value="LAB: -")
+        hex_var = tk.StringVar(value="HEX: -")
+
+        tk.Label(
+            values_frame,
+            textvariable=rgb_var,
+            bg="#fafafa",
+            anchor="w",
+            font=("Consolas", 9)
+        ).pack(anchor="w")
+
+        tk.Label(
+            values_frame,
+            textvariable=lab_var,
+            bg="#fafafa",
+            anchor="w",
+            font=("Consolas", 9)
+        ).pack(anchor="w", pady=(2, 0))
+
+        tk.Label(
+            values_frame,
+            textvariable=hex_var,
+            bg="#fafafa",
+            anchor="w",
+            font=("Consolas", 9)
+        ).pack(anchor="w", pady=(2, 0))
+
+        preview_canvas = tk.Canvas(
+            sample_row,
+            width=130,
+            height=42,
+            bg="#fafafa",
+            highlightthickness=0,
+            bd=0
+        )
+        preview_canvas.pack(side="left", padx=(12, 12))
+
+        preview_rect = preview_canvas.create_rectangle(
+            8, 7, 122, 35,
+            fill="#d9d9d9",
+            outline="#555555"
+        )
+
+        use_button = ttk.Button(
+            sample_row,
+            text="Use sampled color",
+            state="disabled"
+        )
+        use_button.pack(side="right")
+
+        # =====================================================================
+        # Bottom buttons
+        # =====================================================================
+        footer = tk.Frame(panel, bg="white")
+        footer.pack(fill="x", padx=14, pady=(0, 12))
+
+        tk.Button(
+            footer,
+            text="Cancel",
+            width=12,
+            command=popup.destroy
+        ).pack(side="right")
+
+        # =====================================================================
+        # Helpers
+        # =====================================================================
+        def _get_selected_window_id():
+            current_name = selected_image_var.get()
+
+            if current_name in image_names:
+                return image_ids[image_names.index(current_name)]
+
+            return image_ids[0] if image_ids else None
+
+        def _image_object_to_pil(img_obj):
+            """
+            Convert different internal image representations to PIL RGB.
+            """
+            if isinstance(img_obj, Image.Image):
+                return img_obj.convert("RGB")
+
+            if isinstance(img_obj, np.ndarray):
+                arr = img_obj
+
+                if arr.dtype != np.uint8:
+                    arr = np.clip(arr, 0, 255).astype(np.uint8)
+
+                if arr.ndim == 2:
+                    return Image.fromarray(arr, "L").convert("RGB")
+
+                if arr.ndim == 3 and arr.shape[2] >= 3:
+                    return Image.fromarray(arr[:, :, :3], "RGB").convert("RGB")
+
+            if isinstance(img_obj, str) and os.path.exists(img_obj):
+                return Image.open(img_obj).convert("RGB")
+
+            raise ValueError("Unsupported image format.")
+
+        def _canvas_to_image_xy(canvas_x, canvas_y):
+            if state["pil_img"] is None:
+                return None
+
+            x = int(round((canvas_x - state["offset_x"]) / state["scale"]))
+            y = int(round((canvas_y - state["offset_y"]) / state["scale"]))
+
+            w, h = state["pil_img"].size
+
+            x = max(0, min(w - 1, x))
+            y = max(0, min(h - 1, y))
+
+            return x, y
+
+        def _set_sample_rgb(rgb, source_text="image sample"):
+            try:
+                rgb = UtilsTools.safe_rgb_tuple(rgb)
+                lab = UtilsTools.rgb_to_lab(rgb)
+                lab = UtilsTools.safe_lab_tuple(lab)
+                hex_color = UtilsTools.rgb_to_hex(rgb)
+
+                state["sample_rgb"] = rgb
+                state["sample_lab"] = lab
+                state["sample_hex"] = hex_color
+
+                rgb_var.set(f"RGB: {rgb[0]}, {rgb[1]}, {rgb[2]}")
+                lab_var.set(f"LAB: {lab[0]:.4f}, {lab[1]:.4f}, {lab[2]:.4f}")
+                hex_var.set(f"HEX: {hex_color.upper()}")
+
+                preview_canvas.itemconfig(preview_rect, fill=hex_color)
+                use_button.config(state="normal")
+
+                self._update_color_evaluation_conversion_inspector(
+                    vars_dict=vars_dict,
+                    lab=lab,
+                    rgb=rgb,
+                    hex_color=hex_color,
+                    name="Image sample",
+                    source=source_text
+                )
+
+            except Exception:
+                state["sample_rgb"] = None
+                state["sample_lab"] = None
+                state["sample_hex"] = None
+
+                rgb_var.set("RGB: -")
+                lab_var.set("LAB: -")
+                hex_var.set("HEX: -")
+
+                preview_canvas.itemconfig(preview_rect, fill="#d9d9d9")
+                use_button.config(state="disabled")
+
+        def _clear_sample():
+            state["sample_rgb"] = None
+            state["sample_lab"] = None
+            state["sample_hex"] = None
+
+            rgb_var.set("RGB: -")
+            lab_var.set("LAB: -")
+            hex_var.set("HEX: -")
+
+            preview_canvas.itemconfig(preview_rect, fill="#d9d9d9")
+            use_button.config(state="disabled")
+
+        def _load_selected_image(*_):
+            window_id = _get_selected_window_id()
+
+            if window_id is None or window_id not in self.images:
+                return
+
+            try:
+                pil_img = _image_object_to_pil(self.images[window_id])
+            except Exception:
+                self.custom_warning(
+                    "Image Error",
+                    "Could not load the selected image.",
+                    parent=popup
+                )
+                return
+
+            state["window_id"] = window_id
+            state["pil_img"] = pil_img
+
+            img_w, img_h = pil_img.size
+            canvas_w = state["display_w"]
+            canvas_h = state["display_h"]
+
+            scale = min(canvas_w / img_w, canvas_h / img_h)
+            disp_w = max(1, int(round(img_w * scale)))
+            disp_h = max(1, int(round(img_h * scale)))
+
+            state["scale"] = scale
+            state["offset_x"] = int((canvas_w - disp_w) / 2)
+            state["offset_y"] = int((canvas_h - disp_h) / 2)
+
+            resized = pil_img.resize((disp_w, disp_h), Image.LANCZOS)
+            state["photo"] = ImageTk.PhotoImage(resized)
+
+            canvas.delete("all")
+            canvas.create_image(
+                state["offset_x"],
+                state["offset_y"],
+                image=state["photo"],
+                anchor="nw",
+                tags=("image",)
+            )
+
+            _clear_sample()
+
+        def _sample_roi_from_canvas(x1, y1, x2, y2):
+            if state["pil_img"] is None:
+                return
+
+            p1 = _canvas_to_image_xy(x1, y1)
+            p2 = _canvas_to_image_xy(x2, y2)
+
+            if p1 is None or p2 is None:
+                return
+
+            ix1, iy1 = p1
+            ix2, iy2 = p2
+
+            left = min(ix1, ix2)
+            right = max(ix1, ix2)
+            top = min(iy1, iy2)
+            bottom = max(iy1, iy2)
+
+            if abs(right - left) <= 1 and abs(bottom - top) <= 1:
+                rgb = state["pil_img"].getpixel((left, top))
+                _set_sample_rgb(rgb, source_text="image pixel")
+                return
+
+            crop = state["pil_img"].crop((left, top, right + 1, bottom + 1))
+            arr = np.array(crop, dtype=float)
+
+            if arr.ndim == 2:
+                mean_value = int(round(float(np.mean(arr))))
+                rgb = (mean_value, mean_value, mean_value)
+            else:
+                mean_rgb = np.mean(arr.reshape(-1, arr.shape[-1])[:, :3], axis=0)
+                rgb = tuple(int(round(v)) for v in mean_rgb)
+
+            _set_sample_rgb(rgb, source_text="image ROI average")
+
+        def _on_mouse_down(event):
+            if state["pil_img"] is None:
+                return
+
+            state["drag_start"] = (event.x, event.y)
+
+            if state["rect_id"] is not None:
+                try:
+                    canvas.delete(state["rect_id"])
+                except Exception:
+                    pass
+
+            state["rect_id"] = canvas.create_rectangle(
+                event.x,
+                event.y,
+                event.x,
+                event.y,
+                outline="#ffcc00",
+                width=2
+            )
+
+        def _on_mouse_drag(event):
+            if state["drag_start"] is None or state["rect_id"] is None:
+                return
+
+            x0, y0 = state["drag_start"]
+
+            canvas.coords(
+                state["rect_id"],
+                x0,
+                y0,
+                event.x,
+                event.y
+            )
+
+        def _on_mouse_up(event):
+            if state["drag_start"] is None:
+                return
+
+            x0, y0 = state["drag_start"]
+            state["drag_start"] = None
+
+            _sample_roi_from_canvas(x0, y0, event.x, event.y)
+
+        def _use_sampled_color():
+            if (
+                state["sample_rgb"] is None
+                or state["sample_lab"] is None
+                or state["sample_hex"] is None
+            ):
+                return
+
+            self._set_custom_color_as_evaluation_comparison(
+                vars_dict=vars_dict,
+                sample_lab=state["sample_lab"],
+                sample_rgb=state["sample_rgb"],
+                sample_hex=state["sample_hex"]
+            )
+
+            vars_dict["secondary_custom_name"] = "Image Sample"
+
+            self._update_color_evaluation_conversion_inspector(
+                vars_dict=vars_dict,
+                lab=state["sample_lab"],
+                rgb=state["sample_rgb"],
+                hex_color=state["sample_hex"],
+                name="Image Sample",
+                source="image"
+            )
+
+            popup.destroy()
+
+        use_button.configure(command=_use_sampled_color)
+
+        image_combo.bind("<<ComboboxSelected>>", _load_selected_image)
+
+        canvas.bind("<ButtonPress-1>", _on_mouse_down)
+        canvas.bind("<B1-Motion>", _on_mouse_drag)
+        canvas.bind("<ButtonRelease-1>", _on_mouse_up)
+
+        popup.bind("<Escape>", lambda e: popup.destroy())
+
+        _load_selected_image()
 
 
 
@@ -11209,7 +12164,7 @@ class PyFCSApp:
         dialog.grab_set()
 
         WIN_W = 700
-        WIN_H = 430 if require_name else 380
+        WIN_H = 450 if require_name else 400
 
         try:
             if parent is not None and hasattr(parent, "winfo_x"):
@@ -11767,7 +12722,7 @@ class PyFCSApp:
         """
         mode = input_vars["mode_var"].get().strip().upper()
 
-        r, g, b = rgb
+        r, g, b = UtilsTools.safe_rgb_tuple(rgb)
 
         if mode == "RGB":
             input_vars["v1_var"].set(str(r))
@@ -11776,7 +12731,7 @@ class PyFCSApp:
             input_vars["hex_var"].set("")
 
         elif mode == "LAB":
-            lab = UtilsTools.srgb_to_lab(r, g, b)
+            lab = UtilsTools.rgb_to_lab((r, g, b))
             L, a, b_lab = lab
 
             input_vars["v1_var"].set(f"{float(L):.2f}")
@@ -11785,7 +12740,7 @@ class PyFCSApp:
             input_vars["hex_var"].set("")
 
         else:
-            input_vars["hex_var"].set("#{0:02X}{1:02X}{2:02X}".format(r, g, b))
+            input_vars["hex_var"].set(UtilsTools.rgb_to_hex((r, g, b)).upper())
             input_vars["v1_var"].set("")
             input_vars["v2_var"].set("")
             input_vars["v3_var"].set("")
@@ -12203,268 +13158,382 @@ class PyFCSApp:
 
 
 
+    def _update_color_evaluation_conversion_inspector(
+        self,
+        vars_dict,
+        lab=None,
+        rgb=None,
+        hex_color=None,
+        name="Color",
+        source="-"
+    ):
+        """
+        Update the compact conversion inspector in the Color Evaluation window.
+        """
+        try:
+            if lab is None and rgb is None:
+                vars_dict["inspector_title_var"].set("Conversion inspector")
+                vars_dict["inspector_source_var"].set("Source: -")
+                vars_dict["inspector_rgb_var"].set("RGB: -")
+                vars_dict["inspector_lab_var"].set("LAB: -")
+                vars_dict["inspector_hex_var"].set("HEX: -")
+                return
+
+            if lab is None and rgb is not None:
+                rgb = UtilsTools.safe_rgb_tuple(rgb)
+                lab = UtilsTools.rgb_to_lab(rgb)
+
+            if rgb is None and lab is not None:
+                rgb = UtilsTools.lab_to_rgb(lab)
+
+            rgb = UtilsTools.safe_rgb_tuple(rgb)
+            lab = UtilsTools.safe_lab_tuple(lab)
+
+            if hex_color is None:
+                hex_color = UtilsTools.rgb_to_hex(rgb)
+
+            vars_dict["inspector_title_var"].set(f"Conversion inspector")
+            vars_dict["inspector_source_var"].set(f"Source: {source}")
+
+            vars_dict["inspector_rgb_var"].set(
+                f"RGB: {int(rgb[0])}, {int(rgb[1])}, {int(rgb[2])}"
+            )
+            vars_dict["inspector_lab_var"].set(
+                f"LAB: {float(lab[0]):.4f}, {float(lab[1]):.4f}, {float(lab[2]):.4f}"
+            )
+            vars_dict["inspector_hex_var"].set(
+                f"HEX: {str(hex_color).upper()}"
+            )
+
+        except Exception:
+            vars_dict["inspector_title_var"].set("Conversion inspector")
+            vars_dict["inspector_source_var"].set("Source: error")
+            vars_dict["inspector_rgb_var"].set("RGB: -")
+            vars_dict["inspector_lab_var"].set("LAB: -")
+            vars_dict["inspector_hex_var"].set("HEX: -")
+
+
+    def _get_active_color_evaluation_sample(self, vars_dict):
+        """
+        Return the most relevant color sample for global analysis modes.
+
+        Priority:
+        1. Custom comparison color, if available.
+        2. Selected prototype.
+        """
+        try:
+            if (
+                vars_dict.get("secondary_mode") == "custom"
+                and vars_dict.get("secondary_custom_lab") is not None
+                and vars_dict.get("secondary_custom_rgb") is not None
+            ):
+                return {
+                    "name": vars_dict.get("secondary_custom_name", "Custom Color"),
+                    "lab": vars_dict.get("secondary_custom_lab"),
+                    "rgb": vars_dict.get("secondary_custom_rgb"),
+                    "hex": vars_dict.get("secondary_custom_hex"),
+                    "source": "custom"
+                }
+
+            primary_label = vars_dict.get("primary_label")
+            refs_map = vars_dict.get("color_row_refs", {})
+            primary_refs = refs_map.get(primary_label)
+
+            if primary_refs:
+                return {
+                    "name": primary_label,
+                    "lab": primary_refs.get("lab"),
+                    "rgb": primary_refs.get("rgb"),
+                    "hex": primary_refs.get("hex"),
+                    "source": "prototype"
+                }
+
+        except Exception:
+            pass
+
+        return None
+    
+
+    def _classify_delta_e_for_active_thresholds(self, delta_e):
+        """
+        Classify a ΔE value using the active threshold configuration.
+        Returns:
+            (label, order)
+        Lower order means stronger match.
+        """
+        try:
+            self._ensure_threshold_settings()
+
+            mode = self.threshold_settings.get("mode", "default")
+
+            if mode == "known":
+                mode = "default"
+
+            # --------------------------------------------------
+            # Default presets
+            # --------------------------------------------------
+            if mode == "default":
+                preset = self.threshold_settings.get("preset", "pt_at")
+
+                if preset == "pt":
+                    pt = 0.8
+                    if delta_e <= pt:
+                        return "PT match", 0
+                    return "Outside PT", 2
+
+                if preset == "at":
+                    at = 1.8
+                    if delta_e <= at:
+                        return "AT match", 1
+                    return "Outside AT", 2
+
+                pt = 0.8
+                at = 1.8
+
+                if delta_e <= pt:
+                    return "PT match", 0
+                if delta_e <= at:
+                    return "AT match", 1
+                return "Different", 2
+
+            # --------------------------------------------------
+            # Custom thresholds
+            # --------------------------------------------------
+            if mode == "custom":
+                custom_type = self.threshold_settings.get("custom_type", "single")
+
+                if custom_type == "single":
+                    threshold, err = self._parse_positive_threshold(
+                        self.threshold_settings.get("single")
+                    )
+
+                    if err:
+                        return "Invalid threshold", 9
+
+                    if delta_e <= threshold:
+                        return "Inside threshold", 0
+                    return "Outside threshold", 2
+
+                lower, upper, err = self._validate_custom_range(
+                    self.threshold_settings.get("lower"),
+                    self.threshold_settings.get("upper")
+                )
+
+                if err:
+                    return "Invalid threshold", 9
+
+                if delta_e <= lower:
+                    return "Inside lower threshold", 0
+                if delta_e <= upper:
+                    return "Inside upper threshold", 1
+                return "Outside upper threshold", 2
+
+        except Exception:
+            pass
+
+        return "Unavailable", 9
+    
+
+    def _show_color_evaluation_closest_prototypes(self, vars_dict):
+        """
+        Rank the 7 closest loaded prototypes using the active metric
+        against the active custom color.
+
+        This mode only works when a custom color exists.
+        It does not use the selected prototype as input.
+        """
+        sample_lab = vars_dict.get("secondary_custom_lab")
+        sample_rgb = vars_dict.get("secondary_custom_rgb")
+        sample_hex = vars_dict.get("secondary_custom_hex")
+        sample_name = vars_dict.get("secondary_custom_name", "Custom Color")
+
+        metric_name = self.threshold_settings.get("metric", "CIEDE2000")
+        vars_dict["analysis_view_mode"] = "closest"
+
+        if (
+            vars_dict.get("secondary_mode") != "custom"
+            or sample_lab is None
+            or sample_rgb is None
+            or sample_hex is None
+        ):
+            self._update_color_evaluation_result_card(
+                vars_dict=vars_dict,
+                title="Custom color required.",
+                detail="",
+                summary=(
+                    "Use 'Evaluate custom color' or 'Sample from image' first. "
+                    "The closest-prototype search only works with a custom color."
+                ),
+                status="unavailable"
+            )
+
+            self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
+            return
+
+        rows = self._extract_color_space_rows(vars_dict.get("loaded_space_data") or {})
+
+        if not rows:
+            self._update_color_evaluation_result_card(
+                vars_dict=vars_dict,
+                title="No prototypes available.",
+                detail="",
+                summary="Load a valid color space before using closest-prototype mode.",
+                status="unavailable"
+            )
+            return
+
+        ranking = []
+
+        for label, proto_lab in rows:
+            try:
+                evaluation = self.evaluate_color_difference_threshold(
+                    sample_lab=sample_lab,
+                    prototype_lab=proto_lab,
+                    metric=metric_name,
+                    threshold_settings=self.threshold_settings
+                )
+
+                delta_e = evaluation.get("delta_e")
+
+                if delta_e is None:
+                    continue
+
+                class_label, class_order = self._classify_delta_e_for_active_thresholds(
+                    float(delta_e)
+                )
+
+                ranking.append({
+                    "label": label,
+                    "delta_e": float(delta_e),
+                    "class_label": class_label,
+                    "class_order": class_order
+                })
+
+            except Exception:
+                continue
+
+        if not ranking:
+            self._update_color_evaluation_result_card(
+                vars_dict=vars_dict,
+                title="Closest prototype not available.",
+                detail="",
+                summary="Could not compute color-difference values for the loaded prototypes.",
+                status="unavailable"
+            )
+            return
+
+        ranking.sort(key=lambda item: item["delta_e"])
+
+        top_7 = ranking[:7]
+        best = top_7[0]
+
+        vars_dict["closest_ranking"] = top_7
+        vars_dict["closest_best"] = best
+        vars_dict["closest_metric"] = metric_name
+
+        lines = []
+        header = f"{'#':<3} {'Prototype':<24} {metric_name:<12} {'Status':<12}"
+        separator = "-" * len(header)
+
+        lines.append(header)
+        lines.append(separator)
+
+        for idx, item in enumerate(top_7, start=1):
+            label_text = str(item["label"])
+
+            # Keep the table compact if the prototype name is too long.
+            if len(label_text) > 23:
+                label_text = label_text[:20] + "..."
+
+            lines.append(
+                f"{idx:<3} "
+                f"{label_text:<24} "
+                f"{item['delta_e']:>10.3f}   "
+                f"{item['class_label']:<12}"
+            )
+
+        summary = (
+            "7 closest prototypes:\n\n"
+            + "\n".join(lines)
+            + "\n\n"
+            + self._get_color_evaluation_threshold_description()
+        )
+
+        status = "outside"
+
+        if best["class_order"] == 0:
+            status = "inside"
+        elif best["class_order"] == 1:
+            status = "warning"
+
+        self._update_color_evaluation_result_card(
+            vars_dict=vars_dict,
+            title=f"Closest prototype: {best['label']}",
+            detail=f"Minimum {metric_name} = {best['delta_e']:.3f}",
+            summary=summary,
+            status=status
+        )
+
+        self._update_color_evaluation_membership_panel(
+            vars_dict,
+            sample_lab=sample_lab
+        )
+
+        self._update_color_evaluation_conversion_inspector(
+            vars_dict=vars_dict,
+            lab=sample_lab,
+            rgb=sample_rgb,
+            hex_color=sample_hex,
+            name=sample_name,
+            source="custom"
+        )
+
+
+
+
+
     def _normalize_custom_color_input(self, input_mode, value_1="", value_2="", value_3="", hex_value=""):
         """
         Normalize and validate a user-entered color into LAB, RGB, and HEX.
-
-        This function is intentionally defensive because it is used by live validation.
-        It must never raise exceptions that can interrupt the UI.
 
         Returns
         -------
         tuple
             (ok, message, sample_lab, sample_rgb, sample_hex)
         """
-
-        # ------------------------------------------------------------------
-        # Global safety
-        # ------------------------------------------------------------------
         try:
             mode = str(input_mode).strip().upper()
         except Exception:
             return False, "Unsupported input mode.", None, None, None
-
-        # ------------------------------------------------------------------
-        # Local helpers
-        # ------------------------------------------------------------------
-        def _safe_text(value):
-            """Safely convert any value to stripped text."""
-            try:
-                if value is None:
-                    return ""
-                return str(value).strip()
-            except Exception:
-                return ""
-
-        def _is_plain_rgb_integer(text):
-            """
-            RGB must be a plain integer string.
-
-            Accepted:
-                0, 12, 255, +12
-
-            Rejected:
-                a, 1a, 12.5, 12,5, nan, inf, empty
-            """
-            text = _safe_text(text)
-
-            if not text:
-                return False
-
-            if text.startswith("+"):
-                text = text[1:]
-
-            return text.isdigit()
-
-        def _is_plain_lab_number(text):
-            """
-            LAB must be a plain finite number.
-
-            Accepted:
-                12
-                12.5
-                -12.5
-                +12.5
-                .5
-                12.
-
-            Rejected:
-                a
-                1a
-                --
-                .
-                -.
-                nan
-                inf
-                1e999
-            """
-            text = _safe_text(text)
-
-            if not text:
-                return False
-
-            lowered = text.lower()
-            if lowered in (
-                "nan",
-                "+nan",
-                "-nan",
-                "inf",
-                "+inf",
-                "-inf",
-                "infinity",
-                "+infinity",
-                "-infinity",
-            ):
-                return False
-
-            if "e" in lowered:
-                return False
-
-            if text.startswith(("+", "-")):
-                text = text[1:]
-
-            if not text:
-                return False
-
-            if text.count(".") > 1:
-                return False
-
-            parts = text.split(".")
-
-            if len(parts) == 1:
-                return parts[0].isdigit()
-
-            left, right = parts
-
-            # Allow ".5" and "12.", but not "." alone
-            if left == "" and right == "":
-                return False
-
-            if left and not left.isdigit():
-                return False
-
-            if right and not right.isdigit():
-                return False
-
-            return True
-
-        def _safe_float(text):
-            """
-            Safely convert text to finite float.
-
-            Important:
-            This avoids calling float(text) when text is clearly invalid,
-            so inputs like 'a' do not raise ValueError during live validation.
-            """
-            text = _safe_text(text)
-
-            if not _is_plain_lab_number(text):
-                return None
-
-            try:
-                value = float(text)
-            except Exception:
-                return None
-
-            try:
-                if not np.isfinite(value):
-                    return None
-            except Exception:
-                return None
-
-            return value
-
-        def _safe_rgb_tuple(rgb):
-            """
-            Convert any RGB-like object into a safe integer RGB tuple in [0, 255].
-            Returns None if conversion is not possible.
-            """
-            try:
-                if rgb is None:
-                    return None
-
-                if len(rgb) != 3:
-                    return None
-
-                r = float(rgb[0])
-                g = float(rgb[1])
-                b = float(rgb[2])
-
-                if not np.isfinite(r) or not np.isfinite(g) or not np.isfinite(b):
-                    return None
-
-                r = int(round(r))
-                g = int(round(g))
-                b = int(round(b))
-
-                r = max(0, min(255, r))
-                g = max(0, min(255, g))
-                b = max(0, min(255, b))
-
-                return (r, g, b)
-
-            except Exception:
-                return None
-
-        def _safe_lab_tuple(lab):
-            """
-            Convert any LAB-like object into a safe finite LAB tuple.
-            Returns None if conversion is not possible.
-            """
-            try:
-                if lab is None:
-                    return None
-
-                if len(lab) != 3:
-                    return None
-
-                L = float(lab[0])
-                a = float(lab[1])
-                b = float(lab[2])
-
-                if not np.isfinite(L) or not np.isfinite(a) or not np.isfinite(b):
-                    return None
-
-                return (L, a, b)
-
-            except Exception:
-                return None
-
-        def _safe_hex_from_rgb(rgb):
-            """Safely convert RGB tuple to HEX."""
-            try:
-                rgb = _safe_rgb_tuple(rgb)
-
-                if rgb is None:
-                    return None
-
-                return UtilsTools.rgb_to_hex(rgb)
-
-            except Exception:
-                return None
 
         # =========================
         # RGB
         # =========================
         if mode == "RGB":
             try:
-                t1 = _safe_text(value_1)
-                t2 = _safe_text(value_2)
-                t3 = _safe_text(value_3)
+                t1 = UtilsTools.safe_text(value_1)
+                t2 = UtilsTools.safe_text(value_2)
+                t3 = UtilsTools.safe_text(value_3)
 
                 if not t1 or not t2 or not t3:
                     return False, "Enter all RGB values.", None, None, None
 
                 if (
-                    not _is_plain_rgb_integer(t1)
-                    or not _is_plain_rgb_integer(t2)
-                    or not _is_plain_rgb_integer(t3)
+                    not UtilsTools.is_plain_rgb_integer(t1)
+                    or not UtilsTools.is_plain_rgb_integer(t2)
+                    or not UtilsTools.is_plain_rgb_integer(t3)
                 ):
                     return False, "RGB values must be valid integers.", None, None, None
 
-                r = int(t1)
-                g = int(t2)
-                b = int(t3)
+                sample_rgb = (int(t1), int(t2), int(t3))
 
-                if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
+                if not UtilsTools.is_valid_rgb(sample_rgb):
                     return False, "RGB values must be between 0 and 255.", None, None, None
 
-                sample_rgb = (r, g, b)
+                sample_lab = UtilsTools.rgb_to_lab(sample_rgb)
+                sample_lab = UtilsTools.safe_lab_tuple(sample_lab)
 
-                try:
-                    raw_lab = UtilsTools.srgb_to_lab(r, g, b)
-                except Exception:
-                    return False, "Unable to convert RGB color.", None, None, None
-
-                sample_lab = _safe_lab_tuple(raw_lab)
-
-                if sample_lab is None:
-                    return False, "Unable to convert RGB color.", None, None, None
-
-                sample_hex = _safe_hex_from_rgb(sample_rgb)
-
-                if sample_hex is None:
-                    return False, "Unable to convert RGB color.", None, None, None
+                sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
 
                 return True, "Valid RGB color.", sample_lab, sample_rgb, sample_hex
 
@@ -12476,45 +13545,29 @@ class PyFCSApp:
         # =========================
         if mode == "LAB":
             try:
-                t1 = _safe_text(value_1).replace(",", ".")
-                t2 = _safe_text(value_2).replace(",", ".")
-                t3 = _safe_text(value_3).replace(",", ".")
+                t1 = UtilsTools.safe_text(value_1).replace(",", ".")
+                t2 = UtilsTools.safe_text(value_2).replace(",", ".")
+                t3 = UtilsTools.safe_text(value_3).replace(",", ".")
 
                 if not t1 or not t2 or not t3:
                     return False, "Enter all LAB values.", None, None, None
 
-                L = _safe_float(t1)
-                a = _safe_float(t2)
-                b = _safe_float(t3)
+                L = UtilsTools.safe_float(t1)
+                a = UtilsTools.safe_float(t2)
+                b = UtilsTools.safe_float(t3)
 
                 if L is None or a is None or b is None:
                     return False, "LAB values must be valid numbers.", None, None, None
 
-                if not (0 <= L <= 100):
-                    return False, "L must be between 0 and 100.", None, None, None
-
-                if not (-128 <= a <= 127):
-                    return False, "a must be between -128 and 127.", None, None, None
-
-                if not (-128 <= b <= 127):
-                    return False, "b must be between -128 and 127.", None, None, None
-
                 sample_lab = (float(L), float(a), float(b))
 
-                try:
-                    raw_rgb = UtilsTools.lab_to_rgb(sample_lab)
-                except Exception:
-                    return False, "Unable to convert LAB color.", None, None, None
+                if not UtilsTools.is_valid_lab(sample_lab):
+                    return False, "LAB values must be within L [0,100], a [-128,127], b [-128,127].", None, None, None
 
-                sample_rgb = _safe_rgb_tuple(raw_rgb)
+                sample_rgb = UtilsTools.lab_to_rgb(sample_lab)
+                sample_rgb = UtilsTools.safe_rgb_tuple(sample_rgb)
 
-                if sample_rgb is None:
-                    return False, "Unable to convert LAB color.", None, None, None
-
-                sample_hex = _safe_hex_from_rgb(sample_rgb)
-
-                if sample_hex is None:
-                    return False, "Unable to convert LAB color.", None, None, None
+                sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
 
                 return True, "Valid LAB color.", sample_lab, sample_rgb, sample_hex
 
@@ -12526,47 +13579,19 @@ class PyFCSApp:
         # =========================
         if mode == "HEX":
             try:
-                hex_text = _safe_text(hex_value).upper()
+                hex_text = UtilsTools.safe_text(hex_value).upper()
 
                 if not hex_text:
                     return False, "Enter a HEX value.", None, None, None
 
-                if hex_text.startswith("#"):
-                    hex_text = hex_text[1:]
+                if not UtilsTools.is_valid_hex(hex_text):
+                    return False, "HEX value must be #RRGGBB or RRGGBB.", None, None, None
 
-                hex_text = hex_text.strip()
+                sample_rgb = UtilsTools.hex_to_rgb(hex_text)
+                sample_lab = UtilsTools.hex_to_lab(hex_text)
+                sample_lab = UtilsTools.safe_lab_tuple(sample_lab)
 
-                if len(hex_text) != 6:
-                    return False, "HEX value must contain exactly 6 hexadecimal characters.", None, None, None
-
-                allowed = set("0123456789ABCDEF")
-
-                if any(ch not in allowed for ch in hex_text):
-                    return False, "HEX value is not valid.", None, None, None
-
-                try:
-                    r = int(hex_text[0:2], 16)
-                    g = int(hex_text[2:4], 16)
-                    b = int(hex_text[4:6], 16)
-                except Exception:
-                    return False, "HEX value is not valid.", None, None, None
-
-                sample_rgb = (r, g, b)
-
-                try:
-                    raw_lab = UtilsTools.srgb_to_lab(r, g, b)
-                except Exception:
-                    return False, "Unable to convert HEX color.", None, None, None
-
-                sample_lab = _safe_lab_tuple(raw_lab)
-
-                if sample_lab is None:
-                    return False, "Unable to convert HEX color.", None, None, None
-
-                sample_hex = _safe_hex_from_rgb(sample_rgb)
-
-                if sample_hex is None:
-                    return False, "Unable to convert HEX color.", None, None, None
+                sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
 
                 return True, "Valid HEX color.", sample_lab, sample_rgb, sample_hex
 
@@ -12574,6 +13599,310 @@ class PyFCSApp:
                 return False, "Invalid HEX color input.", None, None, None
 
         return False, "Unsupported input mode.", None, None, None
+
+
+
+
+    def _get_color_evaluation_volume_limits(self, vars_dict):
+        """
+        Return volume limits for LAB plots.
+
+        Priority:
+        1. self.volume_limits
+        2. loaded fuzzy color space volume_limits
+        3. default LAB domain
+        """
+        volume_limits = getattr(self, "volume_limits", None)
+
+        if volume_limits is not None:
+            return volume_limits
+
+        fuzzy_cs = vars_dict.get("loaded_fuzzy_color_space")
+
+        if fuzzy_cs is not None:
+            for attr_name in ("volume_limits", "limits", "domain"):
+                try:
+                    candidate = getattr(fuzzy_cs, attr_name, None)
+                    if candidate is not None:
+                        return candidate
+                except Exception:
+                    pass
+
+        # Fallback object compatible with VisualManager.clip_face_to_volume()
+        class DefaultLABVolumeLimits:
+            comp1 = (0, 100)       # L*
+            comp2 = (-128, 127)    # a*
+            comp3 = (-128, 127)    # b*
+
+        return DefaultLABVolumeLimits()
+    
+
+
+    def _get_color_evaluation_plot_context(self, vars_dict, require_closest=True):
+        """
+        Build a shared context for all Color Evaluation plots.
+
+        Uses the currently loaded evaluation color space:
+        - loaded_cores      -> Core volumes
+        - loaded_prototypes -> 0.5-cut volumes
+        - loaded_supports   -> Support volumes
+        """
+        sample_lab = vars_dict.get("secondary_custom_lab")
+        sample_rgb = vars_dict.get("secondary_custom_rgb")
+        sample_hex = vars_dict.get("secondary_custom_hex")
+
+        if (
+            vars_dict.get("secondary_mode") != "custom"
+            or sample_lab is None
+            or sample_rgb is None
+            or sample_hex is None
+        ):
+            self.custom_warning(
+                "Custom Color Required",
+                "Use 'Evaluate custom color' or 'Sample from image' first.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return None
+
+        # Make sure closest ranking exists and matches the current metric/thresholds.
+        if require_closest and not vars_dict.get("closest_ranking"):
+            self._show_color_evaluation_closest_prototypes(vars_dict)
+
+        data_source = vars_dict.get("loaded_space_data") or {}
+        rows = self._extract_color_space_rows(data_source)
+
+        if not rows:
+            self.custom_warning(
+                "No Color Space",
+                "Load a valid color space first.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return None
+
+        # ------------------------------------------------------------
+        # Format expected by VisualManager:
+        # color_data = {label: {"positive_prototype": lab}}
+        # hex_color  = {"#rrggbb": lab}
+        # ------------------------------------------------------------
+        color_data = {}
+        hex_color = {}
+
+        for label, lab in rows:
+            try:
+                lab_arr = np.asarray(lab, dtype=float).reshape(-1)[:3]
+
+                color_data[label] = {
+                    "positive_prototype": lab_arr
+                }
+
+                proto_hex = self._get_evaluation_proto_hex(vars_dict, label)
+                hex_color[proto_hex] = lab_arr
+
+            except Exception:
+                continue
+
+        # ------------------------------------------------------------
+        # Volumes from current evaluation color space
+        # ------------------------------------------------------------
+        core = vars_dict.get("loaded_cores")
+        alpha = vars_dict.get("loaded_prototypes")   # 0.5-cut in your current structure
+        support = vars_dict.get("loaded_supports")
+
+        volume_limits = self._get_color_evaluation_volume_limits(vars_dict)
+
+        # ------------------------------------------------------------
+        # Closest prototype information
+        # ------------------------------------------------------------
+        closest_best = vars_dict.get("closest_best")
+        closest_label = None
+        closest_lab = None
+        closest_hex = None
+
+        if closest_best:
+            closest_label = closest_best.get("label")
+
+            for label, lab in rows:
+                if str(label) == str(closest_label):
+                    closest_lab = np.asarray(lab, dtype=float).reshape(-1)[:3]
+                    closest_hex = self._get_evaluation_proto_hex(vars_dict, label)
+                    break
+
+        filename = (
+            vars_dict.get("loaded_space_name")
+            or vars_dict["space_name_var"].get()
+            or "Color Space Evaluation"
+        )
+
+        metric_name = (
+            vars_dict.get("closest_metric")
+            or self.threshold_settings.get("metric", "CIEDE2000")
+        )
+
+        return {
+            "filename": filename,
+            "color_data": color_data,
+            "core": core,
+            "alpha": alpha,
+            "support": support,
+            "volume_limits": volume_limits,
+            "hex_color": hex_color,
+            "custom_lab": sample_lab,
+            "custom_rgb": sample_rgb,
+            "custom_hex": sample_hex,
+            "closest_label": closest_label,
+            "closest_lab": closest_lab,
+            "closest_hex": closest_hex,
+            "ranking": vars_dict.get("closest_ranking") or [],
+            "metric_name": metric_name,
+        }
+
+
+
+    def _open_color_evaluation_3d_plot(self, vars_dict):
+        """
+        Open Plotly 3D LAB visualization with custom color and closest prototype.
+        """
+        ctx = self._get_color_evaluation_plot_context(vars_dict, require_closest=True)
+
+        if ctx is None:
+            return
+
+        if ctx["closest_lab"] is None:
+            self.custom_warning(
+                "Closest Prototype Required",
+                "Press 'Find closest prototype' first or make sure the closest ranking can be computed.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return
+
+        fig = VisualManager.plot_more_color_evaluation_3D(
+            filename=ctx["filename"],
+            color_data=ctx["color_data"],
+            core=ctx["core"],
+            alpha=ctx["alpha"],
+            support=ctx["support"],
+            volume_limits=ctx["volume_limits"],
+            hex_color=ctx["hex_color"],
+            custom_lab=ctx["custom_lab"],
+            custom_hex=ctx["custom_hex"],
+            closest_label=ctx["closest_label"],
+            closest_lab=ctx["closest_lab"],
+            closest_hex=ctx["closest_hex"],
+            initial_volume_mode="Representative",
+        )
+
+        self._show_color_eval_plotly_figure_in_browser(
+            fig,
+            filename_prefix="color_eval_3d_lab"
+        )
+
+
+    def _open_color_evaluation_ab_plot(self, vars_dict):
+        """
+        Open 2D a*b* projection with custom color and closest prototype.
+        """
+        ctx = self._get_color_evaluation_plot_context(vars_dict, require_closest=True)
+
+        if ctx is None:
+            return
+
+        fig = VisualManager.plot_color_evaluation_ab_projection(
+            color_data=ctx["color_data"],
+            hex_color=ctx["hex_color"],
+            custom_lab=ctx["custom_lab"],
+            custom_hex=ctx["custom_hex"],
+            closest_label=ctx["closest_label"],
+            closest_lab=ctx["closest_lab"],
+            closest_hex=ctx["closest_hex"],
+            filename=ctx["filename"],
+        )
+
+        self._show_color_eval_plotly_figure_in_browser(
+            fig,
+            filename_prefix="color_eval_ab_projection"
+        )
+
+
+    def _open_color_evaluation_top7_plot(self, vars_dict):
+        """
+        Open horizontal bar chart with the 7 closest prototypes.
+        """
+        ctx = self._get_color_evaluation_plot_context(vars_dict, require_closest=True)
+
+        if ctx is None:
+            return
+
+        ranking = ctx.get("ranking") or []
+
+        if not ranking:
+            self.custom_warning(
+                "Ranking Not Available",
+                "Could not compute the closest prototypes.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return
+
+        fig = VisualManager.plot_color_evaluation_top7_bar(
+            ranking=ranking,
+            metric_name=ctx["metric_name"],
+            title=f"Top 7 closest prototypes | {ctx['metric_name']}",
+        )
+
+        self._show_color_eval_plotly_figure_in_browser(
+            fig,
+            filename_prefix="color_eval_top7"
+        )
+
+
+    def _open_color_evaluation_membership_plot(self, vars_dict):
+        """
+        Open membership degree bar chart for the current custom color.
+        """
+        sample_lab = vars_dict.get("secondary_custom_lab")
+
+        if vars_dict.get("secondary_mode") != "custom" or sample_lab is None:
+            self.custom_warning(
+                "Custom Color Required",
+                "Use 'Evaluate custom color' or 'Sample from image' first.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return
+
+        memberships = self._calculate_evaluation_memberships(vars_dict, sample_lab)
+
+        if not memberships:
+            self.custom_warning(
+                "Memberships Not Available",
+                "The loaded color space has no fuzzy membership data available.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return
+
+        fig = VisualManager.plot_color_evaluation_membership_bar(
+            memberships=memberships,
+            title="Membership degrees for custom color",
+            top_n=10,
+        )
+
+        self._show_color_eval_plotly_figure_in_browser(
+            fig,
+            filename_prefix="color_eval_memberships"
+        )
+
+
+    def _show_color_eval_plotly_figure_in_browser(
+        self,
+        fig,
+        filename_prefix="color_eval_plot"
+    ):
+        """
+        Open a Color Evaluation Plotly figure in the default browser.
+        """
+        self._open_plotly_figure_in_browser(
+            fig,
+            filename_prefix=filename_prefix
+        )
+
 
 
 
