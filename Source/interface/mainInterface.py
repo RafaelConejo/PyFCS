@@ -92,6 +92,11 @@ class PyFCSApp:
         # Centralized image/icon references to avoid garbage collection
         self.ui_icons = {}
 
+        # Temporary external Plotly output
+        self.TEMP_PLOT_DIR = os.path.join("external", "temp", "plots")
+        self.TEMP_PLOT_MAX_FILES = 30
+        self.TEMP_PLOT_CLEANUP_EVERY = 5
+
         
         # ---------------------------------------------------------------------
         # Main window configuration
@@ -1293,38 +1298,161 @@ class PyFCSApp:
         self.get_fcs_image_recalculate(colors, threshold, min_samples, popup=None)
 
 
-    def _open_plotly_figure_in_browser(self, fig, filename_prefix="plotly_figure"):
+    def _open_plotly_figure_in_browser(self, fig, filename_prefix="plot"):
         """
-        Save a Plotly figure as an HTML file and open it in the default browser.
+        Save a Plotly figure as a temporary HTML file and open it in the default browser.
 
-        A unique filename is used every time so several plots can remain open
-        independently without overwriting each other.
+        Files are stored in:
+            external/temp/plots/
+
+        Older files are cleaned automatically every self.TEMP_PLOT_CLEANUP_EVERY plots.
         """
         try:
-            output_dir = os.path.abspath(
-                os.path.join(BASE_PATH, "Source", "external", "plots")
+            plot_dir = self._get_temp_plot_dir()
+
+            safe_prefix = self._safe_plot_filename_prefix(filename_prefix)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            counter = int(getattr(self, "_temp_plot_creation_count", 0)) + 1
+
+            filename = f"{safe_prefix}_{timestamp}_{counter:04d}.html"
+            file_path = os.path.join(plot_dir, filename)
+
+            fig.write_html(
+                file_path,
+                include_plotlyjs=True,
+                full_html=True,
+                auto_open=False,
+                config={
+                    "responsive": True,
+                    "displaylogo": False,
+                }
             )
-            os.makedirs(output_dir, exist_ok=True)
 
-            unique_id = uuid.uuid4().hex[:8]
-            filename = f"{filename_prefix}_{unique_id}.html"
+            webbrowser.open_new_tab(
+                Path(file_path).resolve().as_uri()
+            )
 
-            file_path = os.path.abspath(os.path.join(output_dir, filename))
+            self._register_temp_plot_creation()
 
-            fig.write_html(file_path)
-
-            url = Path(file_path).resolve().as_uri()
-            webbrowser.open_new_tab(url)
+            return file_path
 
         except Exception as e:
-            self.custom_warning(
-                "Plot Error",
-                f"The figure could not be opened in the browser:\n{e}",
-                parent=self._get_active_dialog_parent(
-                    getattr(self, "_color_evaluation_window", None)
+            try:
+                self.custom_warning(
+                    "Plot Error",
+                    f"Could not open external plot:\n{e}",
+                    parent=getattr(self, "_color_evaluation_window", None)
                 )
+            except Exception:
+                pass
+
+            return None
+
+
+
+    def _get_temp_plot_dir(self):
+        """
+        Return the folder used for temporary external Plotly plots.
+
+        The default target is:
+            external/temp/plots/
+
+        If the app is running from Source/interface, this resolves to:
+            Source/external/temp/plots/
+        """
+        try:
+            # mainInterface.py suele estar en Source/interface/
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        except Exception:
+            base_dir = os.getcwd()
+
+        plot_dir = os.path.join(base_dir, self.TEMP_PLOT_DIR)
+        os.makedirs(plot_dir, exist_ok=True)
+
+        return plot_dir
+
+
+    def _safe_plot_filename_prefix(self, filename_prefix):
+        """
+        Convert a plot prefix into a safe filename fragment.
+        """
+        text = str(filename_prefix or "plot").strip()
+
+        safe = "".join(
+            ch if ch.isalnum() or ch in ("_", "-", ".") else "_"
+            for ch in text
+        )
+
+        safe = safe.strip("._-")
+
+        return safe or "plot"
+
+
+    def _cleanup_temp_plot_files(self):
+        """
+        Delete the oldest temporary plot HTML files if the folder exceeds
+        self.TEMP_PLOT_MAX_FILES.
+
+        Only .html files inside external/temp/plots are affected.
+        """
+        try:
+            plot_dir = self._get_temp_plot_dir()
+            max_files = int(getattr(self, "self.TEMP_PLOT_MAX_FILES", 30))
+
+            if max_files <= 0:
+                return
+
+            html_files = []
+
+            for name in os.listdir(plot_dir):
+                if not name.lower().endswith(".html"):
+                    continue
+
+                full_path = os.path.join(plot_dir, name)
+
+                if os.path.isfile(full_path):
+                    html_files.append(full_path)
+
+            if len(html_files) <= max_files:
+                return
+
+            html_files.sort(
+                key=lambda path: os.path.getmtime(path)
             )
 
+            files_to_delete = html_files[:len(html_files) - max_files]
+
+            for path in files_to_delete:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+
+    def _register_temp_plot_creation(self):
+        """
+        Count created external plots and run cleanup every self.TEMP_PLOT_CLEANUP_EVERY creations.
+        """
+        try:
+            current_count = int(getattr(self, "_temp_plot_creation_count", 0))
+        except Exception:
+            current_count = 0
+
+        current_count += 1
+        self._temp_plot_creation_count = current_count
+
+        try:
+            cleanup_every = int(getattr(self, "self.TEMP_PLOT_CLEANUP_EVERY", 5))
+        except Exception:
+            cleanup_every = 5
+
+        cleanup_every = max(1, cleanup_every)
+
+        if current_count % cleanup_every == 0:
+            self._cleanup_temp_plot_files()
 
 
 
@@ -7554,17 +7682,13 @@ class PyFCSApp:
     #  FUNCTIONS DISPLAY PIXEL INFO
     # ============================================================================================================================================================
     def _ensure_threshold_settings(self):
-        """Ensure the shared threshold configuration exists."""
-        if not hasattr(self, "threshold_settings"):
-            self.threshold_settings = {
-                "metric": "CIEDE2000",
-                "mode": "default",           # default | custom
-                "preset": "pt_at",           # pt | at | pt_at
-                "custom_type": "single",     # single | lower_upper
-                "single": 1.0,
-                "lower": 0.8,
-                "upper": 1.8,
-            }
+        """
+        Ensure shared threshold settings exist and are normalized by ColorEvaluationManager.
+        """
+        manager = self._get_color_evaluation_manager()
+
+        current_settings = getattr(self, "threshold_settings", None)
+        self.threshold_settings = manager.normalize_threshold_settings(current_settings)
 
 
     def _apply_color_evaluation_result_style(self, vars_dict, status):
@@ -7609,7 +7733,9 @@ class PyFCSApp:
 
 
     def _create_shared_threshold_vars(self):
-        """Create the threshold-related Tk variables shared by all windows."""
+        """
+        Create the threshold-related Tk variables shared by all windows.
+        """
         self._ensure_threshold_settings()
 
         preset_display_map, custom_type_display_map = self._get_threshold_display_maps()
@@ -7619,9 +7745,14 @@ class PyFCSApp:
             saved_mode = "default"
 
         return {
+            "threshold_metric_family_var": tk.StringVar(
+                value=self.threshold_settings.get("metric_family", "Perceptual ΔE")
+            ),
             "threshold_metric_var": tk.StringVar(
                 value=self.threshold_settings.get("metric", "CIEDE2000")
             ),
+            "threshold_metric_help_var": tk.StringVar(value=""),
+
             "threshold_mode_var": tk.StringVar(value=saved_mode),
             "threshold_preset_var": tk.StringVar(
                 value=preset_display_map.get(
@@ -7662,14 +7793,18 @@ class PyFCSApp:
 
 
     def _merge_threshold_vars(self, target_dict):
-        """Inject shared threshold vars into an existing vars dict."""
+        """
+        Inject shared threshold vars into an existing vars dict.
+        """
         shared = self._create_shared_threshold_vars()
         target_dict.update(shared)
         return target_dict
 
 
     def _sync_threshold_settings_from_vars(self, vars_dict):
-        """Persist threshold UI values into self.threshold_settings."""
+        """
+        Persist threshold UI values into self.threshold_settings.
+        """
         preset_reverse_map, custom_type_reverse_map = self._get_threshold_reverse_maps()
 
         mode_value = vars_dict["threshold_mode_var"].get().strip().lower()
@@ -7683,6 +7818,7 @@ class PyFCSApp:
         lower_text = vars_dict["threshold_lower_var"].get().strip()
         upper_text = vars_dict["threshold_upper_var"].get().strip()
 
+        self.threshold_settings["metric_family"] = vars_dict["threshold_metric_family_var"].get().strip()
         self.threshold_settings["metric"] = vars_dict["threshold_metric_var"].get().strip()
         self.threshold_settings["mode"] = mode_value
         self.threshold_settings["preset"] = preset_reverse_map.get(selected_preset_display, "pt_at")
@@ -7690,6 +7826,36 @@ class PyFCSApp:
         self.threshold_settings["single"] = single_text if single_text != "" else None
         self.threshold_settings["lower"] = lower_text if lower_text != "" else None
         self.threshold_settings["upper"] = upper_text if upper_text != "" else None
+
+        manager = self._get_color_evaluation_manager()
+        self.threshold_settings = manager.normalize_threshold_settings(self.threshold_settings)
+
+
+    
+    def _refresh_threshold_metric_controls(self, vars_dict, refs):
+        """
+        Refresh metric combo values and metric help text from selected metric family.
+        """
+        manager = self._get_color_evaluation_manager()
+
+        family = vars_dict["threshold_metric_family_var"].get().strip()
+        metrics = manager.get_metrics_for_family(family)
+
+        metric_combo = refs.get("metric_combo")
+
+        if metric_combo is not None:
+            metric_combo.configure(values=metrics)
+
+        current_metric = vars_dict["threshold_metric_var"].get().strip()
+
+        if current_metric not in metrics:
+            current_metric = metrics[0] if metrics else "CIEDE2000"
+            vars_dict["threshold_metric_var"].set(current_metric)
+
+        vars_dict["threshold_metric_help_var"].set(
+            manager.get_metric_description(current_metric)
+        )
+
 
 
     def _hide_threshold_config_controls(self, refs):
@@ -7709,7 +7875,10 @@ class PyFCSApp:
 
 
     def _apply_threshold_result_style(self, threshold_refs, status):
-        """Apply the shared visual style used by threshold result cards."""
+        """
+        Apply the shared visual style used by threshold result cards.
+        Accepts both old threshold statuses and new generic metric statuses.
+        """
         styles = {
             "red": {
                 "body_bg": "#f8f2f2",
@@ -7719,11 +7888,11 @@ class PyFCSApp:
                 "separator": "#e7b6b6",
             },
             "yellow": {
-                "body_bg": "#fffaf0",
-                "header_bg": "#fcf8e3",
-                "border": "#c09853",
-                "accent": "#9a6b00",
-                "separator": "#ecd9a3",
+                "body_bg": "#fff7e6",
+                "header_bg": "#ffe0b2",
+                "border": "#f0a23a",
+                "accent": "#b26a00",
+                "separator": "#f3c27a",
             },
             "green": {
                 "body_bg": "#f3faf3",
@@ -7742,6 +7911,7 @@ class PyFCSApp:
         }
 
         status_to_theme = {
+            # Existing statuses
             "below_pt": "green",
             "below_at": "green",
             "below_custom": "green",
@@ -7752,6 +7922,17 @@ class PyFCSApp:
             "above_at": "red",
             "above_custom": "red",
             "above_upper": "red",
+
+            # Generic new statuses
+            "inside": "green",
+            "warning": "yellow",
+            "outside": "red",
+            "within": "green",
+            "between": "yellow",
+            "above": "red",
+            "below": "green",
+
+            # Neutral/error
             "invalid": "neutral",
             "unavailable": "neutral",
             "unsupported_metric": "neutral",
@@ -7798,54 +7979,17 @@ class PyFCSApp:
 
 
     def _update_threshold_summary_text(self, vars_dict):
-        """Update the compact textual summary for threshold configuration."""
-        mode = self.threshold_settings.get("mode", "default")
-        if mode == "known":
-            mode = "default"
+        """
+        Update the compact textual summary for threshold configuration.
+        Metric explanation is intentionally NOT repeated here.
+        """
+        manager = self._get_color_evaluation_manager()
 
-        if mode == "default":
-            preset = self.threshold_settings.get("preset", "pt_at")
-            vars_dict["threshold_summary_title_var"].set("Default mode")
+        title, detail, extra = manager.get_threshold_summary_parts(self.threshold_settings)
 
-            if preset == "pt":
-                vars_dict["threshold_summary_detail_var"].set("Preset: Perceptibility Threshold")
-                vars_dict["threshold_summary_extra_var"].set("PT = 0.800")
-            elif preset == "at":
-                vars_dict["threshold_summary_detail_var"].set("Preset: Acceptability Threshold")
-                vars_dict["threshold_summary_extra_var"].set("AT = 1.800")
-            else:
-                vars_dict["threshold_summary_detail_var"].set("Preset: Perceptibility + Acceptability")
-                vars_dict["threshold_summary_extra_var"].set("PT = 0.800 | AT = 1.800")
-            return
-
-        if mode == "custom":
-            custom_type = self.threshold_settings.get("custom_type", "single")
-            vars_dict["threshold_summary_title_var"].set("Custom mode")
-
-            if custom_type == "single":
-                vars_dict["threshold_summary_detail_var"].set("Configuration: Single threshold")
-                parsed, err = self._parse_positive_threshold(self.threshold_settings.get("single"))
-                if err:
-                    vars_dict["threshold_summary_extra_var"].set("Invalid threshold value.")
-                else:
-                    vars_dict["threshold_summary_extra_var"].set(f"Threshold = {parsed:.3f}")
-            else:
-                vars_dict["threshold_summary_detail_var"].set("Configuration: Lower and upper thresholds")
-                lower, upper, err = self._validate_custom_range(
-                    self.threshold_settings.get("lower"),
-                    self.threshold_settings.get("upper")
-                )
-                if err:
-                    vars_dict["threshold_summary_extra_var"].set("Invalid threshold range.")
-                else:
-                    vars_dict["threshold_summary_extra_var"].set(
-                        f"Lower = {lower:.3f} | Upper = {upper:.3f}"
-                    )
-            return
-
-        vars_dict["threshold_summary_title_var"].set("Unknown mode")
-        vars_dict["threshold_summary_detail_var"].set("")
-        vars_dict["threshold_summary_extra_var"].set("")
+        vars_dict["threshold_summary_title_var"].set(title)
+        vars_dict["threshold_summary_detail_var"].set(detail)
+        vars_dict["threshold_summary_extra_var"].set(extra)
 
 
     def _build_shared_threshold_panel(self, parent, vars_dict, title="Threshold", variant="result"):
@@ -7853,8 +7997,8 @@ class PyFCSApp:
         Shared threshold UI builder.
 
         variant:
-            - 'result'  -> like More Info (config + colored result card)
-            - 'summary' -> like Color Evaluation top block (config + textual summary)
+            - 'result'  -> like More Info: config + colored result card
+            - 'summary' -> like Color Evaluation: config + textual summary
         """
         threshold_panel = tk.Frame(parent, bg="white", bd=1, relief="solid")
         threshold_panel.pack(fill="x", pady=(6, 0), anchor="n")
@@ -7873,8 +8017,8 @@ class PyFCSApp:
         threshold_body.pack(fill="x", padx=12, pady=(0, 10))
 
         if variant == "result":
-            selection_w = 140
-            config_w = 370
+            selection_w = 280
+            config_w = 285
             result_w = 380
 
             threshold_body.grid_columnconfigure(0, minsize=selection_w, weight=0)
@@ -7906,8 +8050,8 @@ class PyFCSApp:
             section_output.grid_rowconfigure(1, weight=1)
 
         else:
-            selection_w = 160
-            config_w = 420
+            selection_w = 310
+            config_w = 300
 
             threshold_body.grid_columnconfigure(0, minsize=selection_w, weight=0)
             threshold_body.grid_columnconfigure(1, minsize=1, weight=0)
@@ -7934,7 +8078,28 @@ class PyFCSApp:
             section_output = tk.Frame(threshold_body, bg="white")
             section_output.grid(row=0, column=4, sticky="nsew")
 
-        # Left: selection
+        # -------------------------
+        # Left: metric selection
+        # -------------------------
+        manager = self._get_color_evaluation_manager()
+
+        tk.Label(
+            section_selection,
+            text="Metric Family",
+            font=("Sans", 10, "bold"),
+            anchor="w",
+            bg="white"
+        ).pack(anchor="w", pady=(0, 4))
+
+        metric_family_combo = ttk.Combobox(
+            section_selection,
+            textvariable=vars_dict["threshold_metric_family_var"],
+            state="readonly",
+            width=30 if variant == "result" else 34,
+            values=manager.get_metric_families()
+        )
+        metric_family_combo.pack(anchor="w", pady=(0, 8))
+
         tk.Label(
             section_selection,
             text="Metric",
@@ -7947,46 +8112,58 @@ class PyFCSApp:
             section_selection,
             textvariable=vars_dict["threshold_metric_var"],
             state="readonly",
-            width=16 if variant == "result" else 18,
-            values=["CIEDE2000"]
+            width=30 if variant == "result" else 34,
+            values=manager.get_metrics_for_family(
+                vars_dict["threshold_metric_family_var"].get()
+            )
         )
-        metric_combo.pack(anchor="w", pady=(0, 10))
+        metric_combo.pack(anchor="w", pady=(0, 6))
 
-        tk.Label(
+        metric_help_label = tk.Label(
             section_selection,
-            text="Threshold Type",
-            font=("Sans", 10, "bold"),
+            textvariable=vars_dict["threshold_metric_help_var"],
+            bg="white",
+            fg="#666666",
             anchor="w",
-            bg="white"
-        ).pack(anchor="w", pady=(0, 4))
-
-        mode_combo = ttk.Combobox(
-            section_selection,
-            textvariable=vars_dict["threshold_mode_var"],
-            state="readonly",
-            width=16 if variant == "result" else 18,
-            values=["default", "custom"]
+            justify="left",
+            wraplength=255 if variant == "result" else 285,
+            font=("Sans", 8, "italic")
         )
-        mode_combo.pack(anchor="w")
+        metric_help_label.pack(anchor="w", fill="x", pady=(0, 4))
 
-        # Center: config
+        # -------------------------
+        # Center: configuration
+        # -------------------------
         tk.Label(
             section_config,
             text="Configuration",
             font=("Sans", 10, "bold"),
             anchor="w",
             bg="white"
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
-        section_config.grid_columnconfigure(0, minsize=135, weight=0)
-        section_config.grid_columnconfigure(1, weight=1)
+        section_config.grid_columnconfigure(0, minsize=115, weight=0)
+        section_config.grid_columnconfigure(1, minsize=90, weight=1)
+        section_config.grid_columnconfigure(2, minsize=115, weight=0)
+        section_config.grid_columnconfigure(3, minsize=90, weight=1)
+
+        mode_label = tk.Label(section_config, text="Threshold type:", bg="white", anchor="w")
+        mode_combo = ttk.Combobox(
+            section_config,
+            textvariable=vars_dict["threshold_mode_var"],
+            state="readonly",
+            width=26 if variant == "result" else 28,
+            values=["default", "custom"]
+        )
+        mode_label.grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+        mode_combo.grid(row=1, column=1, columnspan=3, sticky="ew", pady=(0, 6))
 
         preset_label = tk.Label(section_config, text="Default preset:", bg="white", anchor="w")
         preset_combo = ttk.Combobox(
             section_config,
             textvariable=vars_dict["threshold_preset_var"],
             state="readonly",
-            width=34 if variant == "result" else 30,
+            width=26 if variant == "result" else 28,
             values=[
                 "Perceptibility Threshold",
                 "Acceptability Threshold",
@@ -7999,7 +8176,7 @@ class PyFCSApp:
             section_config,
             textvariable=vars_dict["threshold_custom_type_var"],
             state="readonly",
-            width=34 if variant == "result" else 30,
+            width=26 if variant == "result" else 28,
             values=[
                 "Single threshold",
                 "Lower and upper thresholds"
@@ -8010,10 +8187,10 @@ class PyFCSApp:
         single_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_single_var"], width=12)
 
         lower_label = tk.Label(section_config, text="Lower threshold:", bg="white", anchor="w")
-        lower_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_lower_var"], width=12)
+        lower_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_lower_var"], width=10)
 
         upper_label = tk.Label(section_config, text="Upper threshold:", bg="white", anchor="w")
-        upper_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_upper_var"], width=12)
+        upper_entry = tk.Entry(section_config, textvariable=vars_dict["threshold_upper_var"], width=10)
 
         config_hint_label = tk.Label(
             section_config,
@@ -8022,12 +8199,24 @@ class PyFCSApp:
             fg="#666666",
             anchor="w",
             justify="left",
-            wraplength=340 if variant == "result" else 300,
+            wraplength=360,
             font=("Sans", 9, "italic")
         )
 
+        def _update_config_hint_wrap(event=None):
+            try:
+                available_width = max(section_config.winfo_width() - 20, 220)
+                config_hint_label.configure(wraplength=available_width)
+            except Exception:
+                pass
+
+        section_config.bind("<Configure>", _update_config_hint_wrap)
+
         refs = {
+            "metric_family_combo": metric_family_combo,
             "metric_combo": metric_combo,
+            "metric_help_label": metric_help_label,
+            "mode_label": mode_label,
             "mode_combo": mode_combo,
             "preset_label": preset_label,
             "preset_combo": preset_combo,
@@ -8043,7 +8232,9 @@ class PyFCSApp:
             "variant": variant,
         }
 
+        # -------------------------
         # Right: output
+        # -------------------------
         if variant == "result":
             results_title = tk.Label(
                 section_output,
@@ -8207,6 +8398,7 @@ class PyFCSApp:
         return refs
 
 
+
     def _refresh_shared_threshold_ui(self, vars_dict, refs, proto_lab=None, sample_lab=None):
         """
         Shared refresh for threshold controls.
@@ -8214,6 +8406,7 @@ class PyFCSApp:
         - For variant='summary': updates the summary texts only.
         - For variant='result': updates config + evaluation result card.
         """
+        self._refresh_threshold_metric_controls(vars_dict, refs)
         self._sync_threshold_settings_from_vars(vars_dict)
         self._hide_threshold_config_controls(refs)
 
@@ -8225,25 +8418,24 @@ class PyFCSApp:
         upper_text = vars_dict["threshold_upper_var"].get().strip()
 
         if mode_value == "default":
-            refs["preset_label"].grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-            refs["preset_combo"].grid(row=1, column=1, sticky="ew", pady=(0, 6))
+            refs["preset_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+            refs["preset_combo"].grid(row=2, column=1, columnspan=3, sticky="ew", pady=(0, 6))
 
             vars_dict["config_hint_var"].set(
                 "Use predefined perceptibility and/or acceptability thresholds."
             )
-            refs["config_hint_label"].grid(
-                row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0)
-            )
+            refs["config_hint_label"].grid(row=3, column=0, columnspan=4, sticky="ew", pady=(2, 0))
 
         elif mode_value == "custom":
-            refs["custom_type_label"].grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-            refs["custom_type_combo"].grid(row=1, column=1, sticky="ew", pady=(0, 6))
+            refs["custom_type_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+            refs["custom_type_combo"].grid(row=2, column=1, columnspan=3, sticky="ew", pady=(0, 6))
 
             if custom_type == "single":
-                refs["single_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-                refs["single_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
+                refs["single_label"].grid(row=3, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+                refs["single_entry"].grid(row=3, column=1, sticky="w", pady=(0, 6))
 
                 vars_dict["config_hint_var"].set("Define one threshold greater than 0.")
+
                 if single_text == "":
                     vars_dict["config_hint_var"].set("Enter a threshold greater than 0.")
                 else:
@@ -8251,19 +8443,18 @@ class PyFCSApp:
                     if err_single:
                         vars_dict["config_hint_var"].set(err_single)
 
-                refs["config_hint_label"].grid(
-                    row=3, column=0, columnspan=2, sticky="ew", pady=(2, 0)
-                )
+                refs["config_hint_label"].grid(row=4, column=0, columnspan=4, sticky="ew", pady=(2, 0))
 
             else:
-                refs["lower_label"].grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-                refs["lower_entry"].grid(row=2, column=1, sticky="w", pady=(0, 6))
-                refs["upper_label"].grid(row=3, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
-                refs["upper_entry"].grid(row=3, column=1, sticky="w", pady=(0, 6))
+                refs["lower_label"].grid(row=3, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+                refs["lower_entry"].grid(row=3, column=1, sticky="w", pady=(0, 6), padx=(0, 12))
+                refs["upper_label"].grid(row=3, column=2, sticky="w", pady=(0, 6), padx=(8, 10))
+                refs["upper_entry"].grid(row=3, column=3, sticky="w", pady=(0, 6))
 
                 vars_dict["config_hint_var"].set(
                     "Define two thresholds greater than 0, with lower < upper."
                 )
+
                 if lower_text == "" or upper_text == "":
                     vars_dict["config_hint_var"].set(
                         "Enter both thresholds. Values must be greater than 0."
@@ -8273,9 +8464,8 @@ class PyFCSApp:
                     if err_range:
                         vars_dict["config_hint_var"].set(err_range)
 
-                refs["config_hint_label"].grid(
-                    row=4, column=0, columnspan=2, sticky="ew", pady=(2, 0)
-                )
+                refs["config_hint_label"].grid(row=4, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+
         else:
             vars_dict["config_hint_var"].set("")
 
@@ -8297,12 +8487,12 @@ class PyFCSApp:
             threshold_settings=self.threshold_settings
         )
 
-        delta_e_value = evaluation.get("delta_e")
+        metric_value = evaluation.get("metric_value", evaluation.get("delta_e"))
         status = evaluation.get("status", "unavailable")
 
-        if delta_e_value is None:
-            vars_dict["threshold_result_title_var"].set("ΔE not available")
-            vars_dict["threshold_result_detail_var"].set("Unable to compute color difference")
+        if metric_value is None:
+            vars_dict["threshold_result_title_var"].set("Metric not available")
+            vars_dict["threshold_result_detail_var"].set("Unable to compute selected metric")
             vars_dict["threshold_result_summary_var"].set(evaluation.get("summary", ""))
             self._apply_threshold_result_style(refs, status)
             return
@@ -8310,10 +8500,16 @@ class PyFCSApp:
         vars_dict["threshold_result_title_var"].set(
             evaluation.get("evaluation", "No evaluation available")
         )
-        vars_dict["threshold_result_detail_var"].set(f"ΔE00 = {delta_e_value:.3f}")
+        vars_dict["threshold_result_detail_var"].set(
+            evaluation.get(
+                "detail",
+                f"{self.threshold_settings.get('metric', 'Metric')} = {metric_value:.3f}"
+            )
+        )
         vars_dict["threshold_result_summary_var"].set(
             evaluation.get("summary_visual", evaluation.get("summary", ""))
         )
+
         self._apply_threshold_result_style(refs, status)
 
 
@@ -9304,6 +9500,7 @@ class PyFCSApp:
             highlight_selected_row(label)
 
         for widget in (
+            threshold_refs["metric_family_combo"],
             threshold_refs["metric_combo"],
             threshold_refs["mode_combo"],
             threshold_refs["preset_combo"],
@@ -9377,249 +9574,40 @@ class PyFCSApp:
 
     def _parse_positive_threshold(self, value):
         """
-        Safely parse a positive threshold value.
-
-        Never raises an exception.
-        Returns:
-            (parsed_float, None) if valid
-            (None, error_message) if invalid
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
         """
-        if value is None:
-            return None, "Threshold cannot be empty."
-
-        text = str(value).strip()
-
-        if text == "":
-            return None, "Threshold cannot be empty."
-
-        # Allow decimal comma
-        text = text.replace(",", ".")
-
-        # Reject invalid characters before float conversion
-        allowed_chars = set("0123456789.")
-        if any(ch not in allowed_chars for ch in text):
-            return None, "Threshold must be a valid number."
-
-        # Reject malformed decimal patterns like 4.9. or 1..2
-        if text.count(".") > 1:
-            return None, "Threshold must be a valid number."
-
-        # Reject strings that are just a dot
-        if text == ".":
-            return None, "Threshold must be a valid number."
-
-        try:
-            parsed = float(text)
-        except (TypeError, ValueError):
-            return None, "Threshold must be a valid number."
-
-        if not np.isfinite(parsed):
-            return None, "Threshold must be a finite number."
-
-        if parsed <= 0:
-            return None, "Threshold must be greater than 0."
-
-        return parsed, None
+        manager = self._get_color_evaluation_manager()
+        return manager.parse_positive_threshold(value)
     
 
     def _validate_custom_range(self, lower_value, upper_value):
-        lower, err_lower = self._parse_positive_threshold(lower_value)
-        if err_lower:
-            return None, None, f"Lower threshold: {err_lower}"
-
-        upper, err_upper = self._parse_positive_threshold(upper_value)
-        if err_upper:
-            return None, None, f"Upper threshold: {err_upper}"
-
-        if lower >= upper:
-            return None, None, "Lower thr. must be smaller than upper thr."
-
-        return lower, upper, None
+        """
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
+        """
+        manager = self._get_color_evaluation_manager()
+        return manager.validate_custom_range(lower_value, upper_value)
 
 
     def evaluate_color_difference_threshold(self, sample_lab, prototype_lab, metric="CIEDE2000", threshold_settings=None):
         """
-        Compute the color difference between a sampled color and a prototype color,
-        then evaluate that difference according to the active threshold configuration.
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
         """
-        default_settings = {
-            "mode": "default",
-            "preset": "pt_at",
-            "custom_type": "single",
-            "single": None,
-            "lower": None,
-            "upper": None,
-        }
+        manager = self._get_color_evaluation_manager()
 
-        if threshold_settings is None:
-            threshold_settings = default_settings
-        else:
-            merged = default_settings.copy()
-            merged.update(threshold_settings)
-            threshold_settings = merged
+        return manager.evaluate_color_difference_threshold(
+            sample_lab=sample_lab,
+            prototype_lab=prototype_lab,
+            metric=metric,
+            threshold_settings=threshold_settings or self.threshold_settings
+        )
 
-        mode = threshold_settings.get("mode", "default")
-        if mode == "known":
-            mode = "default"
 
-        result = {
-            "metric": metric,
-            "delta_e": None,
-            "mode": mode,
-            "preset": threshold_settings.get("preset"),
-            "lower": None,
-            "upper": None,
-            "status": "unavailable",
-            "evaluation": "Color difference could not be computed.",
-            "summary": "ΔE: not available",
-            "summary_visual": "No threshold result available."
-        }
 
-        try:
-            if metric == "CIEDE2000":
-                delta_e_value = float(self.color_manager.delta_e_ciede2000(prototype_lab, sample_lab))
-            else:
-                result["status"] = "unsupported_metric"
-                result["evaluation"] = f"Metric '{metric}' is not supported yet."
-                result["summary"] = f"Metric: {metric} (not supported)"
-                result["summary_visual"] = "This metric is not supported yet."
-                return result
-        except Exception:
-            return result
 
-        result["delta_e"] = delta_e_value
 
-        # ---------------------------
-        # DEFAULT MODE
-        # ---------------------------
-        if mode == "default":
-            preset = threshold_settings.get("preset", "pt_at")
-            result["preset"] = preset
 
-            if preset == "pt":
-                lower = 0.8
-                result["lower"] = lower
 
-                if delta_e_value <= lower:
-                    result["status"] = "below_pt"
-                    result["evaluation"] = "Within perceptibility threshold."
-                    result["summary_visual"] = "The sampled color is within the perceptibility threshold."
-                else:
-                    result["status"] = "above_pt"
-                    result["evaluation"] = "Outside perceptibility threshold."
-                    result["summary_visual"] = "The sampled color exceeds the perceptibility threshold."
 
-                result["summary"] = f"ΔE = {delta_e_value:.3f} | PT = {lower:.3f}"
-                return result
-
-            elif preset == "at":
-                upper = 1.8
-                result["upper"] = upper
-
-                if delta_e_value <= upper:
-                    result["status"] = "below_at"
-                    result["evaluation"] = "Within acceptability threshold."
-                    result["summary_visual"] = "The sampled color is within the acceptability threshold."
-                else:
-                    result["status"] = "above_at"
-                    result["evaluation"] = "Outside acceptability threshold."
-                    result["summary_visual"] = "The sampled color exceeds the acceptability threshold."
-
-                result["summary"] = f"ΔE = {delta_e_value:.3f} | AT = {upper:.3f}"
-                return result
-
-            else:  # pt_at
-                lower = 0.8
-                upper = 1.8
-
-                result["lower"] = lower
-                result["upper"] = upper
-
-                if delta_e_value <= lower:
-                    result["status"] = "below_pt"
-                    result["evaluation"] = "Below perceptibility threshold."
-                    result["summary_visual"] = "The sampled color is below the perceptibility threshold."
-                elif delta_e_value <= upper:
-                    result["status"] = "between_pt_at"
-                    result["evaluation"] = "Between perceptibility and acceptability thresholds."
-                    result["summary_visual"] = "The sampled color is perceptible, but still within the acceptability range."
-                else:
-                    result["status"] = "above_at"
-                    result["evaluation"] = "Above acceptability threshold."
-                    result["summary_visual"] = "The sampled color exceeds the acceptability threshold."
-
-                result["summary"] = f"ΔE = {delta_e_value:.3f} | PT = {lower:.3f} | AT = {upper:.3f}"
-                return result
-
-        # ---------------------------
-        # CUSTOM MODE
-        # ---------------------------
-        if mode == "custom":
-            custom_type = threshold_settings.get("custom_type", "single")
-            result["custom_type"] = custom_type
-
-            if custom_type == "single":
-                single, err_single = self._parse_positive_threshold(
-                    threshold_settings.get("single")
-                )
-                result["single"] = single
-
-                if err_single:
-                    result["status"] = "invalid"
-                    result["evaluation"] = err_single
-                    result["summary"] = f"ΔE = {delta_e_value:.3f}"
-                    result["summary_visual"] = "Please enter a valid custom threshold."
-                    return result
-
-                if delta_e_value <= single:
-                    result["status"] = "below_custom"
-                    result["evaluation"] = "Within custom threshold."
-                    result["summary_visual"] = "The sampled color is within the selected custom threshold."
-                else:
-                    result["status"] = "above_custom"
-                    result["evaluation"] = "Outside custom threshold."
-                    result["summary_visual"] = "The sampled color exceeds the selected custom threshold."
-
-                result["summary"] = f"ΔE = {delta_e_value:.3f} | threshold = {single:.3f}"
-                return result
-
-            elif custom_type == "lower_upper":
-                lower, upper, err_range = self._validate_custom_range(
-                    threshold_settings.get("lower"),
-                    threshold_settings.get("upper")
-                )
-
-                result["lower"] = lower
-                result["upper"] = upper
-
-                if err_range:
-                    result["status"] = "invalid"
-                    result["evaluation"] = err_range
-                    result["summary"] = f"ΔE = {delta_e_value:.3f}"
-                    result["summary_visual"] = "Please enter a valid lower and upper threshold."
-                    return result
-
-                if delta_e_value <= lower:
-                    result["status"] = "below_lower"
-                    result["evaluation"] = "Below lower threshold."
-                    result["summary_visual"] = "The sampled color is below the lower threshold."
-                elif delta_e_value <= upper:
-                    result["status"] = "between_custom"
-                    result["evaluation"] = "Between lower and upper thresholds."
-                    result["summary_visual"] = "The sampled color falls between the lower and upper thresholds."
-                else:
-                    result["status"] = "above_upper"
-                    result["evaluation"] = "Above upper threshold."
-                    result["summary_visual"] = "The sampled color exceeds the upper threshold."
-
-                result["summary"] = f"ΔE = {delta_e_value:.3f} | lower = {lower:.3f} | upper = {upper:.3f}"
-                return result
-
-        result["status"] = "unknown_mode"
-        result["evaluation"] = f"Unknown threshold mode: {mode}"
-        result["summary"] = f"ΔE = {delta_e_value:.3f}"
-        result["summary_visual"] = "The threshold mode could not be interpreted."
-        return result
 
 
 
@@ -9739,7 +9727,7 @@ class PyFCSApp:
             if total_w <= 1:
                 return
 
-            sash_x = int(total_w * 0.8)  # 75% table | 25% analysis
+            sash_x = int(total_w * 0.48)  # compact table | wider analysis panel
             paned.sash_place(0, sash_x, 1)
         except Exception:
             pass
@@ -9845,7 +9833,7 @@ class PyFCSApp:
         left_panel = tk.Frame(paned, bg="white", bd=1, relief="solid")
         right_panel = tk.Frame(paned, bg="white", bd=1, relief="solid")
 
-        paned.add(left_panel, minsize=430)
+        paned.add(left_panel, minsize=360)
         paned.add(right_panel, minsize=520)
 
         self._color_evaluation_paned = paned
@@ -9857,31 +9845,75 @@ class PyFCSApp:
         list_header.pack(fill="x", padx=1, pady=(1, 0))
 
         list_header.grid_columnconfigure(0, minsize=110)
-        list_header.grid_columnconfigure(1, minsize=190)
-        list_header.grid_columnconfigure(2, minsize=170)
-        list_header.grid_columnconfigure(3, minsize=135)
-        list_header.grid_columnconfigure(4, minsize=105)
-        list_header.grid_columnconfigure(5, weight=1)
+        list_header.grid_columnconfigure(1, minsize=210)
+        list_header.grid_columnconfigure(2, minsize=260)
+        list_header.grid_columnconfigure(3, weight=1)
 
         header_font = ("Sans", 10, "bold")
 
-        tk.Label(list_header, text="", bg="#f4f4f4", font=header_font).grid(
-            row=0, column=0, sticky="w", padx=(8, 4), pady=8
+        tk.Label(
+            list_header,
+            text="",
+            bg="#f4f4f4",
+            font=header_font
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=(8, 4),
+            pady=8
         )
-        tk.Label(list_header, text="Label", bg="#f4f4f4", font=header_font, anchor="w").grid(
-            row=0, column=1, sticky="w", padx=(2, 2), pady=8
+
+        tk.Label(
+            list_header,
+            text="Label",
+            bg="#f4f4f4",
+            font=header_font,
+            anchor="w"
+        ).grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(2, 2),
+            pady=8
         )
-        tk.Label(list_header, text="LAB", bg="#f4f4f4", font=header_font, anchor="center").grid(
-            row=0, column=2, sticky="ew", padx=(2, 2), pady=8
+
+        value_header = tk.Frame(list_header, bg="#f4f4f4")
+        value_header.grid(
+            row=0,
+            column=2,
+            sticky="w",
+            padx=(2, 8),
+            pady=5
         )
-        tk.Label(list_header, text="RGB", bg="#f4f4f4", font=header_font, anchor="center").grid(
-            row=0, column=3, sticky="ew", padx=(2, 2), pady=8
+
+        tk.Label(
+            value_header,
+            text="Value:",
+            bg="#f4f4f4",
+            font=header_font,
+            anchor="w"
+        ).pack(side="left", padx=(0, 6))
+
+        color_display_combo = ttk.Combobox(
+            value_header,
+            textvariable=vars_dict["color_display_mode_var"],
+            values=UtilsTools.get_supported_color_value_spaces(),
+            state="readonly",
+            width=12
         )
-        tk.Label(list_header, text="HEX", bg="#f4f4f4", font=header_font, anchor="center").grid(
-            row=0, column=4, sticky="ew", padx=(2, 6), pady=8
-        )
-        tk.Label(list_header, text="", bg="#f4f4f4", font=header_font).grid(
-            row=0, column=5, sticky="ew", padx=0, pady=8
+        color_display_combo.pack(side="left", padx=(0, 6))
+
+        tk.Button(
+            value_header,
+            text="Next",
+            width=6,
+            command=lambda: self._rotate_color_evaluation_table_display_mode(vars_dict)
+        ).pack(side="left")
+
+        color_display_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda e: self._refresh_color_evaluation_table_display_mode(vars_dict)
         )
 
         tk.Frame(left_panel, bg="#d8d8d8", height=1).pack(fill="x", padx=1)
@@ -9928,39 +9960,72 @@ class PyFCSApp:
         analysis_actions = tk.Frame(right_panel, bg="white")
         analysis_actions.pack(fill="x", padx=12, pady=(0, 6))
 
-        tk.Button(
+        def _run_analysis_action(action_key, callback):
+            self._set_color_evaluation_active_action(vars_dict, action_key)
+            callback()
+
+        btn_compare = tk.Button(
             analysis_actions,
             text="Compare with another color",
-            command=lambda: self._enable_color_evaluation_comparison_mode(vars_dict)
-        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+            command=lambda: _run_analysis_action(
+                "compare",
+                lambda: self._enable_color_evaluation_comparison_mode(vars_dict)
+            )
+        )
+        btn_compare.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        tk.Button(
+        btn_custom = tk.Button(
             analysis_actions,
             text="Evaluate custom color",
-            command=lambda: self._open_custom_color_input_dialog(vars_dict)
-        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+            command=lambda: _run_analysis_action(
+                "custom",
+                lambda: self._open_custom_color_input_dialog(vars_dict)
+            )
+        )
+        btn_custom.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        tk.Button(
+        btn_sample = tk.Button(
             analysis_actions,
             text="Sample from image",
-            command=lambda: self._open_color_evaluation_image_sampler(vars_dict)
-        ).pack(side="left", fill="x", expand=True)
-
+            command=lambda: _run_analysis_action(
+                "sample",
+                lambda: self._open_color_evaluation_image_sampler(vars_dict)
+            )
+        )
+        btn_sample.pack(side="left", fill="x", expand=True)
 
         analysis_extra_actions = tk.Frame(right_panel, bg="white")
         analysis_extra_actions.pack(fill="x", padx=12, pady=(0, 8))
 
-        tk.Button(
+        btn_closest = tk.Button(
             analysis_extra_actions,
             text="Find closest prototype",
-            command=lambda: self._show_color_evaluation_closest_prototypes(vars_dict)
-        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+            command=lambda: _run_analysis_action(
+                "closest",
+                lambda: self._show_color_evaluation_closest_prototypes(vars_dict)
+            )
+        )
+        btn_closest.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        tk.Button(
+        btn_clear = tk.Button(
             analysis_extra_actions,
             text="Clear comparison",
-            command=lambda: self._clear_color_evaluation_comparison(vars_dict)
-        ).pack(side="left", fill="x", expand=True)
+            command=lambda: _run_analysis_action(
+                "clear",
+                lambda: self._clear_color_evaluation_comparison(vars_dict)
+            )
+        )
+        btn_clear.pack(side="left", fill="x", expand=True)
+
+        vars_dict["analysis_action_buttons"] = {
+            "compare": btn_compare,
+            "custom": btn_custom,
+            "sample": btn_sample,
+            "closest": btn_closest,
+            "clear": btn_clear,
+        }
+
+        self._set_color_evaluation_active_action(vars_dict, None)
 
         tk.Label(
             right_panel,
@@ -10120,93 +10185,56 @@ class PyFCSApp:
         results_block.pack(fill="both", expand=True)
 
         results_columns = tk.Frame(results_block, bg="white")
-        results_columns.pack(fill="both", expand=True)
+        results_columns.pack(fill="x", expand=False)
+
+        # Fixed right column for Graphs / Membership.
+        # Left column takes the remaining width.
+        results_columns.grid_columnconfigure(0, weight=1)
+        results_columns.grid_columnconfigure(1, weight=0, minsize=200)
+        results_columns.grid_rowconfigure(0, weight=1)
 
         result_left = tk.Frame(results_columns, bg="white")
-        result_left.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        result_left.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, 8)
+        )
 
         # --------------------------------------------------
         # Right side column: Membership panel + Graph buttons
         # Hidden by default; shown only when a custom/sample color exists.
+        # Membership height will be synchronized with the Results card.
         # --------------------------------------------------
-        right_side_column = tk.Frame(results_columns, bg="white", width=250)
-        right_side_column.pack_propagate(False)
+        right_side_column = tk.Frame(
+            results_columns,
+            bg="white"
+        )
+        right_side_column.grid(
+            row=0,
+            column=1,
+            sticky="new",
+            padx=(8, 0)
+        )
 
-        # Graphs first with side="bottom" so it always reserves its height.
-        graph_buttons_card = tk.Frame(
+        # Spacer aligned with the "Results" title on the left column.
+        membership_title_spacer = tk.Label(
             right_side_column,
-            bg="#fafafa",
-            bd=1,
-            relief="solid"
-        )
-        graph_buttons_card.pack(
-            side="bottom",
-            fill="x",
-            pady=(8, 0)
-        )
-
-        tk.Label(
-            graph_buttons_card,
-            text="Graphs",
-            font=("Sans", 9, "bold"),
+            text="",
+            font=("Sans", 10, "bold"),
             anchor="w",
-            bg="#fafafa",
-            padx=8,
-            pady=4
-        ).pack(fill="x")
-
-        graph_buttons_body = tk.Frame(
-            graph_buttons_card,
-            bg="#fafafa"
+            bg="white"
         )
-        graph_buttons_body.pack(
-            fill="x",
-            padx=8,
-            pady=(0, 8)
-        )
+        # Do not pack here.
 
-        graph_row_1 = tk.Frame(graph_buttons_body, bg="#fafafa")
-        graph_row_1.pack(fill="x", pady=(0, 4))
-
-        graph_row_2 = tk.Frame(graph_buttons_body, bg="#fafafa")
-        graph_row_2.pack(fill="x")
-
-        tk.Button(
-            graph_row_1,
-            text="3D LAB",
-            command=lambda: self._open_color_evaluation_3d_plot(vars_dict)
-        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
-
-        tk.Button(
-            graph_row_1,
-            text="a*b*",
-            command=lambda: self._open_color_evaluation_ab_plot(vars_dict)
-        ).pack(side="left", fill="x", expand=True)
-
-        tk.Button(
-            graph_row_2,
-            text="Top 7",
-            command=lambda: self._open_color_evaluation_top7_plot(vars_dict)
-        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
-
-        tk.Button(
-            graph_row_2,
-            text="Memberships",
-            command=lambda: self._open_color_evaluation_membership_plot(vars_dict)
-        ).pack(side="left", fill="x", expand=True)
-
-        # Membership panel remains scrollable.
+        # Membership panel
         membership_right = tk.Frame(
             right_side_column,
             bg="white",
             bd=1,
             relief="solid",
-            width=250
-        )
-        membership_right.pack(
-            side="top",
-            fill="both",
-            expand=True
+            width=300,
+            height=220
         )
         membership_right.pack_propagate(False)
 
@@ -10308,6 +10336,17 @@ class PyFCSApp:
         membership_list_canvas.bind(
             "<Leave>",
             lambda e: membership_list_canvas.unbind_all("<MouseWheel>")
+        )
+
+        # Graph buttons shown in the right column when Membership is visible.
+        graph_buttons_card = self._create_color_evaluation_graph_buttons_card(
+            right_side_column,
+            vars_dict
+        )
+        graph_buttons_card.pack(
+            side="top",
+            fill="x",
+            pady=(8, 0)
         )
 
         # ------------------------------------------------------------------
@@ -10419,74 +10458,158 @@ class PyFCSApp:
         )
         result_summary_label.pack(anchor="w", fill="x")
 
+        def _sync_membership_height_with_result(event=None):
+            """
+            Keep Membership Degree card visually aligned with the Results card.
+            Graphs will then appear just below the Results height.
+            """
+            try:
+                result_h = max(result_card.winfo_height(), 180)
+                membership_right.configure(height=result_h)
+            except Exception:
+                pass
+
+        result_card.bind("<Configure>", _sync_membership_height_with_result)
+        result_card.after_idle(_sync_membership_height_with_result)
+
         # ------------------------------------------------------------------
-        # Conversion inspector
+        # Color inspector
         # ------------------------------------------------------------------
-        inspector_card = tk.Frame(
-            result_left,
-            bg="#fafafa",
-            bd=0,
-            relief="flat",
-            highlightthickness=1,
-            highlightbackground="#bdbdbd",
-            highlightcolor="#bdbdbd"
+        def _create_color_evaluation_inspector_card(parent):
+            """
+            Create one Color Inspector card.
+
+            Two instances are created:
+            - one inside result_left for custom/sample mode;
+            - one below results_columns for non-custom modes.
+            Both use the same StringVars, so the text stays synchronized.
+            """
+            inspector_card = tk.Frame(
+                parent,
+                bg="#fafafa",
+                bd=0,
+                relief="flat",
+                highlightthickness=1,
+                highlightbackground="#bdbdbd",
+                highlightcolor="#bdbdbd"
+            )
+            inspector_card.pack(fill="x", pady=(8, 0))
+
+            inspector_header = tk.Frame(inspector_card, bg="#f3f3f3")
+            inspector_header.pack(fill="x")
+
+            tk.Label(
+                inspector_header,
+                textvariable=vars_dict["inspector_title_var"],
+                font=("Sans", 9, "bold"),
+                anchor="w",
+                bg="#f3f3f3",
+                padx=10,
+                pady=5
+            ).pack(side="left", fill="x", expand=True)
+
+            tk.Label(
+                inspector_header,
+                textvariable=vars_dict["inspector_source_var"],
+                font=("Sans", 8, "italic"),
+                anchor="e",
+                bg="#f3f3f3",
+                fg="#666666",
+                padx=10
+            ).pack(side="right")
+
+            inspector_body = tk.Frame(inspector_card, bg="#fafafa")
+            inspector_body.pack(fill="x", padx=10, pady=(8, 8))
+
+            inspector_preview = tk.Canvas(
+                inspector_body,
+                width=72,
+                height=54,
+                bg="#fafafa",
+                highlightthickness=0,
+                bd=0
+            )
+            inspector_preview.pack(side="left", padx=(0, 12), anchor="n")
+
+            inspector_preview_rect = inspector_preview.create_rectangle(
+                8, 8, 64, 46,
+                fill="#d9d9d9",
+                outline="#555555",
+                width=1
+            )
+
+            inspector_values = tk.Frame(inspector_body, bg="#fafafa")
+            inspector_values.pack(side="left", fill="x", expand=True)
+
+            inspector_values.grid_columnconfigure(0, minsize=70, weight=0)
+            inspector_values.grid_columnconfigure(1, weight=1)
+
+            def _add_inspector_row(row, label_text, variable):
+                tk.Label(
+                    inspector_values,
+                    text=label_text,
+                    bg="#fafafa",
+                    fg="#333333",
+                    anchor="w",
+                    font=("Sans", 8, "bold")
+                ).grid(row=row, column=0, sticky="w", pady=(0, 2), padx=(0, 8))
+
+                tk.Label(
+                    inspector_values,
+                    textvariable=variable,
+                    bg="#fafafa",
+                    fg="#222222",
+                    anchor="w",
+                    justify="left",
+                    font=("Consolas", 8),
+                    wraplength=390
+                ).grid(row=row, column=1, sticky="ew", pady=(0, 2))
+
+            _add_inspector_row(0, "CIELAB", vars_dict["inspector_lab_var"])
+            _add_inspector_row(1, "RGB", vars_dict["inspector_rgb_var"])
+            _add_inspector_row(2, "HEX", vars_dict["inspector_hex_var"])
+            _add_inspector_row(3, "CIELUV", vars_dict["inspector_luv_var"])
+            _add_inspector_row(4, "LCh", vars_dict["inspector_lch_var"])
+            _add_inspector_row(5, "CIE1931", vars_dict["inspector_cie1931_var"])
+
+            return inspector_card, inspector_preview, inspector_preview_rect
+
+
+        # Inspector used in custom/sample mode: left side, below Results.
+        left_inspector_card, left_inspector_preview, left_inspector_preview_rect = (
+            _create_color_evaluation_inspector_card(result_left)
         )
-        inspector_card.pack(fill="x", pady=(8, 0))
 
-        inspector_header = tk.Frame(inspector_card, bg="#f3f3f3")
-        inspector_header.pack(fill="x")
+        # Inspector used in single / prototype-prototype mode:
+        # full width below Results + Graphs.
+        full_inspector_card, full_inspector_preview, full_inspector_preview_rect = (
+            _create_color_evaluation_inspector_card(results_block)
+        )
 
-        tk.Label(
-            inspector_header,
-            textvariable=vars_dict["inspector_title_var"],
-            font=("Sans", 9),
-            anchor="w",
-            bg="#f3f3f3",
-            padx=10,
-            pady=5
-        ).pack(side="left", fill="x", expand=True)
+        # Initial mode is single color, so show the full-width inspector.
+        left_inspector_card.pack_forget()
 
-        tk.Label(
-            inspector_header,
-            textvariable=vars_dict["inspector_source_var"],
-            font=("Sans", 8, "italic"),
-            anchor="e",
-            bg="#f3f3f3",
-            fg="#666666",
-            padx=10
-        ).pack(side="right")
+        vars_dict["left_inspector_card"] = left_inspector_card
+        vars_dict["full_inspector_card"] = full_inspector_card
 
-        inspector_values = tk.Frame(inspector_card, bg="#fafafa")
-        inspector_values.pack(fill="x", padx=10, pady=(6, 8))
+        vars_dict["inspector_preview"] = left_inspector_preview
+        vars_dict["inspector_preview_rect"] = left_inspector_preview_rect
 
-        tk.Label(
-            inspector_values,
-            textvariable=vars_dict["inspector_rgb_var"],
-            bg="#fafafa",
-            anchor="w",
-            font=("Consolas", 9)
-        ).pack(fill="x")
-
-        tk.Label(
-            inspector_values,
-            textvariable=vars_dict["inspector_lab_var"],
-            bg="#fafafa",
-            anchor="w",
-            font=("Consolas", 9)
-        ).pack(fill="x", pady=(2, 0))
-
-        tk.Label(
-            inspector_values,
-            textvariable=vars_dict["inspector_hex_var"],
-            bg="#fafafa",
-            anchor="w",
-            font=("Consolas", 9)
-        ).pack(fill="x", pady=(2, 0))
+        vars_dict["inspector_previews"] = [
+            (left_inspector_preview, left_inspector_preview_rect),
+            (full_inspector_preview, full_inspector_preview_rect),
+        ]
 
         # ------------------------------------------------------------------
         # Store references
         # ------------------------------------------------------------------
         vars_dict["analysis_result_refs"] = {
+            "results_columns": results_columns,
+            "result_left": result_left,
+
+            "left_inspector_card": left_inspector_card,
+            "full_inspector_card": full_inspector_card,
+
             "result_card": result_card,
             "result_header": result_header,
             "result_status_dot": result_status_dot,
@@ -10501,16 +10624,17 @@ class PyFCSApp:
             "result_summary_icon_text": result_summary_icon_text,
             "result_summary_label": result_summary_label,
 
-            # Right-side Membership + Graphs column
             "right_side_column": right_side_column,
+            "membership_title_spacer": membership_title_spacer,
             "membership_right": membership_right,
             "membership_list_canvas": membership_list_canvas,
             "membership_list_inner": membership_list_inner,
+            "graph_buttons_card": graph_buttons_card,
         }
 
         def _update_analysis_result_wrap(event=None):
             try:
-                result_width = max(results_block.winfo_width() - 24, 200)
+                result_width = max(result_left.winfo_width() - 24, 200)
                 title_wrap = max(result_width - 55, 140)
                 summary_wrap = max(result_width - 70, 140)
 
@@ -10533,6 +10657,7 @@ class PyFCSApp:
         vars_dict["comparison_mode"] = False
 
         for widget in (
+            refs["metric_family_combo"],
             refs["metric_combo"],
             refs["mode_combo"],
             refs["preset_combo"],
@@ -10555,6 +10680,53 @@ class PyFCSApp:
 
         self._refresh_color_evaluation_threshold_ui(vars_dict, refs)
         self._load_current_color_space_for_evaluation(vars_dict)
+        self._update_color_evaluation_graph_buttons(vars_dict)
+
+
+    def _set_color_evaluation_inspector_layout(self, vars_dict):
+        """
+        Switch Color Inspector placement depending on the current analysis mode.
+
+        - Single color / prototype-prototype comparison:
+            show full-width inspector below Results + Graphs.
+        - Custom/sample color:
+            show left inspector below Results, next to Membership/Graphs.
+        """
+        refs = vars_dict.get("analysis_result_refs", {})
+
+        left_inspector_card = refs.get("left_inspector_card") or vars_dict.get("left_inspector_card")
+        full_inspector_card = refs.get("full_inspector_card") or vars_dict.get("full_inspector_card")
+
+        has_custom = (
+            vars_dict.get("secondary_mode") == "custom"
+            and vars_dict.get("secondary_custom_lab") is not None
+            and vars_dict.get("secondary_custom_rgb") is not None
+            and vars_dict.get("secondary_custom_hex") is not None
+        )
+
+        try:
+            if has_custom:
+                if full_inspector_card is not None:
+                    full_inspector_card.pack_forget()
+
+                if (
+                    left_inspector_card is not None
+                    and not left_inspector_card.winfo_ismapped()
+                ):
+                    left_inspector_card.pack(fill="x", pady=(8, 0))
+
+            else:
+                if left_inspector_card is not None:
+                    left_inspector_card.pack_forget()
+
+                if (
+                    full_inspector_card is not None
+                    and not full_inspector_card.winfo_ismapped()
+                ):
+                    full_inspector_card.pack(fill="x", pady=(8, 0))
+
+        except Exception:
+            pass
 
 
     def _get_evaluation_proto_hex(self, vars_dict, label):
@@ -10590,31 +10762,120 @@ class PyFCSApp:
     def _update_color_evaluation_membership_panel(self, vars_dict, sample_lab=None):
         """
         Update the membership list shown on the right side of the Color Evaluation window.
+
+        Layout behavior:
+        - The right column always stays visible.
+        - Graphs are always shown on the right.
+        - Membership Degree is shown only when a custom/sample color exists.
+        - Graph buttons are filtered depending on the current state.
         """
         refs = vars_dict.get("analysis_result_refs", {})
 
         right_side_column = refs.get("right_side_column")
+        membership_title_spacer = refs.get("membership_title_spacer")
+        membership_right = refs.get("membership_right")
         membership_list_canvas = refs.get("membership_list_canvas")
         list_inner = refs.get("membership_list_inner")
+        graph_buttons_card = refs.get("graph_buttons_card")
+        result_card = refs.get("result_card")
 
-        if right_side_column is None or membership_list_canvas is None or list_inner is None:
+        if membership_right is None or membership_list_canvas is None or list_inner is None:
             return
 
-        if sample_lab is None:
-            try:
-                right_side_column.pack_forget()
-            except Exception:
-                pass
-            return
-
+        # Make sure the right column is visible.
         try:
-            if not right_side_column.winfo_ismapped():
-                right_side_column.pack(side="left", fill="both", padx=(8, 0))
+            if right_side_column is not None and not right_side_column.winfo_ismapped():
+                right_side_column.grid(
+                    row=0,
+                    column=1,
+                    sticky="new",
+                    padx=(8, 0)
+                )
         except Exception:
             pass
 
+        # Clear old membership rows
         for child in list_inner.winfo_children():
             child.destroy()
+
+        # Refresh usable graph buttons
+        self._update_color_evaluation_graph_buttons(vars_dict)
+
+        has_custom_membership = (
+            sample_lab is not None
+            and vars_dict.get("secondary_mode") == "custom"
+        )
+
+        # --------------------------------------------------
+        # No custom/sample color:
+        # hide Membership Degree, keep Graphs on the right.
+        # --------------------------------------------------
+        if not has_custom_membership:
+            try:
+                # Keep spacer so Graphs starts aligned with the Results card,
+                # not with the "Results" title.
+                if (
+                    membership_title_spacer is not None
+                    and not membership_title_spacer.winfo_ismapped()
+                ):
+                    membership_title_spacer.pack(
+                        side="top",
+                        fill="x",
+                        pady=(0, 8),
+                        before=graph_buttons_card
+                    )
+
+                membership_right.pack_forget()
+
+                if graph_buttons_card is not None:
+                    graph_buttons_card.pack_configure(pady=(0, 0))
+
+            except Exception:
+                pass
+
+            try:
+                membership_list_canvas.update_idletasks()
+                membership_list_canvas.configure(
+                    scrollregion=membership_list_canvas.bbox("all")
+                )
+                membership_list_canvas.yview_moveto(0)
+            except Exception:
+                pass
+
+            return
+
+        # --------------------------------------------------
+        # Custom/sample color active:
+        # show Membership Degree above Graphs.
+        # --------------------------------------------------
+        try:
+            if (
+                membership_title_spacer is not None
+                and not membership_title_spacer.winfo_ismapped()
+            ):
+                membership_title_spacer.pack(
+                    side="top",
+                    fill="x",
+                    pady=(0, 8),
+                    before=graph_buttons_card
+                )
+
+            if not membership_right.winfo_ismapped():
+                membership_right.pack(
+                    side="top",
+                    fill="x",
+                    before=graph_buttons_card
+                )
+
+            if graph_buttons_card is not None:
+                graph_buttons_card.pack_configure(pady=(8, 0))
+
+            if result_card is not None:
+                result_h = max(result_card.winfo_height(), 180)
+                membership_right.configure(height=result_h)
+
+        except Exception:
+            pass
 
         memberships = self._calculate_evaluation_memberships(vars_dict, sample_lab)
 
@@ -10778,6 +11039,7 @@ class PyFCSApp:
         vars_dict = {
             "space_name_var": tk.StringVar(value="None"),
             "space_count_var": tk.StringVar(value="0"),
+            "color_display_mode_var": tk.StringVar(value="CIELAB"),
 
             "analysis_mode_var": tk.StringVar(value="Select a color from the list."),
             "primary_name_var": tk.StringVar(value="None"),
@@ -10787,12 +11049,16 @@ class PyFCSApp:
             "selected_detail_var": tk.StringVar(value=""),
             "selected_summary_var": tk.StringVar(value=""),
 
-            # Conversion inspector
-            "inspector_title_var": tk.StringVar(value="Conversion inspector"),
+            # Color inspector
+            "inspector_title_var": tk.StringVar(value="Color Inspector"),
             "inspector_source_var": tk.StringVar(value="Source: -"),
-            "inspector_rgb_var": tk.StringVar(value="RGB: -"),
-            "inspector_lab_var": tk.StringVar(value="LAB: -"),
-            "inspector_hex_var": tk.StringVar(value="HEX: -"),
+
+            "inspector_rgb_var": tk.StringVar(value="-"),
+            "inspector_lab_var": tk.StringVar(value="-"),
+            "inspector_hex_var": tk.StringVar(value="-"),
+            "inspector_luv_var": tk.StringVar(value="-"),
+            "inspector_lch_var": tk.StringVar(value="-"),
+            "inspector_cie1931_var": tk.StringVar(value="-"),
 
             "loaded_space_data": None,
             "loaded_space_name": "",
@@ -10812,6 +11078,10 @@ class PyFCSApp:
 
             "analysis_view_mode": "comparison",   # "comparison" | "closest"
 
+            # Last Threshold Analysis action
+            "active_analysis_action": None,
+            "analysis_action_buttons": {},
+
             # Closest ranking cache
             "closest_ranking": [],
             "closest_best": None,
@@ -10819,7 +11089,51 @@ class PyFCSApp:
         }
 
         return self._merge_threshold_vars(vars_dict)
+    
 
+
+    def _set_color_evaluation_active_action(self, vars_dict, action_key):
+        """
+        Visually mark the last pressed button in the Threshold Analysis action area.
+        """
+        vars_dict["active_analysis_action"] = action_key
+
+        buttons = vars_dict.get("analysis_action_buttons", {})
+
+        active_bg = "#dfeeff"
+        active_fg = "#003366"
+        active_border = "#4a78b8"
+
+        normal_bg = "#f0f0f0"
+        normal_fg = "#000000"
+        normal_border = "#d9d9d9"
+
+        for key, button in buttons.items():
+            try:
+                if key == action_key:
+                    button.configure(
+                        bg=active_bg,
+                        fg=active_fg,
+                        activebackground=active_bg,
+                        activeforeground=active_fg,
+                        relief="sunken",
+                        bd=2,
+                        highlightbackground=active_border,
+                        highlightcolor=active_border
+                    )
+                else:
+                    button.configure(
+                        bg=normal_bg,
+                        fg=normal_fg,
+                        activebackground=normal_bg,
+                        activeforeground=normal_fg,
+                        relief="raised",
+                        bd=1,
+                        highlightbackground=normal_border,
+                        highlightcolor=normal_border
+                    )
+            except Exception:
+                pass
 
 
 
@@ -10847,42 +11161,17 @@ class PyFCSApp:
 
 
 
-
     def _get_color_evaluation_threshold_description(self):
-        """Return a compact textual description of the active threshold settings."""
+        """
+        Return a compact textual description of the active threshold settings.
+        """
         self._ensure_threshold_settings()
+        manager = self._get_color_evaluation_manager()
 
-        metric = self.threshold_settings.get("metric", "CIEDE2000")
-        mode = self.threshold_settings.get("mode", "default")
-
-        if mode == "known":
-            mode = "default"
-
-        if mode == "default":
-            preset = self.threshold_settings.get("preset", "pt_at")
-            if preset == "pt":
-                return f"Thresholds -> Metric: {metric} | Mode: default | PT = 0.800"
-            elif preset == "at":
-                return f"Thresholds -> Metric: {metric} | Mode: default | AT = 1.800"
-            return f"Thresholds -> Metric: {metric} | Mode: default | PT = 0.800 | AT = 1.800"
-
-        if mode == "custom":
-            custom_type = self.threshold_settings.get("custom_type", "single")
-            if custom_type == "single":
-                parsed, err = self._parse_positive_threshold(self.threshold_settings.get("single"))
-                if err:
-                    return f"Thresholds -> Metric: {metric} | Mode: custom | Single threshold: invalid"
-                return f"Thresholds -> Metric: {metric} | Mode: custom | Threshold = {parsed:.3f}"
-
-            lower, upper, err = self._validate_custom_range(
-                self.threshold_settings.get("lower"),
-                self.threshold_settings.get("upper")
-            )
-            if err:
-                return f"Thresholds -> Metric: {metric} | Mode: custom | Lower/Upper thresholds: invalid"
-            return f"Thresholds -> Metric: {metric} | Mode: custom | Lower = {lower:.3f} | Upper = {upper:.3f}"
-
-        return f"Thresholds -> Metric: {metric} | Mode: {mode}"
+        return manager.get_threshold_description(
+            threshold_settings=self.threshold_settings,
+            include_metric_description=True
+        )
 
 
 
@@ -10973,68 +11262,29 @@ class PyFCSApp:
 
     def _calculate_evaluation_memberships(self, vars_dict, sample_lab):
         """
-        Calculate membership degrees using the color space currently loaded
-        in the Color Space Evaluation window.
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
         """
-        fuzzy_cs = vars_dict.get("loaded_fuzzy_color_space")
-
-        if fuzzy_cs is None:
-            return []
-
-        try:
-            membership_degrees = fuzzy_cs.calculate_membership(sample_lab)
-        except Exception:
-            return []
-
-        if not membership_degrees:
-            return []
-
-        return sorted(
-            membership_degrees.items(),
-            key=lambda kv: kv[1],
-            reverse=True
+        manager = self._get_color_evaluation_manager()
+        return manager.calculate_memberships(
+            fuzzy_color_space=vars_dict.get("loaded_fuzzy_color_space"),
+            sample_lab=sample_lab
         )
 
 
     def _update_color_evaluation_space_summary(self, vars_dict):
         data_source = vars_dict.get("loaded_space_data") or {}
         space_name = vars_dict.get("loaded_space_name", "Unnamed color space")
-
         valid_rows = self._extract_color_space_rows(data_source)
-
         vars_dict["space_name_var"].set(space_name)
         vars_dict["space_count_var"].set(str(len(valid_rows)))
-        
+
 
     def _extract_color_space_rows(self, data_source):
-        """Return normalized rows [(label, lab_array), ...] from a color space dict."""
-        rows = []
-
-        if not isinstance(data_source, dict):
-            return rows
-
-        for color_name, color_value in data_source.items():
-            if not isinstance(color_value, dict):
-                continue
-
-            lab = None
-            if "positive_prototype" in color_value:
-                lab = color_value["positive_prototype"]
-            elif "Color" in color_value:
-                lab = color_value["Color"]
-
-            if lab is None:
-                continue
-
-            try:
-                lab_arr = np.array(lab, dtype=float)
-                if lab_arr.shape[0] < 3:
-                    continue
-                rows.append((color_name, lab_arr))
-            except Exception:
-                continue
-
-        return rows
+        """
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
+        """
+        manager = self._get_color_evaluation_manager()
+        return manager.extract_color_space_rows(data_source)
 
 
 
@@ -11078,6 +11328,56 @@ class PyFCSApp:
                     pass
 
 
+    def _refresh_color_evaluation_table_display_mode(self, vars_dict):
+        """
+        Refresh the value column of the Color Evaluation table according to
+        the selected color space display mode.
+        """
+        try:
+            display_mode = vars_dict["color_display_mode_var"].get()
+        except Exception:
+            display_mode = "CIELAB"
+
+        for label, refs in vars_dict.get("color_row_refs", {}).items():
+            value_label = refs.get("value_label")
+            lab = refs.get("lab")
+
+            if value_label is None or lab is None:
+                continue
+
+            try:
+                value_label.configure(
+                    text=UtilsTools.format_lab_color_value(lab, display_mode)
+                )
+            except Exception:
+                value_label.configure(text="-")
+
+
+    def _rotate_color_evaluation_table_display_mode(self, vars_dict):
+        """
+        Rotate the value column through the available color spaces.
+        """
+        spaces = UtilsTools.get_supported_color_value_spaces()
+
+        if not spaces:
+            return
+
+        try:
+            current = UtilsTools.normalize_color_value_space(
+                vars_dict["color_display_mode_var"].get()
+            )
+        except Exception:
+            current = "CIELAB"
+
+        if current not in spaces:
+            next_space = spaces[0]
+        else:
+            next_space = spaces[(spaces.index(current) + 1) % len(spaces)]
+
+        vars_dict["color_display_mode_var"].set(next_space)
+        self._refresh_color_evaluation_table_display_mode(vars_dict)
+
+
     def _render_color_evaluation_cards(self, vars_dict, data_source):
         """Render color prototypes as selectable rows aligned with the header."""
         rows_inner = vars_dict["rows_inner"]
@@ -11113,6 +11413,12 @@ class PyFCSApp:
             self._clear_color_evaluation_analysis(vars_dict)
             return
 
+        def _get_display_mode():
+            try:
+                return vars_dict["color_display_mode_var"].get()
+            except Exception:
+                return "CIELAB"
+
         def _highlight_rows():
             primary = vars_dict.get("primary_label")
             secondary = vars_dict.get("secondary_label")
@@ -11138,6 +11444,7 @@ class PyFCSApp:
 
         def _on_select_row(label):
             refs_map = vars_dict["color_row_refs"]
+
             if label not in refs_map:
                 return
 
@@ -11168,7 +11475,6 @@ class PyFCSApp:
                     vars_dict["secondary_label"] = label
                     vars_dict["secondary_mode"] = "row"
 
-                    # Clear custom comparison if a row comparison is chosen
                     vars_dict["secondary_custom_lab"] = None
                     vars_dict["secondary_custom_rgb"] = None
                     vars_dict["secondary_custom_hex"] = None
@@ -11180,8 +11486,10 @@ class PyFCSApp:
                 vars_dict["primary_label"] = label
                 vars_dict["secondary_label"] = None
 
-                # Keep custom comparison if it exists
-                if vars_dict.get("secondary_mode") == "custom" and vars_dict.get("secondary_custom_lab") is not None:
+                if (
+                    vars_dict.get("secondary_mode") == "custom"
+                    and vars_dict.get("secondary_custom_lab") is not None
+                ):
                     vars_dict["analysis_mode_var"].set(
                         "Custom comparison active. Click different selected colors to compare against the custom color."
                     )
@@ -11200,18 +11508,22 @@ class PyFCSApp:
 
             hex_color = self._safe_hex_from_rgb(rgb)
 
-            row = tk.Frame(rows_inner, bg="white", bd=1, relief="solid", cursor="hand2")
+            row = tk.Frame(
+                rows_inner,
+                bg="white",
+                bd=1,
+                relief="solid",
+                cursor="hand2"
+            )
             row.pack(fill="x", padx=8, pady=3)
 
             content = tk.Frame(row, bg="white")
             content.pack(fill="x", padx=8, pady=7)
 
             content.grid_columnconfigure(0, minsize=110)
-            content.grid_columnconfigure(1, minsize=190)
-            content.grid_columnconfigure(2, minsize=170)
-            content.grid_columnconfigure(3, minsize=135)
-            content.grid_columnconfigure(4, minsize=105)
-            content.grid_columnconfigure(5, weight=1)
+            content.grid_columnconfigure(1, minsize=210)
+            content.grid_columnconfigure(2, minsize=260)
+            content.grid_columnconfigure(3, weight=1)
 
             swatch = tk.Canvas(
                 content,
@@ -11221,6 +11533,7 @@ class PyFCSApp:
                 highlightthickness=0
             )
             swatch.grid(row=0, column=0, sticky="w", padx=(8, 4), pady=6)
+
             swatch.create_rectangle(
                 6, 6, 84, 36,
                 fill=hex_color,
@@ -11238,40 +11551,21 @@ class PyFCSApp:
             )
             lbl_name.grid(row=0, column=1, sticky="w", padx=(2, 2))
 
-            lbl_lab = tk.Label(
+            lbl_value = tk.Label(
                 content,
-                text=f"{lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
+                text=UtilsTools.format_lab_color_value(lab, _get_display_mode()),
                 anchor="center",
                 justify="center",
                 bg="white",
-                font=("Sans", 10)
+                font=("Consolas", 9)
             )
-            lbl_lab.grid(row=0, column=2, sticky="ew", padx=(2, 2))
+            lbl_value.grid(row=0, column=2, sticky="w", padx=(2, 8))
 
-            lbl_rgb = tk.Label(
-                content,
-                text=f"{int(rgb[0])}, {int(rgb[1])}, {int(rgb[2])}",
-                anchor="center",
-                justify="center",
-                bg="white",
-                font=("Sans", 10)
-            )
-            lbl_rgb.grid(row=0, column=3, sticky="ew", padx=(2, 2))
-
-            lbl_hex = tk.Label(
-                content,
-                text=hex_color.upper(),
-                anchor="center",
-                justify="center",
-                bg="white",
-                font=("Sans", 10)
-            )
-            lbl_hex.grid(row=0, column=4, sticky="ew", padx=(2, 6))
-
-            filler = tk.Label(content, text="", bg="white")
-            filler.grid(row=0, column=5, sticky="ew")
-
-            widgets = [swatch, lbl_name, lbl_lab, lbl_rgb, lbl_hex, filler]
+            widgets = [
+                swatch,
+                lbl_name,
+                lbl_value,
+            ]
 
             vars_dict["color_row_refs"][label] = {
                 "frame": row,
@@ -11280,6 +11574,7 @@ class PyFCSApp:
                 "lab": lab,
                 "rgb": rgb,
                 "hex": hex_color,
+                "value_label": lbl_value,
             }
 
             for widget in [row, content, *widgets]:
@@ -11293,6 +11588,21 @@ class PyFCSApp:
             self._refresh_color_evaluation_comparison(vars_dict)
             _highlight_rows()
 
+
+    def _get_color_evaluation_manager(self):
+        """
+        Return the shared ColorEvaluationManager instance.
+        """
+        manager = getattr(self, "color_evaluation_manager", None)
+
+        if manager is None:
+            manager = getattr(self, "color_eval_manager", None)
+
+        if manager is None:
+            manager = ColorEvaluationManager()
+            self.color_evaluation_manager = manager
+
+        return manager
 
 
     def _clear_color_evaluation_analysis(self, vars_dict):
@@ -11372,13 +11682,17 @@ class PyFCSApp:
 
 
     def _refresh_color_evaluation_comparison(self, vars_dict):
-        """Refresh the right-side analysis panel for single, row-comparison, or custom-comparison mode."""
+        """
+        Refresh the right-side analysis panel for single, row-comparison, or custom-comparison mode.
+        """
         vars_dict["analysis_view_mode"] = "comparison"
 
         refs_map = vars_dict.get("color_row_refs", {})
         primary_label = vars_dict.get("primary_label")
         secondary_label = vars_dict.get("secondary_label")
         secondary_mode = vars_dict.get("secondary_mode")
+
+        self._set_color_evaluation_inspector_layout(vars_dict)
 
         primary_refs = refs_map.get(primary_label)
         secondary_refs = refs_map.get(secondary_label)
@@ -11403,9 +11717,6 @@ class PyFCSApp:
             source="prototype"
         )
 
-        # --------------------------------------------------
-        # No comparison active
-        # --------------------------------------------------
         if secondary_mode not in ("row", "custom"):
             vars_dict["secondary_name_var"].set("None")
             vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
@@ -11417,8 +11728,7 @@ class PyFCSApp:
                 summary=(
                     "Use 'Compare with another color' to evaluate the selected color "
                     "against a second prototype, or 'Evaluate custom color' to compare it "
-                    "against a manually entered color.\n" +
-                    self._get_color_evaluation_threshold_description()
+                    "against a manually entered color."
                 ),
                 status="unavailable"
             )
@@ -11440,14 +11750,10 @@ class PyFCSApp:
             self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
             return
 
-        # --------------------------------------------------
-        # Row comparison
-        # --------------------------------------------------
         if secondary_mode == "row":
             if not secondary_refs:
                 vars_dict["secondary_name_var"].set("None")
                 vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
-
                 self._update_color_evaluation_result_card(
                     vars_dict=vars_dict,
                     title="Comparison color not available.",
@@ -11458,12 +11764,19 @@ class PyFCSApp:
                 return
 
             s_lab = secondary_refs["lab"]
+            s_rgb = secondary_refs.get("rgb")
             s_hex = secondary_refs["hex"]
             secondary_display_name = secondary_label
 
-        # --------------------------------------------------
-        # Custom comparison
-        # --------------------------------------------------
+            self._update_color_evaluation_conversion_inspector(
+                vars_dict=vars_dict,
+                lab=s_lab,
+                rgb=s_rgb,
+                hex_color=s_hex,
+                name=secondary_display_name,
+                source="comparison prototype"
+            )
+
         else:
             s_lab = vars_dict.get("secondary_custom_lab")
             s_rgb = vars_dict.get("secondary_custom_rgb")
@@ -11472,7 +11785,6 @@ class PyFCSApp:
             if s_lab is None or s_rgb is None or s_hex is None:
                 vars_dict["secondary_name_var"].set("None")
                 vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
-
                 self._update_color_evaluation_result_card(
                     vars_dict=vars_dict,
                     title="Custom comparison color not available.",
@@ -11492,7 +11804,6 @@ class PyFCSApp:
                 name=secondary_display_name,
                 source="custom"
             )
-            
 
         vars_dict["secondary_name_var"].set(secondary_display_name)
         vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill=s_hex)
@@ -11502,21 +11813,23 @@ class PyFCSApp:
         else:
             self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
 
+        metric_name = self.threshold_settings.get("metric", "CIEDE2000")
+
         evaluation = self.evaluate_color_difference_threshold(
             sample_lab=p_lab,
             prototype_lab=s_lab,
-            metric=self.threshold_settings.get("metric", "CIEDE2000"),
+            metric=metric_name,
             threshold_settings=self.threshold_settings
         )
 
-        delta_e_value = evaluation.get("delta_e")
+        metric_value = evaluation.get("metric_value", evaluation.get("delta_e"))
         status = evaluation.get("status", "unavailable")
 
-        if delta_e_value is None:
+        if metric_value is None:
             self._update_color_evaluation_result_card(
                 vars_dict=vars_dict,
-                title=evaluation.get("evaluation", "ΔE not available"),
-                detail="Unable to compute color difference",
+                title=evaluation.get("evaluation", "Metric not available"),
+                detail="Unable to compute selected metric",
                 summary=evaluation.get("summary_visual", evaluation.get("summary", "")),
                 status=status
             )
@@ -11525,10 +11838,14 @@ class PyFCSApp:
         self._update_color_evaluation_result_card(
             vars_dict=vars_dict,
             title=evaluation.get("evaluation", "No evaluation available"),
-            detail=f"ΔE00 = {delta_e_value:.3f}",
+            detail=evaluation.get("detail", f"{metric_name} = {metric_value:.3f}"),
             summary=evaluation.get("summary_visual", evaluation.get("summary", "")),
             status=status
         )
+
+        self._update_color_evaluation_graph_buttons(vars_dict)
+
+
 
 
 
@@ -13168,15 +13485,47 @@ class PyFCSApp:
         source="-"
     ):
         """
-        Update the compact conversion inspector in the Color Evaluation window.
+        Update the Color Inspector.
+
+        There may be two synchronized inspector cards:
+        - left inspector for custom/sample mode;
+        - full-width inspector for single/prototype-prototype mode.
         """
+        def _set_all_preview_colors(fill_color):
+            preview_refs = vars_dict.get("inspector_previews")
+
+            if preview_refs:
+                for canvas, rect in preview_refs:
+                    try:
+                        canvas.itemconfig(rect, fill=fill_color)
+                    except Exception:
+                        pass
+                return
+
+            try:
+                vars_dict["inspector_preview"].itemconfig(
+                    vars_dict["inspector_preview_rect"],
+                    fill=fill_color
+                )
+            except Exception:
+                pass
+
+        def _reset_inspector(source_text="-"):
+            vars_dict["inspector_title_var"].set("Color Inspector")
+            vars_dict["inspector_source_var"].set(f"Source: {source_text}")
+
+            vars_dict["inspector_lab_var"].set("-")
+            vars_dict["inspector_rgb_var"].set("-")
+            vars_dict["inspector_hex_var"].set("-")
+            vars_dict["inspector_luv_var"].set("-")
+            vars_dict["inspector_lch_var"].set("-")
+            vars_dict["inspector_cie1931_var"].set("-")
+
+            _set_all_preview_colors("#d9d9d9")
+
         try:
             if lab is None and rgb is None:
-                vars_dict["inspector_title_var"].set("Conversion inspector")
-                vars_dict["inspector_source_var"].set("Source: -")
-                vars_dict["inspector_rgb_var"].set("RGB: -")
-                vars_dict["inspector_lab_var"].set("LAB: -")
-                vars_dict["inspector_hex_var"].set("HEX: -")
+                _reset_inspector("-")
                 return
 
             if lab is None and rgb is not None:
@@ -13192,25 +13541,40 @@ class PyFCSApp:
             if hex_color is None:
                 hex_color = UtilsTools.rgb_to_hex(rgb)
 
-            vars_dict["inspector_title_var"].set(f"Conversion inspector")
-            vars_dict["inspector_source_var"].set(f"Source: {source}")
+            hex_color = str(hex_color).upper()
 
-            vars_dict["inspector_rgb_var"].set(
-                f"RGB: {int(rgb[0])}, {int(rgb[1])}, {int(rgb[2])}"
-            )
+            if not hex_color.startswith("#"):
+                hex_color = "#" + hex_color
+
+            display_name = str(name).strip() if name else "Color"
+            display_source = str(source).strip() if source else "-"
+
+            vars_dict["inspector_title_var"].set(f"Color Inspector · {display_name}")
+            vars_dict["inspector_source_var"].set(f"Source: {display_source}")
+
             vars_dict["inspector_lab_var"].set(
-                f"LAB: {float(lab[0]):.4f}, {float(lab[1]):.4f}, {float(lab[2]):.4f}"
+                UtilsTools.format_lab_color_value(lab, "CIELAB")
+            )
+            vars_dict["inspector_rgb_var"].set(
+                UtilsTools.format_lab_color_value(lab, "RGB")
             )
             vars_dict["inspector_hex_var"].set(
-                f"HEX: {str(hex_color).upper()}"
+                UtilsTools.format_lab_color_value(lab, "HEX")
+            )
+            vars_dict["inspector_luv_var"].set(
+                UtilsTools.format_lab_color_value(lab, "CIELUV")
+            )
+            vars_dict["inspector_lch_var"].set(
+                UtilsTools.format_lab_color_value(lab, "LCh")
+            )
+            vars_dict["inspector_cie1931_var"].set(
+                UtilsTools.format_lab_color_value(lab, "CIE1931")
             )
 
+            _set_all_preview_colors(hex_color)
+
         except Exception:
-            vars_dict["inspector_title_var"].set("Conversion inspector")
-            vars_dict["inspector_source_var"].set("Source: error")
-            vars_dict["inspector_rgb_var"].set("RGB: -")
-            vars_dict["inspector_lab_var"].set("LAB: -")
-            vars_dict["inspector_hex_var"].set("HEX: -")
+            _reset_inspector("error")
 
 
     def _get_active_color_evaluation_sample(self, vars_dict):
@@ -13254,94 +13618,27 @@ class PyFCSApp:
         return None
     
 
-    def _classify_delta_e_for_active_thresholds(self, delta_e):
+    def _classify_for_active_thresholds(self, metric_value):
         """
-        Classify a ΔE value using the active threshold configuration.
-        Returns:
-            (label, order)
-        Lower order means stronger match.
+        Classify the active scalar metric value using the active threshold configuration.
         """
-        try:
-            self._ensure_threshold_settings()
+        manager = self._get_color_evaluation_manager()
 
-            mode = self.threshold_settings.get("mode", "default")
+        result = manager._classify_metric_value(
+            value=metric_value,
+            threshold_settings=self.threshold_settings
+        )
 
-            if mode == "known":
-                mode = "default"
+        return result.get("class_label", "Unavailable"), result.get("class_order", 9)
 
-            # --------------------------------------------------
-            # Default presets
-            # --------------------------------------------------
-            if mode == "default":
-                preset = self.threshold_settings.get("preset", "pt_at")
 
-                if preset == "pt":
-                    pt = 0.8
-                    if delta_e <= pt:
-                        return "PT match", 0
-                    return "Outside PT", 2
-
-                if preset == "at":
-                    at = 1.8
-                    if delta_e <= at:
-                        return "AT match", 1
-                    return "Outside AT", 2
-
-                pt = 0.8
-                at = 1.8
-
-                if delta_e <= pt:
-                    return "PT match", 0
-                if delta_e <= at:
-                    return "AT match", 1
-                return "Different", 2
-
-            # --------------------------------------------------
-            # Custom thresholds
-            # --------------------------------------------------
-            if mode == "custom":
-                custom_type = self.threshold_settings.get("custom_type", "single")
-
-                if custom_type == "single":
-                    threshold, err = self._parse_positive_threshold(
-                        self.threshold_settings.get("single")
-                    )
-
-                    if err:
-                        return "Invalid threshold", 9
-
-                    if delta_e <= threshold:
-                        return "Inside threshold", 0
-                    return "Outside threshold", 2
-
-                lower, upper, err = self._validate_custom_range(
-                    self.threshold_settings.get("lower"),
-                    self.threshold_settings.get("upper")
-                )
-
-                if err:
-                    return "Invalid threshold", 9
-
-                if delta_e <= lower:
-                    return "Inside lower threshold", 0
-                if delta_e <= upper:
-                    return "Inside upper threshold", 1
-                return "Outside upper threshold", 2
-
-        except Exception:
-            pass
-
-        return "Unavailable", 9
-    
 
     def _show_color_evaluation_closest_prototypes(self, vars_dict):
         """
-        Rank the 7 closest loaded prototypes using the active metric
-        against the active custom color.
-
-        This mode only works when a custom color exists.
-        It does not use the selected prototype as input.
+        Rank the 7 closest loaded prototypes using the active metric against the active custom color.
         """
+        manager = self._get_color_evaluation_manager()
+
         sample_lab = vars_dict.get("secondary_custom_lab")
         sample_rgb = vars_dict.get("secondary_custom_rgb")
         sample_hex = vars_dict.get("secondary_custom_hex")
@@ -13366,7 +13663,6 @@ class PyFCSApp:
                 ),
                 status="unavailable"
             )
-
             self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
             return
 
@@ -13382,37 +13678,15 @@ class PyFCSApp:
             )
             return
 
-        ranking = []
+        top_7 = manager.rank_closest_prototypes(
+            sample_lab=sample_lab,
+            color_rows=rows,
+            metric=metric_name,
+            threshold_settings=self.threshold_settings,
+            top_n=7
+        )
 
-        for label, proto_lab in rows:
-            try:
-                evaluation = self.evaluate_color_difference_threshold(
-                    sample_lab=sample_lab,
-                    prototype_lab=proto_lab,
-                    metric=metric_name,
-                    threshold_settings=self.threshold_settings
-                )
-
-                delta_e = evaluation.get("delta_e")
-
-                if delta_e is None:
-                    continue
-
-                class_label, class_order = self._classify_delta_e_for_active_thresholds(
-                    float(delta_e)
-                )
-
-                ranking.append({
-                    "label": label,
-                    "delta_e": float(delta_e),
-                    "class_label": class_label,
-                    "class_order": class_order
-                })
-
-            except Exception:
-                continue
-
-        if not ranking:
+        if not top_7:
             self._update_color_evaluation_result_card(
                 vars_dict=vars_dict,
                 title="Closest prototype not available.",
@@ -13422,54 +13696,25 @@ class PyFCSApp:
             )
             return
 
-        ranking.sort(key=lambda item: item["delta_e"])
-
-        top_7 = ranking[:7]
         best = top_7[0]
 
         vars_dict["closest_ranking"] = top_7
         vars_dict["closest_best"] = best
         vars_dict["closest_metric"] = metric_name
 
-        lines = []
-        header = f"{'#':<3} {'Prototype':<24} {metric_name:<12} {'Status':<12}"
-        separator = "-" * len(header)
-
-        lines.append(header)
-        lines.append(separator)
-
-        for idx, item in enumerate(top_7, start=1):
-            label_text = str(item["label"])
-
-            # Keep the table compact if the prototype name is too long.
-            if len(label_text) > 23:
-                label_text = label_text[:20] + "..."
-
-            lines.append(
-                f"{idx:<3} "
-                f"{label_text:<24} "
-                f"{item['delta_e']:>10.3f}   "
-                f"{item['class_label']:<12}"
-            )
-
-        summary = (
-            "7 closest prototypes:\n\n"
-            + "\n".join(lines)
-            + "\n\n"
-            + self._get_color_evaluation_threshold_description()
+        summary = manager.format_closest_ranking_summary(
+            ranking=top_7,
+            metric_name=metric_name,
+            threshold_settings=self.threshold_settings,
+            include_threshold_description=False
         )
 
-        status = "outside"
-
-        if best["class_order"] == 0:
-            status = "inside"
-        elif best["class_order"] == 1:
-            status = "warning"
+        status = manager.status_from_class_order(best.get("class_order", 9))
 
         self._update_color_evaluation_result_card(
             vars_dict=vars_dict,
             title=f"Closest prototype: {best['label']}",
-            detail=f"Minimum {metric_name} = {best['delta_e']:.3f}",
+            detail=f"Minimum {metric_name} = {best.get('metric_value', best['delta_e']):.3f}",
             summary=summary,
             status=status
         )
@@ -13487,8 +13732,6 @@ class PyFCSApp:
             name=sample_name,
             source="custom"
         )
-
-
 
 
 
@@ -13638,35 +13881,42 @@ class PyFCSApp:
     
 
 
-    def _get_color_evaluation_plot_context(self, vars_dict, require_closest=True):
+    def _get_color_evaluation_plot_context(
+        self,
+        vars_dict,
+        require_custom=False,
+        require_closest=False
+    ):
         """
         Build a shared context for all Color Evaluation plots.
 
-        Uses the currently loaded evaluation color space:
-        - loaded_cores      -> Core volumes
-        - loaded_prototypes -> 0.5-cut volumes
-        - loaded_supports   -> Support volumes
+        Works with or without custom/sample color.
+
+        Parameters
+        ----------
+        require_custom : bool
+            True when the plot needs a custom/sample color.
+        require_closest : bool
+            True when the plot needs closest-prototype ranking.
         """
         sample_lab = vars_dict.get("secondary_custom_lab")
         sample_rgb = vars_dict.get("secondary_custom_rgb")
         sample_hex = vars_dict.get("secondary_custom_hex")
 
-        if (
-            vars_dict.get("secondary_mode") != "custom"
-            or sample_lab is None
-            or sample_rgb is None
-            or sample_hex is None
-        ):
+        has_custom = (
+            vars_dict.get("secondary_mode") == "custom"
+            and sample_lab is not None
+            and sample_rgb is not None
+            and sample_hex is not None
+        )
+
+        if require_custom and not has_custom:
             self.custom_warning(
                 "Custom Color Required",
                 "Use 'Evaluate custom color' or 'Sample from image' first.",
                 parent=getattr(self, "_color_evaluation_window", None)
             )
             return None
-
-        # Make sure closest ranking exists and matches the current metric/thresholds.
-        if require_closest and not vars_dict.get("closest_ranking"):
-            self._show_color_evaluation_closest_prototypes(vars_dict)
 
         data_source = vars_dict.get("loaded_space_data") or {}
         rows = self._extract_color_space_rows(data_source)
@@ -13679,11 +13929,18 @@ class PyFCSApp:
             )
             return None
 
-        # ------------------------------------------------------------
-        # Format expected by VisualManager:
-        # color_data = {label: {"positive_prototype": lab}}
-        # hex_color  = {"#rrggbb": lab}
-        # ------------------------------------------------------------
+        if require_closest:
+            if not has_custom:
+                self.custom_warning(
+                    "Custom Color Required",
+                    "Closest-prototype plots require a custom or sampled color.",
+                    parent=getattr(self, "_color_evaluation_window", None)
+                )
+                return None
+
+            if not vars_dict.get("closest_ranking"):
+                self._show_color_evaluation_closest_prototypes(vars_dict)
+
         color_data = {}
         hex_color = {}
 
@@ -13701,18 +13958,12 @@ class PyFCSApp:
             except Exception:
                 continue
 
-        # ------------------------------------------------------------
-        # Volumes from current evaluation color space
-        # ------------------------------------------------------------
         core = vars_dict.get("loaded_cores")
-        alpha = vars_dict.get("loaded_prototypes")   # 0.5-cut in your current structure
+        alpha = vars_dict.get("loaded_prototypes")
         support = vars_dict.get("loaded_supports")
 
         volume_limits = self._get_color_evaluation_volume_limits(vars_dict)
 
-        # ------------------------------------------------------------
-        # Closest prototype information
-        # ------------------------------------------------------------
         closest_best = vars_dict.get("closest_best")
         closest_label = None
         closest_lab = None
@@ -13746,12 +13997,15 @@ class PyFCSApp:
             "support": support,
             "volume_limits": volume_limits,
             "hex_color": hex_color,
-            "custom_lab": sample_lab,
-            "custom_rgb": sample_rgb,
-            "custom_hex": sample_hex,
+
+            "custom_lab": sample_lab if has_custom else None,
+            "custom_rgb": sample_rgb if has_custom else None,
+            "custom_hex": sample_hex if has_custom else None,
+
             "closest_label": closest_label,
             "closest_lab": closest_lab,
             "closest_hex": closest_hex,
+
             "ranking": vars_dict.get("closest_ranking") or [],
             "metric_name": metric_name,
         }
@@ -13760,19 +14014,16 @@ class PyFCSApp:
 
     def _open_color_evaluation_3d_plot(self, vars_dict):
         """
-        Open Plotly 3D LAB visualization with custom color and closest prototype.
+        Open Plotly 3D LAB visualization.
+        Works with or without custom/sample color.
         """
-        ctx = self._get_color_evaluation_plot_context(vars_dict, require_closest=True)
+        ctx = self._get_color_evaluation_plot_context(
+            vars_dict,
+            require_custom=False,
+            require_closest=False
+        )
 
         if ctx is None:
-            return
-
-        if ctx["closest_lab"] is None:
-            self.custom_warning(
-                "Closest Prototype Required",
-                "Press 'Find closest prototype' first or make sure the closest ranking can be computed.",
-                parent=getattr(self, "_color_evaluation_window", None)
-            )
             return
 
         fig = VisualManager.plot_more_color_evaluation_3D(
@@ -13799,9 +14050,14 @@ class PyFCSApp:
 
     def _open_color_evaluation_ab_plot(self, vars_dict):
         """
-        Open 2D a*b* projection with custom color and closest prototype.
+        Open 2D a*b* projection.
+        Works with or without custom/sample color.
         """
-        ctx = self._get_color_evaluation_plot_context(vars_dict, require_closest=True)
+        ctx = self._get_color_evaluation_plot_context(
+            vars_dict,
+            require_custom=False,
+            require_closest=False
+        )
 
         if ctx is None:
             return
@@ -13823,11 +14079,78 @@ class PyFCSApp:
         )
 
 
+    def _open_color_evaluation_lc_plot(self, vars_dict):
+        """
+        Open L*C* projection.
+        Works with or without custom/sample color.
+        """
+        ctx = self._get_color_evaluation_plot_context(
+            vars_dict,
+            require_custom=False,
+            require_closest=False
+        )
+
+        if ctx is None:
+            return
+
+        fig = VisualManager.plot_color_evaluation_lc_projection(
+            color_data=ctx["color_data"],
+            hex_color=ctx["hex_color"],
+            custom_lab=ctx["custom_lab"],
+            custom_hex=ctx["custom_hex"],
+            closest_label=ctx["closest_label"],
+            closest_lab=ctx["closest_lab"],
+            closest_hex=ctx["closest_hex"],
+            filename=ctx["filename"],
+        )
+
+        self._show_color_eval_plotly_figure_in_browser(
+            fig,
+            filename_prefix="color_eval_lc_projection"
+        )
+
+
+    def _open_color_evaluation_lch_plot(self, vars_dict):
+        """
+        Open polar LCh hue/chroma plot.
+        Works with or without custom/sample color.
+        """
+        ctx = self._get_color_evaluation_plot_context(
+            vars_dict,
+            require_custom=False,
+            require_closest=False
+        )
+
+        if ctx is None:
+            return
+
+        fig = VisualManager.plot_color_evaluation_lch_polar(
+            color_data=ctx["color_data"],
+            hex_color=ctx["hex_color"],
+            custom_lab=ctx["custom_lab"],
+            custom_hex=ctx["custom_hex"],
+            closest_label=ctx["closest_label"],
+            closest_lab=ctx["closest_lab"],
+            closest_hex=ctx["closest_hex"],
+            filename=ctx["filename"],
+        )
+
+        self._show_color_eval_plotly_figure_in_browser(
+            fig,
+            filename_prefix="color_eval_lch_polar"
+        )
+
+
     def _open_color_evaluation_top7_plot(self, vars_dict):
         """
         Open horizontal bar chart with the 7 closest prototypes.
+        Requires custom/sample color.
         """
-        ctx = self._get_color_evaluation_plot_context(vars_dict, require_closest=True)
+        ctx = self._get_color_evaluation_plot_context(
+            vars_dict,
+            require_custom=True,
+            require_closest=True
+        )
 
         if ctx is None:
             return
@@ -13856,7 +14179,8 @@ class PyFCSApp:
 
     def _open_color_evaluation_membership_plot(self, vars_dict):
         """
-        Open membership degree bar chart for the current custom color.
+        Open membership degree bar chart for the current custom/sample color.
+        Requires custom/sample color and fuzzy membership data.
         """
         sample_lab = vars_dict.get("secondary_custom_lab")
 
@@ -13890,6 +14214,127 @@ class PyFCSApp:
         )
 
 
+    def _open_color_evaluation_component_plot(self, vars_dict):
+        """
+        Open signed component-differences plot.
+
+        Works with:
+        - prototype vs prototype comparison;
+        - prototype vs custom/sample color comparison.
+        """
+        refs_map = vars_dict.get("color_row_refs", {})
+        primary_label = vars_dict.get("primary_label")
+        secondary_label = vars_dict.get("secondary_label")
+        secondary_mode = vars_dict.get("secondary_mode")
+
+        primary_refs = refs_map.get(primary_label)
+
+        if not primary_refs:
+            self.custom_warning(
+                "Comparison Required",
+                "Select a prototype first.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return
+
+        p_lab = primary_refs.get("lab")
+
+        if secondary_mode == "row":
+            secondary_refs = refs_map.get(secondary_label)
+            if not secondary_refs:
+                self.custom_warning(
+                    "Comparison Required",
+                    "Compare the selected prototype with another prototype first.",
+                    parent=getattr(self, "_color_evaluation_window", None)
+                )
+                return
+
+            s_lab = secondary_refs.get("lab")
+            title = f"Component differences | {primary_label} vs {secondary_label}"
+
+        elif secondary_mode == "custom":
+            s_lab = vars_dict.get("secondary_custom_lab")
+
+            if s_lab is None:
+                self.custom_warning(
+                    "Comparison Required",
+                    "Evaluate a custom color or sample a color from an image first.",
+                    parent=getattr(self, "_color_evaluation_window", None)
+                )
+                return
+
+            custom_name = vars_dict.get("secondary_custom_name", "Custom Color")
+            title = f"Component differences | {primary_label} vs {custom_name}"
+
+        else:
+            self.custom_warning(
+                "Comparison Required",
+                "Use 'Compare with another color' or 'Evaluate custom color' first.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return
+
+        components = self._calculate_color_evaluation_component_differences(
+            p_lab,
+            s_lab
+        )
+
+        fig = VisualManager.plot_color_evaluation_component_differences(
+            components=components,
+            title=title
+        )
+
+        self._show_color_eval_plotly_figure_in_browser(
+            fig,
+            filename_prefix="color_eval_components"
+        )
+
+
+    def _calculate_color_evaluation_component_differences(self, lab_1, lab_2):
+        """
+        Calculate signed component differences between two LAB colors.
+
+        Returns keys expected by VisualManager.plot_color_evaluation_component_differences:
+        ΔL*, Δa*, Δb*, ΔC*, Δh°, ΔH*
+        """
+        lab_1 = np.asarray(lab_1, dtype=float).reshape(-1)[:3]
+        lab_2 = np.asarray(lab_2, dtype=float).reshape(-1)[:3]
+
+        L1, a1, b1 = lab_1
+        L2, a2, b2 = lab_2
+
+        dL = float(L2 - L1)
+        da = float(a2 - a1)
+        db = float(b2 - b1)
+
+        C1 = float(np.sqrt(a1 ** 2 + b1 ** 2))
+        C2 = float(np.sqrt(a2 ** 2 + b2 ** 2))
+        dC = float(C2 - C1)
+
+        h1 = float(np.degrees(np.arctan2(b1, a1)) % 360.0)
+        h2 = float(np.degrees(np.arctan2(b2, a2)) % 360.0)
+
+        dh = h2 - h1
+
+        if dh > 180:
+            dh -= 360
+        elif dh < -180:
+            dh += 360
+
+        dEab_sq = da ** 2 + db ** 2
+        dH_sq = max(0.0, dEab_sq - dC ** 2)
+        dH = float(np.sign(dh) * np.sqrt(dH_sq))
+
+        return {
+            "ΔL*": dL,
+            "Δa*": da,
+            "Δb*": db,
+            "ΔC*": dC,
+            "Δh°": float(dh),
+            "ΔH*": dH,
+        }
+
+
     def _show_color_eval_plotly_figure_in_browser(
         self,
         fig,
@@ -13904,7 +14349,274 @@ class PyFCSApp:
         )
 
 
+    def _get_color_evaluation_available_graph_keys(self, vars_dict):
+        """
+        Return the graph buttons that should be visible according to the current state.
 
+        Rules:
+        - Always available with a valid color space:
+            3D LAB, a*b*, L*C*, LCh
+        - Available only with row/custom comparison:
+            Components Δ
+        - Available only with custom/sample color:
+            Top 7
+        - Available only with custom/sample color and fuzzy color space:
+            Memberships
+        """
+        data_source = vars_dict.get("loaded_space_data") or {}
+        rows = self._extract_color_space_rows(data_source)
+
+        if not rows:
+            return []
+
+        available = ["3d", "ab", "lc", "lch"]
+
+        secondary_mode = vars_dict.get("secondary_mode")
+        has_primary = vars_dict.get("primary_label") is not None
+
+        has_custom = (
+            secondary_mode == "custom"
+            and vars_dict.get("secondary_custom_lab") is not None
+            and vars_dict.get("secondary_custom_rgb") is not None
+            and vars_dict.get("secondary_custom_hex") is not None
+        )
+
+        has_row_comparison = (
+            secondary_mode == "row"
+            and vars_dict.get("secondary_label") is not None
+            and has_primary
+        )
+
+        if has_row_comparison:
+            available.append("components")
+
+        if has_custom:
+            available.append("top7")
+
+            if vars_dict.get("loaded_fuzzy_color_space") is not None:
+                available.append("memberships")
+
+            if has_primary:
+                available.append("components")
+
+        # Keep only buttons whose opener actually exists.
+        method_map = {
+            "3d": "_open_color_evaluation_3d_plot",
+            "ab": "_open_color_evaluation_ab_plot",
+            "lc": "_open_color_evaluation_lc_plot",
+            "lch": "_open_color_evaluation_lch_plot",
+            "top7": "_open_color_evaluation_top7_plot",
+            "memberships": "_open_color_evaluation_membership_plot",
+            "components": "_open_color_evaluation_component_plot",
+        }
+
+        return [
+            key
+            for key in available
+            if callable(getattr(self, method_map.get(key, ""), None))
+        ]
+
+
+    def _create_color_evaluation_graph_buttons_card(self, parent, vars_dict):
+        """
+        Create a compact Graphs card.
+
+        The card is shown in the right-side analysis column.
+        The actual buttons are rebuilt dynamically by
+        _update_color_evaluation_graph_buttons() so the layout can change:
+        - one column for single color / prototype-prototype comparison;
+        - two columns for custom/sample color mode.
+        """
+        graph_buttons_card = tk.Frame(
+            parent,
+            bg="#fafafa",
+            bd=1,
+            relief="solid"
+        )
+
+        tk.Label(
+            graph_buttons_card,
+            text="Graphs",
+            font=("Sans", 9, "bold"),
+            anchor="w",
+            bg="#fafafa",
+            padx=8,
+            pady=4
+        ).pack(fill="x")
+
+        graph_buttons_body = tk.Frame(
+            graph_buttons_card,
+            bg="#fafafa"
+        )
+        graph_buttons_body.pack(
+            fill="x",
+            padx=8,
+            pady=(0, 8)
+        )
+
+        graph_specs = {
+            "3d": {
+                "text": "3D LAB",
+                "command": lambda: self._open_color_evaluation_3d_plot(vars_dict)
+            },
+            "ab": {
+                "text": "a*b*",
+                "command": lambda: self._open_color_evaluation_ab_plot(vars_dict)
+            },
+            "lc": {
+                "text": "L*C*",
+                "command": lambda: self._open_color_evaluation_lc_plot(vars_dict)
+            },
+            "lch": {
+                "text": "LCh",
+                "command": lambda: self._open_color_evaluation_lch_plot(vars_dict)
+            },
+            "top7": {
+                "text": "Top 7",
+                "command": lambda: self._open_color_evaluation_top7_plot(vars_dict)
+            },
+            "memberships": {
+                "text": "Memberships",
+                "command": lambda: self._open_color_evaluation_membership_plot(vars_dict)
+            },
+            "components": {
+                "text": "Components Δ",
+                "command": lambda: self._open_color_evaluation_component_plot(vars_dict)
+            },
+        }
+
+        graph_buttons_card._pyfcs_graph_body = graph_buttons_body
+        graph_buttons_card._pyfcs_graph_specs = graph_specs
+
+        return graph_buttons_card
+
+
+    def _update_color_evaluation_graph_buttons(self, vars_dict):
+        """
+        Refresh visible graph buttons.
+
+        Layout behavior:
+        - Single color / prototype-prototype comparison:
+            narrow right column, one button per row.
+        - Custom/sample color:
+            compact right column, two-button layout when possible.
+        """
+        refs = vars_dict.get("analysis_result_refs", {})
+
+        side_card = refs.get("graph_buttons_card")
+        results_columns = refs.get("results_columns")
+        right_side_column = refs.get("right_side_column")
+        membership_right = refs.get("membership_right")
+
+        if side_card is None:
+            return
+
+        body = getattr(side_card, "_pyfcs_graph_body", None)
+        specs = getattr(side_card, "_pyfcs_graph_specs", {})
+
+        if body is None:
+            return
+
+        available = self._get_color_evaluation_available_graph_keys(vars_dict)
+
+        secondary_mode = vars_dict.get("secondary_mode")
+
+        has_custom = (
+            secondary_mode == "custom"
+            and vars_dict.get("secondary_custom_lab") is not None
+            and vars_dict.get("secondary_custom_rgb") is not None
+            and vars_dict.get("secondary_custom_hex") is not None
+        )
+
+        # --------------------------------------------------
+        # Dynamic right-column width
+        # --------------------------------------------------
+        if has_custom:
+            # Width of the whole right column in custom/sample mode
+            right_width = 185
+
+            layout = [
+                ["3d", "ab"],
+                ["lc", "lch"],
+                ["top7"],
+                ["memberships"],
+                ["components"],
+            ]
+        else:
+            # Width of the right column in single / prototype-prototype mode
+            right_width = 140
+
+            layout = [
+                ["3d"],
+                ["ab"],
+                ["lc"],
+                ["lch"],
+                ["components"],
+            ]
+
+        try:
+            if results_columns is not None:
+                results_columns.grid_columnconfigure(
+                    1,
+                    weight=0,
+                    minsize=right_width
+                )
+        except Exception:
+            pass
+
+        try:
+            if right_side_column is not None:
+                right_side_column.configure(width=right_width)
+        except Exception:
+            pass
+
+        try:
+            if membership_right is not None:
+                membership_right.configure(width=right_width)
+        except Exception:
+            pass
+
+        # --------------------------------------------------
+        # Rebuild visible buttons
+        # --------------------------------------------------
+        for child in body.winfo_children():
+            child.destroy()
+
+        visible_rows = []
+
+        for row_keys in layout:
+            visible_keys = [
+                key
+                for key in row_keys
+                if key in available and key in specs
+            ]
+
+            if visible_keys:
+                visible_rows.append(visible_keys)
+
+        for row_index, row_keys in enumerate(visible_rows):
+            row = tk.Frame(body, bg="#fafafa")
+            row.pack(
+                fill="x",
+                pady=(0, 4) if row_index < len(visible_rows) - 1 else (0, 0)
+            )
+
+            for button_index, key in enumerate(row_keys):
+                spec = specs[key]
+
+                btn = tk.Button(
+                    row,
+                    text=spec["text"],
+                    command=spec["command"],
+                    width=8 if has_custom else 14
+                )
+
+                btn.pack(
+                    side="left",
+                    fill="x",
+                    expand=True,
+                    padx=(0, 4) if button_index < len(row_keys) - 1 else (0, 0)
+                )
 
 
 

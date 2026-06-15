@@ -7,6 +7,7 @@ import plotly.express as px
 ### my libraries ###
 from Source.geometry.Point import Point
 
+
 """
 Module summary
 --------------
@@ -18,16 +19,32 @@ It provides:
         * Representative centroids (LAB points)
         * Prototype polyhedra (Voronoi volumes) for Core / 0.5-cut / Support
         * Optional filtered points, displayed only when they truly fall inside each prototype volume
+        * Optional custom/sample color markers for Color Evaluation
+        * Optional closest-prototype highlighting
         * Legend handling to avoid duplicated legend entries
-    - A Matplotlib-based 3D rendering alternative for centroids and prototype volumes
+    - Matplotlib-based 3D rendering alternative for centroids and prototype volumes
+    - Color Evaluation plots:
+        * 3D LAB
+        * a*b* projection
+        * L*C* projection
+        * LCh polar hue/chroma plot
+        * Top-7 ranking bar plot
+        * Membership-degree bar plot
+        * Component-difference plot
     - Geometry helpers to:
-        * Clip polygon faces to a bounding volume (cube limits)
-        * Compute plane/cube intersections
-        * Order face points by angle for consistent polygon traversal
+        * Clip polygon faces to a bounding volume
+        * Triangulate polygonal faces
+        * Find display HEX colors from LAB coordinates
 """
+
+
 class VisualManager:
     # Shared flag that can be used to control legend duplication across traces.
     SHOW_LEGENDS = True
+
+    # ============================================================================================================================================================
+    #  GEOMETRY / COLOR HELPERS
+    # ============================================================================================================================================================
 
     @staticmethod
     def clip_face_to_volume(vertices, volume_limits):
@@ -59,6 +76,128 @@ class VisualManager:
         return np.clip(vertices_array, lower_bounds, upper_bounds)
 
 
+    @staticmethod
+    def _lab_key(lab):
+        """
+        Convert LAB into a stable rounded key.
+        """
+        return tuple(np.round(np.asarray(lab, dtype=float).reshape(-1)[:3], 6))
+
+
+    @staticmethod
+    def _find_hex_for_lab(lab, hex_color, default="#000000"):
+        """
+        Find the HEX color associated with a LAB value.
+
+        hex_color is expected as:
+            {
+                "#rrggbb": lab
+            }
+        """
+        if not isinstance(hex_color, dict):
+            return default
+
+        target_key = VisualManager._lab_key(lab)
+
+        for hex_value, lab_value in hex_color.items():
+            try:
+                if VisualManager._lab_key(lab_value) == target_key:
+                    return hex_value
+            except Exception:
+                continue
+
+        return default
+
+
+    @staticmethod
+    def _triangulate_face(vertices):
+        """
+        Convert a polygon face with N vertices into triangles.
+        """
+        triangles = []
+
+        for i in range(1, len(vertices) - 1):
+            triangles.append([vertices[0], vertices[i], vertices[i + 1]])
+
+        return triangles
+
+
+    @staticmethod
+    def _safe_lab(lab):
+        """
+        Convert input LAB-like value to a 3-component numpy array.
+        """
+        if lab is None:
+            return None
+
+        arr = np.asarray(lab, dtype=float).reshape(-1)
+
+        if arr.shape[0] < 3:
+            return None
+
+        return arr[:3]
+
+
+    @staticmethod
+    def _lab_to_lch(lab):
+        """
+        Convert CIELAB to CIELCh(ab).
+
+        Returns
+        -------
+        tuple
+            (L*, C*, h°)
+        """
+        lab = VisualManager._safe_lab(lab)
+
+        if lab is None:
+            return None
+
+        L, a, b = lab
+        C = float(np.sqrt(a ** 2 + b ** 2))
+        h = float(np.degrees(np.arctan2(b, a)) % 360.0)
+
+        return float(L), C, h
+
+
+    @staticmethod
+    def _format_metric_value(value, metric_name="CIEDE2000"):
+        """
+        Format ranking/metric values for hover labels and bar text.
+        """
+        try:
+            value = float(value)
+        except Exception:
+            return "-"
+
+        metric_name = str(metric_name)
+
+        if metric_name in ("|ΔR|", "|ΔG|", "|ΔB|"):
+            return f"{value:.0f}"
+
+        if metric_name == "RGB Euclidean":
+            return f"{value:.2f}"
+
+        if metric_name == "|Δh°|":
+            return f"{value:.2f}°"
+
+        return f"{value:.3f}"
+
+
+    @staticmethod
+    def _get_ranking_metric_value(item):
+        """
+        Retrieve metric value from ranking item, preserving backwards compatibility.
+        """
+        if not isinstance(item, dict):
+            return None
+
+        return item.get("metric_value", item.get("delta_e"))
+
+
+    # ============================================================================================================================================================
+    #  EMBEDDED MATPLOTLIB 3D MODEL
+    # ============================================================================================================================================================
 
     @staticmethod
     def plot_combined_3D(
@@ -78,20 +217,7 @@ class VisualManager:
 
         This function reuses the provided axis instead of creating a new figure
         every time. That makes repeated updates much cheaper.
-
-        Args:
-            ax: Existing matplotlib 3D axis.
-            filename: Title shown on the plot.
-            color_data: Dictionary with representative color data.
-            core: List of core prototypes.
-            alpha: List of 0.5-cut prototypes.
-            support: List of support prototypes.
-            volume_limits: LAB axis limits.
-            hex_color: Mapping from display hex colors to LAB prototype values.
-            selected_options: Active visualization layers.
-            filtered_points: Optional filtered LAB points grouped by prototype name.
         """
-        # Clear previous artists while keeping the same figure and widget alive.
         ax.cla()
 
         data_map = {
@@ -102,26 +228,22 @@ class VisualManager:
         }
 
         def lab_to_key(lab):
-            """
-            Convert a LAB vector into a rounded hashable key.
-            """
             return tuple(np.round(np.asarray(lab, dtype=float), 6))
 
-        # Build inverse color lookup once for this draw call.
         inverse_hex_color = {
             lab_to_key(lab_val): hex_key
             for hex_key, lab_val in hex_color.items()
         }
 
-        # Preconvert filtered points once to NumPy arrays.
         filtered_points_arrays = {}
+
         if filtered_points is not None:
             for proto_name, points in filtered_points.items():
                 if points:
                     filtered_points_arrays[proto_name] = np.asarray(points, dtype=float)
 
         # ------------------------------------------------------------------
-        # Draw representative points
+        # Representative points
         # ------------------------------------------------------------------
         if "Representative" in selected_options and isinstance(color_data, dict):
             lab_values = [value["positive_prototype"] for value in color_data.values()]
@@ -134,7 +256,6 @@ class VisualManager:
                     for lab in lab_values
                 ]
 
-                # Plot as x=a*, y=b*, z=L* for a more intuitive LAB view.
                 ax.scatter(
                     lab_array[:, 1],
                     lab_array[:, 2],
@@ -148,13 +269,14 @@ class VisualManager:
                 )
 
         # ------------------------------------------------------------------
-        # Draw fuzzy volumes and filtered points
+        # Fuzzy volumes and filtered points
         # ------------------------------------------------------------------
         for option in ("0.5-cut", "Core", "Support"):
             if option not in selected_options:
                 continue
 
             prototypes = data_map.get(option)
+
             if not prototypes:
                 continue
 
@@ -168,9 +290,8 @@ class VisualManager:
                     "#000000",
                 )
 
-                # Cache clipped faces for each prototype and option to avoid
-                # recomputing the same geometry on every redraw.
                 cache_attr = f"_cached_faces_{option.replace('-', '_')}"
+
                 if not hasattr(prototype, cache_attr):
                     valid_faces = []
 
@@ -194,7 +315,6 @@ class VisualManager:
                     all_faces.append(face_vertices)
                     all_facecolors.append(color)
 
-                # Check which filtered points belong to the current prototype volume.
                 if filtered_points_arrays:
                     for _proto_name, points_array in filtered_points_arrays.items():
                         if len(points_array) == 0:
@@ -220,14 +340,13 @@ class VisualManager:
                     )
                 )
 
-            # Draw all filtered points for the current option in a single scatter.
             if all_filtered_points:
                 points_array = np.asarray(all_filtered_points, dtype=float)
 
                 ax.scatter(
-                    points_array[:, 1],  # a*
-                    points_array[:, 2],  # b*
-                    points_array[:, 0],  # L*
+                    points_array[:, 1],
+                    points_array[:, 2],
+                    points_array[:, 0],
                     c="red",
                     marker="o",
                     s=10,
@@ -236,7 +355,7 @@ class VisualManager:
                 )
 
         # ------------------------------------------------------------------
-        # Configure axes
+        # Axes
         # ------------------------------------------------------------------
         ax.set_xlabel("a* (Green-Red)", fontsize=10, labelpad=10)
         ax.set_ylabel("b* (Blue-Yellow)", fontsize=10, labelpad=10)
@@ -272,11 +391,9 @@ class VisualManager:
         ax_inset = fig.add_axes([0.02, 0.02, 0.18, 0.30], projection="3d")
         ax_inset._is_orientation_inset = True
 
-        # Remove white background
         ax_inset.set_facecolor((1, 1, 1, 0))
         ax_inset.patch.set_alpha(0)
 
-        # Fixed orientation
         ax_inset.view_init(elev=30, azim=-60)
 
         lim = 1.2
@@ -292,7 +409,6 @@ class VisualManager:
         ax_inset.set_zlabel("")
         ax_inset.set_axis_off()
 
-        # También por si Matplotlib deja panes visibles en 3D
         try:
             ax_inset.xaxis.pane.fill = False
             ax_inset.yaxis.pane.fill = False
@@ -305,34 +421,32 @@ class VisualManager:
             pass
 
         # a*: Green <-> Red
-        ax_inset.quiver(0, 0, 0,  1, 0, 0, color="red",   arrow_length_ratio=0.2)
+        ax_inset.quiver(0, 0, 0, 1, 0, 0, color="red", arrow_length_ratio=0.2)
         ax_inset.quiver(0, 0, 0, -1, 0, 0, color="green", arrow_length_ratio=0.2)
 
         # b*: Blue <-> Yellow
-        ax_inset.quiver(0, 0, 0, 0,  1, 0, color="gold", arrow_length_ratio=0.2)
+        ax_inset.quiver(0, 0, 0, 0, 1, 0, color="gold", arrow_length_ratio=0.2)
         ax_inset.quiver(0, 0, 0, 0, -1, 0, color="blue", arrow_length_ratio=0.2)
 
         # L*: Dark <-> Light
-        ax_inset.quiver(0, 0, 0, 0, 0,  1, color="gray",  arrow_length_ratio=0.2)
+        ax_inset.quiver(0, 0, 0, 0, 0, 1, color="gray", arrow_length_ratio=0.2)
         ax_inset.quiver(0, 0, 0, 0, 0, -1, color="black", arrow_length_ratio=0.2)
 
-        ax_inset.text( 1.18, -0.05,  0.00, "+a*", fontsize=8)
-        ax_inset.text(-1.32,  0.02,  0.02, "-a*", fontsize=8)
+        ax_inset.text(1.18, -0.05, 0.00, "+a*", fontsize=8)
+        ax_inset.text(-1.32, 0.02, 0.02, "-a*", fontsize=8)
 
-        ax_inset.text( 0.06,  1.18,  0.02, "+b*", fontsize=8)
+        ax_inset.text(0.06, 1.18, 0.02, "+b*", fontsize=8)
         ax_inset.text(-0.10, -1.34, -0.08, "-b*", fontsize=8)
 
-        ax_inset.text( 0.02,  0.02,  1.18, "+L*", fontsize=8)
-        ax_inset.text( 0.04, -0.08, -1.34, "-L*", fontsize=8)
+        ax_inset.text(0.02, 0.02, 1.18, "+L*", fontsize=8)
+        ax_inset.text(0.04, -0.08, -1.34, "-L*", fontsize=8)
 
         return ax_inset
 
 
-
-
-
-
-
+    # ============================================================================================================================================================
+    #  GENERAL INTERACTIVE PLOTLY 3D MODEL
+    # ============================================================================================================================================================
 
     @staticmethod
     def plot_more_combined_3D(
@@ -346,34 +460,28 @@ class VisualManager:
         selected_options,
         filtered_points=None,
     ):
-        """Generates a 3D figure in Plotly combining centroids, prototypes, and filtered points."""
+        """
+        Generate a Plotly 3D figure combining centroids, prototype volumes and filtered points.
+        """
         fig = go.Figure()
 
-        # ---------- Helper: triangulate polygonal faces ----------
         def triangulate_face(vertices):
-            """
-            Convert a polygon face (N vertices) into triangles using a fan triangulation:
-            [v0,v1,v2], [v0,v2,v3], ...
-            """
             triangles = []
+
             for i in range(1, len(vertices) - 1):
                 triangles.append([vertices[0], vertices[i], vertices[i + 1]])
+
             return triangles
 
-        # ---------- Plot centroids ----------
         def plot_centroids():
-            """Plot representative centroids as 3D points (a*, b*, L*) using Plotly."""
             if not color_data:
                 return
 
-            # Extract LAB values from color_data (positive prototype for each entry)
             lab_values = [v["positive_prototype"] for v in color_data.values()]
             lab_array = np.array(lab_values)
 
-            # Reorder axes for visualization: x=a*, y=b*, z=L*
             A, B, L = lab_array[:, 1], lab_array[:, 2], lab_array[:, 0]
 
-            # Map each LAB value to its hex color if present, otherwise default to black
             colors = [
                 next(
                     (k for k, v in hex_color.items() if np.array_equal(v, lab)),
@@ -398,28 +506,17 @@ class VisualManager:
                 )
             )
 
-
-
-        # ---------- Plot prototypes ----------
         def plot_prototypes(prototypes, label):
-            """
-            Plot prototype Voronoi volumes as Mesh3d surfaces.
-            Legend handling:
-              - Uses a global flag and presence of filtered points to decide whether to show legends.
-              - After first use, SHOW_LEGENDS is set to False to avoid repeated legend entries.
-            """
             if not prototypes:
                 return
 
-            global_flag = VisualManager.SHOW_LEGENDS  # access the shared legend flag
+            global_flag = VisualManager.SHOW_LEGENDS
 
-            # Detect whether any filtered points exist (affects whether prototype legend is shown)
             has_filtered = filtered_points and any(
                 len(pts) > 0 for pts in filtered_points.values()
             )
 
             for idx, prototype in enumerate(prototypes):
-                # Determine prototype color from its positive LAB value
                 color = next(
                     (
                         k
@@ -431,7 +528,6 @@ class VisualManager:
 
                 vertices, faces = [], []
 
-                # Build a triangulated mesh for each finite Voronoi face
                 for face in prototype.voronoi_volume.faces:
                     if face.infinity or face.vertex is None:
                         continue
@@ -440,9 +536,11 @@ class VisualManager:
                         face.vertex,
                         volume_limits
                     )
+
                     if len(clipped) >= 3:
                         clipped = clipped[:, [1, 2, 0]]
                         triangles = triangulate_face(clipped)
+
                         for tri in triangles:
                             idx0 = len(vertices)
                             vertices.extend(tri)
@@ -450,8 +548,6 @@ class VisualManager:
 
                 if vertices:
                     vertices = np.array(vertices)
-
-                    # Show prototype legend only if there are NO filtered points and the global flag is enabled
                     show_legend = (not has_filtered) and global_flag
 
                     fig.add_trace(
@@ -470,50 +566,35 @@ class VisualManager:
                         )
                     )
 
-            # Disable legends for subsequent prototype groups so they do not repeat
             VisualManager.SHOW_LEGENDS = False
 
-        # ---------- Plot filtered points ----------
         def plot_filtered_points(prototypes, point_color="black"):
-            """
-            Plot filtered points only if they fall inside the actual Voronoi volume of each prototype.
-
-            Implementation detail:
-              - Adds one real Scatter3d trace with showlegend=False (actual points).
-              - Adds one "dummy" Scatter3d trace (outside plot range) with showlegend=True
-                to create a clean legend entry per volume with a distinctive border color.
-            """
             if not filtered_points or not prototypes:
                 return
 
-            # Edge-color palette to distinguish volumes (up to 24 clearly visible colors)
             border_colors = px.colors.qualitative.Dark24
 
             for proto_name, points in filtered_points.items():
-                # Parse index from name like "Volume_3" -> 3
                 idx = int(proto_name.split("_")[-1])
+
                 if idx >= len(prototypes):
                     continue
 
                 prototype = prototypes[idx]
 
-                # Keep only points that are truly inside the prototype volume
                 points_inside = [
                     p for p in points if prototype.voronoi_volume.isInside(Point(*p))
                 ]
+
                 if not points_inside:
                     continue
 
                 pts = np.array(points_inside)
                 L, A, B = pts[:, 0], pts[:, 1], pts[:, 2]
 
-                # Adaptive point size: more points => smaller markers (bounded)
                 point_size = max(4, min(10, int(300 / len(points_inside))))
-
-                # Assign a unique border color per volume
                 border_color = border_colors[idx % len(border_colors)]
 
-                # 1) Real plot: the points
                 fig.add_trace(
                     go.Scatter3d(
                         x=A,
@@ -522,20 +603,20 @@ class VisualManager:
                         mode="markers",
                         marker=dict(
                             size=point_size,
-                            color=point_color,  # base color (e.g., red or black)
+                            color=point_color,
                             opacity=0.7,
                             line=dict(color=border_color, width=0.8),
                         ),
                         name=f"{prototype.label}",
                         legendgroup=f"{prototype.label}",
-                        showlegend=False,  # do not show this trace in the legend
+                        showlegend=False,
                     )
                 )
 
-                # 2) Dummy legend-only trace (place a marker outside the visible range)
                 x_dummy = [volume_limits.comp2[0] - 10]
                 y_dummy = [volume_limits.comp3[0] - 10]
                 z_dummy = [volume_limits.comp1[0] - 10]
+
                 fig.add_trace(
                     go.Scatter3d(
                         x=x_dummy,
@@ -544,18 +625,16 @@ class VisualManager:
                         mode="markers",
                         marker=dict(
                             size=8,
-                            color=border_color,  # legend marker color (border color)
+                            color=border_color,
                             opacity=1.0,
                             symbol="circle",
                         ),
                         name=f"{prototype.label}",
                         legendgroup=f"{prototype.label}",
-                        showlegend=True,  # only this appears in the legend
+                        showlegend=True,
                     )
                 )
 
-        # ---------- Mapping of user-selected options ----------
-        # Each option triggers one specific plotting routine
         options_map = {
             "Representative": lambda: plot_centroids(),
             "0.5-cut": lambda: plot_prototypes(alpha, "0.5-cut"),
@@ -563,16 +642,14 @@ class VisualManager:
             "Support": lambda: plot_prototypes(support, "Support"),
         }
 
-        # Execute the main traces based on user selection
         for option in selected_options:
             if option in options_map:
                 options_map[option]()
 
-        # Plot filtered points once (uses whichever prototypes list is available)
         plot_filtered_points(core or alpha or support)
 
-        # ---------- Configure axes and layout ----------
         axis_limits = {}
+
         if volume_limits:
             axis_limits = dict(
                 xaxis=dict(range=volume_limits.comp2),
@@ -591,57 +668,13 @@ class VisualManager:
             title=dict(text=f"{filename}", font=dict(size=10), x=0.5, y=0.95),
         )
 
-        # Reset the global legend flag for future executions
         VisualManager.SHOW_LEGENDS = True
         return fig
 
 
-
-
-    @staticmethod
-    def _lab_key(lab):
-        """
-        Convert LAB into a stable rounded key.
-        """
-        return tuple(np.round(np.asarray(lab, dtype=float).reshape(-1)[:3], 6))
-
-
-    @staticmethod
-    def _find_hex_for_lab(lab, hex_color, default="#000000"):
-        """
-        Find the HEX color associated with a LAB value.
-        hex_color is expected as:
-            {
-                "#rrggbb": lab
-            }
-        """
-        if not isinstance(hex_color, dict):
-            return default
-
-        target_key = VisualManager._lab_key(lab)
-
-        for hex_value, lab_value in hex_color.items():
-            try:
-                if VisualManager._lab_key(lab_value) == target_key:
-                    return hex_value
-            except Exception:
-                continue
-
-        return default
-
-
-    @staticmethod
-    def _triangulate_face(vertices):
-        """
-        Convert a polygon face with N vertices into triangles.
-        """
-        triangles = []
-
-        for i in range(1, len(vertices) - 1):
-            triangles.append([vertices[0], vertices[i], vertices[i + 1]])
-
-        return triangles
-
+    # ============================================================================================================================================================
+    #  COLOR EVALUATION PLOTS
+    # ============================================================================================================================================================
 
     @staticmethod
     def plot_more_color_evaluation_3D(
@@ -652,7 +685,7 @@ class VisualManager:
         support,
         volume_limits,
         hex_color,
-        custom_lab,
+        custom_lab=None,
         custom_hex="#ff0000",
         closest_label=None,
         closest_lab=None,
@@ -662,25 +695,22 @@ class VisualManager:
         """
         Plotly 3D LAB visualization for the Color Evaluation tool.
 
+        It works with or without a custom/sample color.
+
         It shows:
         - all representative prototypes;
         - optional Core / 0.5-cut / Support volumes selectable from buttons;
-        - custom color as a highlighted point;
-        - closest prototype as a highlighted point;
-        - line between custom color and closest prototype;
+        - optional custom color as a highlighted point;
+        - optional closest prototype as a highlighted point;
+        - optional line between custom color and closest prototype;
         - right legend with all prototype labels so the user can click/hide colors.
         """
         fig = go.Figure()
 
         color_data = color_data or {}
-        custom_lab = np.asarray(custom_lab, dtype=float).reshape(-1)[:3]
+        custom_lab = VisualManager._safe_lab(custom_lab)
+        closest_lab = VisualManager._safe_lab(closest_lab)
 
-        if closest_lab is not None:
-            closest_lab = np.asarray(closest_lab, dtype=float).reshape(-1)[:3]
-
-        # ------------------------------------------------------------------
-        # Prepare volume groups
-        # ------------------------------------------------------------------
         volume_groups = {
             "Representative": None,
             "Core": core,
@@ -701,8 +731,7 @@ class VisualManager:
         always_visible_indices = []
 
         # ------------------------------------------------------------------
-        # Representative prototypes, one trace per color.
-        # This gives a clickable legend on the right.
+        # Representative prototypes
         # ------------------------------------------------------------------
         for label, value in color_data.items():
             try:
@@ -744,9 +773,7 @@ class VisualManager:
             always_visible_indices.append(len(fig.data) - 1)
 
         # ------------------------------------------------------------------
-        # Volumes: Core / 0.5-cut / Support.
-        # Mesh traces share legendgroup with representative points.
-        # They are controlled by Plotly buttons.
+        # Volumes: Core / 0.5-cut / Support
         # ------------------------------------------------------------------
         for mode_name, prototypes in (
             ("Core", core),
@@ -780,9 +807,7 @@ class VisualManager:
                         if len(clipped) < 3:
                             continue
 
-                        # Reorder from LAB to a*, b*, L*
                         clipped = clipped[:, [1, 2, 0]]
-
                         triangles = VisualManager._triangulate_face(clipped)
 
                         for tri in triangles:
@@ -819,36 +844,38 @@ class VisualManager:
                     continue
 
         # ------------------------------------------------------------------
-        # Custom color
+        # Optional custom color
         # ------------------------------------------------------------------
-        fig.add_trace(
-            go.Scatter3d(
-                x=[custom_lab[1]],
-                y=[custom_lab[2]],
-                z=[custom_lab[0]],
-                mode="markers",
-                marker=dict(
-                    size=11,
-                    color=custom_hex,
-                    symbol="diamond",
-                    opacity=1.0,
-                    line=dict(color="black", width=2),
-                ),
-                name="Custom color",
-                legendgroup="__custom__",
-                showlegend=True,
-                hovertemplate=(
-                    "<b>Custom color</b><br>"
-                    "L*: %{z:.3f}<br>"
-                    "a*: %{x:.3f}<br>"
-                    "b*: %{y:.3f}<extra></extra>"
-                ),
+        if custom_lab is not None:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[custom_lab[1]],
+                    y=[custom_lab[2]],
+                    z=[custom_lab[0]],
+                    mode="markers",
+                    marker=dict(
+                        size=11,
+                        color=custom_hex,
+                        symbol="diamond",
+                        opacity=1.0,
+                        line=dict(color="black", width=2),
+                    ),
+                    name="Custom color",
+                    legendgroup="__custom__",
+                    showlegend=True,
+                    hovertemplate=(
+                        "<b>Custom color</b><br>"
+                        "L*: %{z:.3f}<br>"
+                        "a*: %{x:.3f}<br>"
+                        "b*: %{y:.3f}<extra></extra>"
+                    ),
+                )
             )
-        )
-        always_visible_indices.append(len(fig.data) - 1)
+
+            always_visible_indices.append(len(fig.data) - 1)
 
         # ------------------------------------------------------------------
-        # Closest prototype highlighted separately
+        # Optional closest prototype highlight
         # ------------------------------------------------------------------
         if closest_lab is not None:
             fig.add_trace(
@@ -875,9 +902,13 @@ class VisualManager:
                     ),
                 )
             )
+
             always_visible_indices.append(len(fig.data) - 1)
 
-            # Line between custom and closest
+        # ------------------------------------------------------------------
+        # Optional custom-to-closest line
+        # ------------------------------------------------------------------
+        if custom_lab is not None and closest_lab is not None:
             fig.add_trace(
                 go.Scatter3d(
                     x=[custom_lab[1], closest_lab[1]],
@@ -891,22 +922,21 @@ class VisualManager:
                     hoverinfo="skip",
                 )
             )
+
             always_visible_indices.append(len(fig.data) - 1)
 
         # ------------------------------------------------------------------
-        # Buttons for volume mode
+        # Volume mode buttons
         # ------------------------------------------------------------------
         total_traces = len(fig.data)
 
         def visibility_for(mode_name):
             visibility = [False] * total_traces
 
-            # Representative points + custom + closest + line are always visible
             for idx in always_visible_indices:
                 if 0 <= idx < total_traces:
                     visibility[idx] = True
 
-            # Selected volume layer
             for idx in volume_trace_indices.get(mode_name, []):
                 if 0 <= idx < total_traces:
                     visibility[idx] = True
@@ -927,9 +957,6 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Axis limits
-        # ------------------------------------------------------------------
         axis_limits = {}
 
         if volume_limits:
@@ -978,48 +1005,10 @@ class VisualManager:
 
 
     @staticmethod
-    def plot_color_evaluation_top7_bar(
-        ranking,
-        metric_name="CIEDE2000",
-        title="Top 7 closest prototypes",
-    ):
-        """
-        Horizontal bar chart for the closest 7 prototypes.
-        """
-        ranking = ranking or []
-        ranking = ranking[:7]
-
-        labels = [str(item["label"]) for item in ranking]
-        values = [float(item["delta_e"]) for item in ranking]
-
-        fig = go.Figure()
-
-        fig.add_trace(
-            go.Bar(
-                x=values[::-1],
-                y=labels[::-1],
-                orientation="h",
-                text=[f"{v:.3f}" for v in values[::-1]],
-                textposition="auto",
-                hovertemplate="<b>%{y}</b><br>" + metric_name + ": %{x:.3f}<extra></extra>",
-            )
-        )
-
-        fig.update_layout(
-            title=dict(text=title, x=0.5),
-            xaxis_title=metric_name,
-            yaxis_title="Prototype",
-            margin=dict(l=120, r=30, t=55, b=45),
-        )
-
-        return fig
-
-
-    @staticmethod
     def plot_color_evaluation_ab_projection(
         color_data,
         hex_color,
-        custom_lab,
+        custom_lab=None,
         custom_hex="#ff0000",
         closest_label=None,
         closest_lab=None,
@@ -1027,12 +1016,16 @@ class VisualManager:
         filename="Color evaluation",
     ):
         """
-        2D a*b* projection with all prototypes, custom color, and closest prototype.
+        2D a*b* projection with all prototypes.
+
+        Works with or without a custom/sample color.
+        If custom and closest colors are available, they are highlighted and connected.
         """
         fig = go.Figure()
 
         color_data = color_data or {}
-        custom_lab = np.asarray(custom_lab, dtype=float).reshape(-1)[:3]
+        custom_lab = VisualManager._safe_lab(custom_lab)
+        closest_lab = VisualManager._safe_lab(closest_lab)
 
         for label, value in color_data.items():
             try:
@@ -1063,26 +1056,29 @@ class VisualManager:
                 )
             )
 
-        fig.add_trace(
-            go.Scatter(
-                x=[custom_lab[1]],
-                y=[custom_lab[2]],
-                mode="markers",
-                marker=dict(
-                    size=15,
-                    color=custom_hex,
-                    symbol="diamond",
-                    line=dict(color="black", width=2),
-                ),
-                name="Custom color",
-                showlegend=True,
-                hovertemplate="<b>Custom color</b><br>a*: %{x:.3f}<br>b*: %{y:.3f}<extra></extra>",
+        if custom_lab is not None:
+            fig.add_trace(
+                go.Scatter(
+                    x=[custom_lab[1]],
+                    y=[custom_lab[2]],
+                    mode="markers",
+                    marker=dict(
+                        size=15,
+                        color=custom_hex,
+                        symbol="diamond",
+                        line=dict(color="black", width=2),
+                    ),
+                    name="Custom color",
+                    showlegend=True,
+                    hovertemplate=(
+                        "<b>Custom color</b><br>"
+                        "a*: %{x:.3f}<br>"
+                        "b*: %{y:.3f}<extra></extra>"
+                    ),
+                )
             )
-        )
 
         if closest_lab is not None:
-            closest_lab = np.asarray(closest_lab, dtype=float).reshape(-1)[:3]
-
             fig.add_trace(
                 go.Scatter(
                     x=[closest_lab[1]],
@@ -1104,6 +1100,7 @@ class VisualManager:
                 )
             )
 
+        if custom_lab is not None and closest_lab is not None:
             fig.add_trace(
                 go.Scatter(
                     x=[custom_lab[1], closest_lab[1]],
@@ -1138,6 +1135,326 @@ class VisualManager:
 
 
     @staticmethod
+    def plot_color_evaluation_lc_projection(
+        color_data,
+        hex_color,
+        custom_lab=None,
+        custom_hex="#ff0000",
+        closest_label=None,
+        closest_lab=None,
+        closest_hex="#000000",
+        filename="Color evaluation",
+    ):
+        """
+        2D L*C* projection.
+
+        Shows lightness L* versus chroma C* for all prototypes.
+        Works with or without a custom/sample color.
+        """
+        fig = go.Figure()
+
+        color_data = color_data or {}
+        custom_lab = VisualManager._safe_lab(custom_lab)
+        closest_lab = VisualManager._safe_lab(closest_lab)
+
+        for label, value in color_data.items():
+            try:
+                lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
+                L, C, _h = VisualManager._lab_to_lch(lab)
+            except Exception:
+                continue
+
+            proto_hex = VisualManager._find_hex_for_lab(lab, hex_color, default="#000000")
+
+            fig.add_trace(
+                go.Scatter(
+                    x=[C],
+                    y=[L],
+                    mode="markers",
+                    marker=dict(
+                        size=10,
+                        color=proto_hex,
+                        line=dict(color="black", width=1),
+                    ),
+                    name=str(label),
+                    legendgroup=str(label),
+                    showlegend=True,
+                    hovertemplate=(
+                        f"<b>{label}</b><br>"
+                        "C*: %{x:.3f}<br>"
+                        "L*: %{y:.3f}<extra></extra>"
+                    ),
+                )
+            )
+
+        if custom_lab is not None:
+            L, C, _h = VisualManager._lab_to_lch(custom_lab)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=[C],
+                    y=[L],
+                    mode="markers",
+                    marker=dict(
+                        size=15,
+                        color=custom_hex,
+                        symbol="diamond",
+                        line=dict(color="black", width=2),
+                    ),
+                    name="Custom color",
+                    showlegend=True,
+                    hovertemplate=(
+                        "<b>Custom color</b><br>"
+                        "C*: %{x:.3f}<br>"
+                        "L*: %{y:.3f}<extra></extra>"
+                    ),
+                )
+            )
+
+        if closest_lab is not None:
+            L, C, _h = VisualManager._lab_to_lch(closest_lab)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=[C],
+                    y=[L],
+                    mode="markers",
+                    marker=dict(
+                        size=16,
+                        color=closest_hex,
+                        symbol="circle",
+                        line=dict(color="black", width=4),
+                    ),
+                    name=f"Closest: {closest_label}",
+                    showlegend=True,
+                    hovertemplate=(
+                        f"<b>Closest: {closest_label}</b><br>"
+                        "C*: %{x:.3f}<br>"
+                        "L*: %{y:.3f}<extra></extra>"
+                    ),
+                )
+            )
+
+        if custom_lab is not None and closest_lab is not None:
+            L1, C1, _h1 = VisualManager._lab_to_lch(custom_lab)
+            L2, C2, _h2 = VisualManager._lab_to_lch(closest_lab)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=[C1, C2],
+                    y=[L1, L2],
+                    mode="lines",
+                    line=dict(color="black", width=2),
+                    name="Custom → closest",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
+            )
+
+        fig.update_layout(
+            title=dict(text=f"{filename} | L*C* projection", x=0.5),
+            xaxis_title="C* (Chroma)",
+            yaxis_title="L* (Lightness)",
+            legend=dict(
+                x=1.02,
+                y=1.0,
+                xanchor="left",
+                yanchor="top",
+                groupclick="togglegroup",
+                title=dict(text="Colors"),
+            ),
+            margin=dict(l=60, r=230, t=55, b=55),
+        )
+
+        fig.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor="gray")
+        fig.update_yaxes(range=[0, 100], zeroline=True, zerolinewidth=1, zerolinecolor="gray")
+
+        return fig
+
+
+    @staticmethod
+    def plot_color_evaluation_lch_polar(
+        color_data,
+        hex_color,
+        custom_lab=None,
+        custom_hex="#ff0000",
+        closest_label=None,
+        closest_lab=None,
+        closest_hex="#000000",
+        filename="Color evaluation",
+    ):
+        """
+        Polar LCh plot.
+
+        Angle = hue h°
+        Radius = chroma C*
+        Marker hover includes L*.
+        Works with or without a custom/sample color.
+        """
+        fig = go.Figure()
+
+        color_data = color_data or {}
+        custom_lab = VisualManager._safe_lab(custom_lab)
+        closest_lab = VisualManager._safe_lab(closest_lab)
+
+        for label, value in color_data.items():
+            try:
+                lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
+                L, C, h = VisualManager._lab_to_lch(lab)
+            except Exception:
+                continue
+
+            proto_hex = VisualManager._find_hex_for_lab(lab, hex_color, default="#000000")
+
+            fig.add_trace(
+                go.Scatterpolar(
+                    r=[C],
+                    theta=[h],
+                    mode="markers",
+                    marker=dict(
+                        size=10,
+                        color=proto_hex,
+                        line=dict(color="black", width=1),
+                    ),
+                    name=str(label),
+                    legendgroup=str(label),
+                    showlegend=True,
+                    hovertemplate=(
+                        f"<b>{label}</b><br>"
+                        "h°: %{theta:.2f}<br>"
+                        "C*: %{r:.3f}<br>"
+                        f"L*: {L:.3f}<extra></extra>"
+                    ),
+                )
+            )
+
+        if custom_lab is not None:
+            L, C, h = VisualManager._lab_to_lch(custom_lab)
+
+            fig.add_trace(
+                go.Scatterpolar(
+                    r=[C],
+                    theta=[h],
+                    mode="markers",
+                    marker=dict(
+                        size=15,
+                        color=custom_hex,
+                        symbol="diamond",
+                        line=dict(color="black", width=2),
+                    ),
+                    name="Custom color",
+                    showlegend=True,
+                    hovertemplate=(
+                        "<b>Custom color</b><br>"
+                        "h°: %{theta:.2f}<br>"
+                        "C*: %{r:.3f}<br>"
+                        f"L*: {L:.3f}<extra></extra>"
+                    ),
+                )
+            )
+
+        if closest_lab is not None:
+            L, C, h = VisualManager._lab_to_lch(closest_lab)
+
+            fig.add_trace(
+                go.Scatterpolar(
+                    r=[C],
+                    theta=[h],
+                    mode="markers",
+                    marker=dict(
+                        size=16,
+                        color=closest_hex,
+                        symbol="circle",
+                        line=dict(color="black", width=4),
+                    ),
+                    name=f"Closest: {closest_label}",
+                    showlegend=True,
+                    hovertemplate=(
+                        f"<b>Closest: {closest_label}</b><br>"
+                        "h°: %{theta:.2f}<br>"
+                        "C*: %{r:.3f}<br>"
+                        f"L*: {L:.3f}<extra></extra>"
+                    ),
+                )
+            )
+
+        fig.update_layout(
+            title=dict(text=f"{filename} | LCh hue/chroma", x=0.5),
+            polar=dict(
+                radialaxis=dict(title="C*"),
+                angularaxis=dict(direction="counterclockwise", rotation=0),
+            ),
+            legend=dict(
+                x=1.02,
+                y=1.0,
+                xanchor="left",
+                yanchor="top",
+                groupclick="togglegroup",
+                title=dict(text="Colors"),
+            ),
+            margin=dict(l=60, r=230, t=55, b=55),
+        )
+
+        return fig
+
+
+    @staticmethod
+    def plot_color_evaluation_top7_bar(
+        ranking,
+        metric_name="CIEDE2000",
+        title="Top 7 closest prototypes",
+    ):
+        """
+        Horizontal bar chart for the closest 7 prototypes.
+
+        Ranking items may contain:
+            - metric_value
+            - delta_e
+        """
+        ranking = ranking or []
+        ranking = ranking[:7]
+
+        labels = []
+        values = []
+
+        for item in ranking:
+            try:
+                labels.append(str(item["label"]))
+                values.append(float(VisualManager._get_ranking_metric_value(item)))
+            except Exception:
+                continue
+
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Bar(
+                x=values[::-1],
+                y=labels[::-1],
+                orientation="h",
+                text=[
+                    VisualManager._format_metric_value(v, metric_name)
+                    for v in values[::-1]
+                ],
+                textposition="auto",
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    + metric_name
+                    + ": %{x:.3f}<extra></extra>"
+                ),
+            )
+        )
+
+        fig.update_layout(
+            title=dict(text=title, x=0.5),
+            xaxis_title=metric_name,
+            yaxis_title="Prototype",
+            margin=dict(l=120, r=30, t=55, b=45),
+        )
+
+        return fig
+
+
+    @staticmethod
     def plot_color_evaluation_membership_bar(
         memberships,
         title="Membership degrees",
@@ -1145,6 +1462,7 @@ class VisualManager:
     ):
         """
         Horizontal bar chart for membership degrees.
+
         memberships is expected as:
             [(label, mu), ...]
         """
@@ -1178,5 +1496,51 @@ class VisualManager:
             xaxis=dict(range=[0, 1]),
             margin=dict(l=130, r=30, t=55, b=45),
         )
+
+        return fig
+
+
+    @staticmethod
+    def plot_color_evaluation_component_differences(
+        components,
+        title="Component differences",
+    ):
+        """
+        Bar chart for signed component differences.
+
+        Expected keys:
+            ΔL*, Δa*, Δb*, ΔC*, Δh°, ΔH*
+        """
+        components = components or {}
+
+        keys = ["ΔL*", "Δa*", "Δb*", "ΔC*", "Δh°", "ΔH*"]
+        values = []
+
+        for key in keys:
+            try:
+                values.append(float(components.get(key, 0.0)))
+            except Exception:
+                values.append(0.0)
+
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Bar(
+                x=keys,
+                y=values,
+                text=[f"{v:+.3f}" for v in values],
+                textposition="auto",
+                hovertemplate="<b>%{x}</b><br>Value: %{y:+.3f}<extra></extra>",
+            )
+        )
+
+        fig.update_layout(
+            title=dict(text=title, x=0.5),
+            xaxis_title="Component",
+            yaxis_title="Signed difference",
+            margin=dict(l=60, r=30, t=55, b=55),
+        )
+
+        fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor="gray")
 
         return fig

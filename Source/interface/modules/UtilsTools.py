@@ -475,6 +475,226 @@ def lab_to_hex(lab):
     return rgb_to_hex(rgb)
 
 
+
+
+
+# ============================================================================================================================================================
+#  EXTENDED COLOR SPACE DISPLAY HELPERS
+# ============================================================================================================================================================
+
+SUPPORTED_COLOR_VALUE_SPACES = [
+    "CIELAB",
+    "RGB",
+    "HEX",
+    "CIELUV",
+    "LCh",
+    "CIE1931",
+]
+
+
+def get_supported_color_value_spaces():
+    """
+    Return the color value spaces available for GUI display.
+    """
+    return list(SUPPORTED_COLOR_VALUE_SPACES)
+
+
+def normalize_color_value_space(color_space):
+    """
+    Normalize color space names used by the GUI.
+
+    Accepted canonical names:
+    - CIELAB
+    - RGB
+    - HEX
+    - CIELUV
+    - LCh
+    - CIE1931
+    """
+    text = safe_text(color_space).replace(" ", "").upper()
+
+    aliases = {
+        "LAB": "CIELAB",
+        "CIELAB": "CIELAB",
+
+        "RGB": "RGB",
+        "SRGB": "RGB",
+
+        "HEX": "HEX",
+
+        "LUV": "CIELUV",
+        "CIELUV": "CIELUV",
+
+        "LCH": "LCh",
+        "CIELCH": "LCh",
+        "CIELCHAB": "LCh",
+
+        "CIE1931": "CIE1931",
+        "XYZ": "CIE1931",
+        "XYY": "CIE1931",
+    }
+
+    return aliases.get(text, "CIELAB")
+
+
+def lab_to_xyz(lab):
+    """
+    Convert CIELAB to CIE XYZ using skimage.
+
+    Returns
+    -------
+    tuple
+        (X, Y, Z), using the same reference white convention as skimage.
+    """
+    L, a, b = safe_lab_tuple(lab)
+
+    lab_array = np.array([[L, a, b]], dtype=float)
+    xyz = color.lab2xyz(lab_array)[0]
+
+    return tuple(float(v) for v in xyz)
+
+
+def lab_to_cieluv(lab):
+    """
+    Convert CIELAB to CIELUV.
+
+    Returns
+    -------
+    tuple
+        (L*, u*, v*)
+    """
+    xyz = lab_to_xyz(lab)
+
+    xyz_array = np.array([xyz], dtype=float)
+    luv = color.xyz2luv(xyz_array)[0]
+
+    return tuple(float(v) for v in luv)
+
+
+def lab_to_lch(lab):
+    """
+    Convert CIELAB to cylindrical CIELCh(ab).
+
+    Returns
+    -------
+    tuple
+        (L*, C*, h°)
+    """
+    L, a, b = safe_lab_tuple(lab)
+
+    lab_array = np.array([[L, a, b]], dtype=float)
+    lch = color.lab2lch(lab_array)[0]
+
+    L_value = float(lch[0])
+    C_value = float(lch[1])
+    h_degrees = float(np.degrees(lch[2]) % 360.0)
+
+    return (L_value, C_value, h_degrees)
+
+
+def lab_to_cie1931(lab):
+    """
+    Convert CIELAB to CIE 1931 xyY.
+
+    Returns
+    -------
+    tuple
+        (x, y, Y)
+
+    Notes
+    -----
+    CIE1931 is displayed as chromaticity coordinates x, y plus luminance Y.
+    """
+    X, Y, Z = lab_to_xyz(lab)
+
+    denominator = X + Y + Z
+
+    if abs(denominator) < 1e-12:
+        return (0.0, 0.0, float(Y))
+
+    x = X / denominator
+    y = Y / denominator
+
+    return (float(x), float(y), float(Y))
+
+
+def lab_to_color_value(lab, color_space="CIELAB"):
+    """
+    Convert a CIELAB color to the requested display color space.
+
+    Parameters
+    ----------
+    lab : iterable
+        LAB input color.
+    color_space : str
+        One of: CIELAB, RGB, HEX, CIELUV, LCh, CIE1931.
+
+    Returns
+    -------
+    tuple or str
+        Converted color value.
+    """
+    space = normalize_color_value_space(color_space)
+
+    if space == "CIELAB":
+        return safe_lab_tuple(lab)
+
+    if space == "RGB":
+        return safe_rgb_tuple(lab_to_rgb(lab))
+
+    if space == "HEX":
+        return rgb_to_hex(lab_to_rgb(lab)).upper()
+
+    if space == "CIELUV":
+        return lab_to_cieluv(lab)
+
+    if space == "LCh":
+        return lab_to_lch(lab)
+
+    if space == "CIE1931":
+        return lab_to_cie1931(lab)
+
+    return safe_lab_tuple(lab)
+
+
+def format_lab_color_value(lab, color_space="CIELAB"):
+    """
+    Convert and format a CIELAB color for compact GUI display.
+    """
+    try:
+        space = normalize_color_value_space(color_space)
+        value = lab_to_color_value(lab, space)
+
+        if space == "CIELAB":
+            L, a, b = value
+            return f"L*={L:.2f}, a*={a:.2f}, b*={b:.2f}"
+
+        if space == "RGB":
+            r, g, b = value
+            return f"{int(r)}, {int(g)}, {int(b)}"
+
+        if space == "HEX":
+            return str(value).upper()
+
+        if space == "CIELUV":
+            L, u, v = value
+            return f"L*={L:.2f}, u*={u:.2f}, v*={v:.2f}"
+
+        if space == "LCh":
+            L, C, h = value
+            return f"L*={L:.2f}, C*={C:.2f}, h={h:.2f}°"
+
+        if space == "CIE1931":
+            x, y, Y = value
+            return f"x={x:.4f}, y={y:.4f}, Y={Y:.4f}"
+
+        return "-"
+
+    except Exception:
+        return "-"
+
+
+
 # ============================================================================================================================================================
 #  FILE SELECTION
 # ============================================================================================================================================================
