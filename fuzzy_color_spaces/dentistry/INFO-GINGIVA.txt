@@ -1,0 +1,50 @@
+EXPLANATION OF THE GINGIVA FCS
+
+This Gingiva FCS file represents a custom gingival color space created from a total sample of 238 people.
+
+The purpose of the file is to define a gingiva color reference system using real measured color data. Each color in the file comes from an individual gingiva sample identified with a code such as G1, G2, G3, and so on.
+
+In the CIELAB color system:
+- L* represents lightness.
+  A higher L* value means the color is lighter, and a lower L* value means the color is darker.
+- a* represents the green-red axis.
+  In this gingiva dataset, positive a* values indicate reddish tones.
+- b* represents the blue-yellow axis.
+  Positive b* values indicate yellowish tones.
+
+Once the color space is created, each gingiva color is defined by its three LAB coordinates:
+L*, a*, and b*.
+
+For example, a sample such as G1 is represented by one specific combination of L*, a*, and b* values. That combination defines one gingival color inside the FCS file.
+
+
+
+The distribution table explains where the 238 gingiva samples come from demographically.
+
+The information is organized by:
+- Gender: male (M) and female (F).
+- Age: four age groups: 18-30, 31-45, 46-60, and 61+.
+- Ethnicity: African-American, Asian, Caucasian, and Hispanic.
+
+General totals:
+- Total male participants (M): 97
+- Total female participants (F): 141
+- Total participants: 238
+
+Distribution by ethnicity:
+- African-American: 42 people
+  - 13 men
+  - 29 women
+- Asian: 54 people
+  - 21 men
+  - 33 women
+- Caucasian: 82 people
+  - 35 men
+  - 47 women
+- Hispanic: 60 people
+  - 28 men
+  - 32 women
+
+This distribution is important because the gingiva color space is based on a diverse population sample. The final colors included in the FCS file reflect the measured gingival color variation found across different genders, age groups, and ethnic groups.
+
+In summary, the Gingiva FCS file contains a LAB-based gingival color space created from 238 real gingiva measurements. Each color comes directly from the L*, a*, and b* values of one participant sample. 

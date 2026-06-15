@@ -1,0 +1,23 @@
+EXPLANATION OF THE VITA CLASSICAL FCS
+
+The VITA Classical FCS file represents the 16 tooth shades of the VITA Classical Shade Guide, a standard reference system widely used in dentistry for tooth color selection.
+
+The shades are organized into four chromatic families:
+
+* A shades: reddish-brown.
+* B shades: reddish-yellow.
+* C shades: grayish.
+* D shades: reddish-gray.
+
+Each shade represents a specific tooth color defined by differences in hue, chroma, and lightness. For example, A1 is a lighter reddish-brown shade, while A4 is a darker and more saturated shade from the same family.
+
+In this case, two FCS files are provided:
+
+* VITA-CLASSICAL.fcs contains only the 16 VITA Classical tooth shades.
+* VITA-CLASSICAL-BLACK.fcs contains the same tooth shades plus a black color.
+
+The black color is included to represent the dark background commonly used when placing and visualizing dental shade samples. This allows the color space to reproduce not only the tooth shade references, but also the visual context in which these samples are usually observed.
+
+Although the VITA Classical guide is clinically useful, its shades are discrete categories. Natural tooth color is continuous and may fall between two or more shade tabs. For this reason, representing these shades in a fuzzy color space allows a more flexible and perceptually realistic interpretation.
+
+In summary, the VITA Classical FCS files define a dental color reference space based on the 16 standard VITA shades, with an additional version that includes black to model the typical background used during dental shade visualization.
