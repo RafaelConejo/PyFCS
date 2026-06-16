@@ -4174,15 +4174,15 @@ class PyFCSApp:
         Generate the interactive Plotly figure and open it in the default browser.
         """
         fig = VisualManager.plot_more_combined_3D(
-            self.file_base_name,
-            self.selected_centroids,
-            self.selected_core,
-            self.selected_alpha,
-            self.selected_support,
-            self.volume_limits,
-            self.hex_color,
-            selected_options,
-            self.filtered_points,
+            filename=self.file_base_name,
+            color_data=self.selected_centroids,
+            core=self.selected_core,
+            alpha=self.selected_alpha,
+            support=self.selected_support,
+            volume_limits=self.volume_limits,
+            hex_color=self.hex_color,
+            selected_options=selected_options,
+            filtered_points=self.filtered_points,
         )
 
         if hasattr(self, "lab_value_frame"):
@@ -14026,7 +14026,7 @@ class PyFCSApp:
         if ctx is None:
             return
 
-        fig = VisualManager.plot_more_color_evaluation_3D(
+        fig = VisualManager.plot_more_combined_3D(
             filename=ctx["filename"],
             color_data=ctx["color_data"],
             core=ctx["core"],
@@ -14034,12 +14034,12 @@ class PyFCSApp:
             support=ctx["support"],
             volume_limits=ctx["volume_limits"],
             hex_color=ctx["hex_color"],
-            custom_lab=ctx["custom_lab"],
-            custom_hex=ctx["custom_hex"],
-            closest_label=ctx["closest_label"],
-            closest_lab=ctx["closest_lab"],
-            closest_hex=ctx["closest_hex"],
-            initial_volume_mode="Representative",
+            selected_options=["Representative"],
+            custom_lab=ctx.get("custom_lab"),
+            custom_hex=ctx.get("custom_hex", "#ff0000"),
+            closest_label=ctx.get("closest_label"),
+            closest_lab=ctx.get("closest_lab"),
+            closest_hex=ctx.get("closest_hex", "#000000"),
         )
 
         self._show_color_eval_plotly_figure_in_browser(
