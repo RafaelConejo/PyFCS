@@ -14169,6 +14169,7 @@ class PyFCSApp:
             ranking=ranking,
             metric_name=ctx["metric_name"],
             title=f"Top 7 closest prototypes | {ctx['metric_name']}",
+            threshold_settings=self.threshold_settings,
         )
 
         self._show_color_eval_plotly_figure_in_browser(

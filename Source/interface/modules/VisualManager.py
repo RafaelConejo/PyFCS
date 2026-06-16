@@ -476,6 +476,7 @@ class VisualManager:
         - Optional custom/sample color is drawn as a smaller diamond.
         - Optional closest prototype is highlighted.
         - Optional custom-to-closest distance line can be toggled with a button.
+        - Layout adapts its height when many colors are shown.
         """
 
         fig = go.Figure()
@@ -483,13 +484,10 @@ class VisualManager:
         color_data = color_data or {}
         selected_options = selected_options or ["Representative"]
 
-        # ------------------------------------------------------------------
-        # Title: only color-space name.
-        # ------------------------------------------------------------------
         title_text = str(filename).split("|")[0].strip()
 
         # ------------------------------------------------------------------
-        # Normalize layer names for backwards compatibility.
+        # Normalize layer names.
         # ------------------------------------------------------------------
         def _normalize_option(option):
             text = str(option).strip().lower()
@@ -516,7 +514,79 @@ class VisualManager:
         custom_lab = VisualManager._safe_lab(custom_lab)
         closest_lab = VisualManager._safe_lab(closest_lab)
 
+        # ------------------------------------------------------------------
+        # Robust closest prototype resolution.
+        #
+        # If custom_lab exists but closest_lab was not provided, infer it:
+        #   1) from closest_label, if available;
+        #   2) otherwise, from the nearest representative in LAB Euclidean distance.
+        # ------------------------------------------------------------------
+        if custom_lab is not None and closest_lab is None:
+            # Try to recover closest_lab from closest_label.
+            if closest_label is not None:
+                for label, value in color_data.items():
+                    if str(label) != str(closest_label):
+                        continue
+
+                    try:
+                        inferred_lab = np.asarray(
+                            value["positive_prototype"],
+                            dtype=float
+                        ).reshape(-1)[:3]
+
+                        closest_lab = inferred_lab
+                        closest_hex = VisualManager._find_hex_for_lab(
+                            closest_lab,
+                            hex_color,
+                            default=closest_hex,
+                        )
+                        break
+                    except Exception:
+                        continue
+
+            # If closest_label was not available or did not match, compute closest LAB point.
+            if closest_lab is None:
+                best_label = None
+                best_lab = None
+                best_hex = closest_hex
+                best_distance = float("inf")
+
+                for label, value in color_data.items():
+                    try:
+                        lab = np.asarray(
+                            value["positive_prototype"],
+                            dtype=float
+                        ).reshape(-1)[:3]
+
+                        distance = float(np.linalg.norm(custom_lab - lab))
+
+                        if distance < best_distance:
+                            best_distance = distance
+                            best_label = str(label)
+                            best_lab = lab
+                            best_hex = VisualManager._find_hex_for_lab(
+                                lab,
+                                hex_color,
+                                default=closest_hex,
+                            )
+                    except Exception:
+                        continue
+
+                if best_lab is not None:
+                    closest_label = best_label
+                    closest_lab = best_lab
+                    closest_hex = best_hex
+
         has_distance_line = custom_lab is not None and closest_lab is not None
+
+        # ------------------------------------------------------------------
+        # Dynamic figure height.
+        #
+        # Plotly cannot reliably force legend scroll-box height in older
+        # versions. Increasing the figure height is the most stable solution.
+        # ------------------------------------------------------------------
+        n_colors = len(color_data)
+        figure_height = max(760, min(1250, 520 + n_colors * 15))
 
         # ------------------------------------------------------------------
         # Visual constants.
@@ -532,8 +602,8 @@ class VisualManager:
 
         marker_sizes = {
             "Representative": 5.8,
-            "Custom": 8.2,
-            "Closest": 10.5,
+            "Custom": 6.4,
+            "Closest": 6.4,
         }
 
         layer_indices = {
@@ -548,7 +618,7 @@ class VisualManager:
         legend_labels_added = set()
 
         # ------------------------------------------------------------------
-        # Small helpers.
+        # Helpers.
         # ------------------------------------------------------------------
         def _prototype_hex_from_lab(lab):
             return VisualManager._find_hex_for_lab(
@@ -566,15 +636,12 @@ class VisualManager:
         def _initial_opacity(layer_name):
             return layer_opacity[layer_name] if layer_name in selected_options else 0.0
 
-        def _initial_visible(layer_name):
-            return True if layer_name in selected_options else "legendonly"
-
         def _add_legend_anchor(label, proto_hex, rank):
             """
-            Add one clean legend item per prototype.
+            Add one visible legend item per prototype.
 
-            Real traces do not show legend entries. They share this legendgroup.
-            This avoids duplicated legend entries when several volumes are active.
+            These dummy traces carry the legend entries. The real geometry traces
+            share the same legendgroup but do not appear separately in the legend.
             """
             label = _safe_label(label)
 
@@ -590,9 +657,10 @@ class VisualManager:
                     marker=dict(
                         size=7,
                         color=proto_hex,
-                        opacity=1.0,
                         line=dict(color="black", width=0.8),
                     ),
+                    opacity=1.0,
+                    visible=True,
                     name=label,
                     legendgroup=label,
                     showlegend=True,
@@ -601,6 +669,8 @@ class VisualManager:
                 )
             )
 
+            trace_idx = len(fig.data) - 1
+            color_control_indices.append(trace_idx)
             legend_labels_added.add(label)
 
         def _build_mesh_vertices_and_faces(prototype):
@@ -643,7 +713,7 @@ class VisualManager:
             return np.asarray(vertices, dtype=float), faces
 
         # ------------------------------------------------------------------
-        # Legend anchors first, one per prototype.
+        # Legend anchors first.
         # ------------------------------------------------------------------
         for rank, (label, value) in enumerate(color_data.items()):
             try:
@@ -677,13 +747,13 @@ class VisualManager:
                     marker=dict(
                         size=7.6 if is_closest else marker_sizes["Representative"],
                         color=proto_hex,
-                        opacity=_initial_opacity("Representative"),
                         line=dict(
                             color="black",
                             width=2.4 if is_closest else 0.9,
                         ),
                     ),
-                    visible=_initial_visible("Representative"),
+                    opacity=_initial_opacity("Representative"),
+                    visible=True,
                     name=label,
                     legendgroup=label,
                     showlegend=False,
@@ -735,7 +805,7 @@ class VisualManager:
                         k=[face[2] for face in faces],
                         color=proto_hex,
                         opacity=_initial_opacity(layer_name),
-                        visible=_initial_visible(layer_name),
+                        visible=True,
                         name=f"{layer_name}: {proto_label}",
                         legendgroup=proto_label,
                         showlegend=False,
@@ -814,9 +884,9 @@ class VisualManager:
                         marker=dict(
                             size=point_size,
                             color="black",
-                            opacity=0.62,
                             line=dict(color=border_color, width=0.8),
                         ),
+                        opacity=0.62,
                         visible=True,
                         name=f"Filtered: {proto_label}",
                         legendgroup=proto_label,
@@ -848,9 +918,10 @@ class VisualManager:
                         size=marker_sizes["Custom"],
                         color=custom_hex,
                         symbol="diamond",
-                        opacity=1.0,
                         line=dict(color="black", width=1.7),
                     ),
+                    opacity=1.0,
+                    visible=True,
                     name="Custom color",
                     legendgroup="__custom__",
                     showlegend=True,
@@ -878,9 +949,10 @@ class VisualManager:
                         size=marker_sizes["Closest"],
                         color=closest_hex,
                         symbol="circle",
-                        opacity=1.0,
                         line=dict(color="black", width=3.2),
                     ),
+                    opacity=1.0,
+                    visible=True,
                     name=f"Closest: {closest_label}",
                     legendgroup="__closest__",
                     showlegend=True,
@@ -896,7 +968,9 @@ class VisualManager:
 
         # ------------------------------------------------------------------
         # Optional custom-to-closest line.
-        # Starts hidden. It can be activated with the Distance line button.
+        #
+        # It appears active by default.
+        # The user can still click it in the legend to show/hide it.
         # ------------------------------------------------------------------
         if has_distance_line:
             fig.add_trace(
@@ -910,8 +984,9 @@ class VisualManager:
                         width=4,
                         dash="dash",
                     ),
-                    visible="legendonly",
-                    name="Custom → closest",
+                    opacity=1.0,
+                    visible=True,
+                    name=f"Custom → closest line ({closest_label})",
                     legendgroup="__distance__",
                     showlegend=True,
                     legendrank=10_002,
@@ -922,18 +997,16 @@ class VisualManager:
             layer_indices["Distance line"].append(len(fig.data) - 1)
 
         # ------------------------------------------------------------------
-        # Layer toggle buttons.
+        # Displayed geometry buttons.
         #
-        # Important:
-        # Layers are controlled with opacity AND visible.
-        # Color buttons only change visible, so Select all colors does not
-        # reactivate hidden geometry because hidden layers keep opacity = 0.
+        # These buttons control opacity only.
+        # Therefore Select all colors cannot reactivate hidden geometry.
         # ------------------------------------------------------------------
         layer_button_positions = {
             "Representative": 0.020,
-            "Core": 0.155,
-            "0.5-cut": 0.220,
-            "Support": 0.305,
+            "Core": 0.150,
+            "0.5-cut": 0.210,
+            "Support": 0.290,
         }
 
         layer_menus = []
@@ -941,31 +1014,12 @@ class VisualManager:
         for layer_name in layer_names:
             indices = layer_indices.get(layer_name, [])
 
-            if layer_name == "Representative":
-                on_update = {
-                    "visible": True,
-                    "marker.opacity": layer_opacity[layer_name],
-                }
-                off_update = {
-                    "visible": "legendonly",
-                    "marker.opacity": 0.0,
-                }
-            else:
-                on_update = {
-                    "visible": True,
-                    "opacity": layer_opacity[layer_name],
-                }
-                off_update = {
-                    "visible": "legendonly",
-                    "opacity": 0.0,
-                }
-
             layer_menus.append(
                 dict(
                     type="buttons",
                     direction="right",
                     x=layer_button_positions[layer_name],
-                    y=0.915,
+                    y=0.925,
                     xanchor="left",
                     yanchor="top",
                     active=0 if layer_name in selected_options else -1,
@@ -974,34 +1028,8 @@ class VisualManager:
                         dict(
                             label=layer_name,
                             method="restyle",
-                            args=[on_update, indices],
-                            args2=[off_update, indices],
-                        )
-                    ],
-                    pad=dict(r=1, t=1, b=1),
-                )
-            )
-
-        # ------------------------------------------------------------------
-        # Optional distance line button.
-        # ------------------------------------------------------------------
-        if has_distance_line:
-            layer_menus.append(
-                dict(
-                    type="buttons",
-                    direction="right",
-                    x=0.395,
-                    y=0.915,
-                    xanchor="left",
-                    yanchor="top",
-                    active=-1,
-                    showactive=True,
-                    buttons=[
-                        dict(
-                            label="Distance line",
-                            method="restyle",
-                            args=[{"visible": True}, layer_indices["Distance line"]],
-                            args2=[{"visible": "legendonly"}, layer_indices["Distance line"]],
+                            args=[{"opacity": layer_opacity[layer_name]}, indices],
+                            args2=[{"opacity": 0.0}, indices],
                         )
                     ],
                     pad=dict(r=1, t=1, b=1),
@@ -1011,8 +1039,8 @@ class VisualManager:
         # ------------------------------------------------------------------
         # Color visibility buttons.
         #
-        # These buttons only modify trace visibility.
-        # They do not touch opacity, so they respect Displayed geometry.
+        # These buttons control visible only.
+        # They respect Displayed geometry because hidden layers have opacity 0.
         # ------------------------------------------------------------------
         color_buttons = [
             dict(
@@ -1030,9 +1058,9 @@ class VisualManager:
         color_menu = dict(
             type="buttons",
             direction="down",
-            x=0.805,
-            y=0.915,
-            xanchor="left",
+            x=0.992,
+            y=0.925,
+            xanchor="right",
             yanchor="top",
             active=-1,
             showactive=False,
@@ -1041,22 +1069,22 @@ class VisualManager:
         )
 
         # ------------------------------------------------------------------
-        # Axes ranges.
+        # Axis ranges.
         # ------------------------------------------------------------------
         xaxis_range = volume_limits.comp2 if volume_limits else None
         yaxis_range = volume_limits.comp3 if volume_limits else None
         zaxis_range = volume_limits.comp1 if volume_limits else None
 
         # ------------------------------------------------------------------
-        # Legend configuration.
+        # Legend.
         #
-        # Compatible with older Plotly versions.
-        # Plotly requires itemwidth >= 30.
+        # No maxheight and no itemwidth: compatible with older Plotly versions.
+        # The legend is pinned to the far right.
         # ------------------------------------------------------------------
         legend_config = dict(
-            x=0.805,
-            y=0.845,
-            xanchor="left",
+            x=0.992,
+            y=0.790,
+            xanchor="right",
             yanchor="top",
             title=dict(text="Colors"),
             groupclick="togglegroup",
@@ -1069,13 +1097,31 @@ class VisualManager:
         )
 
         # ------------------------------------------------------------------
+        # Layout annotations.
+        # ------------------------------------------------------------------
+        layout_annotations = [
+            dict(
+                text="<b>Color visibility</b>",
+                x=0.992,
+                y=0.955,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                xanchor="right",
+                yanchor="top",
+                font=dict(size=12, color="#24364f"),
+            ),
+        ]
+
+        # ------------------------------------------------------------------
         # Layout.
         # ------------------------------------------------------------------
         fig.update_layout(
+            height=figure_height,
             title=dict(
                 text=title_text,
-                x=0.395,
-                y=0.992,
+                x=0.385,
+                y=0.990,
                 xanchor="center",
                 yanchor="top",
                 font=dict(
@@ -1086,8 +1132,8 @@ class VisualManager:
             ),
             scene=dict(
                 domain=dict(
-                    x=[0.010, 0.790],
-                    y=[0.015, 0.885],
+                    x=[0.005, 0.765],
+                    y=[0.015, 0.895],
                 ),
                 xaxis=dict(
                     title="a*  (green ↔ red)",
@@ -1119,38 +1165,16 @@ class VisualManager:
                 camera=dict(
                     eye=dict(x=1.55, y=1.65, z=1.18),
                     up=dict(x=0, y=0, z=1),
+                    projection=dict(type="orthographic"),
                 ),
                 aspectmode="cube",
             ),
             updatemenus=layer_menus + [color_menu],
-            annotations=[
-                dict(
-                    text="<b>Displayed geometry</b>",
-                    x=0.020,
-                    y=0.948,
-                    xref="paper",
-                    yref="paper",
-                    showarrow=False,
-                    xanchor="left",
-                    yanchor="top",
-                    font=dict(size=12, color="#24364f"),
-                ),
-                dict(
-                    text="<b>Color visibility</b>",
-                    x=0.805,
-                    y=0.948,
-                    xref="paper",
-                    yref="paper",
-                    showarrow=False,
-                    xanchor="left",
-                    yanchor="top",
-                    font=dict(size=12, color="#24364f"),
-                ),
-            ],
+            annotations=layout_annotations,
             legend=legend_config,
             margin=dict(
                 l=8,
-                r=330,
+                r=8,
                 b=8,
                 t=58,
             ),
@@ -1164,6 +1188,11 @@ class VisualManager:
         )
 
         return fig
+
+
+
+
+
 
 
     @staticmethod
@@ -1182,6 +1211,7 @@ class VisualManager:
 
         Works with or without a custom/sample color.
         If custom and closest colors are available, they are highlighted and connected.
+        The default interaction mode is pan instead of zoom.
         """
         fig = go.Figure()
 
@@ -1189,13 +1219,124 @@ class VisualManager:
         custom_lab = VisualManager._safe_lab(custom_lab)
         closest_lab = VisualManager._safe_lab(closest_lab)
 
+        # ------------------------------------------------------------------
+        # Robust closest prototype resolution.
+        #
+        # If custom_lab exists but closest_lab was not provided, infer it:
+        #   1) from closest_label, if available;
+        #   2) otherwise, from the nearest representative in LAB Euclidean distance.
+        # ------------------------------------------------------------------
+        if custom_lab is not None and closest_lab is None:
+            if closest_label is not None:
+                for label, value in color_data.items():
+                    if str(label) != str(closest_label):
+                        continue
+
+                    try:
+                        inferred_lab = np.asarray(
+                            value["positive_prototype"],
+                            dtype=float
+                        ).reshape(-1)[:3]
+
+                        closest_lab = inferred_lab
+                        closest_hex = VisualManager._find_hex_for_lab(
+                            closest_lab,
+                            hex_color,
+                            default=closest_hex,
+                        )
+                        break
+                    except Exception:
+                        continue
+
+            if closest_lab is None:
+                best_label = None
+                best_lab = None
+                best_hex = closest_hex
+                best_distance = float("inf")
+
+                for label, value in color_data.items():
+                    try:
+                        lab = np.asarray(
+                            value["positive_prototype"],
+                            dtype=float
+                        ).reshape(-1)[:3]
+
+                        distance = float(np.linalg.norm(custom_lab - lab))
+
+                        if distance < best_distance:
+                            best_distance = distance
+                            best_label = str(label)
+                            best_lab = lab
+                            best_hex = VisualManager._find_hex_for_lab(
+                                lab,
+                                hex_color,
+                                default=closest_hex,
+                            )
+                    except Exception:
+                        continue
+
+                if best_lab is not None:
+                    closest_label = best_label
+                    closest_lab = best_lab
+                    closest_hex = best_hex
+
+        has_distance_line = custom_lab is not None and closest_lab is not None
+
+        # ------------------------------------------------------------------
+        # Draw connection line first, so markers remain above it.
+        # ------------------------------------------------------------------
+        if has_distance_line:
+            # Base suave para dar cuerpo
+            fig.add_trace(
+                go.Scatter(
+                    x=[custom_lab[1], closest_lab[1]],
+                    y=[custom_lab[2], closest_lab[2]],
+                    mode="lines",
+                    line=dict(
+                        color="rgba(255,255,255,0.95)",
+                        width=6,
+                    ),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+
+            # Línea principal más elegante
+            fig.add_trace(
+                go.Scatter(
+                    x=[custom_lab[1], closest_lab[1]],
+                    y=[custom_lab[2], closest_lab[2]],
+                    mode="lines",
+                    line=dict(
+                        color="rgba(35,54,79,0.95)",
+                        width=2.6,
+                        dash="dot",
+                    ),
+                    name="Custom → closest line",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
+            )
+
+        # ------------------------------------------------------------------
+        # Prototype points.
+        # ------------------------------------------------------------------
         for label, value in color_data.items():
             try:
                 lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
             except Exception:
                 continue
 
-            proto_hex = VisualManager._find_hex_for_lab(lab, hex_color, default="#000000")
+            proto_hex = VisualManager._find_hex_for_lab(
+                lab,
+                hex_color,
+                default="#000000"
+            )
+
+            is_closest = (
+                closest_label is not None
+                and str(label) == str(closest_label)
+            )
 
             fig.add_trace(
                 go.Scatter(
@@ -1203,9 +1344,13 @@ class VisualManager:
                     y=[lab[2]],
                     mode="markers",
                     marker=dict(
-                        size=9,
+                        size=11 if is_closest else 8,
                         color=proto_hex,
-                        line=dict(color="black", width=1),
+                        line=dict(
+                            color="black",
+                            width=3 if is_closest else 1,
+                        ),
+                        symbol="circle",
                     ),
                     name=str(label),
                     legendgroup=str(label),
@@ -1218,6 +1363,9 @@ class VisualManager:
                 )
             )
 
+        # ------------------------------------------------------------------
+        # Optional custom color.
+        # ------------------------------------------------------------------
         if custom_lab is not None:
             fig.add_trace(
                 go.Scatter(
@@ -1225,10 +1373,10 @@ class VisualManager:
                     y=[custom_lab[2]],
                     mode="markers",
                     marker=dict(
-                        size=15,
+                        size=10,
                         color=custom_hex,
                         symbol="diamond",
-                        line=dict(color="black", width=2),
+                        line=dict(color="black", width=1.8),
                     ),
                     name="Custom color",
                     showlegend=True,
@@ -1240,6 +1388,12 @@ class VisualManager:
                 )
             )
 
+        # ------------------------------------------------------------------
+        # Optional closest prototype extra highlight.
+        #
+        # It shares legendgroup with the closest prototype, so if the user
+        # hides that color from the legend, this highlight also disappears.
+        # ------------------------------------------------------------------
         if closest_lab is not None:
             fig.add_trace(
                 go.Scatter(
@@ -1247,38 +1401,38 @@ class VisualManager:
                     y=[closest_lab[2]],
                     mode="markers",
                     marker=dict(
-                        size=16,
+                        size=14,
                         color=closest_hex,
-                        symbol="circle",
-                        line=dict(color="black", width=4),
+                        symbol="circle-open",
+                        line=dict(color="black", width=3.5),
                     ),
-                    name=f"Closest: {closest_label}",
-                    showlegend=True,
+                    name=str(closest_label),
+                    legendgroup=str(closest_label),
+                    showlegend=False,
                     hovertemplate=(
-                        f"<b>Closest: {closest_label}</b><br>"
+                        f"<b>{closest_label}</b><br>"
                         "a*: %{x:.3f}<br>"
                         "b*: %{y:.3f}<extra></extra>"
                     ),
                 )
             )
 
-        if custom_lab is not None and closest_lab is not None:
-            fig.add_trace(
-                go.Scatter(
-                    x=[custom_lab[1], closest_lab[1]],
-                    y=[custom_lab[2], closest_lab[2]],
-                    mode="lines",
-                    line=dict(color="black", width=2),
-                    name="Custom → closest",
-                    showlegend=True,
-                    hoverinfo="skip",
-                )
-            )
-
+        # ------------------------------------------------------------------
+        # Layout.
+        # ------------------------------------------------------------------
         fig.update_layout(
-            title=dict(text=f"{filename} | a*b* projection", x=0.5),
-            xaxis_title="a* (Red-Green)",
-            yaxis_title="b* (Blue-Yellow)",
+            title=dict(
+                text=f"{filename} | a*b* projection",
+                x=0.5,
+                font=dict(
+                    size=16,
+                    family="Arial, sans-serif",
+                    color="#24364f",
+                ),
+            ),
+            dragmode="pan",
+            xaxis_title="a* (green ↔ red)",
+            yaxis_title="b* (blue ↔ yellow)",
             legend=dict(
                 x=1.02,
                 y=1.0,
@@ -1286,12 +1440,43 @@ class VisualManager:
                 yanchor="top",
                 groupclick="togglegroup",
                 title=dict(text="Colors"),
+                bgcolor="rgba(255,255,255,0.94)",
+                bordercolor="rgba(0,0,0,0.12)",
+                borderwidth=1,
+                font=dict(size=10, color="#24364f"),
+                itemsizing="constant",
             ),
-            margin=dict(l=60, r=230, t=55, b=55),
+            margin=dict(l=65, r=230, t=60, b=60),
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+            hoverlabel=dict(
+                bgcolor="white",
+                bordercolor="#24364f",
+                font=dict(color="#24364f"),
+            ),
         )
 
-        fig.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor="gray")
-        fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor="gray")
+        fig.update_xaxes(
+            zeroline=True,
+            zerolinewidth=1,
+            zerolinecolor="gray",
+            gridcolor="rgba(0,0,0,0.08)",
+            showline=True,
+            linecolor="rgba(0,0,0,0.25)",
+            mirror=True,
+        )
+
+        fig.update_yaxes(
+            zeroline=True,
+            zerolinewidth=1,
+            zerolinecolor="gray",
+            gridcolor="rgba(0,0,0,0.08)",
+            showline=True,
+            linecolor="rgba(0,0,0,0.25)",
+            mirror=True,
+            scaleanchor="x",
+            scaleratio=1,
+        )
 
         return fig
 
@@ -1312,6 +1497,8 @@ class VisualManager:
 
         Shows lightness L* versus chroma C* for all prototypes.
         Works with or without a custom/sample color.
+        The default interaction mode is pan instead of zoom.
+        If custom color is available, the closest prototype is inferred when needed.
         """
         fig = go.Figure()
 
@@ -1319,6 +1506,106 @@ class VisualManager:
         custom_lab = VisualManager._safe_lab(custom_lab)
         closest_lab = VisualManager._safe_lab(closest_lab)
 
+        # ------------------------------------------------------------------
+        # Robust closest prototype resolution.
+        # ------------------------------------------------------------------
+        if custom_lab is not None and closest_lab is None:
+            if closest_label is not None:
+                for label, value in color_data.items():
+                    if str(label) != str(closest_label):
+                        continue
+
+                    try:
+                        closest_lab = np.asarray(
+                            value["positive_prototype"],
+                            dtype=float
+                        ).reshape(-1)[:3]
+
+                        closest_hex = VisualManager._find_hex_for_lab(
+                            closest_lab,
+                            hex_color,
+                            default=closest_hex,
+                        )
+                        break
+                    except Exception:
+                        continue
+
+            if closest_lab is None:
+                best_label = None
+                best_lab = None
+                best_hex = closest_hex
+                best_distance = float("inf")
+
+                for label, value in color_data.items():
+                    try:
+                        lab = np.asarray(
+                            value["positive_prototype"],
+                            dtype=float
+                        ).reshape(-1)[:3]
+
+                        distance = float(np.linalg.norm(custom_lab - lab))
+
+                        if distance < best_distance:
+                            best_distance = distance
+                            best_label = str(label)
+                            best_lab = lab
+                            best_hex = VisualManager._find_hex_for_lab(
+                                lab,
+                                hex_color,
+                                default=closest_hex,
+                            )
+                    except Exception:
+                        continue
+
+                if best_lab is not None:
+                    closest_label = best_label
+                    closest_lab = best_lab
+                    closest_hex = best_hex
+
+        has_distance_line = custom_lab is not None and closest_lab is not None
+
+        # ------------------------------------------------------------------
+        # Distance line first, so markers remain above it.
+        # ------------------------------------------------------------------
+        if has_distance_line:
+            L1, C1, _h1 = VisualManager._lab_to_lch(custom_lab)
+            L2, C2, _h2 = VisualManager._lab_to_lch(closest_lab)
+
+            # Soft base line
+            fig.add_trace(
+                go.Scatter(
+                    x=[C1, C2],
+                    y=[L1, L2],
+                    mode="lines",
+                    line=dict(
+                        color="rgba(255,255,255,0.95)",
+                        width=6,
+                    ),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+
+            # Main elegant dashed line
+            fig.add_trace(
+                go.Scatter(
+                    x=[C1, C2],
+                    y=[L1, L2],
+                    mode="lines",
+                    line=dict(
+                        color="rgba(35,54,79,0.95)",
+                        width=2.6,
+                        dash="dot",
+                    ),
+                    name="Custom → closest line",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
+            )
+
+        # ------------------------------------------------------------------
+        # Prototype points.
+        # ------------------------------------------------------------------
         for label, value in color_data.items():
             try:
                 lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
@@ -1326,7 +1613,16 @@ class VisualManager:
             except Exception:
                 continue
 
-            proto_hex = VisualManager._find_hex_for_lab(lab, hex_color, default="#000000")
+            proto_hex = VisualManager._find_hex_for_lab(
+                lab,
+                hex_color,
+                default="#000000"
+            )
+
+            is_closest = (
+                closest_label is not None
+                and str(label) == str(closest_label)
+            )
 
             fig.add_trace(
                 go.Scatter(
@@ -1334,9 +1630,13 @@ class VisualManager:
                     y=[L],
                     mode="markers",
                     marker=dict(
-                        size=10,
+                        size=11 if is_closest else 8,
                         color=proto_hex,
-                        line=dict(color="black", width=1),
+                        symbol="circle",
+                        line=dict(
+                            color="black",
+                            width=3 if is_closest else 1,
+                        ),
                     ),
                     name=str(label),
                     legendgroup=str(label),
@@ -1349,6 +1649,9 @@ class VisualManager:
                 )
             )
 
+        # ------------------------------------------------------------------
+        # Optional custom color.
+        # ------------------------------------------------------------------
         if custom_lab is not None:
             L, C, _h = VisualManager._lab_to_lch(custom_lab)
 
@@ -1358,10 +1661,10 @@ class VisualManager:
                     y=[L],
                     mode="markers",
                     marker=dict(
-                        size=15,
+                        size=10,
                         color=custom_hex,
                         symbol="diamond",
-                        line=dict(color="black", width=2),
+                        line=dict(color="black", width=1.8),
                     ),
                     name="Custom color",
                     showlegend=True,
@@ -1373,6 +1676,10 @@ class VisualManager:
                 )
             )
 
+        # ------------------------------------------------------------------
+        # Optional closest prototype extra highlight.
+        # Same legendgroup, so it disappears when the user hides that color.
+        # ------------------------------------------------------------------
         if closest_lab is not None:
             L, C, _h = VisualManager._lab_to_lch(closest_lab)
 
@@ -1382,39 +1689,33 @@ class VisualManager:
                     y=[L],
                     mode="markers",
                     marker=dict(
-                        size=16,
+                        size=14,
                         color=closest_hex,
-                        symbol="circle",
-                        line=dict(color="black", width=4),
+                        symbol="circle-open",
+                        line=dict(color="black", width=3.5),
                     ),
-                    name=f"Closest: {closest_label}",
-                    showlegend=True,
+                    name=str(closest_label),
+                    legendgroup=str(closest_label),
+                    showlegend=False,
                     hovertemplate=(
-                        f"<b>Closest: {closest_label}</b><br>"
+                        f"<b>{closest_label}</b><br>"
                         "C*: %{x:.3f}<br>"
                         "L*: %{y:.3f}<extra></extra>"
                     ),
                 )
             )
 
-        if custom_lab is not None and closest_lab is not None:
-            L1, C1, _h1 = VisualManager._lab_to_lch(custom_lab)
-            L2, C2, _h2 = VisualManager._lab_to_lch(closest_lab)
-
-            fig.add_trace(
-                go.Scatter(
-                    x=[C1, C2],
-                    y=[L1, L2],
-                    mode="lines",
-                    line=dict(color="black", width=2),
-                    name="Custom → closest",
-                    showlegend=True,
-                    hoverinfo="skip",
-                )
-            )
-
         fig.update_layout(
-            title=dict(text=f"{filename} | L*C* projection", x=0.5),
+            title=dict(
+                text=f"{filename} | L*C* projection",
+                x=0.5,
+                font=dict(
+                    size=16,
+                    family="Arial, sans-serif",
+                    color="#24364f",
+                ),
+            ),
+            dragmode="pan",
             xaxis_title="C* (Chroma)",
             yaxis_title="L* (Lightness)",
             legend=dict(
@@ -1424,12 +1725,42 @@ class VisualManager:
                 yanchor="top",
                 groupclick="togglegroup",
                 title=dict(text="Colors"),
+                bgcolor="rgba(255,255,255,0.94)",
+                bordercolor="rgba(0,0,0,0.12)",
+                borderwidth=1,
+                font=dict(size=10, color="#24364f"),
+                itemsizing="constant",
             ),
-            margin=dict(l=60, r=230, t=55, b=55),
+            margin=dict(l=65, r=230, t=60, b=60),
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+            hoverlabel=dict(
+                bgcolor="white",
+                bordercolor="#24364f",
+                font=dict(color="#24364f"),
+            ),
         )
 
-        fig.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor="gray")
-        fig.update_yaxes(range=[0, 100], zeroline=True, zerolinewidth=1, zerolinecolor="gray")
+        fig.update_xaxes(
+            zeroline=True,
+            zerolinewidth=1,
+            zerolinecolor="gray",
+            gridcolor="rgba(0,0,0,0.08)",
+            showline=True,
+            linecolor="rgba(0,0,0,0.25)",
+            mirror=True,
+        )
+
+        fig.update_yaxes(
+            range=[0, 100],
+            zeroline=True,
+            zerolinewidth=1,
+            zerolinecolor="gray",
+            gridcolor="rgba(0,0,0,0.08)",
+            showline=True,
+            linecolor="rgba(0,0,0,0.25)",
+            mirror=True,
+        )
 
         return fig
 
@@ -1452,6 +1783,7 @@ class VisualManager:
         Radius = chroma C*
         Marker hover includes L*.
         Works with or without a custom/sample color.
+        If custom color is available, the closest prototype is inferred when needed.
         """
         fig = go.Figure()
 
@@ -1459,6 +1791,106 @@ class VisualManager:
         custom_lab = VisualManager._safe_lab(custom_lab)
         closest_lab = VisualManager._safe_lab(closest_lab)
 
+        # ------------------------------------------------------------------
+        # Robust closest prototype resolution.
+        # ------------------------------------------------------------------
+        if custom_lab is not None and closest_lab is None:
+            if closest_label is not None:
+                for label, value in color_data.items():
+                    if str(label) != str(closest_label):
+                        continue
+
+                    try:
+                        closest_lab = np.asarray(
+                            value["positive_prototype"],
+                            dtype=float
+                        ).reshape(-1)[:3]
+
+                        closest_hex = VisualManager._find_hex_for_lab(
+                            closest_lab,
+                            hex_color,
+                            default=closest_hex,
+                        )
+                        break
+                    except Exception:
+                        continue
+
+            if closest_lab is None:
+                best_label = None
+                best_lab = None
+                best_hex = closest_hex
+                best_distance = float("inf")
+
+                for label, value in color_data.items():
+                    try:
+                        lab = np.asarray(
+                            value["positive_prototype"],
+                            dtype=float
+                        ).reshape(-1)[:3]
+
+                        distance = float(np.linalg.norm(custom_lab - lab))
+
+                        if distance < best_distance:
+                            best_distance = distance
+                            best_label = str(label)
+                            best_lab = lab
+                            best_hex = VisualManager._find_hex_for_lab(
+                                lab,
+                                hex_color,
+                                default=closest_hex,
+                            )
+                    except Exception:
+                        continue
+
+                if best_lab is not None:
+                    closest_label = best_label
+                    closest_lab = best_lab
+                    closest_hex = best_hex
+
+        has_distance_line = custom_lab is not None and closest_lab is not None
+
+        # ------------------------------------------------------------------
+        # Distance line first, so markers remain above it.
+        # ------------------------------------------------------------------
+        if has_distance_line:
+            L1, C1, h1 = VisualManager._lab_to_lch(custom_lab)
+            L2, C2, h2 = VisualManager._lab_to_lch(closest_lab)
+
+            # Soft base line
+            fig.add_trace(
+                go.Scatterpolar(
+                    r=[C1, C2],
+                    theta=[h1, h2],
+                    mode="lines",
+                    line=dict(
+                        color="rgba(255,255,255,0.95)",
+                        width=6,
+                    ),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+
+            # Main elegant dashed line
+            fig.add_trace(
+                go.Scatterpolar(
+                    r=[C1, C2],
+                    theta=[h1, h2],
+                    mode="lines",
+                    line=dict(
+                        color="rgba(35,54,79,0.95)",
+                        width=2.6,
+                        dash="dot",
+                    ),
+                    name="Custom → closest line",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
+            )
+
+        # ------------------------------------------------------------------
+        # Prototype points.
+        # ------------------------------------------------------------------
         for label, value in color_data.items():
             try:
                 lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
@@ -1466,7 +1898,16 @@ class VisualManager:
             except Exception:
                 continue
 
-            proto_hex = VisualManager._find_hex_for_lab(lab, hex_color, default="#000000")
+            proto_hex = VisualManager._find_hex_for_lab(
+                lab,
+                hex_color,
+                default="#000000"
+            )
+
+            is_closest = (
+                closest_label is not None
+                and str(label) == str(closest_label)
+            )
 
             fig.add_trace(
                 go.Scatterpolar(
@@ -1474,9 +1915,13 @@ class VisualManager:
                     theta=[h],
                     mode="markers",
                     marker=dict(
-                        size=10,
+                        size=11 if is_closest else 8,
                         color=proto_hex,
-                        line=dict(color="black", width=1),
+                        symbol="circle",
+                        line=dict(
+                            color="black",
+                            width=3 if is_closest else 1,
+                        ),
                     ),
                     name=str(label),
                     legendgroup=str(label),
@@ -1490,6 +1935,9 @@ class VisualManager:
                 )
             )
 
+        # ------------------------------------------------------------------
+        # Optional custom color.
+        # ------------------------------------------------------------------
         if custom_lab is not None:
             L, C, h = VisualManager._lab_to_lch(custom_lab)
 
@@ -1499,10 +1947,10 @@ class VisualManager:
                     theta=[h],
                     mode="markers",
                     marker=dict(
-                        size=15,
+                        size=10,
                         color=custom_hex,
                         symbol="diamond",
-                        line=dict(color="black", width=2),
+                        line=dict(color="black", width=1.8),
                     ),
                     name="Custom color",
                     showlegend=True,
@@ -1515,6 +1963,10 @@ class VisualManager:
                 )
             )
 
+        # ------------------------------------------------------------------
+        # Optional closest prototype extra highlight.
+        # Same legendgroup, so it disappears when the user hides that color.
+        # ------------------------------------------------------------------
         if closest_lab is not None:
             L, C, h = VisualManager._lab_to_lch(closest_lab)
 
@@ -1524,15 +1976,16 @@ class VisualManager:
                     theta=[h],
                     mode="markers",
                     marker=dict(
-                        size=16,
+                        size=14,
                         color=closest_hex,
-                        symbol="circle",
-                        line=dict(color="black", width=4),
+                        symbol="circle-open",
+                        line=dict(color="black", width=3.5),
                     ),
-                    name=f"Closest: {closest_label}",
-                    showlegend=True,
+                    name=str(closest_label),
+                    legendgroup=str(closest_label),
+                    showlegend=False,
                     hovertemplate=(
-                        f"<b>Closest: {closest_label}</b><br>"
+                        f"<b>{closest_label}</b><br>"
                         "h°: %{theta:.2f}<br>"
                         "C*: %{r:.3f}<br>"
                         f"L*: {L:.3f}<extra></extra>"
@@ -1541,10 +1994,29 @@ class VisualManager:
             )
 
         fig.update_layout(
-            title=dict(text=f"{filename} | LCh hue/chroma", x=0.5),
+            title=dict(
+                text=f"{filename} | LCh hue/chroma",
+                x=0.5,
+                font=dict(
+                    size=16,
+                    family="Arial, sans-serif",
+                    color="#24364f",
+                ),
+            ),
+            dragmode="pan",
             polar=dict(
-                radialaxis=dict(title="C*"),
-                angularaxis=dict(direction="counterclockwise", rotation=0),
+                radialaxis=dict(
+                    title="C*",
+                    gridcolor="rgba(0,0,0,0.08)",
+                    linecolor="rgba(0,0,0,0.25)",
+                ),
+                angularaxis=dict(
+                    direction="counterclockwise",
+                    rotation=0,
+                    gridcolor="rgba(0,0,0,0.08)",
+                    linecolor="rgba(0,0,0,0.25)",
+                ),
+                bgcolor="white",
             ),
             legend=dict(
                 x=1.02,
@@ -1553,11 +2025,24 @@ class VisualManager:
                 yanchor="top",
                 groupclick="togglegroup",
                 title=dict(text="Colors"),
+                bgcolor="rgba(255,255,255,0.94)",
+                bordercolor="rgba(0,0,0,0.12)",
+                borderwidth=1,
+                font=dict(size=10, color="#24364f"),
+                itemsizing="constant",
             ),
-            margin=dict(l=60, r=230, t=55, b=55),
+            margin=dict(l=65, r=230, t=60, b=60),
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+            hoverlabel=dict(
+                bgcolor="white",
+                bordercolor="#24364f",
+                font=dict(color="#24364f"),
+            ),
         )
 
         return fig
+
 
 
     @staticmethod
@@ -1565,6 +2050,7 @@ class VisualManager:
         ranking,
         metric_name="CIEDE2000",
         title="Top 7 closest prototypes",
+        threshold_settings=None,
     ):
         """
         Horizontal bar chart for the closest 7 prototypes.
@@ -1572,6 +2058,12 @@ class VisualManager:
         Ranking items may contain:
             - metric_value
             - delta_e
+
+        Visual improvements:
+            - Best/closest prototype highlighted.
+            - Cleaner background and grid.
+            - Threshold guide lines follow the active threshold settings.
+            - Default interaction mode set to pan.
         """
         ranking = ranking or []
         ranking = ranking[:7]
@@ -1588,29 +2080,220 @@ class VisualManager:
 
         fig = go.Figure()
 
+        if not labels or not values:
+            fig.update_layout(
+                title=dict(text=title, x=0.5),
+                paper_bgcolor="white",
+                plot_bgcolor="white",
+            )
+            return fig
+
+        labels_plot = labels[::-1]
+        values_plot = values[::-1]
+
+        # Closest is the first item in the original ranking.
+        # After reversing, it is the last displayed bar, visually at the top.
+        colors = []
+
+        for label in labels_plot:
+            if label == labels[0]:
+                colors.append("rgba(35,54,79,0.95)")      # highlighted closest
+            else:
+                colors.append("rgba(135,157,184,0.72)")   # secondary bars
+
         fig.add_trace(
             go.Bar(
-                x=values[::-1],
-                y=labels[::-1],
+                x=values_plot,
+                y=labels_plot,
                 orientation="h",
+                marker=dict(
+                    color=colors,
+                    line=dict(
+                        color="rgba(35,54,79,0.45)",
+                        width=1,
+                    ),
+                ),
                 text=[
                     VisualManager._format_metric_value(v, metric_name)
-                    for v in values[::-1]
+                    for v in values_plot
                 ],
-                textposition="auto",
+                textposition="outside",
+                cliponaxis=False,
                 hovertemplate=(
                     "<b>%{y}</b><br>"
-                    + metric_name
+                    + str(metric_name)
                     + ": %{x:.3f}<extra></extra>"
                 ),
             )
         )
 
+        # ------------------------------------------------------------------
+        # Active threshold guide lines.
+        #
+        # This is linked to threshold_settings:
+        #   mode="default":
+        #       preset="pt"    -> PT only
+        #       preset="at"    -> AT only
+        #       preset="pt_at" -> PT + AT
+        #
+        #   mode="custom":
+        #       custom_type="single"      -> one custom threshold
+        #       custom_type="lower_upper" -> lower + upper thresholds
+        # ------------------------------------------------------------------
+        def _safe_positive_float(value):
+            try:
+                parsed = float(value)
+                if parsed > 0:
+                    return parsed
+            except Exception:
+                pass
+            return None
+
+        def _metric_matches_threshold_settings():
+            if not threshold_settings:
+                return False
+
+            active_metric = str(threshold_settings.get("metric", "")).strip()
+            current_metric = str(metric_name).strip()
+
+            # If no metric is stored in settings, allow the guide.
+            if not active_metric:
+                return True
+
+            return active_metric == current_metric
+
+        def _get_active_threshold_guides():
+            if not threshold_settings or not _metric_matches_threshold_settings():
+                return []
+
+            mode = str(threshold_settings.get("mode", "default")).strip().lower()
+            preset = str(threshold_settings.get("preset", "pt_at")).strip().lower()
+            custom_type = str(threshold_settings.get("custom_type", "single")).strip().lower()
+
+            guides = []
+
+            if mode in ("default", "known"):
+                if preset == "pt":
+                    guides.append(
+                        (0.8, "PT 0.8", "rgba(64,128,64,0.75)")
+                    )
+
+                elif preset == "at":
+                    guides.append(
+                        (1.8, "AT 1.8", "rgba(180,120,35,0.75)")
+                    )
+
+                else:
+                    guides.extend([
+                        (0.8, "PT 0.8", "rgba(64,128,64,0.75)"),
+                        (1.8, "AT 1.8", "rgba(180,120,35,0.75)"),
+                    ])
+
+            elif mode == "custom":
+                if custom_type == "single":
+                    value = _safe_positive_float(threshold_settings.get("single"))
+
+                    if value is not None:
+                        guides.append(
+                            (value, f"Threshold {value:g}", "rgba(90,90,160,0.80)")
+                        )
+
+                else:
+                    lower = _safe_positive_float(threshold_settings.get("lower"))
+                    upper = _safe_positive_float(threshold_settings.get("upper"))
+
+                    if lower is not None:
+                        guides.append(
+                            (lower, f"Lower {lower:g}", "rgba(64,128,64,0.75)")
+                        )
+
+                    if upper is not None:
+                        guides.append(
+                            (upper, f"Upper {upper:g}", "rgba(180,80,65,0.75)")
+                        )
+
+            return guides
+
+        shapes = []
+        annotations = []
+
+        active_guides = _get_active_threshold_guides()
+
+        for x_value, label_text, color in active_guides:
+            shapes.append(
+                dict(
+                    type="line",
+                    x0=x_value,
+                    x1=x_value,
+                    y0=-0.5,
+                    y1=len(labels_plot) - 0.5,
+                    xref="x",
+                    yref="y",
+                    line=dict(
+                        color=color,
+                        width=1.7,
+                        dash="dot",
+                    ),
+                )
+            )
+
+            annotations.append(
+                dict(
+                    x=x_value,
+                    y=1.04,
+                    xref="x",
+                    yref="paper",
+                    text=label_text,
+                    showarrow=False,
+                    font=dict(
+                        size=10,
+                        color=color,
+                    ),
+                    xanchor="center",
+                )
+            )
+
         fig.update_layout(
-            title=dict(text=title, x=0.5),
+            title=dict(
+                text=title,
+                x=0.5,
+                font=dict(
+                    size=16,
+                    family="Arial, sans-serif",
+                    color="#24364f",
+                ),
+            ),
+            dragmode="pan",
             xaxis_title=metric_name,
             yaxis_title="Prototype",
-            margin=dict(l=120, r=30, t=55, b=45),
+            shapes=shapes,
+            annotations=annotations,
+            margin=dict(l=135, r=70, t=65, b=55),
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+            bargap=0.28,
+            hoverlabel=dict(
+                bgcolor="white",
+                bordercolor="#24364f",
+                font=dict(color="#24364f"),
+            ),
+        )
+
+        fig.update_xaxes(
+            zeroline=True,
+            zerolinewidth=1,
+            zerolinecolor="rgba(0,0,0,0.35)",
+            gridcolor="rgba(0,0,0,0.08)",
+            showline=True,
+            linecolor="rgba(0,0,0,0.25)",
+            mirror=True,
+        )
+
+        fig.update_yaxes(
+            gridcolor="rgba(0,0,0,0.04)",
+            showline=True,
+            linecolor="rgba(0,0,0,0.20)",
+            mirror=True,
         )
 
         return fig
@@ -1627,6 +2310,12 @@ class VisualManager:
 
         memberships is expected as:
             [(label, mu), ...]
+
+        Visual improvements:
+            - Color encodes membership strength.
+            - Winner is visually emphasized.
+            - Cleaner grid and fixed 0-1 scale.
+            - Default interaction mode set to pan.
         """
         memberships = memberships or []
         memberships = sorted(
@@ -1635,28 +2324,141 @@ class VisualManager:
             reverse=True
         )[:top_n]
 
-        labels = [str(label) for label, _mu in memberships]
-        values = [float(mu) for _label, mu in memberships]
+        labels = []
+        values = []
+
+        for label, mu in memberships:
+            try:
+                labels.append(str(label))
+                values.append(float(mu))
+            except Exception:
+                continue
 
         fig = go.Figure()
 
+        if not labels or not values:
+            fig.update_layout(
+                title=dict(text=title, x=0.5),
+                paper_bgcolor="white",
+                plot_bgcolor="white",
+            )
+            return fig
+
+        labels_plot = labels[::-1]
+        values_plot = values[::-1]
+
+        def _membership_color(mu):
+            if mu >= 0.75:
+                return "rgba(46,125,82,0.92)"       # high
+            if mu >= 0.40:
+                return "rgba(58,112,165,0.86)"      # medium
+            if mu >= 0.15:
+                return "rgba(190,139,56,0.82)"      # low-medium
+            return "rgba(160,160,160,0.70)"         # low
+
+        colors = [_membership_color(v) for v in values_plot]
+
         fig.add_trace(
             go.Bar(
-                x=values[::-1],
-                y=labels[::-1],
+                x=values_plot,
+                y=labels_plot,
                 orientation="h",
-                text=[f"{v:.4f}" for v in values[::-1]],
-                textposition="auto",
+                marker=dict(
+                    color=colors,
+                    line=dict(
+                        color="rgba(35,54,79,0.35)",
+                        width=1,
+                    ),
+                ),
+                text=[f"{v:.4f}" for v in values_plot],
+                textposition="outside",
+                cliponaxis=False,
                 hovertemplate="<b>%{y}</b><br>μ = %{x:.4f}<extra></extra>",
             )
         )
 
+        # Soft reference bands.
+        shapes = [
+            dict(
+                type="rect",
+                x0=0.0,
+                x1=0.4,
+                y0=-0.5,
+                y1=len(labels_plot) - 0.5,
+                xref="x",
+                yref="y",
+                fillcolor="rgba(160,160,160,0.055)",
+                line=dict(width=0),
+                layer="below",
+            ),
+            dict(
+                type="rect",
+                x0=0.4,
+                x1=0.75,
+                y0=-0.5,
+                y1=len(labels_plot) - 0.5,
+                xref="x",
+                yref="y",
+                fillcolor="rgba(58,112,165,0.045)",
+                line=dict(width=0),
+                layer="below",
+            ),
+            dict(
+                type="rect",
+                x0=0.75,
+                x1=1.0,
+                y0=-0.5,
+                y1=len(labels_plot) - 0.5,
+                xref="x",
+                yref="y",
+                fillcolor="rgba(46,125,82,0.055)",
+                line=dict(width=0),
+                layer="below",
+            ),
+        ]
+
         fig.update_layout(
-            title=dict(text=title, x=0.5),
+            title=dict(
+                text=title,
+                x=0.5,
+                font=dict(
+                    size=16,
+                    family="Arial, sans-serif",
+                    color="#24364f",
+                ),
+            ),
+            dragmode="pan",
             xaxis_title="Membership degree (μ)",
             yaxis_title="Prototype",
-            xaxis=dict(range=[0, 1]),
-            margin=dict(l=130, r=30, t=55, b=45),
+            shapes=shapes,
+            margin=dict(l=140, r=75, t=60, b=55),
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+            bargap=0.28,
+            hoverlabel=dict(
+                bgcolor="white",
+                bordercolor="#24364f",
+                font=dict(color="#24364f"),
+            ),
+        )
+
+        fig.update_xaxes(
+            range=[0, 1.05],
+            tickformat=".2f",
+            zeroline=True,
+            zerolinewidth=1,
+            zerolinecolor="rgba(0,0,0,0.35)",
+            gridcolor="rgba(0,0,0,0.08)",
+            showline=True,
+            linecolor="rgba(0,0,0,0.25)",
+            mirror=True,
+        )
+
+        fig.update_yaxes(
+            gridcolor="rgba(0,0,0,0.04)",
+            showline=True,
+            linecolor="rgba(0,0,0,0.20)",
+            mirror=True,
         )
 
         return fig
@@ -1672,6 +2474,12 @@ class VisualManager:
 
         Expected keys:
             ΔL*, Δa*, Δb*, ΔC*, Δh°, ΔH*
+
+        Visual improvements:
+            - Positive/negative components are visually separated.
+            - Zero baseline is emphasized.
+            - Cleaner grid and better text placement.
+            - Default interaction mode set to pan.
         """
         components = components or {}
 
@@ -1684,25 +2492,98 @@ class VisualManager:
             except Exception:
                 values.append(0.0)
 
+        max_abs = max([abs(v) for v in values] + [1.0])
+        y_padding = max_abs * 0.18
+
+        colors = []
+
+        for value in values:
+            if value > 0:
+                colors.append("rgba(190,88,64,0.88)")      # positive
+            elif value < 0:
+                colors.append("rgba(58,112,165,0.88)")     # negative
+            else:
+                colors.append("rgba(160,160,160,0.70)")    # zero
+
         fig = go.Figure()
 
         fig.add_trace(
             go.Bar(
                 x=keys,
                 y=values,
+                marker=dict(
+                    color=colors,
+                    line=dict(
+                        color="rgba(35,54,79,0.35)",
+                        width=1,
+                    ),
+                ),
                 text=[f"{v:+.3f}" for v in values],
-                textposition="auto",
+                textposition=[
+                    "outside" if v >= 0 else "outside"
+                    for v in values
+                ],
+                cliponaxis=False,
                 hovertemplate="<b>%{x}</b><br>Value: %{y:+.3f}<extra></extra>",
             )
         )
 
         fig.update_layout(
-            title=dict(text=title, x=0.5),
+            title=dict(
+                text=title,
+                x=0.5,
+                font=dict(
+                    size=16,
+                    family="Arial, sans-serif",
+                    color="#24364f",
+                ),
+            ),
+            dragmode="pan",
             xaxis_title="Component",
             yaxis_title="Signed difference",
-            margin=dict(l=60, r=30, t=55, b=55),
+            margin=dict(l=70, r=45, t=60, b=60),
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+            bargap=0.34,
+            hoverlabel=dict(
+                bgcolor="white",
+                bordercolor="#24364f",
+                font=dict(color="#24364f"),
+            ),
+            shapes=[
+                dict(
+                    type="line",
+                    x0=-0.5,
+                    x1=len(keys) - 0.5,
+                    y0=0,
+                    y1=0,
+                    xref="x",
+                    yref="y",
+                    line=dict(
+                        color="rgba(35,54,79,0.75)",
+                        width=1.8,
+                    ),
+                )
+            ],
         )
 
-        fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor="gray")
+        fig.update_xaxes(
+            showline=True,
+            linecolor="rgba(0,0,0,0.25)",
+            mirror=True,
+            gridcolor="rgba(0,0,0,0.04)",
+        )
+
+        fig.update_yaxes(
+            range=[
+                min(values) - y_padding,
+                max(values) + y_padding,
+            ],
+            zeroline=False,
+            gridcolor="rgba(0,0,0,0.08)",
+            showline=True,
+            linecolor="rgba(0,0,0,0.25)",
+            mirror=True,
+        )
 
         return fig
