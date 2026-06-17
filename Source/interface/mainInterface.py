@@ -103,7 +103,8 @@ class PyFCSApp:
         # ---------------------------------------------------------------------
         self.root.title("PyFCS Interface")
         self.root.geometry("1200x650")
-        # self.root.attributes("-fullscreen", True)
+        self.root.attributes("-fullscreen", True)
+        self.root.bind("<Escape>", self.toggle_fullscreen)
         self.root.configure(bg="gray82")
 
         # ---------------------------------------------------------------------
@@ -195,6 +196,14 @@ class PyFCSApp:
         fuzzy_menu.add_command(label="New Color Space", command=self.show_menu_create_fcs)
         fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space)
         self.menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
+
+        # ---------------------------------------------------------------------
+        # Color Evaluation direct menu action
+        # ---------------------------------------------------------------------
+        self.menubar.add_command(
+            label="Color Evaluation",
+            command=self.color_evaluation
+        )
 
         help_menu = Menu(self.menubar, tearoff=0)
         help_menu.add_command(label="About", command=self.about_info)
