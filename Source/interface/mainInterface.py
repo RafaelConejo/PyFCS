@@ -96,68 +96,229 @@ class PyFCSApp:
         self.TEMP_PLOT_DIR = os.path.join("external", "temp", "plots")
         self.TEMP_PLOT_MAX_FILES = 30
         self.TEMP_PLOT_CLEANUP_EVERY = 5
+        self._temp_plot_creation_count = 0
 
-        
+        # ---------------------------------------------------------------------
+        # Visual constants
+        # ---------------------------------------------------------------------
+        APP_BG = "#f5f6f8"
+        CARD_BG = "#ffffff"
+        PANEL_BG = "#fbfbfc"
+        SOFT_BG = "#f1f3f6"
+        BORDER = "#d9dde3"
+        TEXT = "#1f2937"
+        MUTED = "#6b7280"
+        BLUE = "#1f4e8c"
+        BLUE_BG = "#e8f0fe"
+        BLUE_BG_ACTIVE = "#d7e5fb"
+        GREEN = "#1f5f3a"
+        GREEN_BG = "#e0f2e9"
+        GREEN_BG_ACTIVE = "#cfeadb"
+        RED = "#8a1f1f"
+        RED_BG = "#f8d7da"
+        RED_BG_ACTIVE = "#f1c4c9"
+
+        FONT = ("Segoe UI", 9)
+        FONT_BOLD = ("Segoe UI", 9, "bold")
+        FONT_TITLE = ("Segoe UI", 10, "bold")
+        FONT_SMALL = ("Segoe UI", 8)
+        FONT_SMALL_BOLD = ("Segoe UI", 8, "bold")
+
         # ---------------------------------------------------------------------
         # Main window configuration
         # ---------------------------------------------------------------------
         self.root.title("PyFCS Interface")
-        self.root.geometry("1200x650")
-        self.root.attributes("-fullscreen", True)
+        self.root.geometry("1200x720")
+        self.root.minsize(1050, 620)
+        self.root.configure(bg=APP_BG)
+
+        try:
+            self.root.attributes("-fullscreen", True)
+        except tk.TclError:
+            try:
+                if platform.system() == "Windows":
+                    self.root.state("zoomed")
+                else:
+                    screen_width = self.root.winfo_screenwidth()
+                    screen_height = self.root.winfo_screenheight()
+                    self.root.geometry(f"{screen_width}x{screen_height}+0+0")
+            except Exception:
+                pass
+
         self.root.bind("<Escape>", self.toggle_fullscreen)
-        self.root.configure(bg="gray82")
+        self.root.bind("<F11>", self.toggle_fullscreen)
+
+        # ---------------------------------------------------------------------
+        # ttk style
+        # ---------------------------------------------------------------------
+        try:
+            style = ttk.Style(self.root)
+            try:
+                style.theme_use("clam")
+            except tk.TclError:
+                pass
+
+            style.configure(
+                "PyFCS.TNotebook",
+                background=APP_BG,
+                borderwidth=0
+            )
+            style.configure(
+                "PyFCS.TNotebook.Tab",
+                font=FONT,
+                padding=(14, 7),
+                background=SOFT_BG,
+                foreground=TEXT
+            )
+            style.map(
+                "PyFCS.TNotebook.Tab",
+                background=[("selected", CARD_BG)],
+                foreground=[("selected", TEXT)]
+            )
+            style.configure(
+                "PyFCS.TPanedwindow",
+                background=APP_BG,
+                borderwidth=0
+            )
+        except Exception:
+            pass
 
         # ---------------------------------------------------------------------
         # Local UI helpers
         # ---------------------------------------------------------------------
-        def create_toolbar_button(parent, text, command, image=None, side="left", padx=4, pady=2, width=None):
+        def create_card(parent, title=None, padx=10, pady=10):
             """
-            Create a toolbar button with consistent styling.
+            Create a clean card-like container without heavy black borders.
             """
-            btn_kwargs = {
-                "parent": parent,
-                "text": text,
-                "command": command,
-                "compound": "left",
-                "padx": 6,
-                "pady": 3,
-            }
+            if title:
+                frame = tk.LabelFrame(
+                    parent,
+                    text=f" {title} ",
+                    font=FONT_TITLE,
+                    bg=CARD_BG,
+                    fg=TEXT,
+                    bd=0,
+                    relief="flat",
+                    padx=padx,
+                    pady=pady,
+                    labelanchor="nw"
+                )
+            else:
+                frame = tk.Frame(
+                    parent,
+                    bg=CARD_BG,
+                    bd=0,
+                    relief="flat"
+                )
 
-            if image is not None:
-                btn_kwargs["image"] = image
+            return frame
+
+        def create_toolbar_button(parent, text, command, image=None, side="left", padx=5, pady=3, width=None):
+            """
+            Create a toolbar button with a clear button-like appearance.
+            Compatible with Windows, macOS and Linux.
+            """
+            btn = tk.Button(
+                parent,
+                text=text,
+                command=command,
+                image=image,
+                compound="left",
+                font=FONT_BOLD,
+                bg="#f8fafc",
+                fg=TEXT,
+                activebackground="#e8f0fe",
+                activeforeground=TEXT,
+                relief="raised",
+                bd=2,
+                padx=8,
+                pady=4,
+                cursor="hand2",
+                highlightthickness=0
+            )
 
             if width is not None:
-                btn_kwargs["width"] = width
+                btn.configure(width=width)
 
-            btn = tk.Button(
-                btn_kwargs["parent"],
-                text=btn_kwargs["text"],
-                command=btn_kwargs["command"],
-                compound=btn_kwargs["compound"],
-                padx=btn_kwargs["padx"],
-                pady=btn_kwargs["pady"],
-                image=btn_kwargs.get("image"),
-                font=("Sans", 10, "bold"),
+            def on_enter(_event):
+                try:
+                    btn.configure(bg="#eef2f7")
+                except Exception:
+                    pass
+
+            def on_leave(_event):
+                try:
+                    btn.configure(bg="#f8fafc")
+                except Exception:
+                    pass
+
+            btn.bind("<Enter>", on_enter)
+            btn.bind("<Leave>", on_leave)
+
+            btn.pack(side=side, padx=4, pady=2)
+            return btn
+        
+
+        def add_toolbar_separator(parent):
+            """
+            Add a subtle vertical separator between toolbar groups.
+            """
+            sep = tk.Frame(
+                parent,
+                bg=BORDER,
+                width=1
             )
-            btn.pack(side=side, padx=padx, pady=pady)
+            sep.pack(side="left", fill="y", padx=8, pady=6)
+            return sep
+
+        def create_action_button(parent, text, command, bg, fg, active_bg, side="left", padx=(0, 10)):
+            """
+            Create a styled action button for the Data tab footer.
+            """
+            btn = tk.Button(
+                parent,
+                text=text,
+                command=command,
+                font=FONT_BOLD,
+                bg=bg,
+                fg=fg,
+                activebackground=active_bg,
+                activeforeground=fg,
+                relief="solid",
+                bd=1,
+                padx=14,
+                pady=7,
+                cursor="hand2",
+                highlightthickness=0
+            )
+            btn.pack(side=side, padx=padx)
             return btn
 
         def bind_vertical_mousewheel(canvas):
             """
             Enable mouse wheel scrolling only while the pointer is inside the target canvas.
-            Supports Windows, macOS, and Linux.
+            Compatible with Windows, macOS and Linux.
             """
             system_name = platform.system()
 
             def on_mousewheel(event):
-                if system_name in ("Windows", "Darwin"):
-                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                if system_name == "Darwin":
+                    step = -1 if event.delta > 0 else 1
+                else:
+                    step = int(-1 * (event.delta / 120))
+                    if step == 0:
+                        step = -1 if event.delta > 0 else 1
+
+                canvas.yview_scroll(step, "units")
+                return "break"
 
             def on_mousewheel_linux_up(event):
                 canvas.yview_scroll(-1, "units")
+                return "break"
 
             def on_mousewheel_linux_down(event):
                 canvas.yview_scroll(1, "units")
+                return "break"
 
             def bind_events(_event):
                 if system_name in ("Windows", "Darwin"):
@@ -197,9 +358,6 @@ class PyFCSApp:
         fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space)
         self.menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
 
-        # ---------------------------------------------------------------------
-        # Color Evaluation direct menu action
-        # ---------------------------------------------------------------------
         self.menubar.add_command(
             label="Color Evaluation",
             command=self.color_evaluation
@@ -223,11 +381,24 @@ class PyFCSApp:
         # ---------------------------------------------------------------------
         # Toolbar area
         # ---------------------------------------------------------------------
-        main_frame = tk.Frame(self.root, bg="gray82")
-        main_frame.pack(fill="x", padx=10, pady=(10, 6))
+        main_frame = tk.Frame(self.root, bg=APP_BG)
+        main_frame.pack(fill="x", padx=12, pady=(8, 6))
+
+        toolbar_card = tk.Frame(
+            main_frame,
+            bg=CARD_BG,
+            bd=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=BORDER
+        )
+        toolbar_card.pack(fill="x")
+
+        toolbar_inner = tk.Frame(toolbar_card, bg=CARD_BG)
+        toolbar_inner.pack(fill="x", padx=10, pady=7)
 
         # Load icons once
-        icon_size = (35, 35)
+        icon_size = (30, 30)
         load_image_icon = self.load_toolbar_icon("LoadImage.png", icon_size)
         save_image_icon = self.load_toolbar_icon("SaveImage.png", icon_size)
         new_fcs_icon = self.load_toolbar_icon("NewFCS1.png", icon_size)
@@ -236,15 +407,13 @@ class PyFCSApp:
         pt_icon = self.load_toolbar_icon("PT.png", icon_size)
         evaluate_icon = self.load_toolbar_icon("evaluateColor.png", icon_size)
 
-        image_manager_frame = tk.LabelFrame(
-            main_frame,
-            text="Image Manager",
-            font=("Segoe UI", 10),
-            bg="gray95",
-            padx=8,
-            pady=8
+        image_manager_frame = create_card(
+            toolbar_inner,
+            title="Image Manager",
+            padx=6,
+            pady=5
         )
-        image_manager_frame.pack(side="left", fill="y", expand=False, padx=4, pady=4)
+        image_manager_frame.pack(side="left", fill="y", expand=False, padx=(0, 10))
 
         create_toolbar_button(
             image_manager_frame,
@@ -259,15 +428,15 @@ class PyFCSApp:
             command=self.save_image
         )
 
-        fuzzy_manager_frame = tk.LabelFrame(
-            main_frame,
-            text="Fuzzy Color Space Manager",
-            font=("Segoe UI", 10),
-            bg="gray95",
-            padx=8,
-            pady=8
+        add_toolbar_separator(toolbar_inner)
+
+        fuzzy_manager_frame = create_card(
+            toolbar_inner,
+            title="Fuzzy Color Space Manager",
+            padx=6,
+            pady=5
         )
-        fuzzy_manager_frame.pack(side="left", fill="y", expand=False, padx=4, pady=4)
+        fuzzy_manager_frame.pack(side="left", fill="y", expand=False, padx=(0, 10))
 
         create_toolbar_button(
             fuzzy_manager_frame,
@@ -282,15 +451,15 @@ class PyFCSApp:
             command=self.load_color_space
         )
 
-        color_evaluation_frame = tk.LabelFrame(
-            main_frame,
-            text="Color Difference Evaluation",
-            font=("Segoe UI", 10),
-            bg="gray95",
-            padx=8,
-            pady=8
+        add_toolbar_separator(toolbar_inner)
+
+        color_evaluation_frame = create_card(
+            toolbar_inner,
+            title="Color Difference Evaluation",
+            padx=6,
+            pady=5
         )
-        color_evaluation_frame.pack(side="left", fill="y", expand=False, padx=4, pady=4)
+        color_evaluation_frame.pack(side="left", fill="y", expand=False, padx=(0, 0))
 
         create_toolbar_button(
             color_evaluation_frame,
@@ -310,123 +479,169 @@ class PyFCSApp:
             image=evaluate_icon,
             command=self.color_evaluation
         )
-        
 
         # ---------------------------------------------------------------------
         # Main working area
         # ---------------------------------------------------------------------
-        main_content_frame = tk.Frame(self.root, bg="gray82")
-        main_content_frame.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        main_content_frame = tk.Frame(self.root, bg=APP_BG)
+        main_content_frame.pack(fill="both", expand=True, padx=14, pady=(0, 10))
 
-        main_paned = ttk.Panedwindow(main_content_frame, orient="horizontal")
+        main_paned = ttk.Panedwindow(
+            main_content_frame,
+            orient="horizontal",
+            style="PyFCS.TPanedwindow"
+        )
         main_paned.pack(fill="both", expand=True)
 
-        # Left pane: wider image display area
-        image_area_frame = tk.LabelFrame(
+        # Left pane: Image Display
+        image_area_frame = create_card(
             main_paned,
-            text="Image Display",
-            bg="gray95",
-            padx=8,
-            pady=8
+            title="Image Display",
+            padx=10,
+            pady=10
         )
+
         self.image_canvas = tk.Canvas(
             image_area_frame,
-            bg="white",
-            borderwidth=2,
-            relief="ridge",
+            bg=PANEL_BG,
+            borderwidth=1,
+            relief="solid",
             highlightthickness=0
         )
         self.image_canvas.pack(fill="both", expand=True)
 
         # Right pane: notebook area
-        notebook_container = tk.Frame(main_paned, bg="gray82")
-        self.notebook = ttk.Notebook(notebook_container)
-        self.notebook.pack(fill="both", expand=True)
+        notebook_container = tk.Frame(
+            main_paned,
+            bg=CARD_BG,
+            bd=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=BORDER
+        )
+        notebook_container.pack_propagate(False)
 
-        # Make the image display area wider than before
+        self.notebook = ttk.Notebook(
+            notebook_container,
+            style="PyFCS.TNotebook"
+        )
+        self.notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
         main_paned.add(image_area_frame, weight=5)
-        main_paned.add(notebook_container, weight=4)
+        main_paned.add(notebook_container, weight=6)
 
         def set_initial_main_sash():
             """
-            Set the initial split so the image display area is visibly wider.
+            Set the initial split with a balanced layout.
             """
             total_width = main_paned.winfo_width()
             if total_width > 1:
-                main_paned.sashpos(0, int(total_width * 0.40))
+                main_paned.sashpos(0, int(total_width * 0.42))
 
-        self.root.after(120, set_initial_main_sash)
+        self.root.after(140, set_initial_main_sash)
 
         # ---------------------------------------------------------------------
         # Tab: Model 3D
         # ---------------------------------------------------------------------
-        model_3d_tab = tk.Frame(self.notebook, bg="gray95")
+        model_3d_tab = tk.Frame(self.notebook, bg=CARD_BG)
         self.notebook.add(model_3d_tab, text="Model 3D")
 
         self.model_3d_options = {}
 
-        buttons_frame = tk.Frame(model_3d_tab, bg="gray95")
-        buttons_frame.pack(side="top", fill="x", pady=5)
+        options_bar = tk.Frame(model_3d_tab, bg=CARD_BG)
+        options_bar.pack(side="top", fill="x", padx=12, pady=(12, 8))
+
+        tk.Label(
+            options_bar,
+            text="Display:",
+            font=FONT_SMALL_BOLD,
+            bg=CARD_BG,
+            fg=MUTED
+        ).pack(side="left", padx=(0, 10))
 
         options = ["Representative", "Core", "0.5-cut", "Support"]
         for option in options:
             var = tk.BooleanVar(value=(option == "Representative"))
             self.model_3d_options[option] = var
+
             tk.Checkbutton(
-                buttons_frame,
+                options_bar,
                 text=option,
                 variable=var,
-                bg="gray95",
-                font=("Sans", 10),
-                command=self.on_option_select
-            ).pack(side="left", padx=16)
+                bg=CARD_BG,
+                fg=TEXT,
+                activebackground=CARD_BG,
+                activeforeground=TEXT,
+                selectcolor=CARD_BG,
+                font=FONT,
+                command=self.on_option_select,
+                cursor="hand2"
+            ).pack(side="left", padx=(0, 22))
 
         # Internal split for the 3D model tab
         paned = tk.PanedWindow(
             model_3d_tab,
             orient="horizontal",
-            sashrelief="raised",
-            bg="gray95",
-            sashwidth=6
+            sashrelief="flat",
+            bg=CARD_BG,
+            sashwidth=6,
+            bd=0
         )
-        paned.pack(fill="both", expand=True)
+        paned.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-        # 3D display area: larger
+        # 3D display area
         self.Canvas1 = tk.Frame(
             paned,
-            bg="white",
-            borderwidth=2,
-            relief="ridge",
-            width=760
+            bg=PANEL_BG,
+            borderwidth=1,
+            relief="solid",
+            width=760,
+            highlightthickness=0
         )
-        paned.add(self.Canvas1, stretch="always", minsize=500)
+        paned.add(self.Canvas1, stretch="always", minsize=520)
 
-        # Color button panel: narrower
+        # Color button panel
         self.colors_frame = tk.Frame(
             paned,
-            bg="gray95",
-            width=130
+            bg=CARD_BG,
+            width=155,
+            bd=1,
+            relief="solid",
+            highlightthickness=0
         )
-        paned.add(self.colors_frame, minsize=110)
+        paned.add(self.colors_frame, minsize=145)
+
+        colors_header = tk.Frame(self.colors_frame, bg=CARD_BG)
+        colors_header.pack(fill="x", padx=8, pady=(8, 4))
+
+        tk.Label(
+            colors_header,
+            text="Colors",
+            font=FONT_SMALL_BOLD,
+            bg=CARD_BG,
+            fg=TEXT,
+            anchor="w"
+        ).pack(side="left")
 
         self.scrollable_canvas = tk.Canvas(
             self.colors_frame,
-            bg="gray95",
+            bg=CARD_BG,
             highlightthickness=0,
-            width=135
+            borderwidth=0,
+            width=145
         )
-        self.scrollable_canvas.pack(side="left", fill="both", expand=True)
+        self.scrollable_canvas.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=(0, 8))
 
         self.scrollbar = tk.Scrollbar(
             self.colors_frame,
             orient="vertical",
             command=self.scrollable_canvas.yview
         )
-        self.scrollbar.pack(side="right", fill="y")
+        self.scrollbar.pack(side="right", fill="y", pady=(0, 8), padx=(0, 4))
 
         self.scrollable_canvas.configure(yscrollcommand=self.scrollbar.set)
 
-        self.inner_frame = tk.Frame(self.scrollable_canvas, bg="gray95")
+        self.inner_frame = tk.Frame(self.scrollable_canvas, bg=CARD_BG)
         self.inner_frame.bind(
             "<Configure>",
             lambda _e: self.scrollable_canvas.configure(
@@ -442,19 +657,35 @@ class PyFCSApp:
             anchor="nw"
         )
 
+        def resize_color_inner_frame(event):
+            try:
+                self.scrollable_canvas.itemconfig(
+                    self.colors_canvas_window_id,
+                    width=max(event.width - 4, 120)
+                )
+            except Exception:
+                pass
+
+        self.scrollable_canvas.bind("<Configure>", resize_color_inner_frame)
+
         self.color_buttons_frame = tk.Frame(
             self.inner_frame,
-            bg=self.inner_frame["bg"]
+            bg=CARD_BG
         )
-        self.color_buttons_frame.pack(fill="x", pady=5)
+        self.color_buttons_frame.pack(fill="x", pady=(2, 8), padx=4)
 
         button_style = {
-            "width": 10,
+            "width": 12,
             "height": 1,
-            "font": ("Sans", 10),
-            "relief": "raised",
-            "bd": 2,
+            "font": ("Segoe UI", 9, "bold"),
+            "relief": "flat",
+            "bd": 0,
             "cursor": "hand2",
+            "bg": "#eef2f7",
+            "fg": "#1f2937",
+            "activebackground": "#e5e7eb",
+            "activeforeground": "#1f2937",
+            "highlightthickness": 0
         }
 
         self.select_all_button = tk.Button(
@@ -464,7 +695,7 @@ class PyFCSApp:
             **button_style
         )
         if self.COLOR_SPACE:
-            self.select_all_button.pack(pady=4)
+            self.select_all_button.pack(fill="x", pady=(2, 4))
 
         self.deselect_all_button = tk.Button(
             self.color_buttons_frame,
@@ -473,39 +704,43 @@ class PyFCSApp:
             **button_style
         )
         if self.COLOR_SPACE:
-            self.deselect_all_button.pack(pady=4)
+            self.deselect_all_button.pack(fill="x", pady=(0, 4))
 
         # ---------------------------------------------------------------------
         # Tab: Data
         # ---------------------------------------------------------------------
-        data_tab = tk.Frame(self.notebook, bg="#eeeeee")
+        data_tab = tk.Frame(self.notebook, bg=CARD_BG)
         self.notebook.add(data_tab, text="Data")
 
-        # ---------------------------------------------------------------------
-        # Main outer container
-        # ---------------------------------------------------------------------
-        data_main = tk.Frame(data_tab, bg="#eeeeee")
-        data_main.pack(fill="both", expand=True, padx=14, pady=14)
+        data_main = tk.Frame(data_tab, bg=CARD_BG)
+        data_main.pack(fill="both", expand=True, padx=12, pady=12)
 
-        data_panel = tk.Frame(data_main, bg="white", bd=1, relief="solid")
+        data_panel = tk.Frame(
+            data_main,
+            bg=CARD_BG,
+            bd=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=BORDER
+        )
         data_panel.pack(fill="both", expand=True)
 
         # ---------------------------------------------------------------------
         # Header: title + file name
         # ---------------------------------------------------------------------
-        data_header = tk.Frame(data_panel, bg="#f6f6f6", height=64)
+        data_header = tk.Frame(data_panel, bg=SOFT_BG, height=66)
         data_header.pack(fill="x")
         data_header.pack_propagate(False)
 
-        header_left = tk.Frame(data_header, bg="#f6f6f6")
+        header_left = tk.Frame(data_header, bg=SOFT_BG)
         header_left.pack(side="left", fill="y", padx=16)
 
         self.data_header_title = tk.Label(
             header_left,
             text="Color Space Data (0)",
-            font=("Sans", 13, "bold"),
-            bg="#f6f6f6",
-            fg="#222222",
+            font=("Segoe UI", 13, "bold"),
+            bg=SOFT_BG,
+            fg=TEXT,
             anchor="w"
         )
         self.data_header_title.pack(anchor="w", pady=(10, 0))
@@ -513,30 +748,35 @@ class PyFCSApp:
         tk.Label(
             header_left,
             text="Edit prototypes, add colors, apply or delete the current color space",
-            font=("Sans", 9, "italic"),
-            bg="#f6f6f6",
-            fg="#666666",
+            font=FONT_SMALL,
+            bg=SOFT_BG,
+            fg=MUTED,
             anchor="w"
         ).pack(anchor="w", pady=(2, 0))
 
-        name_row = tk.Frame(data_header, bg="#f6f6f6")
+        name_row = tk.Frame(data_header, bg=SOFT_BG)
         name_row.pack(side="right", fill="y", padx=16)
 
         tk.Label(
             name_row,
             text="Name:",
-            font=("Helvetica", 10, "bold"),
-            bg="#f6f6f6",
-            fg="#222222"
+            font=FONT_BOLD,
+            bg=SOFT_BG,
+            fg=TEXT
         ).pack(side="left", padx=(0, 8))
 
         self.file_name_entry = tk.Entry(
             name_row,
-            font=("Helvetica", 10),
+            font=FONT,
             width=28,
             justify="center",
             relief="solid",
-            bd=1
+            bd=1,
+            bg=CARD_BG,
+            fg=TEXT,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=BLUE
         )
         self.file_name_entry.pack(side="left")
         self.file_name_entry.insert(0, "")
@@ -544,13 +784,13 @@ class PyFCSApp:
         # ---------------------------------------------------------------------
         # Canvas area directly inside the main panel
         # ---------------------------------------------------------------------
-        canvas_area = tk.Frame(data_panel, bg="white")
+        canvas_area = tk.Frame(data_panel, bg=CARD_BG)
         canvas_area.pack(fill="both", expand=True, padx=16, pady=(16, 8))
 
         canvas_area.rowconfigure(0, weight=1)
         canvas_area.columnconfigure(0, weight=1)
 
-        canvas_frame = tk.Frame(canvas_area, bg="white")
+        canvas_frame = tk.Frame(canvas_area, bg=CARD_BG)
         canvas_frame.grid(row=0, column=0, sticky="nsew")
 
         canvas_frame.rowconfigure(0, weight=1)
@@ -558,22 +798,21 @@ class PyFCSApp:
 
         self.data_window = tk.Canvas(
             canvas_frame,
-            bg="white",
+            bg=CARD_BG,
             borderwidth=0,
             relief="flat",
             highlightthickness=0
         )
         self.data_window.grid(row=0, column=0, sticky="nsew")
 
-        self.data_scrollbar_v = Scrollbar(
+        self.data_scrollbar_v = tk.Scrollbar(
             canvas_frame,
             orient="vertical",
             command=self.data_window.yview
         )
         self.data_scrollbar_v.grid(row=0, column=1, sticky="ns")
 
-        # Horizontal scrollbar outside the canvas/table area
-        self.data_scrollbar_h = Scrollbar(
+        self.data_scrollbar_h = tk.Scrollbar(
             canvas_area,
             orient="horizontal",
             command=self.data_window.xview
@@ -600,7 +839,7 @@ class PyFCSApp:
         )
         # ------------------------------------------------------------------
 
-        self.inner_frame_data = tk.Frame(self.data_window, bg="white")
+        self.inner_frame_data = tk.Frame(self.data_window, bg=CARD_BG)
         self.data_window.create_window((0, 0), window=self.inner_frame_data, anchor="nw")
 
         self.inner_frame_data.bind(
@@ -628,65 +867,52 @@ class PyFCSApp:
         # ---------------------------------------------------------------------
         # Footer buttons
         # ---------------------------------------------------------------------
-        bottom_bar = tk.Frame(data_panel, bg="white")
+        bottom_bar = tk.Frame(data_panel, bg=CARD_BG)
         bottom_bar.pack(fill="x", padx=16, pady=(0, 14))
 
-        left_actions = tk.Frame(bottom_bar, bg="white")
+        left_actions = tk.Frame(bottom_bar, bg=CARD_BG)
         left_actions.pack(side="left")
 
-        right_actions = tk.Frame(bottom_bar, bg="white")
+        right_actions = tk.Frame(bottom_bar, bg=CARD_BG)
         right_actions.pack(side="right")
 
-        add_button = tk.Button(
+        add_button = create_action_button(
             left_actions,
             text="+ Add New Color",
-            font=("Helvetica", 10, "bold"),
-            bg="#E0F2E9",
-            fg="#1f5f3a",
-            activebackground="#CFEADB",
-            activeforeground="#1f5f3a",
-            relief="solid",
-            bd=1,
-            padx=14,
-            pady=7,
-            cursor="hand2",
-            command=self.addColor_data_window
+            command=self.addColor_data_window,
+            bg=GREEN_BG,
+            fg=GREEN,
+            active_bg=GREEN_BG_ACTIVE,
+            side="left",
+            padx=(0, 10)
         )
-        add_button.pack(side="left", padx=(0, 10))
 
-        apply_button = tk.Button(
+        apply_button = create_action_button(
             left_actions,
             text="Apply Changes",
-            font=("Helvetica", 10, "bold"),
-            bg="#E8F0FE",
-            fg="#1f4e8c",
-            activebackground="#D7E5FB",
-            activeforeground="#1f4e8c",
-            relief="solid",
-            bd=1,
-            padx=14,
-            pady=7,
-            cursor="hand2",
-            command=self.apply_changes
+            command=self.apply_changes,
+            bg=BLUE_BG,
+            fg=BLUE,
+            active_bg=BLUE_BG_ACTIVE,
+            side="left",
+            padx=(0, 10)
         )
-        apply_button.pack(side="left")
 
-        delete_button = tk.Button(
+        delete_button = create_action_button(
             right_actions,
             text="Delete Color Space",
-            font=("Helvetica", 10, "bold"),
-            bg="#F8D7DA",
-            fg="#8a1f1f",
-            activebackground="#F1C4C9",
-            activeforeground="#8a1f1f",
-            relief="solid",
-            bd=1,
-            padx=14,
-            pady=7,
-            cursor="hand2",
-            command=self.delete_color_space
+            command=self.delete_color_space,
+            bg=RED_BG,
+            fg=RED,
+            active_bg=RED_BG_ACTIVE,
+            side="right",
+            padx=(0, 0)
         )
-        delete_button.pack(side="right")
+
+        # ---------------------------------------------------------------------
+        # Internal status variable
+        # ---------------------------------------------------------------------
+        self.status_var = tk.StringVar(value="Ready")
 
 
 
@@ -1001,46 +1227,187 @@ class PyFCSApp:
 
 
     def about_info(self):
-        """Displays a popup window with 'About' information."""
-        # Create a new top-level window (popup)
-        about_window = tk.Toplevel(self.root)  
-        about_window.title("About PyFCS")  # Set the title of the popup window
-        
-        # Disable resizing of the popup window
+        """
+        Display an improved About window for PyFCS.
+        """
+        about_window = tk.Toplevel(self.root)
+        about_window.title("About PyFCS")
+        about_window.configure(bg="#f5f6f8")
         about_window.resizable(False, False)
 
-        # Center the popup window
-        self.center_popup(about_window, 600, 200)
+        try:
+            about_window.iconphoto(True, self.logo)
+        except Exception:
+            pass
 
-        # Create and add a label with the software information
-        about_label = tk.Label(
-            about_window, 
-            text="PyFCS: Python Fuzzy Color Software\n"
-                "A color modeling Python Software based on Fuzzy Color Spaces.\n"
-                "Version 1.0\n\n"
-                "Contact: rafaconejo@ugr.es", 
-            padx=20, pady=20, font=("Helvetica", 12, "bold"), justify="center",
-            bg="#f0f0f0", fg="#333333"  # Background color and text color
+        WIN_W = 520
+        WIN_H = 420
+        WEBSITE_URL = "https://pyfcs.com/"
+
+        def close_about():
+            try:
+                about_window.grab_release()
+            except Exception:
+                pass
+            about_window.destroy()
+
+        def open_website(_event=None):
+            try:
+                webbrowser.open_new_tab(WEBSITE_URL)
+            except Exception:
+                pass
+
+        about_window.protocol("WM_DELETE_WINDOW", close_about)
+
+        # ------------------------------------------------------------
+        # Main outer container
+        # ------------------------------------------------------------
+        outer = tk.Frame(
+            about_window,
+            bg="#f5f6f8"
         )
-        about_label.pack(pady=20)  # Add the label to the popup window with padding
+        outer.pack(fill="both", expand=True, padx=14, pady=14)
 
-        # Create a frame to style the close button
-        button_frame = tk.Frame(about_window, bg="#f0f0f0")
-        button_frame.pack(pady=10)
+        card = tk.Frame(
+            outer,
+            bg="white",
+            bd=1,
+            relief="solid"
+        )
+        card.pack(fill="both", expand=True)
 
-        # Create a 'Close' button to close the popup window with enhanced styling
+        # ------------------------------------------------------------
+        # Header with logo
+        # ------------------------------------------------------------
+        header = tk.Frame(card, bg="white")
+        header.pack(fill="x", padx=22, pady=(18, 6))
+
+        try:
+            logo_img = self.load_toolbar_icon("logo.png", size=(64, 64))
+
+            logo_label = tk.Label(
+                header,
+                image=logo_img,
+                bg="white",
+                bd=0
+            )
+            logo_label.image = logo_img
+            logo_label.pack(anchor="center", pady=(0, 8))
+
+        except Exception:
+            pass
+
+        tk.Label(
+            header,
+            text="PyFCS",
+            font=("Segoe UI", 18, "bold"),
+            bg="white",
+            fg="#1f2937"
+        ).pack(anchor="center")
+
+        tk.Label(
+            header,
+            text="Python Fuzzy Color Software",
+            font=("Segoe UI", 10),
+            bg="white",
+            fg="#6b7280"
+        ).pack(anchor="center", pady=(2, 0))
+
+        # ------------------------------------------------------------
+        # Body text
+        # ------------------------------------------------------------
+        body = tk.Frame(card, bg="white")
+        body.pack(fill="x", padx=28, pady=(10, 8))
+
+        tk.Label(
+            body,
+            text="A color modeling Python software based on Fuzzy Color Spaces.",
+            font=("Segoe UI", 10),
+            bg="white",
+            fg="#374151",
+            justify="center",
+            wraplength=420
+        ).pack(anchor="center", pady=(0, 12))
+
+        info_box = tk.Frame(
+            body,
+            bg="#f8fafc",
+            bd=0,
+            relief="flat"
+        )
+        info_box.pack(fill="x", padx=12, pady=(2, 0))
+
+        tk.Label(
+            info_box,
+            text="Version 1.4.0",
+            font=("Segoe UI", 10, "bold"),
+            bg="#f8fafc",
+            fg="#1f2937"
+        ).pack(anchor="center", pady=(10, 2))
+
+        tk.Label(
+            info_box,
+            text="Contact: rafaconejo@ugr.es",
+            font=("Segoe UI", 9),
+            bg="#f8fafc",
+            fg="#4b5563"
+        ).pack(anchor="center", pady=(0, 4))
+
+        website_label = tk.Label(
+            info_box,
+            text=WEBSITE_URL,
+            font=("Segoe UI", 9, "underline"),
+            bg="#f8fafc",
+            fg="#1f4e8c",
+            cursor="hand2"
+        )
+        website_label.pack(anchor="center", pady=(0, 10))
+        website_label.bind("<Button-1>", open_website)
+
+        # ------------------------------------------------------------
+        # Footer
+        # ------------------------------------------------------------
+        footer = tk.Frame(card, bg="white")
+        footer.pack(fill="x", padx=22, pady=(12, 18))
+
         close_button = tk.Button(
-            button_frame,
+            footer,
             text="Close",
-            command=about_window.destroy,
-            font=("Helvetica", 10, "bold"),
-            bg="#884786",  # Green background
-            fg="white",    # White text
-            relief=tk.FLAT,
-            padx=10,
-            pady=5
+            command=close_about,
+            font=("Segoe UI", 10, "bold"),
+            bg="#e8f0fe",
+            fg="#1f4e8c",
+            activebackground="#d7e5fb",
+            activeforeground="#1f4e8c",
+            relief="raised",
+            bd=1,
+            padx=30,
+            pady=7,
+            cursor="hand2",
+            highlightthickness=0
         )
-        close_button.pack(pady=10)  # Add the button to the frame
+        close_button.pack(anchor="center")
+
+        # ------------------------------------------------------------
+        # Keyboard shortcuts
+        # ------------------------------------------------------------
+        about_window.bind("<Escape>", lambda _event: close_about())
+        about_window.bind("<Return>", lambda _event: close_about())
+
+        # ------------------------------------------------------------
+        # Center after layout
+        # ------------------------------------------------------------
+        about_window.update_idletasks()
+        self.center_popup(about_window, WIN_W, WIN_H)
+
+        about_window.transient(self.root)
+        about_window.grab_set()
+        about_window.focus_set()
+
+        try:
+            close_button.focus_set()
+        except Exception:
+            pass
 
 
 
@@ -4039,11 +4406,21 @@ class PyFCSApp:
 
         self.add_button = tk.Button(
             self.Canvas1,
-            text="Interactive Figure",
-            font=("Sans", 12),
+            text="Interactive\nFigure",
+            font=("Segoe UI", 9, "bold"),
+            justify="center",
+            bg="#e8f0fe",
+            fg="#1f4e8c",
+            activebackground="#d7e5fb",
+            activeforeground="#1f4e8c",
+            relief="raised",
+            bd=1,
+            padx=10,
+            pady=4,
+            cursor="hand2",
             command=self._on_add_graph_current,
         )
-        self.add_button.place(relx=0.95, rely=0.05, anchor="ne")
+        self.add_button.place(relx=0.965, rely=0.05, anchor="ne")
 
 
     def _on_add_graph_current(self):
@@ -4149,6 +4526,15 @@ class PyFCSApp:
             self.hex_color,
             selected_options,
             self.filtered_points,
+        )
+
+        # Softer and smaller title
+        display_name = str(self.file_base_name).replace("_", " ")
+        self.ax_3d.set_title(
+            display_name,
+            fontsize=13,
+            fontweight="semibold",
+            pad=10
         )
 
         self.graph_widget.draw()
@@ -4301,22 +4687,43 @@ class PyFCSApp:
         self.selected_colors = {}
         self.color_buttons = []
 
+        CARD_BG = "#ffffff"
+        TEXT = "#1f2937"
+        MUTED = "#6b7280"
+
         for color in colors:
             is_selected = previous_selected_colors.get(color, True)
             self.selected_colors[color] = tk.BooleanVar(value=is_selected)
 
-            button = tk.Checkbutton(
+            row = tk.Frame(
                 self.inner_frame,
+                bg=CARD_BG,
+                bd=0,
+                relief="flat"
+            )
+            row.pack(fill="x", anchor="w", pady=2, padx=4)
+
+            button = tk.Checkbutton(
+                row,
                 text=color,
                 variable=self.selected_colors[color],
-                bg="gray95",
-                font=("Sans", 10),
+                bg=CARD_BG,
+                fg=TEXT,
+                activebackground=CARD_BG,
+                activeforeground=TEXT,
+                selectcolor=CARD_BG,
+                font=("Segoe UI", 10),
                 onvalue=True,
                 offvalue=False,
                 command=self.select_color,
+                cursor="hand2",
+                bd=0,
+                highlightthickness=0,
+                anchor="w"
             )
-            button.pack(anchor="w", pady=2, padx=10)
-            self.color_buttons.append(button)
+            button.pack(fill="x", anchor="w", padx=4, pady=1)
+
+            self.color_buttons.append(row)
 
         self.scrollable_canvas.update_idletasks()
         self.scrollable_canvas.configure(scrollregion=self.scrollable_canvas.bbox("all"))
@@ -7687,6 +8094,9 @@ class PyFCSApp:
 
 
 
+
+
+
     # ============================================================================================================================================================
     #  FUNCTIONS DISPLAY PIXEL INFO
     # ============================================================================================================================================================
@@ -7793,6 +8203,7 @@ class PyFCSApp:
             "threshold_result_title_var": tk.StringVar(value=""),
             "threshold_result_detail_var": tk.StringVar(value=""),
             "threshold_result_summary_var": tk.StringVar(value=""),
+            "threshold_result_message_var": tk.StringVar(value=""),
 
             # Summary-style block
             "threshold_summary_title_var": tk.StringVar(value=""),
@@ -8407,6 +8818,94 @@ class PyFCSApp:
         return refs
 
 
+    def _apply_more_info_threshold_result_style(self, refs, status):
+        """
+        Apply the same formal threshold result style used in Color Evaluation.
+        """
+        self._apply_threshold_result_style(refs, status)
+
+
+    def _refresh_more_info_threshold_ui(self, vars_dict, refs, proto_lab=None, sample_lab=None):
+        """
+        Refresh the More Info threshold UI.
+
+        It keeps the formal result style and uses the existing informative
+        summary sentence generated by ColorEvaluationManager, without showing
+        the component breakdown.
+        """
+        original_variant = refs.get("variant", "more_info")
+
+        try:
+            refs["variant"] = "summary"
+            self._refresh_shared_threshold_ui(
+                vars_dict=vars_dict,
+                refs=refs,
+                proto_lab=None,
+                sample_lab=None
+            )
+        finally:
+            refs["variant"] = original_variant
+
+        if proto_lab is None or sample_lab is None:
+            vars_dict["threshold_result_title_var"].set("Select a prototype to evaluate")
+            vars_dict["threshold_result_detail_var"].set("")
+            vars_dict["threshold_result_summary_var"].set("")
+            self._apply_more_info_threshold_result_style(refs, "unavailable")
+            return
+
+        evaluation = self.evaluate_color_difference_threshold(
+            sample_lab=sample_lab,
+            prototype_lab=proto_lab,
+            metric=self.threshold_settings.get("metric", "CIEDE2000"),
+            threshold_settings=self.threshold_settings
+        )
+
+        metric_value = evaluation.get("metric_value", evaluation.get("delta_e"))
+        status = evaluation.get("status", "unavailable")
+        metric_name = self.threshold_settings.get("metric", "Metric")
+
+        if metric_value is None:
+            vars_dict["threshold_result_title_var"].set(
+                evaluation.get("evaluation", "Metric not available")
+            )
+            vars_dict["threshold_result_detail_var"].set(
+                "Unable to compute selected metric"
+            )
+
+            summary_text = evaluation.get("summary_visual", evaluation.get("summary", ""))
+            short_summary = str(summary_text).strip().splitlines()[0] if str(summary_text).strip() else ""
+
+            vars_dict["threshold_result_summary_var"].set(short_summary)
+            self._apply_more_info_threshold_result_style(refs, status)
+            return
+
+        vars_dict["threshold_result_title_var"].set(
+            evaluation.get("evaluation", "No evaluation available")
+        )
+
+        vars_dict["threshold_result_detail_var"].set(
+            evaluation.get(
+                "detail",
+                f"{metric_name} = {metric_value:.3f}"
+            )
+        )
+
+        # Use only the first informative line:
+        # "Invalid threshold using CIEDE2000."
+        # and discard the following "Component breakdown..." lines.
+        summary_text = evaluation.get("summary_visual", evaluation.get("summary", ""))
+        summary_text = str(summary_text).strip()
+
+        if summary_text:
+            short_summary = summary_text.splitlines()[0].strip()
+        else:
+            short_summary = f"{evaluation.get('evaluation', 'Result')} using {metric_name}."
+
+        vars_dict["threshold_result_summary_var"].set(short_summary)
+
+        self._apply_more_info_threshold_result_style(refs, status)
+
+
 
     def _refresh_shared_threshold_ui(self, vars_dict, refs, proto_lab=None, sample_lab=None):
         """
@@ -8831,53 +9330,109 @@ class PyFCSApp:
 
     def display_pixel_value(self, x_original, y_original, pixel_lab, is_average=False, selection_info=None):
         """
-        Displays the pixel value in LAB format and its coordinates within a frame at the bottom of the canvas.
-        Shows only the selected prototype in black text.
-        Stores pixel/ROI info for the "More Info" popup.
+        Display selected pixel/ROI LAB information in a compact floating info bar.
+        Shows coordinates, LAB value, selected prototype and a More Info action.
+        Stores pixel/ROI info for the More Info popup.
         """
-        # Create the frame and labels only once
+        # ---------------------------------------------------------------------
+        # Create compact floating info bar only once
+        # ---------------------------------------------------------------------
         if not hasattr(self, "lab_value_frame"):
-            self.lab_value_frame = tk.Frame(self.Canvas1, bg="lightgray", bd=1, relief="solid")
-            self.lab_value_frame.place(relx=0.5, rely=0.97, anchor="s")
+            BAR_BG = "#ffffff"
+            TEXT = "#1f2937"
+            MUTED = "#6b7280"
+            SEPARATOR = "#d9dde3"
+            LINK = "#1f4e8c"
 
-            text_frame = tk.Frame(self.lab_value_frame, bg="lightgray")
-            text_frame.pack(side="left", padx=8, pady=4)
+            self.lab_value_frame = tk.Frame(
+                self.Canvas1,
+                bg=BAR_BG,
+                bd=0,
+                relief="flat",
+                highlightthickness=1,
+                highlightbackground="#d9dde3"
+            )
 
-            bold_font = ("Sans", 11, "bold")
-            normal_font = ("Sans", 11)
+            # Más abajo que antes
+            self.lab_value_frame.place(relx=0.5, rely=0.987, anchor="s")
 
-            # Coordinates
-            tk.Label(text_frame, text="Coords:", font=bold_font, bg="lightgray").pack(side="left")
-            self.coord_value = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
-            self.coord_value.pack(side="left")
+            text_frame = tk.Frame(self.lab_value_frame, bg=BAR_BG)
+            text_frame.pack(side="left", padx=(10, 6), pady=4)
 
-            tk.Label(text_frame, text="  |  ", font=bold_font, bg="lightgray").pack(side="left")
+            label_font = ("Segoe UI", 8, "bold")
+            value_font = ("Segoe UI", 9)
 
-            # LAB
-            tk.Label(text_frame, text="LAB:", font=bold_font, bg="lightgray").pack(side="left")
-            self.lab_value_print = tk.Label(text_frame, text="", font=normal_font, bg="lightgray")
-            self.lab_value_print.pack(side="left")
+            def add_separator(parent):
+                tk.Frame(
+                    parent,
+                    bg=SEPARATOR,
+                    width=1,
+                    height=18
+                ).pack(side="left", padx=8, pady=2)
 
-            tk.Label(text_frame, text="  |  ", font=bold_font, bg="lightgray").pack(side="left")
+            def make_info_item(parent, label_text):
+                group = tk.Frame(parent, bg=BAR_BG)
+                group.pack(side="left")
 
-            # Selected prototype
-            tk.Label(text_frame, text="Prototype:", font=bold_font, bg="lightgray").pack(side="left")
-            self.proto_value_text = tk.Label(text_frame, text="", font=normal_font, bg="lightgray", fg="black")
-            self.proto_value_text.pack(side="left")
+                tk.Label(
+                    group,
+                    text=f"{label_text}:",
+                    font=label_font,
+                    bg=BAR_BG,
+                    fg=MUTED
+                ).pack(side="left")
 
-            search_icon = self.load_toolbar_icon("Search.png", (24, 24))
+                value_label = tk.Label(
+                    group,
+                    text="",
+                    font=value_font,
+                    bg=BAR_BG,
+                    fg=TEXT
+                )
+                value_label.pack(side="left", padx=(4, 0))
+
+                return value_label
+
+            self.coord_value = make_info_item(text_frame, "Coords")
+            add_separator(text_frame)
+
+            self.lab_value_print = make_info_item(text_frame, "LAB")
+            add_separator(text_frame)
+
+            self.proto_value_text = make_info_item(text_frame, "Prototype")
+
+            search_icon = self.load_toolbar_icon("Search.png", (17, 17))
+
             more_info_button = tk.Label(
                 self.lab_value_frame,
                 image=search_icon,
-                bg="lightgray",
-                cursor="hand2"
+                bg=BAR_BG,
+                cursor="hand2",
+                padx=5,
+                pady=2
             )
+            more_info_button.image = search_icon
             more_info_button.bind("<Button-1>", lambda e: self.show_more_info_pixel())
-            more_info_button.pack(side="right", padx=6, pady=2)
 
-        # ---------------------------
+            def _search_enter(_event):
+                try:
+                    more_info_button.configure(bg="#f1f5f9")
+                except Exception:
+                    pass
+
+            def _search_leave(_event):
+                try:
+                    more_info_button.configure(bg=BAR_BG)
+                except Exception:
+                    pass
+
+            more_info_button.bind("<Enter>", _search_enter)
+            more_info_button.bind("<Leave>", _search_leave)
+            more_info_button.pack(side="right", padx=(2, 8), pady=4)
+
+        # ---------------------------------------------------------------------
         # Membership computation
-        # ---------------------------
+        # ---------------------------------------------------------------------
         membership_degrees = self.fuzzy_color_space.calculate_membership(pixel_lab)
 
         if membership_degrees:
@@ -8889,9 +9444,9 @@ class PyFCSApp:
             winner_mu = 0.0
             top_memberships = []
 
-        # ---------------------------
+        # ---------------------------------------------------------------------
         # Store data for the "More Info" popup
-        # ---------------------------
+        # ---------------------------------------------------------------------
         self._last_pixel_info = {
             "x": x_original,
             "y": y_original,
@@ -8904,26 +9459,39 @@ class PyFCSApp:
             "all_memberships": top_memberships,
         }
 
-        # ---------------------------
-        # Update UI
-        # ---------------------------
+        # ---------------------------------------------------------------------
+        # Prepare compact display text
+        # ---------------------------------------------------------------------
         if selection_info and selection_info.get("type") == "roi":
-            coord_text = f"({selection_info['x1']},{selection_info['y1']})→({selection_info['x2']},{selection_info['y2']})"
+            coord_text = (
+                f"ROI ({selection_info['x1']},{selection_info['y1']})"
+                f"→({selection_info['x2']},{selection_info['y2']})"
+            )
         else:
             coord_text = f"({x_original}, {y_original})"
 
-        # Limit coordinates length a bit so LAB and prototype remain visible
-        max_coord_len = 28
+        max_coord_len = 24
         if len(coord_text) > max_coord_len:
             coord_text = coord_text[:max_coord_len - 1] + "…"
 
-        self.coord_value.config(text=f" {coord_text}")
-        self.lab_value_print.config(text=f" {pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}")
+        lab_text = f"{pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}"
 
         if max_proto is None:
-            self.proto_value_text.config(text=" —", fg="black")
+            proto_text = "—"
         else:
-            self.proto_value_text.config(text=f" {max_proto}", fg="black")
+            proto_text = str(max_proto)
+            max_proto_len = 18
+            if len(proto_text) > max_proto_len:
+                proto_text = proto_text[:max_proto_len - 1] + "…"
+
+        # ---------------------------------------------------------------------
+        # Update UI
+        # ---------------------------------------------------------------------
+        self.coord_value.config(text=coord_text)
+        self.lab_value_print.config(text=lab_text)
+        self.proto_value_text.config(text=proto_text, fg="#1f2937")
+
+
 
     def _close_more_info_window(self):
         """Close the 'More Info' window if it is currently open."""
@@ -9440,13 +10008,418 @@ class PyFCSApp:
 
 
     def _build_more_info_threshold_panel(self, parent, vars_dict):
-        """Build the shared threshold panel for More Info."""
-        return self._build_shared_threshold_panel(
-            parent=parent,
-            vars_dict=vars_dict,
-            title="Threshold",
-            variant="result"
+        """
+        Build a compact Threshold panel for the More Info window.
+
+        This keeps the same shared threshold variables/settings, but uses a
+        narrower layout and a simplified result card.
+        """
+        threshold_panel = tk.Frame(parent, bg="white", bd=1, relief="solid")
+        threshold_panel.pack(fill="x", pady=(6, 0), anchor="n")
+
+        tk.Label(
+            threshold_panel,
+            text="Threshold",
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+            bg="white",
+            fg="#1f2937",
+            padx=12,
+            pady=8
+        ).pack(fill="x")
+
+        threshold_body = tk.Frame(threshold_panel, bg="white")
+        threshold_body.pack(fill="x", padx=12, pady=(0, 10))
+
+        # Compact 3-block layout:
+        # Metric | Configuration | Result
+        threshold_body.grid_columnconfigure(0, minsize=230, weight=0)
+        threshold_body.grid_columnconfigure(1, minsize=1, weight=0)
+        threshold_body.grid_columnconfigure(2, minsize=330, weight=1)
+        threshold_body.grid_columnconfigure(3, minsize=1, weight=0)
+        threshold_body.grid_columnconfigure(4, minsize=230, weight=0)
+
+        section_selection = tk.Frame(threshold_body, bg="white", width=230)
+        section_selection.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
+        section_selection.grid_propagate(False)
+
+        tk.Frame(threshold_body, bg="#e5e7eb", width=1, height=118).grid(
+            row=0, column=1, sticky="ns", padx=(0, 10), pady=2
         )
+
+        section_config = tk.Frame(threshold_body, bg="white")
+        section_config.grid(row=0, column=2, sticky="nsew", padx=(0, 10))
+
+        tk.Frame(threshold_body, bg="#e5e7eb", width=1, height=118).grid(
+            row=0, column=3, sticky="ns", padx=(0, 10), pady=2
+        )
+
+        section_output = tk.Frame(threshold_body, bg="white", width=230)
+        section_output.grid(row=0, column=4, sticky="nsew")
+        section_output.grid_propagate(False)
+
+        manager = self._get_color_evaluation_manager()
+
+        # ------------------------------------------------------------------
+        # Metric selection
+        # ------------------------------------------------------------------
+        tk.Label(
+            section_selection,
+            text="Metric Family",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+            bg="white",
+            fg="#1f2937"
+        ).pack(anchor="w", pady=(0, 3))
+
+        metric_family_combo = ttk.Combobox(
+            section_selection,
+            textvariable=vars_dict["threshold_metric_family_var"],
+            state="readonly",
+            width=24,
+            values=manager.get_metric_families()
+        )
+        metric_family_combo.pack(anchor="w", fill="x", pady=(0, 7))
+
+        tk.Label(
+            section_selection,
+            text="Metric",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+            bg="white",
+            fg="#1f2937"
+        ).pack(anchor="w", pady=(0, 3))
+
+        metric_combo = ttk.Combobox(
+            section_selection,
+            textvariable=vars_dict["threshold_metric_var"],
+            state="readonly",
+            width=24,
+            values=manager.get_metrics_for_family(
+                vars_dict["threshold_metric_family_var"].get()
+            )
+        )
+        metric_combo.pack(anchor="w", fill="x", pady=(0, 5))
+
+        metric_help_label = tk.Label(
+            section_selection,
+            textvariable=vars_dict["threshold_metric_help_var"],
+            bg="white",
+            fg="#6b7280",
+            anchor="w",
+            justify="left",
+            wraplength=210,
+            font=("Segoe UI", 8, "italic")
+        )
+        metric_help_label.pack(anchor="w", fill="x")
+
+        # ------------------------------------------------------------------
+        # Configuration
+        # ------------------------------------------------------------------
+        tk.Label(
+            section_config,
+            text="Configuration",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+            bg="white",
+            fg="#1f2937"
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 7))
+
+        section_config.grid_columnconfigure(0, minsize=98, weight=0)
+        section_config.grid_columnconfigure(1, minsize=90, weight=1)
+        section_config.grid_columnconfigure(2, minsize=95, weight=0)
+        section_config.grid_columnconfigure(3, minsize=70, weight=1)
+
+        mode_label = tk.Label(
+            section_config,
+            text="Threshold type:",
+            bg="white",
+            fg="#1f2937",
+            anchor="w",
+            font=("Segoe UI", 9)
+        )
+
+        mode_combo = ttk.Combobox(
+            section_config,
+            textvariable=vars_dict["threshold_mode_var"],
+            state="readonly",
+            width=20,
+            values=["default", "custom"]
+        )
+
+        mode_label.grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 8))
+        mode_combo.grid(row=1, column=1, columnspan=3, sticky="ew", pady=(0, 6))
+
+        preset_label = tk.Label(
+            section_config,
+            text="Default preset:",
+            bg="white",
+            fg="#1f2937",
+            anchor="w",
+            font=("Segoe UI", 9)
+        )
+
+        preset_combo = ttk.Combobox(
+            section_config,
+            textvariable=vars_dict["threshold_preset_var"],
+            state="readonly",
+            width=20,
+            values=[
+                "Perceptibility Threshold",
+                "Acceptability Threshold",
+                "Perceptibility + Acceptability"
+            ]
+        )
+
+        custom_type_label = tk.Label(
+            section_config,
+            text="Custom mode:",
+            bg="white",
+            fg="#1f2937",
+            anchor="w",
+            font=("Segoe UI", 9)
+        )
+
+        custom_type_combo = ttk.Combobox(
+            section_config,
+            textvariable=vars_dict["threshold_custom_type_var"],
+            state="readonly",
+            width=20,
+            values=[
+                "Single threshold",
+                "Lower and upper thresholds"
+            ]
+        )
+
+        single_label = tk.Label(
+            section_config,
+            text="Threshold:",
+            bg="white",
+            fg="#1f2937",
+            anchor="w",
+            font=("Segoe UI", 9)
+        )
+        single_entry = tk.Entry(
+            section_config,
+            textvariable=vars_dict["threshold_single_var"],
+            width=9,
+            font=("Segoe UI", 9)
+        )
+
+        lower_label = tk.Label(
+            section_config,
+            text="Lower:",
+            bg="white",
+            fg="#1f2937",
+            anchor="w",
+            font=("Segoe UI", 9)
+        )
+        lower_entry = tk.Entry(
+            section_config,
+            textvariable=vars_dict["threshold_lower_var"],
+            width=8,
+            font=("Segoe UI", 9)
+        )
+
+        upper_label = tk.Label(
+            section_config,
+            text="Upper:",
+            bg="white",
+            fg="#1f2937",
+            anchor="w",
+            font=("Segoe UI", 9)
+        )
+        upper_entry = tk.Entry(
+            section_config,
+            textvariable=vars_dict["threshold_upper_var"],
+            width=8,
+            font=("Segoe UI", 9)
+        )
+
+        config_hint_label = tk.Label(
+            section_config,
+            textvariable=vars_dict["config_hint_var"],
+            bg="white",
+            fg="#6b7280",
+            anchor="w",
+            justify="left",
+            wraplength=310,
+            font=("Segoe UI", 8, "italic")
+        )
+
+        def _update_config_hint_wrap(event=None):
+            try:
+                available_width = max(section_config.winfo_width() - 20, 220)
+                config_hint_label.configure(wraplength=available_width)
+            except Exception:
+                pass
+
+        section_config.bind("<Configure>", _update_config_hint_wrap)
+
+        # ------------------------------------------------------------------
+        # Result: formal card, same style as Color Evaluation, but shorter
+        # ------------------------------------------------------------------
+        tk.Label(
+            section_output,
+            text="Results",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+            bg="white",
+            fg="#1f2937"
+        ).pack(anchor="w", pady=(0, 7))
+
+        result_card = tk.Frame(
+            section_output,
+            bg="#f7f7f7",
+            bd=0,
+            relief="flat",
+            highlightthickness=2,
+            highlightbackground="#bdbdbd",
+            highlightcolor="#bdbdbd"
+        )
+        result_card.pack(fill="both", expand=True)
+
+        result_header = tk.Frame(result_card, bg="#eeeeee")
+        result_header.pack(fill="x")
+
+        result_status_dot = tk.Canvas(
+            result_header,
+            width=18,
+            height=18,
+            bg="#eeeeee",
+            highlightthickness=0,
+            bd=0
+        )
+        result_status_dot.pack(side="left", padx=(10, 6), pady=8)
+
+        result_status_dot_oval = result_status_dot.create_oval(
+            3, 3, 15, 15,
+            fill="#bdbdbd",
+            outline="#bdbdbd"
+        )
+
+        result_title_label = tk.Label(
+            result_header,
+            textvariable=vars_dict["threshold_result_title_var"],
+            anchor="w",
+            justify="left",
+            bg="#eeeeee",
+            font=("Segoe UI", 10, "bold"),
+            wraplength=170
+        )
+        result_title_label.pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(0, 10),
+            pady=8
+        )
+
+        result_body = tk.Frame(result_card, bg="#f7f7f7")
+        result_body.pack(fill="both", expand=True, padx=12, pady=(10, 10))
+
+        result_value_label = tk.Label(
+            result_body,
+            textvariable=vars_dict["threshold_result_detail_var"],
+            anchor="w",
+            justify="left",
+            bg="#f7f7f7",
+            fg="#666666",
+            font=("Segoe UI", 9, "bold"),
+            wraplength=185
+        )
+        result_value_label.pack(anchor="w", fill="x", pady=(0, 9))
+
+        result_separator = tk.Frame(
+            result_body,
+            bg="#dddddd",
+            height=2
+        )
+        result_separator.pack(fill="x", padx=4, pady=(0, 8))
+
+        result_summary_row = tk.Frame(result_body, bg="#f7f7f7")
+        result_summary_row.pack(fill="x")
+
+        result_summary_icon = tk.Canvas(
+            result_summary_row,
+            width=20,
+            height=20,
+            bg="#f7f7f7",
+            highlightthickness=0,
+            bd=0
+        )
+        result_summary_icon.pack(side="left", padx=(0, 7), anchor="n")
+
+        result_summary_icon_circle = result_summary_icon.create_oval(
+            2, 2, 18, 18,
+            outline="#666666",
+            width=2
+        )
+
+        result_summary_icon_text = result_summary_icon.create_text(
+            10, 10,
+            text="!",
+            fill="#666666",
+            font=("Segoe UI", 9, "bold")
+        )
+
+        result_text_container = tk.Frame(result_summary_row, bg="#f7f7f7")
+        result_text_container.pack(side="left", fill="both", expand=True)
+
+        result_summary_label = tk.Label(
+            result_text_container,
+            textvariable=vars_dict["threshold_result_summary_var"],
+            anchor="w",
+            justify="left",
+            bg="#f7f7f7",
+            wraplength=165,
+            font=("Segoe UI", 8)
+        )
+        result_summary_label.pack(anchor="w", fill="x")
+
+        refs = {
+            "metric_family_combo": metric_family_combo,
+            "metric_combo": metric_combo,
+            "metric_help_label": metric_help_label,
+
+            "mode_label": mode_label,
+            "mode_combo": mode_combo,
+
+            "preset_label": preset_label,
+            "preset_combo": preset_combo,
+
+            "custom_type_label": custom_type_label,
+            "custom_type_combo": custom_type_combo,
+
+            "single_label": single_label,
+            "single_entry": single_entry,
+
+            "lower_label": lower_label,
+            "lower_entry": lower_entry,
+
+            "upper_label": upper_label,
+            "upper_entry": upper_entry,
+
+            "config_hint_label": config_hint_label,
+
+            "variant": "more_info",
+
+            "result_card": result_card,
+            "result_header": result_header,
+            "result_status_dot": result_status_dot,
+            "result_status_dot_oval": result_status_dot_oval,
+            "result_title_label": result_title_label,
+            "result_body": result_body,
+            "result_value_label": result_value_label,
+            "result_separator": result_separator,
+            "result_summary_row": result_summary_row,
+            "result_summary_icon": result_summary_icon,
+            "result_summary_icon_circle": result_summary_icon_circle,
+            "result_summary_icon_text": result_summary_icon_text,
+            "result_summary_label": result_summary_label,
+        }
+
+        return refs
 
 
 
@@ -9473,12 +10446,20 @@ class PyFCSApp:
                         pass
 
         def refresh_threshold_section(proto_lab=None):
-            self._refresh_shared_threshold_ui(
-                vars_dict=vars_dict,
-                refs=threshold_refs,
-                proto_lab=proto_lab,
-                sample_lab=sample_lab
-            )
+            if threshold_refs.get("variant") == "more_info":
+                self._refresh_more_info_threshold_ui(
+                    vars_dict=vars_dict,
+                    refs=threshold_refs,
+                    proto_lab=proto_lab,
+                    sample_lab=sample_lab
+                )
+            else:
+                self._refresh_shared_threshold_ui(
+                    vars_dict=vars_dict,
+                    refs=threshold_refs,
+                    proto_lab=proto_lab,
+                    sample_lab=sample_lab
+                )
 
         def select_membership(label):
             vars_dict["selected_label_var"].set(label)
@@ -9669,18 +10650,62 @@ class PyFCSApp:
         win.geometry(f"{WIN_W}x{WIN_H}")
         win.minsize(980, 680)
         win.resizable(True, True)
-
         win.configure(bg="#f2f2f2")
         win.protocol("WM_DELETE_WINDOW", self._on_close_color_evaluation_window)
+
+        # ------------------------------------------------------------------
+        # Fullscreen toggle for this specific Toplevel window
+        # ------------------------------------------------------------------
+        def toggle_color_evaluation_fullscreen(event=None):
+            try:
+                current_state = bool(win.attributes("-fullscreen"))
+                win.attributes("-fullscreen", not current_state)
+
+                # When leaving fullscreen, restore a normal usable size
+                if current_state:
+                    win.geometry(f"{WIN_W}x{WIN_H}")
+                    win.update_idletasks()
+                    try:
+                        self.center_popup(win, WIN_W, WIN_H)
+                    except Exception:
+                        pass
+
+            except tk.TclError:
+                # Fallback for systems/window managers where -fullscreen is not available
+                try:
+                    if platform.system() == "Windows":
+                        if win.state() == "zoomed":
+                            win.state("normal")
+                            win.geometry(f"{WIN_W}x{WIN_H}")
+                        else:
+                            win.state("zoomed")
+                    else:
+                        screen_width = win.winfo_screenwidth()
+                        screen_height = win.winfo_screenheight()
+                        win.geometry(f"{screen_width}x{screen_height}+0+0")
+                except Exception:
+                    pass
+
+        win.bind("<Escape>", toggle_color_evaluation_fullscreen)
+        win.bind("<F11>", toggle_color_evaluation_fullscreen)
 
         self._build_color_evaluation_window(win)
 
         win.focus_set()
 
+        # Open fullscreen by default
         try:
-            win.state("zoomed")
-        except Exception:
-            pass
+            win.attributes("-fullscreen", True)
+        except tk.TclError:
+            try:
+                if platform.system() == "Windows":
+                    win.state("zoomed")
+                else:
+                    screen_width = win.winfo_screenwidth()
+                    screen_height = win.winfo_screenheight()
+                    win.geometry(f"{screen_width}x{screen_height}+0+0")
+            except Exception:
+                pass
 
         win.after_idle(self._set_color_evaluation_initial_sash)
 
