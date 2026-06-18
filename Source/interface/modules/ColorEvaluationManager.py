@@ -23,7 +23,7 @@ class ColorEvaluationManager:
             "CIE76",
             "CIE94 Graphic Arts",
             "CIE94 Textiles",
-            "CMC l:c",
+            "CMC 2:1",
         ],
         "LAB components": [
             "|ΔL*|",
@@ -350,18 +350,167 @@ class ColorEvaluationManager:
             return 12.92 * u if u <= 0.0031308 else 1.055 * (u ** (1.0 / 2.4)) - 0.055
 
         return tuple(max(0, min(255, int(round(gamma(v) * 255.0)))) for v in (R, G, B))
+    
+
+    @staticmethod
+    def ciede2000_coordinate_contribution(sample_lab, prototype_lab, kL=1.0, kC=1.0, kH=1.0):
+        """
+        Computes the CIEDE2000 L/C/H percentage contribution following
+        the same tilted-coordinate idea used in dE00_Euclidea.m.
+
+        prototype_lab is treated as LABREF.
+        sample_lab is treated as LAB.
+
+        Returns positive percentage contributions:
+            L_percent, C_percent, H_percent
+        """
+
+        # MATLAB equivalent:
+        # LABREF = prototype_lab
+        # LAB    = sample_lab
+        L, a, b = ColorEvaluationManager._safe_lab_array(prototype_lab)
+        Ls, a_s, b_s = ColorEvaluationManager._safe_lab_array(sample_lab)
+
+        C = float(np.sqrt(a ** 2 + b ** 2))
+        Cs = float(np.sqrt(a_s ** 2 + b_s ** 2))
+
+        Cm = (C + Cs) / 2.0
+        G = 0.5 * (1.0 - np.sqrt((Cm ** 7) / (Cm ** 7 + 25.0 ** 7)))
+
+        a_p = (1.0 + G) * a
+        a_sp = (1.0 + G) * a_s
+
+        C = float(np.sqrt(a_p ** 2 + b ** 2))
+        Cs = float(np.sqrt(a_sp ** 2 + b_s ** 2))
+
+        h = float(np.degrees(np.arctan2(b, a_p)) % 360.0)
+        hs = float(np.degrees(np.arctan2(b_s, a_sp)) % 360.0)
+
+        Cm = (C + Cs) / 2.0
+        hm = (h + hs) / 2.0
+
+        if abs(h - hs) > 180.0:
+            hm = hm - 180.0
+
+        dh_abs = abs(h - hs)
+        if dh_abs > 180.0:
+            dh_abs = 360.0 - dh_abs
+
+        DL = abs(L - Ls)
+        DC = abs(C - Cs)
+        DH = 2.0 * np.sqrt(max(C * Cs, 0.0)) * np.sin(np.radians(dh_abs / 2.0))
+
+        T = (
+            1.0
+            - 0.17 * np.cos(np.radians(hm - 30.0))
+            + 0.24 * np.cos(np.radians(2.0 * hm))
+            + 0.32 * np.cos(np.radians(3.0 * hm + 6.0))
+            - 0.20 * np.cos(np.radians(4.0 * hm - 63.0))
+        )
+
+        Lm = (L + Ls) / 2.0
+
+        SL = 1.0 + (0.015 * (Lm - 50.0) ** 2) / np.sqrt(20.0 + (Lm - 50.0) ** 2)
+        SC = 1.0 + 0.045 * Cm
+        SH = 1.0 + 0.015 * Cm * T
+
+        Dt = 30.0 * np.exp(-((hm - 275.0) / 25.0) ** 2)
+        RC = 2.0 * np.sqrt((Cm ** 7) / (Cm ** 7 + 25.0 ** 7))
+        RT = -np.sin(np.radians(2.0 * Dt)) * RC
+
+        denom = SH ** 2 - SC ** 2
+
+        if abs(denom) < 1e-12:
+            theta = 0.0
+        else:
+            theta = 0.5 * np.arctan(RT * ((SC * SH) / denom))
+
+        DCp = DC * np.cos(theta) + DH * np.sin(theta)
+        DHp = DH * np.cos(theta) + DC * np.sin(theta)
+
+        tan_theta = np.tan(theta)
+
+        SCp_den = 2.0 * (SH * kH) + RT * (SC * kC) * tan_theta
+        SHp_den = 2.0 * (SC * kC) + RT * (SH * kH) * tan_theta
+
+        if abs(SCp_den) < 1e-12 or abs(SHp_den) < 1e-12:
+            return {
+                "L_percent": 0.0,
+                "C_percent": 0.0,
+                "H_percent": 0.0,
+                "L_value": 0.0,
+                "C_value": 0.0,
+                "H_value": 0.0,
+                "DE00_coordinate": 0.0,
+            }
+
+        SCp = (SC * kC) * np.sqrt((2.0 * (SH * kH)) / SCp_den)
+        SHp = (SH * kH) * np.sqrt((2.0 * (SC * kC)) / SHp_den)
+
+        DL00 = DL / (SL * kL)
+        DC00 = DCp / SCp
+        DH00 = DHp / SHp
+
+        DE00 = np.sqrt(DL00 ** 2 + DC00 ** 2 + DH00 ** 2)
+
+        if not np.isfinite(DE00) or DE00 <= 1e-12:
+            return {
+                "L_percent": 0.0,
+                "C_percent": 0.0,
+                "H_percent": 0.0,
+                "L_value": 0.0,
+                "C_value": 0.0,
+                "H_value": 0.0,
+                "DE00_coordinate": 0.0,
+            }
+
+        L_percent = 100.0 * (DL00 / DE00) ** 2
+        C_percent = 100.0 * (DC00 / DE00) ** 2
+        H_percent = 100.0 * (DH00 / DE00) ** 2
+
+        return {
+            "L_percent": float(L_percent),
+            "C_percent": float(C_percent),
+            "H_percent": float(H_percent),
+            "L_value": float((L_percent * DE00) / 100.0),
+            "C_value": float((C_percent * DE00) / 100.0),
+            "H_value": float((H_percent * DE00) / 100.0),
+            "DE00_coordinate": float(DE00),
+        }
 
     @staticmethod
     def calculate_component_differences(sample_lab, prototype_lab):
         L1, a1, b1 = ColorEvaluationManager._safe_lab_array(sample_lab)
         L2, a2, b2 = ColorEvaluationManager._safe_lab_array(prototype_lab)
         dL, da, db = float(L1 - L2), float(a1 - a2), float(b1 - b2)
-        C1, C2 = float(np.sqrt(a1 ** 2 + b1 ** 2)), float(np.sqrt(a2 ** 2 + b2 ** 2))
+        # CIEDE2000-adjusted chroma and hue components
+        # These replace the raw LCh components so that ΔC*, Δh° and ΔH*
+        # follow the same a', C' and h' correction used in CIEDE2000.
+
+        C1_raw = float(np.sqrt(a1 ** 2 + b1 ** 2))
+        C2_raw = float(np.sqrt(a2 ** 2 + b2 ** 2))
+
+        C_avg = (C1_raw + C2_raw) / 2.0
+        G = 0.5 * (1.0 - np.sqrt((C_avg ** 7) / (C_avg ** 7 + 25.0 ** 7)))
+
+        a1p = (1.0 + G) * a1
+        a2p = (1.0 + G) * a2
+
+        C1 = float(np.sqrt(a1p ** 2 + b1 ** 2))
+        C2 = float(np.sqrt(a2p ** 2 + b2 ** 2))
+
         dC = float(C1 - C2)
-        h1 = float(np.degrees(np.arctan2(b1, a1)) % 360.0)
-        h2 = float(np.degrees(np.arctan2(b2, a2)) % 360.0)
+
+        h1 = float(np.degrees(np.arctan2(b1, a1p)) % 360.0)
+        h2 = float(np.degrees(np.arctan2(b2, a2p)) % 360.0)
+
         dh = ColorEvaluationManager.signed_hue_angle_difference(h1, h2)
-        dH = float(2.0 * np.sqrt(max(C1 * C2, 0.0)) * np.sin(np.radians(dh / 2.0)))
+
+        dH = float(
+            2.0
+            * np.sqrt(max(C1 * C2, 0.0))
+            * np.sin(np.radians(dh / 2.0))
+        )
         delta_e_ab = float(np.sqrt(dL ** 2 + da ** 2 + db ** 2))
         delta_ab_plane = float(np.sqrt(da ** 2 + db ** 2))
         rgb1 = ColorEvaluationManager.lab_to_rgb_approx((L1, a1, b1))
@@ -376,11 +525,17 @@ class ColorEvaluationManager:
             "h1°": h1, "h2°": h2, "Δh°": dh, "|Δh°|": abs(dh),
             "ΔH*": dH, "|ΔH*|": abs(dH),
             "ΔEab": delta_e_ab, "Δab plane": delta_ab_plane,
+
             "RGB1": rgb1, "RGB2": rgb2,
             "ΔR": dR, "ΔG": dG, "ΔB": dB,
             "|ΔR|": abs(dR), "|ΔG|": abs(dG), "|ΔB|": abs(dB),
             "RGB Euclidean": rgb_euclidean,
         }
+
+
+
+
+
 
     # ============================================================================================================================================================
     #  METRIC COMPUTATION
@@ -483,14 +638,82 @@ class ColorEvaluationManager:
         return f"{metric} = {value:.3f}"
 
     @classmethod
-    def format_component_summary(cls, sample_lab, prototype_lab):
+    def format_component_summary(cls, sample_lab, prototype_lab, metric="CIEDE2000"):
+        metric = cls.normalize_metric_name(metric)
         c = cls.calculate_component_differences(sample_lab, prototype_lab)
-        return (
-            "Component breakdown:\n"
-            f"ΔL* = {c['ΔL*']:+.3f} | Δa* = {c['Δa*']:+.3f} | Δb* = {c['Δb*']:+.3f}\n"
-            f"ΔC* = {c['ΔC*']:+.3f} | Δh° = {c['Δh°']:+.3f}° | ΔH* = {c['ΔH*']:+.3f}\n"
+
+        lab_line = (
+            f"ΔL* = {c['ΔL*']:+.3f} | "
+            f"Δa* = {c['Δa*']:+.3f} | "
+            f"Δb* = {c['Δb*']:+.3f}"
+        )
+
+        lch_line = (
+            f"ΔC* = {c['ΔC*']:+.3f} | "
+            f"Δh° = {c['Δh°']:+.3f}° | "
+            f"ΔH* = {c['ΔH*']:+.3f}"
+        )
+
+        rgb_line = (
             f"RGB Δ = ({c['ΔR']:+.0f}, {c['ΔG']:+.0f}, {c['ΔB']:+.0f})"
         )
+
+        lines = ["\nComponent breakdown:"]
+
+        if metric == "CIEDE2000":
+            lines.append(lab_line)
+            lines.append(lch_line)
+
+            de00_contribution = cls.ciede2000_coordinate_contribution(
+                sample_lab,
+                prototype_lab
+            )
+
+            lines.append(rgb_line)
+
+            lines.append(
+                "\nΔE00% contribution L*/C*/H* = "
+                f"{de00_contribution['L_percent']:.1f} / "
+                f"{de00_contribution['C_percent']:.1f} / "
+                f"{de00_contribution['H_percent']:.1f}"
+            )
+
+
+        elif metric in ("CIE76", "ΔEab"):
+            lines.append(lab_line)
+            lines.append(f"ΔEab = {c['ΔEab']:.3f}")
+            lines.append(rgb_line)
+
+        elif metric == "Δab plane":
+            lines.append(
+                f"Δa* = {c['Δa*']:+.3f} | "
+                f"Δb* = {c['Δb*']:+.3f} | "
+                f"Δab = {c['Δab plane']:.3f}"
+            )
+            lines.append(rgb_line)
+
+        elif metric in ("|ΔL*|", "|Δa*|", "|Δb*|"):
+            lines.append(lab_line)
+            lines.append(rgb_line)
+
+        elif metric in ("|ΔC*|", "|Δh°|", "|ΔH*|"):
+            lines.append(lch_line)
+            lines.append(rgb_line)
+
+        elif metric in ("CIE94 Graphic Arts", "CIE94 Textiles", "CMC l:c"):
+            lines.append(lab_line)
+            lines.append(lch_line)
+            lines.append(rgb_line)
+
+        elif metric in ("RGB Euclidean", "|ΔR|", "|ΔG|", "|ΔB|"):
+            lines.append(rgb_line)
+
+        else:
+            lines.append(lab_line)
+            lines.append(lch_line)
+            lines.append(rgb_line)
+
+        return "\n".join(lines)
 
     # ============================================================================================================================================================
     #  EVALUATION / CLASSIFICATION
@@ -533,6 +756,7 @@ class ColorEvaluationManager:
 
         return {"status": "unavailable", "label": "Unavailable", "order": 9}
 
+
     @classmethod
     def evaluate_color_difference_threshold(cls, sample_lab, prototype_lab, metric="CIEDE2000", threshold_settings=None):
         try:
@@ -543,7 +767,7 @@ class ColorEvaluationManager:
             detail = cls.format_metric_value(value, metric)
             summary = (
                 f"{classification['label']} using {metric}.\n"
-                f"{cls.format_component_summary(sample_lab, prototype_lab)}"
+                f"{cls.format_component_summary(sample_lab, prototype_lab, metric)}"
             )
             return {
                 "delta_e": value,

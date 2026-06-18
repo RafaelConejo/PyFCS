@@ -1,5 +1,4 @@
 import numpy as np
-from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import plotly.graph_objects as go
 import plotly.express as px
