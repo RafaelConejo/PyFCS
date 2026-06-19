@@ -11967,7 +11967,7 @@ class PyFCSApp:
 
         for label, mu in visible_memberships:
             row = tk.Frame(list_inner, bg="white")
-            row.pack(fill="x", padx=4, pady=2)
+            row.pack(fill="x", padx=4, pady=4)
 
             proto_hex = self._get_evaluation_proto_hex(vars_dict, label)
 
@@ -11987,15 +11987,28 @@ class PyFCSApp:
                 outline="#707070"
             )
 
+            text_block = tk.Frame(row, bg="white")
+            text_block.pack(side="left", fill="x", expand=True)
+
             tk.Label(
-                row,
-                text=f"{label}   μ = {float(mu):.4f}",
+                text_block,
+                text=str(label),
                 bg="white",
                 anchor="w",
                 justify="left",
                 font=("Sans", 9),
-                wraplength=185
-            ).pack(side="left", fill="x", expand=True)
+                wraplength=155
+            ).pack(anchor="w", fill="x")
+
+            tk.Label(
+                text_block,
+                text=f"μ = {float(mu):.4f}",
+                bg="white",
+                fg="#555555",
+                anchor="w",
+                justify="left",
+                font=("Consolas", 8)
+            ).pack(anchor="w", fill="x", pady=(1, 0))
 
         try:
             membership_list_canvas.update_idletasks()
