@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 from skimage import color
+import matplotlib.pyplot as plt
 import math, colorsys, numpy as np
 from sklearn.cluster import DBSCAN
 
@@ -271,6 +272,26 @@ class ImageManager:
 
 
 
+    @staticmethod
+    def _pil_to_rgb_uint8(image):
+        """Return a uint8 RGB NumPy array from a PIL image, safely handling grayscale/RGBA images."""
+        img_np = np.asarray(image)
+
+        if img_np.ndim == 2:
+            img_np = np.stack([img_np, img_np, img_np], axis=-1)
+        elif img_np.shape[-1] == 4:
+            img_np = img_np[..., :3]
+        elif img_np.shape[-1] > 3:
+            img_np = img_np[..., :3]
+
+        return img_np.astype(np.uint8, copy=False)
+
+    def _pil_to_lab_image(self, image):
+        """Convert a PIL image to LAB using skimage, returning an H x W x 3 float array."""
+        img_rgb = self._pil_to_rgb_uint8(image)
+        img01 = img_rgb.astype(np.float32) / 255.0
+        return color.rgb2lab(img01)
+
     def get_proto_percentage(
         self,
         prototypes,
@@ -281,71 +302,221 @@ class ImageManager:
         cancel_callback=None,
     ):
         """
-        Generate a grayscale membership map for the selected prototype.
+        Generate a grayscale membership map for one selected prototype.
 
-        Workflow:
-        - Convert input PIL image to a NumPy RGB array (discard alpha channel if present)
-        - Normalize RGB to [0, 1] and convert to LAB
-        - Quantize LAB values to 2 decimals to increase cache hits
-        - For each pixel (LAB), compute membership for the selected prototype using
-            fuzzy_color_space.calculate_membership_for_prototype(...)
-        - Cache membership values per unique LAB triple to avoid repeated computation
-        - Optionally report progress through `progress_callback(current, total)`
-        - Convert membership [0..1] into a grayscale uint8 image [0..255]
-
-        Returns:
-            np.ndarray (H, W) uint8 grayscale image.
+        Optimized version:
+        - Converts RGB -> LAB once.
+        - Quantizes LAB to 0.01.
+        - Computes membership only for unique LAB values.
+        - Reconstructs the full image using the inverse map.
         """
-        img_np = np.array(image)
+        if selected_option < 0 or selected_option >= len(prototypes):
+            raise ValueError("Selected prototype index is out of range.")
 
-        # Remove alpha channel if present (RGBA -> RGB)
-        if img_np.shape[-1] == 4:
-            img_np = img_np[..., :3]
+        if cancel_callback and cancel_callback():
+            return None
 
-        # Normalize to [0,1]
-        img_np = img_np / 255.0
+        lab_image = self._pil_to_lab_image(image)
+        height, width = lab_image.shape[:2]
 
-        # RGB -> LAB
-        lab_image = color.rgb2lab(img_np)
+        lab_int = np.round(lab_image.reshape(-1, 3) * 100.0).astype(np.int32)
+        uniq, inv = np.unique(lab_int, axis=0, return_inverse=True)
 
-        # Quantize LAB to 0.01 to improve cache hits
-        lab_q = np.round(lab_image, 2)
-        lab_flat = lab_q.reshape(-1, 3)
+        values_for_uniq = np.empty((uniq.shape[0],), dtype=np.float32)
+        total_uniqs = int(uniq.shape[0])
 
-        selected_prototype = prototypes[selected_option]
-        print(f"Selected Prototype: {selected_prototype.label}")
-
-        membership_cache = {}
-        flattened_memberships = np.empty(lab_flat.shape[0], dtype=np.float32)
-
-        total = lab_flat.shape[0]
-        for i, lab_color in enumerate(lab_flat):
-            # Cooperative cancellation check
+        for i in range(total_uniqs):
             if cancel_callback and cancel_callback():
                 return None
 
-            key = (lab_color[0], lab_color[1], lab_color[2])
+            lab_tuple = tuple((uniq[i].astype(np.float32) / 100.0).tolist())
+            value = fuzzy_color_space.calculate_membership_for_prototype(
+                lab_tuple,
+                selected_option
+            )
+            values_for_uniq[i] = np.clip(float(value), 0.0, 1.0)
 
-            # Compute membership once per unique LAB triple
-            if key not in membership_cache:
-                membership_cache[key] = fuzzy_color_space.calculate_membership_for_prototype(
-                    lab_color, selected_option
-                )
-
-            flattened_memberships[i] = membership_cache[key]
-
-            # Progress reporting (every 5000 pixels, and also at the end)
-            if progress_callback and (i % 5000 == 0 or i == total - 1):
+            if progress_callback and (i % 500 == 0 or i == total_uniqs - 1):
                 if cancel_callback and cancel_callback():
                     return None
-                progress_callback(i + 1, total)
+                progress_callback(i + 1, total_uniqs)
 
         grayscale_image = (
-            (flattened_memberships * 255.0)
-            .reshape(lab_image.shape[0], lab_image.shape[1])
-            .astype(np.uint8)
-        )
+            values_for_uniq[inv]
+            .reshape(height, width)
+            * 255.0
+        ).astype(np.uint8)
+
         return grayscale_image
+
+    @staticmethod
+    def estimate_proto_coverage(grayscale_image_array, valid_mask):
+        """
+        Estimate the percentage of valid pixels covered by a prototype membership map.
+
+        Keeps your previous threshold behavior:
+        - binary-like maps with 255 use threshold 255
+        - continuous maps use threshold 128
+        """
+        if grayscale_image_array is None:
+            return 0.0, 128
+
+        valid_total = int(np.count_nonzero(valid_mask))
+        if valid_total == 0:
+            return 0.0, 128
+
+        if grayscale_image_array.ndim == 2:
+            unique_vals = np.unique(grayscale_image_array)
+            if unique_vals.size <= 3 and 255 in unique_vals:
+                threshold = 255
+            else:
+                threshold = 128
+
+            colored = int(np.count_nonzero((grayscale_image_array >= threshold) & valid_mask))
+        else:
+            threshold = 128
+            colored = int(np.count_nonzero(np.any(grayscale_image_array != 0, axis=-1) & valid_mask))
+
+        pct = 100.0 * (colored / valid_total)
+        return pct, threshold
+
+    def get_best_prototype_label_map(
+        self,
+        image,
+        fuzzy_color_space,
+        valid_mask=None,
+        progress_callback=None,
+        cancel_callback=None,
+    ):
+        """
+        Compute the best-prototype label map for the full image.
+
+        Returns:
+            np.ndarray of shape (H, W), dtype int32.
+            Pixels without assignment/background are -1 when valid_mask is supplied.
+        """
+        if cancel_callback and cancel_callback():
+            return None
+
+        fuzzy_color_space.precompute_pack()
+
+        lab_image = self._pil_to_lab_image(image)
+        height, width = lab_image.shape[:2]
+
+        lab_int = np.round(lab_image.reshape(-1, 3) * 100.0).astype(np.int32)
+        uniq, inv = np.unique(lab_int, axis=0, return_inverse=True)
+
+        best_for_uniq = np.empty((uniq.shape[0],), dtype=np.int32)
+        total_uniqs = int(uniq.shape[0])
+
+        for i in range(total_uniqs):
+            if cancel_callback and cancel_callback():
+                return None
+
+            lab_tuple = tuple((uniq[i].astype(np.float32) / 100.0).tolist())
+            best_idx = fuzzy_color_space.best_prototype_index_from_lab(lab_tuple)
+            best_for_uniq[i] = int(best_idx) if best_idx is not None else -1
+
+            if progress_callback and (i % 500 == 0 or i == total_uniqs - 1):
+                if cancel_callback and cancel_callback():
+                    return None
+                progress_callback(i + 1, total_uniqs)
+
+        label_map = best_for_uniq[inv].reshape(height, width).astype(np.int32)
+
+        if valid_mask is not None:
+            if valid_mask.shape != label_map.shape:
+                raise ValueError("valid_mask shape does not match the generated label map.")
+            label_map[~valid_mask] = -1
+
+        return label_map
+
+    @staticmethod
+    def build_original_palette_uint8(prototypes):
+        """
+        Build a dynamic high-contrast visualization palette in prototype order.
+        Requires: import matplotlib.pyplot as plt
+        """
+        n = len(prototypes)
+        if n == 0:
+            return np.zeros((0, 3), dtype=np.uint8)
+
+        qualitative_cmaps = ["tab20", "tab20b", "tab20c", "Set3", "Dark2", "Accent"]
+        colors = []
+
+        for cmap_name in qualitative_cmaps:
+            cmap = plt.get_cmap(cmap_name)
+            for i in range(cmap.N):
+                rgb01 = np.array(cmap(i)[:3], dtype=float)
+                colors.append((np.clip(rgb01, 0, 1) * 255).astype(np.uint8))
+                if len(colors) >= n:
+                    break
+            if len(colors) >= n:
+                break
+
+        if len(colors) < n:
+            remaining = n - len(colors)
+            hsv = plt.get_cmap("hsv", remaining)
+            for i in range(remaining):
+                rgb01 = np.array(hsv(i)[:3], dtype=float)
+                colors.append((np.clip(rgb01, 0, 1) * 255).astype(np.uint8))
+
+        palette = []
+        for i, prototype in enumerate(prototypes):
+            rgb255 = colors[i].copy()
+            if getattr(prototype, "label", "").lower() == "black":
+                rgb255 = np.array([0, 0, 0], dtype=np.uint8)
+            palette.append(rgb255)
+
+        return np.stack(palette, axis=0).astype(np.uint8)
+
+    @staticmethod
+    def build_alt_palette_uint8(prototypes, hex_color):
+        """Build the representative-color palette using the colors stored in hex_color."""
+        if isinstance(hex_color, dict):
+            hex_colors = list(hex_color.keys())
+        else:
+            hex_colors = list(hex_color or [])
+
+        alt = []
+        for i, _prototype in enumerate(prototypes):
+            rgb = np.array([0, 0, 0], dtype=np.uint8)
+
+            if i < len(hex_colors):
+                hx = str(hex_colors[i]).strip()
+                if hx.startswith("#") and len(hx) == 7:
+                    try:
+                        rgb = np.array(
+                            [int(hx[j:j + 2], 16) for j in (1, 3, 5)],
+                            dtype=np.uint8
+                        )
+                    except ValueError:
+                        rgb = np.array([0, 0, 0], dtype=np.uint8)
+
+            alt.append(rgb)
+
+        if not alt:
+            return np.zeros((0, 3), dtype=np.uint8)
+
+        return np.stack(alt, axis=0).astype(np.uint8)
+
+    @staticmethod
+    def recolor_label_map(label_map, palette_uint8):
+        """
+        Convert a label map to an RGBA image using a palette.
+        label_map == -1 remains transparent/background.
+        """
+        h, w = label_map.shape[:2]
+        recolored_rgb = np.zeros((h, w, 3), dtype=np.uint8)
+
+        valid_label_mask = (label_map >= 0) & (label_map < len(palette_uint8))
+        if np.any(valid_label_mask):
+            idx = label_map[valid_label_mask].astype(np.int32)
+            recolored_rgb[valid_label_mask] = palette_uint8[idx]
+
+        return UtilsTools._apply_alpha_to_rgb_array(recolored_rgb, valid_label_mask)
+
+
 
 
 

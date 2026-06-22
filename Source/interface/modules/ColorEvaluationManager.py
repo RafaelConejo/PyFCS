@@ -184,7 +184,7 @@ class ColorEvaluationManager:
             "DeltaE2000": "CIEDE2000", "Delta E 2000": "CIEDE2000", "ΔE00": "CIEDE2000", "DE2000": "CIEDE2000",
             "DeltaE76": "CIE76", "ΔE76": "CIE76", "DE76": "CIE76",
             "CIE94": "CIE94 Graphic Arts", "ΔE94": "CIE94 Graphic Arts",
-            "CMC": "CMC l:c", "CMC 2:1": "CMC l:c",
+            "CMC": "CMC 2:1", "CMC l:c": "CMC 2:1",
             "dL": "|ΔL*|", "ΔL": "|ΔL*|", "abs dL": "|ΔL*|",
             "dA": "|Δa*|", "Δa": "|Δa*|", "abs da": "|Δa*|",
             "dB": "|Δb*|", "Δb": "|Δb*|", "abs db": "|Δb*|",
@@ -227,6 +227,7 @@ class ColorEvaluationManager:
             "CIE76": "Euclidean distance in CIELAB. Simple but less perceptually corrected.",
             "CIE94 Graphic Arts": "CIE94 ΔE using graphic-arts weighting.",
             "CIE94 Textiles": "CIE94 ΔE using textile weighting.",
+            "CMC 2:1": "CMC 2:1 color difference. Commonly used for acceptability assessment.",
             "CMC l:c": "CMC l:c color difference. Commonly used for acceptability assessment.",
             "|ΔL*|": "Absolute lightness difference only. Chroma and hue are ignored.",
             "|Δa*|": "Absolute green-red component difference only.",
@@ -617,7 +618,7 @@ class ColorEvaluationManager:
             return float(cls.delta_e_cie94(sample_lab, prototype_lab, application="graphic arts"))
         if metric == "CIE94 Textiles":
             return float(cls.delta_e_cie94(sample_lab, prototype_lab, application="textiles"))
-        if metric == "CMC l:c":
+        if metric in ("CMC 2:1", "CMC l:c"):
             return float(cls.delta_e_cmc(sample_lab, prototype_lab, lightness=2.0, chroma=1.0))
         components = cls.calculate_component_differences(sample_lab, prototype_lab)
         if metric in components:
@@ -700,7 +701,7 @@ class ColorEvaluationManager:
             lines.append(lch_line)
             lines.append(rgb_line)
 
-        elif metric in ("CIE94 Graphic Arts", "CIE94 Textiles", "CMC l:c"):
+        elif metric in ("CIE94 Graphic Arts", "CIE94 Textiles", "CMC 2:1", "CMC l:c"):
             lines.append(lab_line)
             lines.append(lch_line)
             lines.append(rgb_line)
@@ -1062,3 +1063,372 @@ class ColorEvaluationManager:
                 pass
 
         return summary
+
+    # ============================================================================================================================================================
+    #  GUI-INDEPENDENT COLOR EVALUATION HELPERS
+    # ============================================================================================================================================================
+    @classmethod
+    def get_threshold_display_maps(cls):
+        """Return display maps used by threshold UIs."""
+        preset_display_map = {
+            "pt": "Perceptibility Threshold",
+            "at": "Acceptability Threshold",
+            "pt_at": "Perceptibility + Acceptability",
+        }
+        custom_type_display_map = {
+            "single": "Single threshold",
+            "lower_upper": "Lower and upper thresholds",
+        }
+        return preset_display_map, custom_type_display_map
+
+    @classmethod
+    def get_threshold_reverse_maps(cls):
+        """Return reverse display maps used by threshold UIs."""
+        preset_display_map, custom_type_display_map = cls.get_threshold_display_maps()
+        return (
+            {v: k for k, v in preset_display_map.items()},
+            {v: k for k, v in custom_type_display_map.items()},
+        )
+
+    @classmethod
+    def build_threshold_settings_from_ui_values(
+        cls,
+        metric_family,
+        metric,
+        mode,
+        preset_display,
+        custom_type_display,
+        single_value,
+        lower_value,
+        upper_value,
+        base_settings=None,
+    ):
+        """
+        Build normalized threshold settings from raw UI values.
+
+        The GUI still owns Tk variables, but this method owns the translation
+        between display labels and internal configuration keys.
+        """
+        settings = cls.get_default_threshold_settings()
+
+        if isinstance(base_settings, dict):
+            settings.update(base_settings)
+
+        preset_reverse_map, custom_type_reverse_map = cls.get_threshold_reverse_maps()
+
+        mode_value = str(mode).strip().lower()
+        if mode_value == "known":
+            mode_value = "default"
+
+        single_text = str(single_value).strip() if single_value is not None else ""
+        lower_text = str(lower_value).strip() if lower_value is not None else ""
+        upper_text = str(upper_value).strip() if upper_value is not None else ""
+
+        settings["metric_family"] = str(metric_family).strip()
+        settings["metric"] = str(metric).strip()
+        settings["mode"] = mode_value
+        settings["preset"] = preset_reverse_map.get(str(preset_display).strip(), "pt_at")
+        settings["custom_type"] = custom_type_reverse_map.get(str(custom_type_display).strip(), "single")
+        settings["single"] = single_text if single_text != "" else None
+        settings["lower"] = lower_text if lower_text != "" else None
+        settings["upper"] = upper_text if upper_text != "" else None
+
+        return cls.normalize_threshold_settings(settings)
+
+    @classmethod
+    def classify_metric_value(cls, value, threshold_settings=None):
+        """Public wrapper around threshold classification for a scalar metric value."""
+        return cls._classify_metric_value(value=value, threshold_settings=threshold_settings)
+
+    @staticmethod
+    def get_custom_color_input_mode_help(mode):
+        """Return labels, limits and examples for a custom color input mode."""
+        mode = str(mode).strip().upper()
+
+        if mode == "RGB":
+            return {
+                "labels": ("R", "G", "B"),
+                "limits": "Valid range: R, G, B ∈ [0, 255] (integers)",
+                "example": "Example: 120, 85, 200",
+            }
+
+        if mode == "LAB":
+            return {
+                "labels": ("L", "a", "b"),
+                "limits": "Valid range:L ∈ [0, 100], \na ∈ [-128, 127], b ∈ [-128, 127]",
+                "example": "Example: 54.2, 18.5, -32.1",
+            }
+
+        return {
+            "labels": ("HEX", "", ""),
+            "limits": "Valid format: #RRGGBB or RRGGBB",
+            "example": "Example: #7A4FD9",
+        }
+
+    @staticmethod
+    def normalize_custom_color_input(
+        input_mode,
+        value_1="",
+        value_2="",
+        value_3="",
+        hex_value="",
+        utils_tools=None,
+    ):
+        """
+        Normalize and validate a user-entered color into LAB, RGB, and HEX.
+
+        Parameters
+        ----------
+        utils_tools : module/object
+            Utility provider used by the GUI. Passing it keeps the exact same
+            conversion behavior as the existing interface.
+
+        Returns
+        -------
+        tuple
+            (ok, message, sample_lab, sample_rgb, sample_hex)
+        """
+        if utils_tools is None:
+            return False, "Color conversion utilities are not available.", None, None, None
+
+        try:
+            mode = str(input_mode).strip().upper()
+        except Exception:
+            return False, "Unsupported input mode.", None, None, None
+
+        if mode == "RGB":
+            try:
+                t1 = utils_tools.safe_text(value_1)
+                t2 = utils_tools.safe_text(value_2)
+                t3 = utils_tools.safe_text(value_3)
+
+                if not t1 or not t2 or not t3:
+                    return False, "Enter all RGB values.", None, None, None
+
+                if (
+                    not utils_tools.is_plain_rgb_integer(t1)
+                    or not utils_tools.is_plain_rgb_integer(t2)
+                    or not utils_tools.is_plain_rgb_integer(t3)
+                ):
+                    return False, "RGB values must be valid integers.", None, None, None
+
+                sample_rgb = (int(t1), int(t2), int(t3))
+
+                if not utils_tools.is_valid_rgb(sample_rgb):
+                    return False, "RGB values must be between 0 and 255.", None, None, None
+
+                sample_lab = utils_tools.rgb_to_lab(sample_rgb)
+                sample_lab = utils_tools.safe_lab_tuple(sample_lab)
+                sample_hex = utils_tools.rgb_to_hex(sample_rgb)
+
+                return True, "Valid RGB color.", sample_lab, sample_rgb, sample_hex
+
+            except Exception:
+                return False, "Invalid RGB color input.", None, None, None
+
+        if mode == "LAB":
+            try:
+                t1 = utils_tools.safe_text(value_1).replace(",", ".")
+                t2 = utils_tools.safe_text(value_2).replace(",", ".")
+                t3 = utils_tools.safe_text(value_3).replace(",", ".")
+
+                if not t1 or not t2 or not t3:
+                    return False, "Enter all LAB values.", None, None, None
+
+                L = utils_tools.safe_float(t1)
+                a = utils_tools.safe_float(t2)
+                b = utils_tools.safe_float(t3)
+
+                if L is None or a is None or b is None:
+                    return False, "LAB values must be valid numbers.", None, None, None
+
+                sample_lab = (float(L), float(a), float(b))
+
+                if not utils_tools.is_valid_lab(sample_lab):
+                    return False, "LAB values must be within L [0,100], a [-128,127], b [-128,127].", None, None, None
+
+                sample_rgb = utils_tools.lab_to_rgb(sample_lab)
+                sample_rgb = utils_tools.safe_rgb_tuple(sample_rgb)
+                sample_hex = utils_tools.rgb_to_hex(sample_rgb)
+
+                return True, "Valid LAB color.", sample_lab, sample_rgb, sample_hex
+
+            except Exception:
+                return False, "Invalid LAB color input.", None, None, None
+
+        if mode == "HEX":
+            try:
+                hex_text = utils_tools.safe_text(hex_value).upper()
+
+                if not hex_text:
+                    return False, "Enter a HEX value.", None, None, None
+
+                if not utils_tools.is_valid_hex(hex_text):
+                    return False, "HEX value must be #RRGGBB or RRGGBB.", None, None, None
+
+                sample_rgb = utils_tools.hex_to_rgb(hex_text)
+                sample_lab = utils_tools.hex_to_lab(hex_text)
+                sample_lab = utils_tools.safe_lab_tuple(sample_lab)
+                sample_hex = utils_tools.rgb_to_hex(sample_rgb)
+
+                return True, "Valid HEX color.", sample_lab, sample_rgb, sample_hex
+
+            except Exception:
+                return False, "Invalid HEX color input.", None, None, None
+
+        return False, "Unsupported input mode.", None, None, None
+
+    @staticmethod
+    def resolve_volume_limits(volume_limits=None, fuzzy_color_space=None):
+        """
+        Return volume limits for LAB plots.
+
+        Priority:
+        1. Explicit application volume limits.
+        2. Loaded fuzzy color space volume_limits / limits / domain.
+        3. Default LAB domain.
+        """
+        if volume_limits is not None:
+            return volume_limits
+
+        if fuzzy_color_space is not None:
+            for attr_name in ("volume_limits", "limits", "domain"):
+                try:
+                    candidate = getattr(fuzzy_color_space, attr_name, None)
+                    if candidate is not None:
+                        return candidate
+                except Exception:
+                    pass
+
+        class DefaultLABVolumeLimits:
+            comp1 = (0, 100)
+            comp2 = (-128, 127)
+            comp3 = (-128, 127)
+
+        return DefaultLABVolumeLimits()
+
+    @staticmethod
+    def get_active_color_evaluation_sample(vars_dict):
+        """
+        Return the most relevant color sample for global analysis modes.
+
+        Priority:
+        1. Custom comparison color, if available.
+        2. Selected prototype.
+        """
+        try:
+            if (
+                vars_dict.get("secondary_mode") == "custom"
+                and vars_dict.get("secondary_custom_lab") is not None
+                and vars_dict.get("secondary_custom_rgb") is not None
+            ):
+                return {
+                    "name": vars_dict.get("secondary_custom_name", "Custom Color"),
+                    "lab": vars_dict.get("secondary_custom_lab"),
+                    "rgb": vars_dict.get("secondary_custom_rgb"),
+                    "hex": vars_dict.get("secondary_custom_hex"),
+                    "source": "custom",
+                }
+
+            primary_label = vars_dict.get("primary_label")
+            refs_map = vars_dict.get("color_row_refs", {})
+            primary_refs = refs_map.get(primary_label)
+
+            if primary_refs:
+                return {
+                    "name": primary_label,
+                    "lab": primary_refs.get("lab"),
+                    "rgb": primary_refs.get("rgb"),
+                    "hex": primary_refs.get("hex"),
+                    "source": "prototype",
+                }
+
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def calculate_visual_component_differences(lab_1, lab_2):
+        """
+        Calculate signed component differences between two LAB colors.
+
+        Returns the keys expected by VisualManager.plot_color_evaluation_component_differences:
+        ΔL*, Δa*, Δb*, ΔC*, Δh°, ΔH*.
+        """
+        lab_1 = np.asarray(lab_1, dtype=float).reshape(-1)[:3]
+        lab_2 = np.asarray(lab_2, dtype=float).reshape(-1)[:3]
+
+        L1, a1, b1 = lab_1
+        L2, a2, b2 = lab_2
+
+        dL = float(L2 - L1)
+        da = float(a2 - a1)
+        db = float(b2 - b1)
+
+        C1 = float(np.sqrt(a1 ** 2 + b1 ** 2))
+        C2 = float(np.sqrt(a2 ** 2 + b2 ** 2))
+        dC = float(C2 - C1)
+
+        h1 = float(np.degrees(np.arctan2(b1, a1)) % 360.0)
+        h2 = float(np.degrees(np.arctan2(b2, a2)) % 360.0)
+
+        dh = h2 - h1
+
+        if dh > 180:
+            dh -= 360
+        elif dh < -180:
+            dh += 360
+
+        dEab_sq = da ** 2 + db ** 2
+        dH_sq = max(0.0, dEab_sq - dC ** 2)
+        dH = float(np.sign(dh) * np.sqrt(dH_sq))
+
+        return {
+            "ΔL*": dL,
+            "Δa*": da,
+            "Δb*": db,
+            "ΔC*": dC,
+            "Δh°": float(dh),
+            "ΔH*": dH,
+        }
+
+    @staticmethod
+    def get_color_evaluation_available_graph_keys(
+        rows,
+        secondary_mode=None,
+        has_primary=False,
+        secondary_label_available=False,
+        has_custom=False,
+        has_fuzzy_color_space=False,
+    ):
+        """
+        Return graph keys that are logically available for the current state.
+
+        The GUI can still filter these keys by checking whether each opener method exists.
+        """
+        if not rows:
+            return []
+
+        available = ["3d", "ab", "lc", "lch"]
+
+        has_row_comparison = bool(
+            secondary_mode == "row"
+            and has_primary
+            and secondary_label_available
+        )
+
+        if has_row_comparison:
+            available.append("components")
+
+        if has_custom:
+            available.append("top7")
+
+            if has_fuzzy_color_space:
+                available.append("memberships")
+
+            if has_primary:
+                available.append("components")
+
+        return available
+

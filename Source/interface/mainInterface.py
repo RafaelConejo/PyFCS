@@ -16,7 +16,6 @@ if BASE_PATH not in sys.path:
 import math
 import time
 import copy
-import uuid
 import random
 import platform
 import colorsys
@@ -27,16 +26,10 @@ import numpy as np
 import tkinter as tk
 from pathlib import Path
 from skimage import color
-import tkinter.font as tkFont
-import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageEnhance
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORMAL
-
-from PyQt5.QtCore import QUrl, QEventLoop
-from PyQt5.QtWidgets import QVBoxLayout, QWidget, QApplication, QMainWindow
-from PyQt5.QtWebEngineWidgets import QWebEngineView
 
 # --- project imports ---
 from Source.input_output.Input import Input
@@ -5599,6 +5592,13 @@ class PyFCSApp:
 
 
 
+
+
+
+
+
+
+
     # ============================================================================================================================================================
     #  FUNCTIONS IMAGE DISPLAY
     # ============================================================================================================================================================
@@ -6445,27 +6445,6 @@ class PyFCSApp:
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def _ensure_image_jobs(self):
         """Lazy-init job registry used to bind one running process per image/window."""
         if not hasattr(self, "image_jobs"):
@@ -6958,9 +6937,45 @@ class PyFCSApp:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
     # ============================================================================================================================================================
     #  FUNCTIONS IMAGE UTILS 
     # ============================================================================================================================================================
+    def _destroy_proto_options(self, window_id):
+        """Destroy and unregister the legend/prototype options panel for one floating image."""
+        self.proto_options = getattr(self, "proto_options", {})
+        info = self.proto_options.pop(window_id, None)
+
+        if not isinstance(info, dict):
+            return
+
+        canvas_item = info.get("canvas_item")
+        frame = info.get("frame")
+
+        try:
+            if canvas_item:
+                self.image_canvas.delete(canvas_item)
+        except Exception:
+            pass
+
+        try:
+            if frame and frame.winfo_exists():
+                frame.destroy()
+        except Exception:
+            pass
+
+
+
     def color_mapping(self, window_id):
         """Displays the prototype coverage mapping for a selected prototype."""
         # Check if the floating window exists
@@ -7043,7 +7058,8 @@ class PyFCSApp:
 
         if not hasattr(self, "current_protos"):
             self.current_protos = {}
-        self.current_protos[window_id] = tk.StringVar(value=0)
+        default_proto = self.color_matrix[0] if self.color_matrix else ""
+        self.current_protos[window_id] = tk.StringVar(value=default_proto)
 
         for color in self.color_matrix:
             rb = tk.Radiobutton(
@@ -7055,7 +7071,7 @@ class PyFCSApp:
                 anchor="w",
                 font=("Sans", 10),
                 relief="flat",
-                command=lambda color=color: self.get_proto_percentage(window_id)
+                command=lambda: self.get_proto_percentage(window_id)
             )
             rb.pack(fill="x", padx=5, pady=2)
 
@@ -7125,11 +7141,8 @@ class PyFCSApp:
         """
         Compute/display the prototype coverage mapping for the currently selected prototype.
 
-        Cache scope:
-            (image_key, color_space_key)
-
-        Cache key inside that scope:
-            (selected_proto_index, displayed_width, displayed_height)
+        UI/job/cache orchestration stays in the main class.
+        Image/membership computation lives in ImageManager.
         """
         if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
             self.custom_warning(
@@ -7147,6 +7160,10 @@ class PyFCSApp:
             return
 
         selected_proto = self.current_protos[window_id].get()
+        if selected_proto not in self.color_matrix:
+            self.custom_warning("Error", "Selected prototype is not available in the current Color Space.")
+            return
+
         pos = self.color_matrix.index(selected_proto)
 
         image_key = self.window_image_key[window_id]
@@ -7176,8 +7193,8 @@ class PyFCSApp:
                 processing_img = UtilsTools._pil_rgb_for_processing(source_img)
 
                 cache_key = (pos, w, h)
-
                 cached_entry = scope_cache.get(cache_key)
+
                 if cached_entry is not None:
                     if self._is_job_cancelled(window_id, cancel_event, job_id):
                         return
@@ -7198,29 +7215,20 @@ class PyFCSApp:
                         cancel_callback=lambda: cancel_event.is_set()
                     )
 
-                    # Force transparent/background pixels to 0 in the grayscale map
+                    if grayscale_image_array is None:
+                        return
+
+                    # Force transparent/background pixels to 0 in the grayscale map.
                     if grayscale_image_array.ndim == 2:
                         grayscale_image_array[~valid_mask] = 0
 
                     if self._is_job_cancelled(window_id, cancel_event, job_id):
                         return
 
-                    unique_vals = np.unique(grayscale_image_array) if grayscale_image_array.ndim == 2 else None
-                    if grayscale_image_array.ndim == 2 and unique_vals is not None and unique_vals.size <= 3 and 255 in unique_vals:
-                        thresh = 255
-                    else:
-                        thresh = 128
-
-                    if grayscale_image_array.ndim == 2:
-                        valid_total = np.count_nonzero(valid_mask)
-                        colored = np.count_nonzero((grayscale_image_array >= thresh) & valid_mask)
-                        total = valid_total
-                    else:
-                        valid_total = np.count_nonzero(valid_mask)
-                        colored = np.count_nonzero(np.any(grayscale_image_array != 0, axis=-1) & valid_mask)
-                        total = valid_total
-
-                    pct = 100.0 * (colored / total) if total else 0.0
+                    pct, thresh = self.image_manager.estimate_proto_coverage(
+                        grayscale_image_array,
+                        valid_mask
+                    )
 
                     scope_cache[cache_key] = {
                         "array": grayscale_image_array,
@@ -7235,7 +7243,10 @@ class PyFCSApp:
                         return
 
                     self.display_color_mapping(grayscale_image_array, window_id)
-                    self.image_canvas.itemconfig(f"{window_id}_pct_text", text=f"{selected_proto}: {pct:.2f}%")
+                    self.image_canvas.itemconfig(
+                        f"{window_id}_pct_text",
+                        text=f"{selected_proto}: {pct:.2f}%"
+                    )
                     self.image_canvas.tag_raise(f"{window_id}_pct_text")
 
                 self.image_canvas.after(0, _ui)
@@ -7464,15 +7475,10 @@ class PyFCSApp:
 
     def color_mapping_all(self, window_id):
         """
-        Fast Tkinter "Color Mapping All" operation.
+        Fast Tkinter Color Mapping All operation.
 
-        Main cache design:
-        - Persistent cache is stored by (image_key, color_space_key)
-        - Inside that scope we cache label_map by:
-            (width, height, prototype_labels)
-
-        This allows reopening the same image and reusing previously computed results
-        as long as the image identity and color space remain the same.
+        UI/job/cache orchestration stays here.
+        Label-map computation, palette generation and recoloring live in ImageManager.
         """
         items = self.image_canvas.find_withtag(window_id)
         if not items:
@@ -7520,23 +7526,23 @@ class PyFCSApp:
         self.CAN_APPLY_MAPPING[window_id] = False
         self.SHOW_ORIGINAL[window_id] = True
 
-        self.proto_options = getattr(self, "proto_options", {})
-        info = self.proto_options.pop(window_id, None)
-        if isinstance(info, dict):
-            frame = info.get("frame")
-            canvas_item = info.get("canvas_item")
-
-            try:
-                if canvas_item:
-                    self.image_canvas.delete(canvas_item)
-            except Exception:
-                pass
-
-            try:
-                if frame and frame.winfo_exists():
-                    frame.destroy()
-            except Exception:
-                pass
+        if hasattr(self, "_destroy_proto_options"):
+            self._destroy_proto_options(window_id)
+        else:
+            self.proto_options = getattr(self, "proto_options", {})
+            info = self.proto_options.pop(window_id, None)
+            if isinstance(info, dict):
+                try:
+                    if info.get("canvas_item"):
+                        self.image_canvas.delete(info.get("canvas_item"))
+                except Exception:
+                    pass
+                try:
+                    frame = info.get("frame")
+                    if frame and frame.winfo_exists():
+                        frame.destroy()
+                except Exception:
+                    pass
 
         def update_progress(job_id, current_step, total_steps):
             if total_steps <= 0:
@@ -7544,13 +7550,8 @@ class PyFCSApp:
             self._update_window_progress(window_id, job_id, current_step, total_steps)
 
         def build_legend_frame(prototypes, parent_canvas, palette_uint8):
-            """
-            Creates and returns the legend frame.
-
-            palette_uint8: (N,3) uint8 array with one display color per prototype.
-            """
+            """Create and return the legend frame for the current palette."""
             legend_frame = tk.Frame(parent_canvas, bg="white", relief="solid", bd=1)
-
             legend_frame.grid_rowconfigure(0, weight=1)
             legend_frame.grid_columnconfigure(0, weight=1)
 
@@ -7559,7 +7560,6 @@ class PyFCSApp:
             h_scroll = tk.Scrollbar(legend_frame, orient=tk.HORIZONTAL, command=canvas.xview)
 
             canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-
             canvas.grid(row=0, column=0, sticky="nsew")
             v_scroll.grid(row=0, column=1, sticky="ns")
             h_scroll.grid(row=1, column=0, sticky="ew")
@@ -7614,76 +7614,85 @@ class PyFCSApp:
 
             return legend_frame
 
-        def build_original_palette_uint8():
-            """
-            Build a dynamic high-contrast palette in prototype order.
+        def update_ui(recolored_image, new_legend_frame):
+            """Update the UI safely from the main thread."""
+            try:
+                self.modified_image[window_id] = recolored_image
 
-            The palette is intended only for visualization. It supports any number
-            of prototypes by combining several qualitative Matplotlib colormaps and,
-            if needed, falling back to HSV only after the qualitative colors are used.
-            """
-            n = len(self.prototypes)
-
-            qualitative_cmaps = ["tab20", "tab20b", "tab20c", "Set3", "Dark2", "Accent"]
-            colors = []
-
-            for cmap_name in qualitative_cmaps:
-                cmap = plt.get_cmap(cmap_name)
-                cmap_size = cmap.N
-
-                for i in range(cmap_size):
-                    rgb01 = np.array(cmap(i)[:3], dtype=float)
-                    rgb255 = (np.clip(rgb01, 0, 1) * 255).astype(np.uint8)
-                    colors.append(rgb255)
-
-                    if len(colors) >= n:
-                        break
-
-                if len(colors) >= n:
-                    break
-
-            # Fallback if there are more prototypes than qualitative colors
-            if len(colors) < n:
-                remaining = n - len(colors)
-                hsv = plt.get_cmap("hsv", remaining)
-
-                for i in range(remaining):
-                    rgb01 = np.array(hsv(i)[:3], dtype=float)
-                    rgb255 = (np.clip(rgb01, 0, 1) * 255).astype(np.uint8)
-                    colors.append(rgb255)
-
-            palette = []
-
-            for i, p in enumerate(self.prototypes):
-                rgb255 = colors[i].copy()
-
-                # Optional: preserve black if a black prototype still exists in old color spaces
-                if getattr(p, "label", "").lower() == "black":
-                    rgb255 = np.array([0, 0, 0], dtype=np.uint8)
-
-                palette.append(rgb255)
-
-            return np.stack(palette, axis=0).astype(np.uint8)
-
-        def build_alt_palette_uint8():
-            """Build the alternate palette using the colors stored in self.hex_color."""
-            hex_colors = list(self.hex_color.keys())
-            alt = []
-            for i, _p in enumerate(self.prototypes):
-                if i < len(hex_colors):
-                    hx = hex_colors[i]
-                    rgb = np.array([int(hx[j:j + 2], 16) for j in (1, 3, 5)], dtype=np.uint8)
+                if recolored_image.ndim == 3 and recolored_image.shape[-1] == 4:
+                    pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGBA")
                 else:
-                    rgb = np.array([0, 0, 0], dtype=np.uint8)
-                alt.append(rgb)
-            return np.stack(alt, axis=0).astype(np.uint8)
+                    pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGB")
+
+                img_tk = ImageTk.PhotoImage(pil_to_show)
+                self.floating_images[window_id] = img_tk
+
+                if hasattr(self, "display_pil"):
+                    self.display_pil[window_id] = pil_to_show
+
+                image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
+                if image_items:
+                    self.image_canvas.itemconfig(image_items[0], image=img_tk)
+                else:
+                    self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
+
+                # Remove previous legend canvas item before adding the new one.
+                if hasattr(self, "_destroy_proto_options"):
+                    self._destroy_proto_options(window_id)
+                else:
+                    self.proto_options = getattr(self, "proto_options", {})
+                    old_info = self.proto_options.pop(window_id, None)
+                    if isinstance(old_info, dict):
+                        try:
+                            if old_info.get("canvas_item"):
+                                self.image_canvas.delete(old_info.get("canvas_item"))
+                        except Exception:
+                            pass
+                        try:
+                            old_frame = old_info.get("frame")
+                            if old_frame and old_frame is not new_legend_frame and old_frame.winfo_exists():
+                                old_frame.destroy()
+                        except Exception:
+                            pass
+
+                bbox = self.image_canvas.bbox(items[0])
+                if not bbox:
+                    return
+
+                x1, y1, x2, y2 = bbox
+                frame_x = x2 + 10
+                frame_y = y1
+                img_h = (y2 - y1)
+                desired_w = 150
+                desired_h = min(300, img_h)
+
+                legend_item = self.image_canvas.create_window(
+                    frame_x,
+                    frame_y,
+                    window=new_legend_frame,
+                    anchor="nw",
+                    width=desired_w,
+                    height=desired_h,
+                    tags=(f"{window_id}_legend", "legend")
+                )
+
+                btn = tk.Button(
+                    new_legend_frame,
+                    text="Alt. Colors",
+                    command=lambda: recolor(window_id)
+                )
+                btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+
+                self.proto_options[window_id] = {
+                    "frame": new_legend_frame,
+                    "canvas_item": legend_item
+                }
+
+            except Exception as e:
+                self.custom_warning("Display Error", f"Error displaying the image: {e}")
 
         def recolor(window_id):
-            """
-            Switch displayed palette without recomputing memberships.
-            Reuses cached label_map + palettes from the persistent cache.
-            Preserves transparency for pixels outside the tooth mask.
-            """
+            """Switch displayed palette without recomputing memberships."""
             if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
                 self.custom_warning(
                     "Old Color Space",
@@ -7694,10 +7703,7 @@ class PyFCSApp:
             if not self._window_exists(window_id):
                 return
 
-            if not hasattr(self, "cm_cache_by_image"):
-                return
-
-            scope_cache = self.cm_cache_by_image.get(cache_scope)
+            scope_cache = getattr(self, "cm_cache_by_image", {}).get(cache_scope)
             if not scope_cache:
                 return
 
@@ -7709,30 +7715,11 @@ class PyFCSApp:
             palettes = cache_pack["palettes"]
             current = cache_pack["scheme"]
 
-            # Toggle between representative colors and high-contrast colors
             new = "original" if current == "alt" else "alt"
             cache_pack["scheme"] = new
 
             palette = palettes[new]
-
-            recolored_rgb = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
-
-            # Only valid tooth pixels are recolored.
-            # Invalid/background pixels are label_map == -1 and remain transparent.
-            valid_label_mask = (label_map >= 0)
-
-            if np.any(valid_label_mask):
-                recolored_rgb[valid_label_mask] = palette[label_map[valid_label_mask].astype(np.int32)]
-
-            recolored_image = UtilsTools._apply_alpha_to_rgb_array(recolored_rgb, valid_label_mask)
-
-            old_legend_frame = cache_pack.get("legend_frame")
-            if old_legend_frame:
-                try:
-                    if old_legend_frame.winfo_exists():
-                        old_legend_frame.destroy()
-                except Exception:
-                    pass
+            recolored_image = self.image_manager.recolor_label_map(label_map, palette)
 
             new_legend_frame = build_legend_frame(self.prototypes, self.image_canvas, palette)
             cache_pack["legend_frame"] = new_legend_frame
@@ -7763,68 +7750,32 @@ class PyFCSApp:
 
                 proto_labels = tuple([p.label for p in self.prototypes])
                 cache_key = (w, h, proto_labels)
-
                 label_map = scope_cache.get(cache_key)
 
-                self.fuzzy_color_space.precompute_pack()
-
-                if self._is_job_cancelled(window_id, cancel_event, job_id):
-                    return
-
                 if label_map is None:
-                    img_np = np.array(processing_img)
+                    label_map = self.image_manager.get_best_prototype_label_map(
+                        image=processing_img,
+                        fuzzy_color_space=self.fuzzy_color_space,
+                        valid_mask=valid_mask,
+                        progress_callback=lambda current, total: update_progress(job_id, current, total),
+                        cancel_callback=lambda: self._is_job_cancelled(window_id, cancel_event, job_id)
+                    )
 
-                    img01 = img_np.astype(np.float32) / 255.0
-                    lab_img = color.rgb2lab(img01)
+                    if label_map is None:
+                        return
 
-                    lab_q = np.round(lab_img, 2)
-                    height, width = lab_q.shape[0], lab_q.shape[1]
-
-                    lab_int = np.round(lab_q.reshape(-1, 3) * 100.0).astype(np.int32)
-                    uniq, inv = np.unique(lab_int, axis=0, return_inverse=True)
-
-                    best_for_uniq = np.empty((uniq.shape[0],), dtype=np.int32)
-
-                    total_uniqs = int(uniq.shape[0])
-                    last_update = time.perf_counter()
-
-                    for i in range(total_uniqs):
-                        if self._is_job_cancelled(window_id, cancel_event, job_id):
-                            return
-
-                        L_i, A_i, B_i = uniq[i].astype(np.float32) / 100.0
-                        best_idx = self.fuzzy_color_space.best_prototype_index_from_lab((L_i, A_i, B_i))
-                        best_for_uniq[i] = int(best_idx)
-
-                        now = time.perf_counter()
-                        if now - last_update > 0.03 or i == total_uniqs - 1:
-                            update_progress(job_id, i + 1, total_uniqs)
-                            last_update = now
-
-                    label_map = best_for_uniq[inv].reshape(height, width).astype(np.int32)
-
-                    # Transparent pixels are not assigned to any prototype
-                    label_map[~valid_mask] = -1
                     scope_cache[cache_key] = label_map
 
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
 
-                original_palette = build_original_palette_uint8()  # high-contrast HSV colors
-                alt_palette = build_alt_palette_uint8()            # representative color-space colors
+                original_palette = self.image_manager.build_original_palette_uint8(self.prototypes)
+                alt_palette = self.image_manager.build_alt_palette_uint8(self.prototypes, self.hex_color)
 
-                # Show representative color-space colors first
+                # Show representative color-space colors first.
                 scheme = "alt"
                 palette = alt_palette
-
-                recolored_rgb = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
-                valid_label_mask = (label_map >= 0)
-
-                if np.any(valid_label_mask):
-                    recolored_rgb[valid_label_mask] = palette[label_map[valid_label_mask].astype(np.int32)]
-
-                recolored_image = UtilsTools._apply_alpha_to_rgb_array(recolored_rgb, valid_label_mask)
-
+                recolored_image = self.image_manager.recolor_label_map(label_map, palette)
                 new_legend_frame = build_legend_frame(self.prototypes, self.image_canvas, palette)
 
                 scope_cache["last_pack"] = {
@@ -7856,74 +7807,19 @@ class PyFCSApp:
                     lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}")
                 )
 
-        def update_ui(recolored_image, new_legend_frame):
-            """Update the UI safely from the main thread."""
-            try:
-                self.modified_image[window_id] = recolored_image
-
-                if recolored_image.ndim == 3 and recolored_image.shape[-1] == 4:
-                    pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGBA")
-                else:
-                    pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGB")
-
-                img_tk = ImageTk.PhotoImage(pil_to_show)
-                self.floating_images[window_id] = img_tk
-
-                if hasattr(self, "display_pil"):
-                    self.display_pil[window_id] = pil_to_show
-
-                image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
-                if image_items:
-                    self.image_canvas.itemconfig(image_items[0], image=img_tk)
-                else:
-                    self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
-
-                x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
-                frame_x = x2 + 10
-                frame_y = y1
-                img_h = (y2 - y1)
-                desired_w = 150
-                desired_h = min(300, img_h)
-
-                legend_item = self.image_canvas.create_window(
-                    frame_x, frame_y,
-                    window=new_legend_frame,
-                    anchor="nw",
-                    width=desired_w,
-                    height=desired_h,
-                    tags=(f"{window_id}_legend", "legend")
-                )
-
-                current_scheme = "alt"
-
-                try:
-                    scope_cache = self.cm_cache_by_image.get(cache_scope, {})
-                    cache_pack = scope_cache.get("last_pack", {})
-                    current_scheme = cache_pack.get("scheme", "alt")
-                except Exception:
-                    pass
-
-                #button_text = "High-contrast Colors" if current_scheme == "alt" else "Representative Colors"
-                button_text = "Alt. Colors"
-
-                btn = tk.Button(
-                    new_legend_frame,
-                    text=button_text,
-                    command=lambda: recolor(window_id)
-                )
-                btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
-
-                self.proto_options[window_id] = {
-                    "frame": new_legend_frame,
-                    "canvas_item": legend_item
-                }
-
-            except Exception as e:
-                self.custom_warning("Display Error", f"Error displaying the image: {e}")
-
         job_id = self._start_window_job(window_id, "color_mapping_all", run_process)
         if job_id is not None:
             self._show_window_loading(window_id, "Color Mapping All...")
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -8097,6 +7993,11 @@ class PyFCSApp:
 
 
 
+
+
+
+
+
     # ============================================================================================================================================================
     #  FUNCTIONS DISPLAY PIXEL INFO
     # ============================================================================================================================================================
@@ -8130,25 +8031,14 @@ class PyFCSApp:
 
     def _get_threshold_display_maps(self):
         """Return display maps used by all threshold UIs."""
-        preset_display_map = {
-            "pt": "Perceptibility Threshold",
-            "at": "Acceptability Threshold",
-            "pt_at": "Perceptibility + Acceptability"
-        }
-        custom_type_display_map = {
-            "single": "Single threshold",
-            "lower_upper": "Lower and upper thresholds"
-        }
-        return preset_display_map, custom_type_display_map
+        manager = self._get_color_evaluation_manager()
+        return manager.get_threshold_display_maps()
 
 
     def _get_threshold_reverse_maps(self):
         """Return reverse display maps used by all threshold UIs."""
-        preset_display_map, custom_type_display_map = self._get_threshold_display_maps()
-        return (
-            {v: k for k, v in preset_display_map.items()},
-            {v: k for k, v in custom_type_display_map.items()}
-        )
+        manager = self._get_color_evaluation_manager()
+        return manager.get_threshold_reverse_maps()
 
 
     def _create_shared_threshold_vars(self):
@@ -8224,31 +8114,21 @@ class PyFCSApp:
     def _sync_threshold_settings_from_vars(self, vars_dict):
         """
         Persist threshold UI values into self.threshold_settings.
+        Translation/normalization logic lives in ColorEvaluationManager.
         """
-        preset_reverse_map, custom_type_reverse_map = self._get_threshold_reverse_maps()
-
-        mode_value = vars_dict["threshold_mode_var"].get().strip().lower()
-        if mode_value == "known":
-            mode_value = "default"
-
-        selected_preset_display = vars_dict["threshold_preset_var"].get().strip()
-        selected_custom_type_display = vars_dict["threshold_custom_type_var"].get().strip()
-
-        single_text = vars_dict["threshold_single_var"].get().strip()
-        lower_text = vars_dict["threshold_lower_var"].get().strip()
-        upper_text = vars_dict["threshold_upper_var"].get().strip()
-
-        self.threshold_settings["metric_family"] = vars_dict["threshold_metric_family_var"].get().strip()
-        self.threshold_settings["metric"] = vars_dict["threshold_metric_var"].get().strip()
-        self.threshold_settings["mode"] = mode_value
-        self.threshold_settings["preset"] = preset_reverse_map.get(selected_preset_display, "pt_at")
-        self.threshold_settings["custom_type"] = custom_type_reverse_map.get(selected_custom_type_display, "single")
-        self.threshold_settings["single"] = single_text if single_text != "" else None
-        self.threshold_settings["lower"] = lower_text if lower_text != "" else None
-        self.threshold_settings["upper"] = upper_text if upper_text != "" else None
-
         manager = self._get_color_evaluation_manager()
-        self.threshold_settings = manager.normalize_threshold_settings(self.threshold_settings)
+
+        self.threshold_settings = manager.build_threshold_settings_from_ui_values(
+            metric_family=vars_dict["threshold_metric_family_var"].get(),
+            metric=vars_dict["threshold_metric_var"].get(),
+            mode=vars_dict["threshold_mode_var"].get(),
+            preset_display=vars_dict["threshold_preset_var"].get(),
+            custom_type_display=vars_dict["threshold_custom_type_var"].get(),
+            single_value=vars_dict["threshold_single_var"].get(),
+            lower_value=vars_dict["threshold_lower_var"].get(),
+            upper_value=vars_dict["threshold_upper_var"].get(),
+            base_settings=getattr(self, "threshold_settings", None),
+        )
 
 
     
@@ -10561,7 +10441,6 @@ class PyFCSApp:
             refresh_threshold_section(proto_lab=None)
 
 
-
     def _parse_positive_threshold(self, value):
         """
         Compatibility wrapper. Logic lives in ColorEvaluationManager.
@@ -10590,6 +10469,13 @@ class PyFCSApp:
             metric=metric,
             threshold_settings=threshold_settings or self.threshold_settings
         )
+
+
+
+
+
+
+
 
 
 
@@ -13423,28 +13309,11 @@ class PyFCSApp:
 
 
     def _get_custom_color_input_mode_help(self, mode):
-        """Return labels, limits and examples for the selected custom color input mode."""
-        mode = str(mode).strip().upper()
-
-        if mode == "RGB":
-            return {
-                "labels": ("R", "G", "B"),
-                "limits": "Valid range: R, G, B ∈ [0, 255] (integers)",
-                "example": "Example: 120, 85, 200",
-            }
-
-        if mode == "LAB":
-            return {
-                "labels": ("L", "a", "b"),
-                "limits": "Valid range:L ∈ [0, 100], \na ∈ [-128, 127], b ∈ [-128, 127]",
-                "example": "Example: 54.2, 18.5, -32.1",
-            }
-
-        return {
-            "labels": ("HEX", "", ""),
-            "limits": "Valid format: #RRGGBB or RRGGBB",
-            "example": "Example: #7A4FD9",
-        }
+        """
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
+        """
+        manager = self._get_color_evaluation_manager()
+        return manager.get_custom_color_input_mode_help(mode)
 
 
 
@@ -14626,43 +14495,10 @@ class PyFCSApp:
 
     def _get_active_color_evaluation_sample(self, vars_dict):
         """
-        Return the most relevant color sample for global analysis modes.
-
-        Priority:
-        1. Custom comparison color, if available.
-        2. Selected prototype.
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
         """
-        try:
-            if (
-                vars_dict.get("secondary_mode") == "custom"
-                and vars_dict.get("secondary_custom_lab") is not None
-                and vars_dict.get("secondary_custom_rgb") is not None
-            ):
-                return {
-                    "name": vars_dict.get("secondary_custom_name", "Custom Color"),
-                    "lab": vars_dict.get("secondary_custom_lab"),
-                    "rgb": vars_dict.get("secondary_custom_rgb"),
-                    "hex": vars_dict.get("secondary_custom_hex"),
-                    "source": "custom"
-                }
-
-            primary_label = vars_dict.get("primary_label")
-            refs_map = vars_dict.get("color_row_refs", {})
-            primary_refs = refs_map.get(primary_label)
-
-            if primary_refs:
-                return {
-                    "name": primary_label,
-                    "lab": primary_refs.get("lab"),
-                    "rgb": primary_refs.get("rgb"),
-                    "hex": primary_refs.get("hex"),
-                    "source": "prototype"
-                }
-
-        except Exception:
-            pass
-
-        return None
+        manager = self._get_color_evaluation_manager()
+        return manager.get_active_color_evaluation_sample(vars_dict)
     
 
     def _classify_for_active_thresholds(self, metric_value):
@@ -14670,12 +14506,10 @@ class PyFCSApp:
         Classify the active scalar metric value using the active threshold configuration.
         """
         manager = self._get_color_evaluation_manager()
-
-        result = manager._classify_metric_value(
+        result = manager.classify_metric_value(
             value=metric_value,
-            threshold_settings=self.threshold_settings
+            threshold_settings=self.threshold_settings,
         )
-
         return result.get("class_label", "Unavailable"), result.get("class_order", 9)
 
 
@@ -14784,147 +14618,32 @@ class PyFCSApp:
 
     def _normalize_custom_color_input(self, input_mode, value_1="", value_2="", value_3="", hex_value=""):
         """
-        Normalize and validate a user-entered color into LAB, RGB, and HEX.
-
-        Returns
-        -------
-        tuple
-            (ok, message, sample_lab, sample_rgb, sample_hex)
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
         """
-        try:
-            mode = str(input_mode).strip().upper()
-        except Exception:
-            return False, "Unsupported input mode.", None, None, None
+        manager = self._get_color_evaluation_manager()
 
-        # =========================
-        # RGB
-        # =========================
-        if mode == "RGB":
-            try:
-                t1 = UtilsTools.safe_text(value_1)
-                t2 = UtilsTools.safe_text(value_2)
-                t3 = UtilsTools.safe_text(value_3)
-
-                if not t1 or not t2 or not t3:
-                    return False, "Enter all RGB values.", None, None, None
-
-                if (
-                    not UtilsTools.is_plain_rgb_integer(t1)
-                    or not UtilsTools.is_plain_rgb_integer(t2)
-                    or not UtilsTools.is_plain_rgb_integer(t3)
-                ):
-                    return False, "RGB values must be valid integers.", None, None, None
-
-                sample_rgb = (int(t1), int(t2), int(t3))
-
-                if not UtilsTools.is_valid_rgb(sample_rgb):
-                    return False, "RGB values must be between 0 and 255.", None, None, None
-
-                sample_lab = UtilsTools.rgb_to_lab(sample_rgb)
-                sample_lab = UtilsTools.safe_lab_tuple(sample_lab)
-
-                sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
-
-                return True, "Valid RGB color.", sample_lab, sample_rgb, sample_hex
-
-            except Exception:
-                return False, "Invalid RGB color input.", None, None, None
-
-        # =========================
-        # LAB
-        # =========================
-        if mode == "LAB":
-            try:
-                t1 = UtilsTools.safe_text(value_1).replace(",", ".")
-                t2 = UtilsTools.safe_text(value_2).replace(",", ".")
-                t3 = UtilsTools.safe_text(value_3).replace(",", ".")
-
-                if not t1 or not t2 or not t3:
-                    return False, "Enter all LAB values.", None, None, None
-
-                L = UtilsTools.safe_float(t1)
-                a = UtilsTools.safe_float(t2)
-                b = UtilsTools.safe_float(t3)
-
-                if L is None or a is None or b is None:
-                    return False, "LAB values must be valid numbers.", None, None, None
-
-                sample_lab = (float(L), float(a), float(b))
-
-                if not UtilsTools.is_valid_lab(sample_lab):
-                    return False, "LAB values must be within L [0,100], a [-128,127], b [-128,127].", None, None, None
-
-                sample_rgb = UtilsTools.lab_to_rgb(sample_lab)
-                sample_rgb = UtilsTools.safe_rgb_tuple(sample_rgb)
-
-                sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
-
-                return True, "Valid LAB color.", sample_lab, sample_rgb, sample_hex
-
-            except Exception:
-                return False, "Invalid LAB color input.", None, None, None
-
-        # =========================
-        # HEX
-        # =========================
-        if mode == "HEX":
-            try:
-                hex_text = UtilsTools.safe_text(hex_value).upper()
-
-                if not hex_text:
-                    return False, "Enter a HEX value.", None, None, None
-
-                if not UtilsTools.is_valid_hex(hex_text):
-                    return False, "HEX value must be #RRGGBB or RRGGBB.", None, None, None
-
-                sample_rgb = UtilsTools.hex_to_rgb(hex_text)
-                sample_lab = UtilsTools.hex_to_lab(hex_text)
-                sample_lab = UtilsTools.safe_lab_tuple(sample_lab)
-
-                sample_hex = UtilsTools.rgb_to_hex(sample_rgb)
-
-                return True, "Valid HEX color.", sample_lab, sample_rgb, sample_hex
-
-            except Exception:
-                return False, "Invalid HEX color input.", None, None, None
-
-        return False, "Unsupported input mode.", None, None, None
+        return manager.normalize_custom_color_input(
+            input_mode=input_mode,
+            value_1=value_1,
+            value_2=value_2,
+            value_3=value_3,
+            hex_value=hex_value,
+            utils_tools=UtilsTools,
+        )
 
 
 
 
     def _get_color_evaluation_volume_limits(self, vars_dict):
         """
-        Return volume limits for LAB plots.
-
-        Priority:
-        1. self.volume_limits
-        2. loaded fuzzy color space volume_limits
-        3. default LAB domain
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
         """
-        volume_limits = getattr(self, "volume_limits", None)
+        manager = self._get_color_evaluation_manager()
 
-        if volume_limits is not None:
-            return volume_limits
-
-        fuzzy_cs = vars_dict.get("loaded_fuzzy_color_space")
-
-        if fuzzy_cs is not None:
-            for attr_name in ("volume_limits", "limits", "domain"):
-                try:
-                    candidate = getattr(fuzzy_cs, attr_name, None)
-                    if candidate is not None:
-                        return candidate
-                except Exception:
-                    pass
-
-        # Fallback object compatible with VisualManager.clip_face_to_volume()
-        class DefaultLABVolumeLimits:
-            comp1 = (0, 100)       # L*
-            comp2 = (-128, 127)    # a*
-            comp3 = (-128, 127)    # b*
-
-        return DefaultLABVolumeLimits()
+        return manager.resolve_volume_limits(
+            volume_limits=getattr(self, "volume_limits", None),
+            fuzzy_color_space=vars_dict.get("loaded_fuzzy_color_space"),
+        )
     
 
 
@@ -15340,47 +15059,10 @@ class PyFCSApp:
 
     def _calculate_color_evaluation_component_differences(self, lab_1, lab_2):
         """
-        Calculate signed component differences between two LAB colors.
-
-        Returns keys expected by VisualManager.plot_color_evaluation_component_differences:
-        ΔL*, Δa*, Δb*, ΔC*, Δh°, ΔH*
+        Compatibility wrapper. Logic lives in ColorEvaluationManager.
         """
-        lab_1 = np.asarray(lab_1, dtype=float).reshape(-1)[:3]
-        lab_2 = np.asarray(lab_2, dtype=float).reshape(-1)[:3]
-
-        L1, a1, b1 = lab_1
-        L2, a2, b2 = lab_2
-
-        dL = float(L2 - L1)
-        da = float(a2 - a1)
-        db = float(b2 - b1)
-
-        C1 = float(np.sqrt(a1 ** 2 + b1 ** 2))
-        C2 = float(np.sqrt(a2 ** 2 + b2 ** 2))
-        dC = float(C2 - C1)
-
-        h1 = float(np.degrees(np.arctan2(b1, a1)) % 360.0)
-        h2 = float(np.degrees(np.arctan2(b2, a2)) % 360.0)
-
-        dh = h2 - h1
-
-        if dh > 180:
-            dh -= 360
-        elif dh < -180:
-            dh += 360
-
-        dEab_sq = da ** 2 + db ** 2
-        dH_sq = max(0.0, dEab_sq - dC ** 2)
-        dH = float(np.sign(dh) * np.sqrt(dH_sq))
-
-        return {
-            "ΔL*": dL,
-            "Δa*": da,
-            "Δb*": db,
-            "ΔC*": dC,
-            "Δh°": float(dh),
-            "ΔH*": dH,
-        }
+        manager = self._get_color_evaluation_manager()
+        return manager.calculate_visual_component_differences(lab_1, lab_2)
 
 
     def _show_color_eval_plotly_figure_in_browser(
@@ -15400,24 +15082,12 @@ class PyFCSApp:
     def _get_color_evaluation_available_graph_keys(self, vars_dict):
         """
         Return the graph buttons that should be visible according to the current state.
-
-        Rules:
-        - Always available with a valid color space:
-            3D LAB, a*b*, L*C*, LCh
-        - Available only with row/custom comparison:
-            Components Δ
-        - Available only with custom/sample color:
-            Top 7
-        - Available only with custom/sample color and fuzzy color space:
-            Memberships
+        The state logic lives in ColorEvaluationManager; the GUI only filters by available openers.
         """
+        manager = self._get_color_evaluation_manager()
+
         data_source = vars_dict.get("loaded_space_data") or {}
         rows = self._extract_color_space_rows(data_source)
-
-        if not rows:
-            return []
-
-        available = ["3d", "ab", "lc", "lch"]
 
         secondary_mode = vars_dict.get("secondary_mode")
         has_primary = vars_dict.get("primary_label") is not None
@@ -15429,25 +15099,15 @@ class PyFCSApp:
             and vars_dict.get("secondary_custom_hex") is not None
         )
 
-        has_row_comparison = (
-            secondary_mode == "row"
-            and vars_dict.get("secondary_label") is not None
-            and has_primary
+        available = manager.get_color_evaluation_available_graph_keys(
+            rows=rows,
+            secondary_mode=secondary_mode,
+            has_primary=has_primary,
+            secondary_label_available=vars_dict.get("secondary_label") is not None,
+            has_custom=has_custom,
+            has_fuzzy_color_space=vars_dict.get("loaded_fuzzy_color_space") is not None,
         )
 
-        if has_row_comparison:
-            available.append("components")
-
-        if has_custom:
-            available.append("top7")
-
-            if vars_dict.get("loaded_fuzzy_color_space") is not None:
-                available.append("memberships")
-
-            if has_primary:
-                available.append("components")
-
-        # Keep only buttons whose opener actually exists.
         method_map = {
             "3d": "_open_color_evaluation_3d_plot",
             "ab": "_open_color_evaluation_ab_plot",
