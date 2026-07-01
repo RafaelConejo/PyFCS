@@ -78,6 +78,13 @@ class PyFCSApp:
         self.display_pil = {}
         self.image_jobs = {}
 
+        # Floating image viewport zoom state
+        self.image_view_source = {}
+        self.image_view_state = {}
+        self._image_zoom_hover_window = None
+        self._image_zoom_callbacks = {}
+        self._image_zoom_mousewheel_bound = False
+
         # Additional runtime state
         self.rgb_data = []
         self.graph_widget = None
@@ -3262,6 +3269,77 @@ class PyFCSApp:
         update_selected_count()
 
 
+    def _get_best_image_source_pil(self, window_id, prefer_current_view=True, rgb=True):
+        """
+        Return the best available PIL image source for image tools.
+
+        If prefer_current_view=True:
+            Use the current visible source first. This may be Original, Color Mapping,
+            or Color Mapping All.
+
+        If prefer_current_view=False:
+            Use the real original image first. This is the correct mode for:
+            - Image-Based Color Space Creation
+            - Manual color picking
+            - Automatic color detection
+        """
+        def _to_pil(obj):
+            if isinstance(obj, Image.Image):
+                return obj.convert("RGB") if rgb else obj.copy()
+
+            if isinstance(obj, np.ndarray):
+                arr = obj
+
+                if arr.dtype != np.uint8:
+                    arr = np.clip(arr, 0, 255).astype(np.uint8)
+
+                if arr.ndim == 2:
+                    img = Image.fromarray(arr, "L")
+                    return img.convert("RGB") if rgb else img
+
+                if arr.ndim == 3:
+                    if arr.shape[2] == 4:
+                        img = Image.fromarray(arr, "RGBA")
+                        return img.convert("RGB") if rgb else img
+
+                    if arr.shape[2] >= 3:
+                        img = Image.fromarray(arr[:, :, :3], "RGB")
+                        return img.convert("RGB") if rgb else img
+
+            if isinstance(obj, str) and os.path.exists(obj):
+                img = Image.open(obj)
+                return img.convert("RGB") if rgb else img
+
+            raise ValueError("Unsupported image format.")
+
+        candidates = []
+
+        if prefer_current_view:
+            candidates.append(("image_view_source", getattr(self, "image_view_source", {}).get(window_id)))
+            candidates.append(("display_pil", getattr(self, "display_pil", {}).get(window_id)))
+
+        # Original image priority.
+        candidates.append(("pil_images_original", getattr(self, "pil_images_original", {}).get(window_id)))
+
+        # Reload from original file path if needed.
+        if hasattr(self, "load_images_names") and window_id in self.load_images_names:
+            candidates.append(("load_images_names", self.load_images_names.get(window_id)))
+
+        # Last fallback only.
+        candidates.append(("images", getattr(self, "images", {}).get(window_id)))
+
+        for _name, obj in candidates:
+            if obj is None:
+                continue
+
+            try:
+                return _to_pil(obj)
+            except Exception:
+                continue
+
+        raise ValueError(f"No valid image source found for window_id: {window_id}")
+
+
     def _open_image_creation_tool_window(self, parent_popup, colors, target_frame, update_selected_count):
         """
         Open the right-side image tool window.
@@ -3323,11 +3401,9 @@ class PyFCSApp:
                 screen_w = parent_popup.winfo_screenwidth()
                 screen_h = parent_popup.winfo_screenheight()
 
-                # If it does not fit on the right, place it on the left.
                 if x + WIN_W > screen_w:
                     x = max(0, px - WIN_W - gap)
 
-                # Keep it vertically visible.
                 if y + WIN_H > screen_h:
                     y = max(0, screen_h - WIN_H - 40)
 
@@ -3639,11 +3715,11 @@ class PyFCSApp:
         )
         plus_button.pack(side="left", padx=(0, 12))
 
-        # Small explanation
         tk.Label(
             auto_card,
             text=(
-                "If too many colors are detected, try decreasing it; if too few are detected, try increasing it."
+                "If too many colors are detected, try decreasing it; "
+                "if too few are detected, try increasing it."
             ),
             bg="#fafafa",
             fg="#666666",
@@ -3844,8 +3920,18 @@ class PyFCSApp:
                 self.custom_warning("No Image Selected", "Select an image first.", parent=win)
                 return
 
-            if window_id not in self.images:
-                self.custom_warning("Image Not Available", "Selected image is not available.", parent=win)
+            try:
+                detection_img = self._get_best_image_source_pil(
+                    window_id,
+                    prefer_current_view=False,
+                    rgb=True
+                )
+            except Exception as e:
+                self.custom_warning(
+                    "Image Not Available",
+                    f"Selected image is not available:\n{e}",
+                    parent=win
+                )
                 return
 
             set_tool_busy(True)
@@ -3856,9 +3942,12 @@ class PyFCSApp:
             def worker():
                 try:
                     detected_colors = self.image_manager.get_fcs_image(
-                        self.images[window_id],
+                        detection_img,
                         current_threshold,
-                        current_min_samples
+                        current_min_samples,
+                        max_pixels=120000,
+                        max_side=800,
+                        lab_quantization=0.75
                     )
 
                     def finish_ok():
@@ -3927,6 +4016,17 @@ class PyFCSApp:
         self._manual_img_canvas.bind("<ButtonPress-1>", self._manual_on_mouse_down)
         self._manual_img_canvas.bind("<B1-Motion>", self._manual_on_mouse_drag)
         self._manual_img_canvas.bind("<ButtonRelease-1>", self._manual_on_mouse_up)
+
+        # Manual picker zoom
+        self._manual_img_canvas.bind("<MouseWheel>", self._manual_on_mousewheel, add="+")
+        self._manual_img_canvas.bind("<Button-4>", self._manual_on_linux_zoom_in, add="+")
+        self._manual_img_canvas.bind("<Button-5>", self._manual_on_linux_zoom_out, add="+")
+
+        # Optional reset zoom
+        self._manual_img_canvas.bind(
+            "<Double-Button-3>",
+            lambda event: self._manual_apply_zoom(reset=True)
+        )
 
         def on_close():
             if busy_state.get("running", False):
@@ -4030,13 +4130,19 @@ class PyFCSApp:
             self.custom_warning(message="Select an image first.")
             return
 
-        if window_id not in self.images:
+        try:
+            detection_img = self._get_best_image_source_pil(
+                window_id,
+                prefer_current_view=False,
+                rgb=True
+            )
+        except Exception:
             self.custom_warning(message="Selected image is not available.")
             return
 
         try:
             detected_colors = self.image_manager.get_fcs_image(
-                self.images[window_id],
+                detection_img,
                 threshold,
                 min_samples
             )
@@ -4053,7 +4159,7 @@ class PyFCSApp:
 
         added = 0
 
-        for i, item in enumerate(detected_colors):
+        for item in detected_colors:
             try:
                 rgb = item.get("rgb")
 
@@ -4132,54 +4238,74 @@ class PyFCSApp:
 
 
 
-    def _manual_load_image_from_window_id(self, window_id: str):
-        """Load an image from the internal images dict and render it in the picker canvas."""
-        if window_id not in self.images:
+    def _manual_load_image_from_window_id(self, window_id):
+        """
+        Load an image into the manual picker canvas using the best available source.
+
+        This version keeps compatibility with the existing manual handlers and
+        initializes viewport zoom state.
+        """
+        if not hasattr(self, "_manual_img_canvas") or self._manual_img_canvas is None:
+            return
+
+        try:
+            pil_img = self._get_best_image_source_pil(
+                window_id,
+                prefer_current_view=False,
+                rgb=True
+            )
+        except Exception:
             self.custom_warning(message="Selected image is not available.")
             return
 
         self._manual_image_id = window_id
-        image = self.images[window_id]
 
-        if isinstance(image, Image.Image):
-            pil = image.convert("RGB")
-        else:
-            pil = Image.fromarray(image).convert("RGB")
+        # Main source used by click/drag/zoom.
+        self._manual_pil_full = pil_img
+        self._manual_pil_img = pil_img
+        self._manual_source_img = pil_img
 
-        self._manual_pil_full = pil
-
-        cw = int(self._manual_img_canvas["width"])
-        ch = int(self._manual_img_canvas["height"])
-
-        img_w, img_h = pil.size
-        scale = min(cw / img_w, ch / img_h)
-
-        new_w = max(1, int(img_w * scale))
-        new_h = max(1, int(img_h * scale))
-
-        resized = pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        canvas = self._manual_img_canvas
 
         try:
-            resized = ImageEnhance.Sharpness(resized).enhance(1.2)
+            canvas.delete("all")
         except Exception:
             pass
 
+        img_w, img_h = pil_img.size
+
+        try:
+            canvas_w = int(canvas["width"])
+            canvas_h = int(canvas["height"])
+        except Exception:
+            canvas_w, canvas_h = 465, 285
+
+        scale = min(canvas_w / img_w, canvas_h / img_h)
+
+        draw_w = max(1, int(round(img_w * scale)))
+        draw_h = max(1, int(round(img_h * scale)))
+
+        offset_x = int((canvas_w - draw_w) / 2)
+        offset_y = int((canvas_h - draw_h) / 2)
+
+        # Legacy names used by your existing handlers.
         self._manual_scale = scale
-        self._manual_draw_w = new_w
-        self._manual_draw_h = new_h
-        self._manual_offset_x = (cw - new_w) // 2
-        self._manual_offset_y = (ch - new_h) // 2
+        self._manual_offset_x = offset_x
+        self._manual_offset_y = offset_y
+        self._manual_draw_w = draw_w
+        self._manual_draw_h = draw_h
 
-        self._manual_tk_img = ImageTk.PhotoImage(resized)
+        # Extra aliases from the newer code.
+        self._manual_image_scale = scale
+        self._manual_image_offset_x = offset_x
+        self._manual_image_offset_y = offset_y
+        self._manual_display_w = draw_w
+        self._manual_display_h = draw_h
 
-        self._manual_img_canvas.delete("all")
-        self._manual_img_canvas.configure(bg="white")
-        self._manual_img_canvas.create_image(
-            self._manual_offset_x,
-            self._manual_offset_y,
-            anchor="nw",
-            image=self._manual_tk_img
-        )
+        # Viewport zoom state.
+        self._manual_zoom = 1.0
+        self._manual_view_cx = img_w / 2
+        self._manual_view_cy = img_h / 2
 
         self._manual_dragging = False
         self._manual_drag_start = None
@@ -4188,14 +4314,266 @@ class PyFCSApp:
         self._picked_rgb = None
         self._picked_lab = None
 
-        if hasattr(self, "_picked_rgb_var"):
+        try:
             self._picked_rgb_var.set("RGB: -")
-
-        if hasattr(self, "_picked_lab_var"):
             self._picked_lab_var.set("LAB: -")
+        except Exception:
+            pass
 
-        if hasattr(self, "_picked_preview") and hasattr(self, "_picked_preview_rect"):
-            self._picked_preview.itemconfig(self._picked_preview_rect, fill="#d9d9d9")
+        try:
+            self._picked_preview.itemconfig(
+                self._picked_preview_rect,
+                fill="#d9d9d9"
+            )
+        except Exception:
+            pass
+
+        self._manual_render_preview()
+
+    def _manual_clamp(self, value, min_value, max_value):
+        """Clamp a numeric value."""
+        return max(min_value, min(max_value, value))
+
+
+    def _manual_is_inside_display(self, canvas_x, canvas_y):
+        """Return True if the canvas point is inside the displayed manual image."""
+        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
+            return False
+
+        ox = getattr(self, "_manual_offset_x", 0)
+        oy = getattr(self, "_manual_offset_y", 0)
+        dw = getattr(self, "_manual_draw_w", 0)
+        dh = getattr(self, "_manual_draw_h", 0)
+
+        return ox <= canvas_x < ox + dw and oy <= canvas_y < oy + dh
+
+
+    def _manual_clamp_canvas_to_display(self, canvas_x, canvas_y):
+        """Clamp a canvas point to the visible manual image area."""
+        ox = getattr(self, "_manual_offset_x", 0)
+        oy = getattr(self, "_manual_offset_y", 0)
+        dw = max(1, getattr(self, "_manual_draw_w", 1))
+        dh = max(1, getattr(self, "_manual_draw_h", 1))
+
+        x = self._manual_clamp(canvas_x, ox, ox + dw - 1)
+        y = self._manual_clamp(canvas_y, oy, oy + dh - 1)
+
+        return x, y
+
+
+    def _manual_get_view_crop_box(self):
+        """
+        Return the current crop box in full-image coordinates for the manual picker.
+        """
+        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
+            return None
+
+        img_w, img_h = self._manual_pil_full.size
+
+        zoom = max(1.0, float(getattr(self, "_manual_zoom", 1.0)))
+        cx = float(getattr(self, "_manual_view_cx", img_w / 2))
+        cy = float(getattr(self, "_manual_view_cy", img_h / 2))
+
+        crop_w = max(1.0, img_w / zoom)
+        crop_h = max(1.0, img_h / zoom)
+
+        left = cx - crop_w / 2
+        top = cy - crop_h / 2
+
+        left = self._manual_clamp(left, 0, max(0, img_w - crop_w))
+        top = self._manual_clamp(top, 0, max(0, img_h - crop_h))
+
+        right = left + crop_w
+        bottom = top + crop_h
+
+        return left, top, right, bottom
+
+
+    def _manual_render_preview(self):
+        """
+        Render the current manual picker viewport into the fixed canvas size.
+        """
+        if not hasattr(self, "_manual_img_canvas") or self._manual_img_canvas is None:
+            return
+
+        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
+            return
+
+        crop_box = self._manual_get_view_crop_box()
+        if crop_box is None:
+            return
+
+        left, top, right, bottom = crop_box
+
+        crop = self._manual_pil_full.crop((
+            int(round(left)),
+            int(round(top)),
+            int(round(right)),
+            int(round(bottom))
+        ))
+
+        draw_w = max(1, int(getattr(self, "_manual_draw_w", 1)))
+        draw_h = max(1, int(getattr(self, "_manual_draw_h", 1)))
+
+        resized = crop.resize((draw_w, draw_h), Image.Resampling.LANCZOS)
+
+        self._manual_photo = ImageTk.PhotoImage(resized)
+
+        canvas = self._manual_img_canvas
+
+        try:
+            canvas.delete("manual_image")
+        except Exception:
+            pass
+
+        canvas.create_image(
+            getattr(self, "_manual_offset_x", 0),
+            getattr(self, "_manual_offset_y", 0),
+            image=self._manual_photo,
+            anchor="nw",
+            tags=("manual_image",)
+        )
+
+        try:
+            canvas.tag_lower("manual_image")
+        except Exception:
+            pass
+
+
+    def _manual_canvas_to_image_xy(self, canvas_x, canvas_y, require_inside=True):
+        """
+        Convert manual picker canvas coordinates to full-image coordinates,
+        taking viewport zoom into account.
+        """
+        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
+            return None
+
+        if require_inside and not self._manual_is_inside_display(canvas_x, canvas_y):
+            return None
+
+        canvas_x, canvas_y = self._manual_clamp_canvas_to_display(canvas_x, canvas_y)
+
+        ox = getattr(self, "_manual_offset_x", 0)
+        oy = getattr(self, "_manual_offset_y", 0)
+        dw = max(1, getattr(self, "_manual_draw_w", 1))
+        dh = max(1, getattr(self, "_manual_draw_h", 1))
+
+        rel_x = canvas_x - ox
+        rel_y = canvas_y - oy
+
+        crop_box = self._manual_get_view_crop_box()
+        if crop_box is None:
+            return None
+
+        left, top, right, bottom = crop_box
+
+        crop_w = right - left
+        crop_h = bottom - top
+
+        img_x = left + (rel_x / dw) * crop_w
+        img_y = top + (rel_y / dh) * crop_h
+
+        img_w, img_h = self._manual_pil_full.size
+
+        img_x = int(self._manual_clamp(img_x, 0, img_w - 1))
+        img_y = int(self._manual_clamp(img_y, 0, img_h - 1))
+
+        return img_x, img_y
+
+
+    def _manual_clear_selection_rectangle(self):
+        """Clear the manual picker ROI rectangle."""
+        if getattr(self, "_manual_rect_id", None) is not None:
+            try:
+                self._manual_img_canvas.delete(self._manual_rect_id)
+            except Exception:
+                pass
+
+        self._manual_rect_id = None
+        self._manual_dragging = False
+        self._manual_drag_start = None
+
+
+    def _manual_apply_zoom(self, factor=None, reset=False, event=None):
+        """
+        Apply viewport zoom in the manual image picker without changing canvas size.
+        """
+        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
+            return "break"
+
+        img_w, img_h = self._manual_pil_full.size
+
+        self._manual_clear_selection_rectangle()
+
+        if reset:
+            self._manual_zoom = 1.0
+            self._manual_view_cx = img_w / 2
+            self._manual_view_cy = img_h / 2
+            self._manual_render_preview()
+            return "break"
+
+        if factor is None:
+            return "break"
+
+        old_zoom = float(getattr(self, "_manual_zoom", 1.0))
+        new_zoom = self._manual_clamp(old_zoom * factor, 1.0, 16.0)
+
+        if abs(new_zoom - old_zoom) < 1e-9:
+            return "break"
+
+        point_info = None
+
+        if event is not None and self._manual_is_inside_display(event.x, event.y):
+            xy = self._manual_canvas_to_image_xy(event.x, event.y, require_inside=True)
+
+            if xy is not None:
+                ox = getattr(self, "_manual_offset_x", 0)
+                oy = getattr(self, "_manual_offset_y", 0)
+                dw = max(1, getattr(self, "_manual_draw_w", 1))
+                dh = max(1, getattr(self, "_manual_draw_h", 1))
+
+                rel_fx = (event.x - ox) / dw
+                rel_fy = (event.y - oy) / dh
+
+                point_info = (xy[0], xy[1], rel_fx, rel_fy)
+
+        self._manual_zoom = new_zoom
+
+        if point_info is not None:
+            source_x, source_y, rel_fx, rel_fy = point_info
+
+            crop_w = max(1.0, img_w / new_zoom)
+            crop_h = max(1.0, img_h / new_zoom)
+
+            new_left = source_x - rel_fx * crop_w
+            new_top = source_y - rel_fy * crop_h
+
+            new_left = self._manual_clamp(new_left, 0, max(0, img_w - crop_w))
+            new_top = self._manual_clamp(new_top, 0, max(0, img_h - crop_h))
+
+            self._manual_view_cx = new_left + crop_w / 2
+            self._manual_view_cy = new_top + crop_h / 2
+
+        self._manual_render_preview()
+
+        return "break"
+
+
+    def _manual_on_mousewheel(self, event):
+        """Windows/macOS mouse wheel zoom for the manual image picker."""
+        if event.delta > 0:
+            return self._manual_apply_zoom(factor=1.15, event=event)
+        return self._manual_apply_zoom(factor=1 / 1.15, event=event)
+
+
+    def _manual_on_linux_zoom_in(self, event):
+        """Linux wheel-up zoom for the manual image picker."""
+        return self._manual_apply_zoom(factor=1.15, event=event)
+
+
+    def _manual_on_linux_zoom_out(self, event):
+        """Linux wheel-down zoom for the manual image picker."""
+        return self._manual_apply_zoom(factor=1 / 1.15, event=event)
 
 
     def _manual_on_image_click(self, event):
@@ -4203,33 +4581,40 @@ class PyFCSApp:
         if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
             return
 
-        # Map click to the drawn image area inside the canvas
-        x = event.x - self._manual_offset_x
-        y = event.y - self._manual_offset_y
-        if x < 0 or y < 0 or x >= self._manual_draw_w or y >= self._manual_draw_h:
+        xy = self._manual_canvas_to_image_xy(event.x, event.y, require_inside=True)
+        if xy is None:
             return
 
-        # Map back to full-resolution coordinates
-        full_x = int(x / self._manual_scale)
-        full_y = int(y / self._manual_scale)
+        full_x, full_y = xy
 
-        full_w, full_h = self._manual_pil_full.size
-        full_x = max(0, min(full_w - 1, full_x))
-        full_y = max(0, min(full_h - 1, full_y))
+        pixel = self._manual_pil_full.getpixel((full_x, full_y))
 
-        r, g, b = self._manual_pil_full.getpixel((full_x, full_y))
+        if isinstance(pixel, int):
+            r = g = b = int(pixel)
+        else:
+            r, g, b = pixel[:3]
+
         lab = UtilsTools.srgb_to_lab(r, g, b)
+        lab = np.array(lab, dtype=float).reshape(-1)
 
-        # Store picked values for later "Add Selected Color"
-        self._picked_rgb = (r, g, b)
-        self._picked_lab = lab
+        self._picked_rgb = (int(r), int(g), int(b))
+        self._picked_lab = (
+            float(lab[0]),
+            float(lab[1]),
+            float(lab[2])
+        )
 
-        # Update UI
         self._picked_rgb_var.set(f"RGB: ({r}, {g}, {b})")
-        self._picked_lab_var.set(f"LAB: ({lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f})")
+        self._picked_lab_var.set(
+            f"LAB: ({self._picked_lab[0]:.2f}, {self._picked_lab[1]:.2f}, {self._picked_lab[2]:.2f})"
+        )
 
-        hex_color = f"#{r:02x}{g:02x}{b:02x}"
-        self._picked_preview.itemconfig(self._picked_preview_rect, fill=hex_color)
+        hex_color = f"#{int(r):02x}{int(g):02x}{int(b):02x}"
+
+        try:
+            self._picked_preview.itemconfig(self._picked_preview_rect, fill=hex_color)
+        except Exception:
+            pass
 
 
     def _manual_on_mouse_down(self, event):
@@ -4237,22 +4622,28 @@ class PyFCSApp:
         if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
             return
 
-        # Start point in canvas coordinates
-        self._manual_dragging = True
-        self._manual_drag_start = (event.x, event.y)
+        if not self._manual_is_inside_display(event.x, event.y):
+            return
 
-        # Remove previous rectangle
-        if self._manual_rect_id is not None:
+        x, y = self._manual_clamp_canvas_to_display(event.x, event.y)
+
+        self._manual_dragging = True
+        self._manual_drag_start = (x, y)
+
+        if getattr(self, "_manual_rect_id", None) is not None:
             try:
                 self._manual_img_canvas.delete(self._manual_rect_id)
             except Exception:
                 pass
             self._manual_rect_id = None
 
-        # Create a new rubber-band rectangle
         self._manual_rect_id = self._manual_img_canvas.create_rectangle(
-            event.x, event.y, event.x, event.y,
-            outline="#ff0000", width=2
+            x,
+            y,
+            x,
+            y,
+            outline="#ff0000",
+            width=2
         )
 
 
@@ -4260,103 +4651,125 @@ class PyFCSApp:
         """Update rectangle while dragging."""
         if not getattr(self, "_manual_dragging", False):
             return
+
         if self._manual_rect_id is None:
             return
 
         x0, y0 = self._manual_drag_start
-        x1, y1 = event.x, event.y
+        x1, y1 = self._manual_clamp_canvas_to_display(event.x, event.y)
 
-        # Update rectangle coordinates
-        self._manual_img_canvas.coords(self._manual_rect_id, x0, y0, x1, y1)
+        self._manual_img_canvas.coords(
+            self._manual_rect_id,
+            x0,
+            y0,
+            x1,
+            y1
+        )
 
 
     def _manual_on_mouse_up(self, event):
-        """Finish selection, compute average color in the selected rectangle (or single pixel)."""
+        """Finish selection, compute average color in the selected rectangle or one pixel."""
         if not getattr(self, "_manual_dragging", False):
             return
+
         self._manual_dragging = False
 
         if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
             return
+
         if self._manual_drag_start is None:
             return
 
         x0, y0 = self._manual_drag_start
-        x1, y1 = event.x, event.y
+        x1, y1 = self._manual_clamp_canvas_to_display(event.x, event.y)
 
-        # Normalize rect in canvas coordinates
-        left = min(x0, x1)
-        right = max(x0, x1)
-        top = min(y0, y1)
-        bottom = max(y0, y1)
+        left_c = min(x0, x1)
+        right_c = max(x0, x1)
+        top_c = min(y0, y1)
+        bottom_c = max(y0, y1)
 
-        # If selection is tiny -> treat as click
-        if (right - left) < 3 and (bottom - top) < 3:
-            # Reuse your existing single-pixel logic
-            fake = type("E", (), {"x": event.x, "y": event.y})
-            self._manual_on_image_click(fake)
-            # Remove rectangle
+        # Tiny selection: treat as single-pixel click.
+        if (right_c - left_c) < 3 and (bottom_c - top_c) < 3:
+            fake_event = type("E", (), {"x": x1, "y": y1})
+            self._manual_on_image_click(fake_event)
+
             if self._manual_rect_id is not None:
-                self._manual_img_canvas.delete(self._manual_rect_id)
+                try:
+                    self._manual_img_canvas.delete(self._manual_rect_id)
+                except Exception:
+                    pass
                 self._manual_rect_id = None
+
+            self._manual_drag_start = None
             return
 
-        # Map canvas rectangle to drawn image coords
-        left_d = left - self._manual_offset_x
-        right_d = right - self._manual_offset_x
-        top_d = top - self._manual_offset_y
-        bottom_d = bottom - self._manual_offset_y
+        p1 = self._manual_canvas_to_image_xy(left_c, top_c, require_inside=False)
+        p2 = self._manual_canvas_to_image_xy(right_c, bottom_c, require_inside=False)
 
-        # Clip to drawn image bounds
-        left_d = max(0, min(self._manual_draw_w, left_d))
-        right_d = max(0, min(self._manual_draw_w, right_d))
-        top_d = max(0, min(self._manual_draw_h, top_d))
-        bottom_d = max(0, min(self._manual_draw_h, bottom_d))
-
-        if right_d <= left_d or bottom_d <= top_d:
+        if p1 is None or p2 is None:
+            self._manual_drag_start = None
             return
 
-        # Map to full-resolution coords
-        full_left = int(left_d / self._manual_scale)
-        full_right = int(right_d / self._manual_scale)
-        full_top = int(top_d / self._manual_scale)
-        full_bottom = int(bottom_d / self._manual_scale)
+        ix1, iy1 = p1
+        ix2, iy2 = p2
+
+        full_left = min(ix1, ix2)
+        full_right = max(ix1, ix2)
+        full_top = min(iy1, iy2)
+        full_bottom = max(iy1, iy2)
 
         full_w, full_h = self._manual_pil_full.size
+
         full_left = max(0, min(full_w - 1, full_left))
-        full_right = max(0, min(full_w, full_right))
+        full_right = max(0, min(full_w - 1, full_right))
         full_top = max(0, min(full_h - 1, full_top))
-        full_bottom = max(0, min(full_h, full_bottom))
+        full_bottom = max(0, min(full_h - 1, full_bottom))
 
         if full_right <= full_left or full_bottom <= full_top:
+            self._manual_drag_start = None
             return
 
-        # Crop and compute mean RGB
-        crop = self._manual_pil_full.crop((full_left, full_top, full_right, full_bottom))
-        arr = np.asarray(crop, dtype=np.float32)  # (h,w,3)
-        mean_rgb = arr.reshape(-1, 3).mean(axis=0)
+        crop = self._manual_pil_full.crop((
+            full_left,
+            full_top,
+            full_right + 1,
+            full_bottom + 1
+        ))
 
-        r = int(round(mean_rgb[0]))
-        g = int(round(mean_rgb[1]))
-        b = int(round(mean_rgb[2]))
+        arr = np.asarray(crop, dtype=np.float32)
+
+        if arr.ndim == 2:
+            mean_value = int(round(float(np.mean(arr))))
+            r = g = b = mean_value
+        else:
+            mean_rgb = arr.reshape(-1, arr.shape[-1])[:, :3].mean(axis=0)
+            r = int(round(mean_rgb[0]))
+            g = int(round(mean_rgb[1]))
+            b = int(round(mean_rgb[2]))
 
         lab = UtilsTools.srgb_to_lab(r, g, b)
+        lab = np.array(lab, dtype=float).reshape(-1)
 
-        # Store picked values for "Add Selected Color"
         self._picked_rgb = (r, g, b)
-        self._picked_lab = lab
+        self._picked_lab = (
+            float(lab[0]),
+            float(lab[1]),
+            float(lab[2])
+        )
 
-        # Update UI
         self._picked_rgb_var.set(f"RGB (avg): ({r}, {g}, {b})")
-        self._picked_lab_var.set(f"LAB (avg): ({lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f})")
+        self._picked_lab_var.set(
+            f"LAB (avg): ({self._picked_lab[0]:.2f}, {self._picked_lab[1]:.2f}, {self._picked_lab[2]:.2f})"
+        )
 
         hex_color = f"#{r:02x}{g:02x}{b:02x}"
-        self._picked_preview.itemconfig(self._picked_preview_rect, fill=hex_color)
 
-        # Optional: keep rectangle visible or remove it
-        # If you prefer to remove it after selection:
-        # self._manual_img_canvas.delete(self._manual_rect_id)
-        # self._manual_rect_id = None
+        try:
+            self._picked_preview.itemconfig(self._picked_preview_rect, fill=hex_color)
+        except Exception:
+            pass
+
+        self._manual_drag_start = None
 
 
 
@@ -5603,20 +6016,23 @@ class PyFCSApp:
     #  FUNCTIONS IMAGE DISPLAY
     # ============================================================================================================================================================
     def save_image(self):
-        """Save the currently displayed image for a selected window. If it is a Color Mapping All view, also save a legend image."""
-        # Verify we have at least one window to save from
+        """
+        Save the currently displayed image for a selected window.
+
+        If the selected image is a Color Mapping All result, also save a standalone
+        legend image using the current palette scheme.
+        """
         if not hasattr(self, "load_images_names") or not self.load_images_names:
             self.custom_warning(message="There are currently no images available to save.")
             return
-        
+
         if self._has_any_active_job():
             self.custom_warning(
                 "Process Running",
-                "Finish or cancel the current color mapping process before opening a new image."
+                "Finish or cancel the current color mapping process before saving an image."
             )
             return
 
-        # Create a popup window for image selection
         popup, listbox = UtilsTools.create_selection_popup(
             parent=self.image_canvas,
             title="Select an Image to Save",
@@ -5627,43 +6043,95 @@ class PyFCSApp:
 
         self.center_popup(popup, 220, 220)
 
-        def _build_legend_pil(labels, colors, box_size=24, padding=10, row_gap=6):
-            """Build a standalone legend image (PIL) from labels and RGB uint8 colors."""
+        def _build_legend_pil(labels, colors, box_size=28, padding=10, row_gap=6):
+            """Build a standalone legend image from labels and RGB uint8 colors."""
             font = ImageFont.load_default()
 
-            # Compute legend width based on longest label
             max_text_w = 0
             for lbl in labels:
+                lbl = str(lbl)
                 try:
                     bbox = font.getbbox(lbl)
                     max_text_w = max(max_text_w, bbox[2] - bbox[0])
                 except Exception:
-                    max_text_w = max(max_text_w, len(lbl) * 6)
+                    max_text_w = max(max_text_w, len(lbl) * 7)
 
-            width = padding * 2 + box_size + 8 + max_text_w
+            width = padding * 2 + box_size + 10 + max_text_w
             height = padding * 2 + len(labels) * (box_size + row_gap) - row_gap
 
             legend = Image.new("RGB", (max(1, width), max(1, height)), "white")
             draw = ImageDraw.Draw(legend)
 
             y = padding
+
             for lbl, col in zip(labels, colors):
-                # Color box
+                try:
+                    r, g, b = int(col[0]), int(col[1]), int(col[2])
+                except Exception:
+                    r, g, b = 0, 0, 0
+
                 draw.rectangle(
                     [padding, y, padding + box_size, y + box_size],
-                    fill=(int(col[0]), int(col[1]), int(col[2])),
+                    fill=(r, g, b),
                     outline=(0, 0, 0)
                 )
-                # Text
+
                 draw.text(
-                    (padding + box_size + 8, y + 4),
-                    lbl,
+                    (padding + box_size + 10, y + 7),
+                    str(lbl),
                     fill="black",
                     font=font
                 )
+
                 y += box_size + row_gap
 
             return legend
+
+        def _get_mapping_all_legend_data(window_id):
+            """
+            Return labels and current palette colors for a Color Mapping All window.
+
+            Supports the current cache-based implementation:
+            self.cm_cache_by_image[(image_key, color_space_key)]["last_pack"]
+            """
+            # Must currently be a Color Mapping All result
+            if getattr(self, "window_mapping_mode", {}).get(window_id) != "all":
+                return None, None
+
+            if not hasattr(self, "window_image_key") or window_id not in self.window_image_key:
+                return None, None
+
+            if not hasattr(self, "cm_cache_by_image"):
+                return None, None
+
+            image_key = self.window_image_key.get(window_id)
+            color_space_key = getattr(self, "file_path", None)
+            cache_scope = (image_key, color_space_key)
+
+            scope_cache = self.cm_cache_by_image.get(cache_scope)
+            if not scope_cache:
+                return None, None
+
+            cache_pack = scope_cache.get("last_pack")
+            if not cache_pack:
+                return None, None
+
+            palettes = cache_pack.get("palettes")
+            scheme = cache_pack.get("scheme")
+
+            if not palettes or not scheme or scheme not in palettes:
+                return None, None
+
+            colors = palettes[scheme]
+
+            labels = []
+            if hasattr(self, "prototypes") and self.prototypes:
+                labels = [p.label for p in self.prototypes]
+
+            if not labels:
+                return None, None
+
+            return labels, colors
 
         def on_select(event):
             selection = listbox.curselection()
@@ -5672,6 +6140,7 @@ class PyFCSApp:
 
             index = selection[0]
             window_ids = list(self.load_images_names.keys())
+
             if index >= len(window_ids):
                 self.custom_warning("Error", "Invalid selection index.")
                 return
@@ -5680,53 +6149,63 @@ class PyFCSApp:
 
             save_path = filedialog.asksaveasfilename(
                 defaultextension=".png",
-                filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg"), ("All Files", "*.*")]
+                filetypes=[
+                    ("PNG files", "*.png"),
+                    ("JPEG files", "*.jpg"),
+                    ("All Files", "*.*")
+                ]
             )
+
             if not save_path:
                 return
 
             try:
-                # Always save what is currently displayed (source of truth)
                 if not hasattr(self, "display_pil") or window_id not in self.display_pil:
                     self.custom_warning("Error", "No displayed image available to save for this window.")
                     return
 
-                self.display_pil[window_id].save(save_path)
+                # Save current displayed image
+                img_to_save = self.display_pil[window_id]
 
-                # If this window has a Color Mapping All legend available, save it separately
-                is_mapping_all = (
-                    hasattr(self, "prototype_color_sets") and
-                    hasattr(self, "current_color_scheme") and
-                    window_id in self.prototype_color_sets and
-                    window_id in self.current_color_scheme
-                )
+                # JPEG does not support alpha
+                ext = os.path.splitext(save_path)[1].lower()
+                if ext in (".jpg", ".jpeg") and img_to_save.mode in ("RGBA", "LA"):
+                    img_to_save = img_to_save.convert("RGB")
 
+                img_to_save.save(save_path)
+
+                # Save legend only for Color Mapping All
                 legend_path = None
-                if is_mapping_all:
-                    # Get legend labels + current palette colors
-                    labels = [p.label for p in self.prototypes]
-                    scheme = self.current_color_scheme[window_id]  # "original" or "alt"
-                    colors = self.prototype_color_sets[window_id][scheme]  # list/array of RGB
+                labels, legend_colors = _get_mapping_all_legend_data(window_id)
 
-                    legend_img = _build_legend_pil(labels, colors)
+                if labels is not None and legend_colors is not None:
+                    legend_img = _build_legend_pil(labels, legend_colors)
 
                     base, _ext = os.path.splitext(save_path)
                     legend_path = base + "_legend.png"
+
                     legend_img.save(legend_path)
 
-                # Feedback
                 if legend_path:
                     messagebox.showinfo(
                         "Success",
-                        f"Image saved successfully at:\n{save_path}\n\nLegend saved at:\n{legend_path}"
+                        f"Image saved successfully at:\n{save_path}\n\n"
+                        f"Legend saved at:\n{legend_path}"
                     )
                 else:
-                    messagebox.showinfo("Success", f"Image saved successfully at:\n{save_path}")
+                    messagebox.showinfo(
+                        "Success",
+                        f"Image saved successfully at:\n{save_path}"
+                    )
 
             except Exception as e:
                 self.custom_warning("Error", f"Failed to save image:\n{str(e)}")
+
             finally:
-                popup.destroy()
+                try:
+                    popup.destroy()
+                except Exception:
+                    pass
 
         listbox.bind("<<ListboxSelect>>", on_select)
 
@@ -5811,11 +6290,17 @@ class PyFCSApp:
                 "load_images_names",
                 "window_image_key",
                 "window_mapping_mode",
+                "image_view_source",
+                "image_view_state",
+                "_image_zoom_callbacks",
             ):
                 if hasattr(self, attr_name):
                     d = getattr(self, attr_name)
                     if isinstance(d, dict) and window_id in d:
                         del d[window_id]
+
+            if getattr(self, "_image_zoom_hover_window", None) == window_id:
+                self._image_zoom_hover_window = None
 
         # Reset leftover per-window dimension dicts if they still exist
         if hasattr(self, "image_dimensions"):
@@ -5876,6 +6361,187 @@ class PyFCSApp:
         state["drag_start"] = None
 
 
+
+    def _set_image_zoom_source(self, window_id, pil_source, reset_zoom=True):
+        """
+        Set the PIL image used by the viewport zoom system.
+
+        This must be called every time the visible image changes:
+        - Original Image
+        - Color Mapping
+        - Color Mapping All
+        - Recoloring Color Mapping All
+        """
+        if pil_source is None:
+            return
+
+        if not hasattr(self, "image_view_source"):
+            self.image_view_source = {}
+
+        if not hasattr(self, "image_view_state"):
+            self.image_view_state = {}
+
+        self.image_view_source[window_id] = pil_source
+
+        if reset_zoom or window_id not in self.image_view_state:
+            w, h = pil_source.size
+            self.image_view_state[window_id] = {
+                "zoom": 1.0,
+                "cx": w / 2,
+                "cy": h / 2,
+            }
+
+        try:
+            self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
+        except Exception:
+            pass
+
+
+    def _ensure_image_zoom_mousewheel_binding(self):
+        """
+        Bind mouse wheel zoom once directly to the image canvas.
+
+        Important:
+        - Do NOT use root.bind_all() here.
+        - Other widgets may call unbind_all("<MouseWheel>") for scrolling,
+        which would remove a global zoom binding.
+        - Binding directly to self.image_canvas keeps image zoom working.
+        """
+        if getattr(self, "_image_zoom_mousewheel_bound", False):
+            return
+
+        if not hasattr(self, "image_canvas"):
+            return
+
+        if not hasattr(self, "_image_zoom_callbacks"):
+            self._image_zoom_callbacks = {}
+
+        def _get_window_id_from_current_canvas_item():
+            """
+            Try to recover the floating window id from the canvas item currently
+            under the mouse pointer.
+            """
+            try:
+                current_items = self.image_canvas.find_withtag("current")
+                if not current_items:
+                    return None
+
+                tags = self.image_canvas.gettags(current_items[0])
+
+                for tag in tags:
+                    if (
+                        hasattr(self, "floating_window_state")
+                        and tag in self.floating_window_state
+                    ):
+                        return tag
+
+            except Exception:
+                pass
+
+            return None
+
+        def _event_is_inside_image(window_id, event):
+            """
+            Ensure the wheel event happened inside the displayed image area,
+            not just somewhere else in the image canvas.
+            """
+            try:
+                if (
+                    not hasattr(self, "floating_window_state")
+                    or window_id not in self.floating_window_state
+                ):
+                    return False
+
+                st = self.floating_window_state[window_id]
+
+                IMG_LEFT_PAD = 15
+                IMG_TOP_PAD = 40
+
+                img_left = st["x"] + IMG_LEFT_PAD
+                img_top = st["y"] + IMG_TOP_PAD
+                img_right = img_left + st["w"]
+                img_bottom = img_top + st["h"]
+
+                abs_x = self.image_canvas.canvasx(event.x)
+                abs_y = self.image_canvas.canvasy(event.y)
+
+                return img_left <= abs_x < img_right and img_top <= abs_y < img_bottom
+
+            except Exception:
+                return False
+
+        def _get_zoom_target_window(event):
+            """
+            Get the current floating image window that should receive the zoom event.
+            Prefer the hover window, but fall back to the canvas current item.
+            """
+            window_id = getattr(self, "_image_zoom_hover_window", None)
+
+            if not window_id:
+                window_id = _get_window_id_from_current_canvas_item()
+
+            if not window_id:
+                return None
+
+            if not _event_is_inside_image(window_id, event):
+                return None
+
+            return window_id
+
+        def _dispatch_mousewheel(event):
+            window_id = _get_zoom_target_window(event)
+            if not window_id:
+                return None
+
+            callbacks = self._image_zoom_callbacks.get(window_id)
+            if not callbacks:
+                return None
+
+            callback = callbacks.get("wheel")
+            if callback:
+                return callback(event)
+
+            return None
+
+        def _dispatch_linux_wheel_up(event):
+            window_id = _get_zoom_target_window(event)
+            if not window_id:
+                return None
+
+            callbacks = self._image_zoom_callbacks.get(window_id)
+            if not callbacks:
+                return None
+
+            callback = callbacks.get("linux_up")
+            if callback:
+                return callback(event)
+
+            return None
+
+        def _dispatch_linux_wheel_down(event):
+            window_id = _get_zoom_target_window(event)
+            if not window_id:
+                return None
+
+            callbacks = self._image_zoom_callbacks.get(window_id)
+            if not callbacks:
+                return None
+
+            callback = callbacks.get("linux_down")
+            if callback:
+                return callback(event)
+
+            return None
+
+        # Bind directly to the image canvas, not globally.
+        # This survives other widgets doing root.unbind_all("<MouseWheel>").
+        self.image_canvas.bind("<MouseWheel>", _dispatch_mousewheel, add="+")
+        self.image_canvas.bind("<Button-4>", _dispatch_linux_wheel_up, add="+")
+        self.image_canvas.bind("<Button-5>", _dispatch_linux_wheel_down, add="+")
+
+        self._image_zoom_mousewheel_bound = True
+
+
     def create_floating_window(self, x, y, filename):
         """
         Creates a floating window with the selected image, a title bar, and a dropdown menu.
@@ -5923,6 +6589,21 @@ class PyFCSApp:
         # Store the currently displayed PIL image (source of truth for saving)
         if not hasattr(self, "display_pil"):
             self.display_pil = {}
+
+        # Store viewport zoom state for each floating image
+        if not hasattr(self, "image_view_source"):
+            self.image_view_source = {}
+
+        if not hasattr(self, "image_view_state"):
+            self.image_view_state = {}
+
+        if not hasattr(self, "_image_zoom_callbacks"):
+            self._image_zoom_callbacks = {}
+
+        if not hasattr(self, "_image_zoom_hover_window"):
+            self._image_zoom_hover_window = None
+
+        self._ensure_image_zoom_mousewheel_binding()
 
         # Persistent caches by image + color space
         if not hasattr(self, "window_image_key"):
@@ -5974,6 +6655,16 @@ class PyFCSApp:
 
         # Store the currently displayed PIL image (source of truth for saving)
         self.display_pil[window_id] = pil_resized
+
+        # Viewport zoom source and state.
+        # The source is the full original image; the displayed image is only a viewport.
+        self.image_view_source[window_id] = pil_original
+        self.image_view_state[window_id] = {
+            "zoom": 1.0,
+            "cx": original_width / 2,
+            "cy": original_height / 2,
+        }
+
 
         img_tk = ImageTk.PhotoImage(pil_resized)
         self.floating_images[window_id] = img_tk
@@ -6105,30 +6796,308 @@ class PyFCSApp:
 
             self._focus_floating_window(window_id)
 
-        def _update_image_to_size(window_id, target_w, target_h):
+        def _update_image_to_size(window_id, target_w, target_h, reset_view=True):
             """
-            Resize the displayed image to fit target_w/target_h while preserving aspect ratio.
+            Resize the floating image window while preserving aspect ratio.
+
+            Important:
+            - This changes the window/image display size.
+            - Mouse-wheel zoom does NOT call this function anymore.
+            - Mouse-wheel zoom only changes the viewport crop.
             """
-            pil_original = self.pil_images_original[window_id]
-            ow, oh = pil_original.size
+            source_pil = self.image_view_source.get(
+                window_id,
+                self.pil_images_original[window_id]
+            )
+
+            ow, oh = source_pil.size
 
             scale = min(target_w / ow, target_h / oh)
             new_w = max(30, int(ow * scale))
             new_h = max(30, int(oh * scale))
 
-            pil_resized = pil_original.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            self.images[window_id] = pil_resized
-            self.image_dimensions[window_id] = (new_w, new_h)
-
-            img_tk = ImageTk.PhotoImage(pil_resized)
-            self.floating_images[window_id] = img_tk
-            self.display_pil[window_id] = pil_resized
-
-            self.image_canvas.itemconfig(f"{window_id}_img_item", image=self.floating_images[window_id])
-
             self.floating_window_state[window_id]["w"] = new_w
             self.floating_window_state[window_id]["h"] = new_h
+            self.image_dimensions[window_id] = (new_w, new_h)
+
+            if reset_view:
+                self.image_view_state[window_id] = {
+                    "zoom": 1.0,
+                    "cx": ow / 2,
+                    "cy": oh / 2,
+                }
+
+            _render_image_view(window_id)
             _relayout(window_id)
+
+
+        # ---------------------------
+        # Viewport zoom helpers
+        # ---------------------------
+        def _clamp(value, min_value, max_value):
+            """Clamp value between min_value and max_value."""
+            return max(min_value, min(max_value, value))
+
+
+        def _get_view_crop_box(window_id):
+            """
+            Return the current visible crop box in source-image coordinates.
+
+            The floating window size does not change. Only this crop box changes.
+            """
+            source_pil = self.image_view_source.get(
+                window_id,
+                self.pil_images_original[window_id]
+            )
+
+            source_w, source_h = source_pil.size
+
+            state = self.image_view_state.get(window_id)
+            if not state:
+                state = {
+                    "zoom": 1.0,
+                    "cx": source_w / 2,
+                    "cy": source_h / 2,
+                }
+                self.image_view_state[window_id] = state
+
+            zoom = max(1.0, float(state.get("zoom", 1.0)))
+            cx = float(state.get("cx", source_w / 2))
+            cy = float(state.get("cy", source_h / 2))
+
+            crop_w = max(1.0, source_w / zoom)
+            crop_h = max(1.0, source_h / zoom)
+
+            left = cx - crop_w / 2
+            top = cy - crop_h / 2
+
+            left = _clamp(left, 0, max(0, source_w - crop_w))
+            top = _clamp(top, 0, max(0, source_h - crop_h))
+
+            right = left + crop_w
+            bottom = top + crop_h
+
+            return left, top, right, bottom
+
+
+        def _render_image_view(window_id):
+            """
+            Render the current viewport crop into the existing floating image size.
+
+            This is the key difference:
+            - The image item keeps the same width/height.
+            - The crop area changes according to zoom and center.
+            """
+            if window_id not in self.floating_window_state:
+                return
+
+            source_pil = self.image_view_source.get(
+                window_id,
+                self.pil_images_original[window_id]
+            )
+
+            st = self.floating_window_state[window_id]
+            draw_w = max(1, int(st["w"]))
+            draw_h = max(1, int(st["h"]))
+
+            left, top, right, bottom = _get_view_crop_box(window_id)
+
+            crop = source_pil.crop((
+                int(round(left)),
+                int(round(top)),
+                int(round(right)),
+                int(round(bottom))
+            ))
+
+            pil_view = crop.resize((draw_w, draw_h), Image.Resampling.LANCZOS)
+
+            self.images[window_id] = pil_view
+            self.image_dimensions[window_id] = (draw_w, draw_h)
+            self.display_pil[window_id] = pil_view
+
+            img_tk = ImageTk.PhotoImage(pil_view)
+            self.floating_images[window_id] = img_tk
+
+            self.image_canvas.itemconfig(
+                f"{window_id}_img_item",
+                image=self.floating_images[window_id]
+            )
+
+
+        def _canvas_point_to_original_image(event, window_id):
+            """
+            Convert a canvas mouse event into original image coordinates,
+            taking the current zoom viewport into account.
+            """
+            if window_id not in self.floating_window_state:
+                return None
+
+            st = self.floating_window_state[window_id]
+
+            img_left = st["x"] + IMG_LEFT_PAD
+            img_top = st["y"] + IMG_TOP_PAD
+            draw_w = max(1, int(st["w"]))
+            draw_h = max(1, int(st["h"]))
+
+            abs_x = self.image_canvas.canvasx(event.x)
+            abs_y = self.image_canvas.canvasy(event.y)
+
+            rel_x = abs_x - img_left
+            rel_y = abs_y - img_top
+
+            if not (0 <= rel_x < draw_w and 0 <= rel_y < draw_h):
+                return None
+
+            left, top, right, bottom = _get_view_crop_box(window_id)
+
+            crop_w = right - left
+            crop_h = bottom - top
+
+            source_x = left + (rel_x / draw_w) * crop_w
+            source_y = top + (rel_y / draw_h) * crop_h
+
+            source_pil = self.image_view_source.get(
+                window_id,
+                self.pil_images_original[window_id]
+            )
+
+            source_w, source_h = source_pil.size
+
+            source_x = int(_clamp(source_x, 0, source_w - 1))
+            source_y = int(_clamp(source_y, 0, source_h - 1))
+
+            return source_x, source_y, rel_x, rel_y
+
+
+        def _apply_zoom(window_id, factor=None, reset=False, event=None):
+            """
+            Apply zoom to the viewport without changing the floating window size.
+
+            Wheel zoom behavior:
+            - The point under the cursor remains under the cursor after zooming.
+            - Only the internal crop changes.
+            """
+            if self._has_active_job(window_id):
+                return "break"
+
+            try:
+                self._clear_original_selection_rectangle(window_id)
+            except Exception:
+                pass
+
+            source_pil = self.image_view_source.get(
+                window_id,
+                self.pil_images_original[window_id]
+            )
+            source_w, source_h = source_pil.size
+
+            if reset:
+                self.image_view_state[window_id] = {
+                    "zoom": 1.0,
+                    "cx": source_w / 2,
+                    "cy": source_h / 2,
+                }
+
+                _render_image_view(window_id)
+
+                try:
+                    self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
+                except Exception:
+                    pass
+
+                return "break"
+
+            if factor is None:
+                return "break"
+
+            state = self.image_view_state.get(window_id)
+            if not state:
+                state = {
+                    "zoom": 1.0,
+                    "cx": source_w / 2,
+                    "cy": source_h / 2,
+                }
+                self.image_view_state[window_id] = state
+
+            point_info = None
+            if event is not None:
+                point_info = _canvas_point_to_original_image(event, window_id)
+
+            old_zoom = float(state.get("zoom", 1.0))
+            new_zoom = _clamp(old_zoom * factor, 1.0, 12.0)
+
+            # If zoom did not change, stop.
+            if abs(new_zoom - old_zoom) < 1e-9:
+                return "break"
+
+            state["zoom"] = new_zoom
+
+            # If the mouse is over the image, keep that source point under the cursor.
+            if point_info is not None:
+                source_x, source_y, rel_x, rel_y = point_info
+
+                st = self.floating_window_state[window_id]
+                draw_w = max(1, int(st["w"]))
+                draw_h = max(1, int(st["h"]))
+
+                crop_w = max(1.0, source_w / new_zoom)
+                crop_h = max(1.0, source_h / new_zoom)
+
+                rel_fx = rel_x / draw_w
+                rel_fy = rel_y / draw_h
+
+                new_left = source_x - rel_fx * crop_w
+                new_top = source_y - rel_fy * crop_h
+
+                new_left = _clamp(new_left, 0, max(0, source_w - crop_w))
+                new_top = _clamp(new_top, 0, max(0, source_h - crop_h))
+
+                state["cx"] = new_left + crop_w / 2
+                state["cy"] = new_top + crop_h / 2
+
+            _render_image_view(window_id)
+
+            try:
+                self.image_canvas.itemconfig(
+                    f"{window_id}_pct_text",
+                    text=f"Zoom: {new_zoom * 100:.0f}%"
+                )
+            except Exception:
+                pass
+
+            return "break"
+
+
+        def _zoom_mousewheel(event):
+            """Mouse wheel zoom handler for Windows/macOS."""
+            if event.delta > 0:
+                return _apply_zoom(window_id, factor=1.15, event=event)
+            else:
+                return _apply_zoom(window_id, factor=1 / 1.15, event=event)
+
+
+        def _zoom_linux_in(event):
+            """Mouse wheel up zoom handler for Linux."""
+            return _apply_zoom(window_id, factor=1.15, event=event)
+
+
+        def _zoom_linux_out(event):
+            """Mouse wheel down zoom handler for Linux."""
+            return _apply_zoom(window_id, factor=1 / 1.15, event=event)
+
+
+        def _activate_image_zoom(event):
+            """Mark this floating image as the current mouse-wheel zoom target."""
+            self._image_zoom_hover_window = window_id
+            return None
+
+
+        def _deactivate_image_zoom(event):
+            """Clear the mouse-wheel zoom target when leaving this image."""
+            if getattr(self, "_image_zoom_hover_window", None) == window_id:
+                self._image_zoom_hover_window = None
+            return None
+        
 
         # ---------------------------
         # Menu action wrappers
@@ -6193,11 +7162,17 @@ class PyFCSApp:
                 "load_images_names",
                 "window_image_key",
                 "window_mapping_mode",
+                "image_view_source",
+                "image_view_state",
+                "_image_zoom_callbacks",
             ):
                 if hasattr(self, attr_name):
                     d = getattr(self, attr_name)
                     if isinstance(d, dict) and window_id in d:
                         del d[window_id]
+
+            if getattr(self, "_image_zoom_hover_window", None) == window_id:
+                self._image_zoom_hover_window = None
 
             if hasattr(self, "proto_options") and window_id in self.proto_options:
                 info = self.proto_options.get(window_id)
@@ -6247,6 +7222,11 @@ class PyFCSApp:
                 label="Color Mapping All",
                 state=NORMAL if mapping_enabled else DISABLED,
                 command=_color_mapping_all_action
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="Reset Zoom",
+                command=lambda: _apply_zoom(window_id, reset=True)
             )
             menu.post(event.x_root, event.y_root)
             return "break"
@@ -6320,7 +7300,12 @@ class PyFCSApp:
             desired_w = max(30, int(start["w"] + dw))
             desired_h = max(30, int(start["h"] + dh))
 
-            _update_image_to_size(window_id, desired_w, desired_h)
+            _update_image_to_size(
+                window_id,
+                desired_w,
+                desired_h,
+                reset_view=True
+            )
             return "break"
 
         def end_resize(event):
@@ -6361,31 +7346,17 @@ class PyFCSApp:
             if self._has_active_job(window_id):
                 return "break"
 
+            point_info = _canvas_point_to_original_image(event, window_id)
+            if point_info is None:
+                return "break"
+
+            x_original, y_original, _rel_x, _rel_y = point_info
+
             pil_original = self.pil_images_original[window_id]
             ow, oh = pil_original.size
 
-            resized_w, resized_h = self.image_dimensions[window_id]
-            if resized_w <= 0 or resized_h <= 0:
-                return "break"
-
-            abs_x = self.image_canvas.canvasx(event.x)
-            abs_y = self.image_canvas.canvasy(event.y)
-
-            st = self.floating_window_state[window_id]
-            img_left = st["x"] + IMG_LEFT_PAD
-            img_top = st["y"] + IMG_TOP_PAD
-
-            relative_x = abs_x - img_left
-            relative_y = abs_y - img_top
-
-            if not (0 <= relative_x < resized_w and 0 <= relative_y < resized_h):
-                return "break"
-
-            scale_x = ow / resized_w
-            scale_y = oh / resized_h
-
-            x_original = int(relative_x * scale_x)
-            y_original = int(relative_y * scale_y)
+            x_original = int(_clamp(x_original, 0, ow - 1))
+            y_original = int(_clamp(y_original, 0, oh - 1))
 
             pixel_value = pil_original.getpixel((x_original, y_original))
 
@@ -6404,7 +7375,12 @@ class PyFCSApp:
             pixel_lab = color.rgb2lab(pixel_rgb_np)[0][0]
 
             if self.COLOR_SPACE:
-                self.display_pixel_value(x_original, y_original, pixel_lab, is_average=False)
+                self.display_pixel_value(
+                    x_original,
+                    y_original,
+                    pixel_lab,
+                    is_average=False
+                )
 
             return "break"
 
@@ -6423,6 +7399,27 @@ class PyFCSApp:
         self.image_canvas.tag_bind(f"{window_id}_close_button", "<Button-1>", close_window)
         self.image_canvas.tag_bind(f"{window_id}_click_image", "<Button-1>", get_pixel_value)
         self.image_canvas.tag_bind(f"{window_id}_arrow_button", "<Button-1>", show_menu_image)
+
+        # Mouse hover target for wheel zoom.
+        # Important: Canvas.tag_bind() does not support <MouseWheel>,
+        # so the real wheel event is handled by root.bind_all().
+        self.image_canvas.tag_bind(
+            f"{window_id}_click_image",
+            "<Enter>",
+            _activate_image_zoom
+        )
+
+        self.image_canvas.tag_bind(
+            f"{window_id}_click_image",
+            "<Leave>",
+            _deactivate_image_zoom
+        )
+
+        self._image_zoom_callbacks[window_id] = {
+            "wheel": _zoom_mousewheel,
+            "linux_up": _zoom_linux_in,
+            "linux_down": _zoom_linux_out,
+        }
 
         self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<Button-1>", start_resize)
         self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<B1-Motion>", do_resize)
@@ -7289,12 +8286,18 @@ class PyFCSApp:
                 rgba_array = UtilsTools._apply_alpha_to_rgb_array(grayscale_image_array, valid_mask)
                 grayscale_image = Image.fromarray(rgba_array.astype(np.uint8), mode="RGBA")
 
+            # Make zoom work over the generated Color Mapping image, not over the original.
+            self._set_image_zoom_source(window_id, grayscale_image, reset_zoom=True)
+
             # Resize only for display
             new_width, new_height = self.image_dimensions[window_id]
             grayscale_image_display = grayscale_image.resize(
                 (new_width, new_height),
                 Image.Resampling.LANCZOS
             )
+
+            self.images[window_id] = grayscale_image_display
+            self.display_pil[window_id] = grayscale_image_display
 
             if hasattr(self, "display_pil"):
                 self.display_pil[window_id] = grayscale_image_display
@@ -7362,6 +8365,9 @@ class PyFCSApp:
                 return
 
             pil_original = self.pil_images_original[window_id]
+
+            # Restore zoom source to the original full-resolution image.
+            self._set_image_zoom_source(window_id, pil_original, reset_zoom=True)
 
             # Preserve the current displayed size if the window was resized
             if hasattr(self, "image_dimensions") and window_id in self.image_dimensions:
@@ -7624,11 +8630,14 @@ class PyFCSApp:
                 else:
                     pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGB")
 
+                # Make zoom work over the current Color Mapping All image.
+                self._set_image_zoom_source(window_id, pil_to_show, reset_zoom=True)
+
+                self.images[window_id] = pil_to_show
+                self.display_pil[window_id] = pil_to_show
+
                 img_tk = ImageTk.PhotoImage(pil_to_show)
                 self.floating_images[window_id] = img_tk
-
-                if hasattr(self, "display_pil"):
-                    self.display_pil[window_id] = pil_to_show
 
                 image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
                 if image_items:
@@ -12801,10 +13810,20 @@ class PyFCSApp:
             )
             return
 
-        if not hasattr(self, "images") or not self.images:
+        has_original_images = (
+            hasattr(self, "pil_images_original")
+            and bool(self.pil_images_original)
+        )
+
+        has_loaded_paths = (
+            hasattr(self, "load_images_names")
+            and bool(self.load_images_names)
+        )
+
+        if not has_original_images and not has_loaded_paths:
             self.custom_warning(
                 "No Images Available",
-                "Image data are not available.",
+                "Original image data are not available.",
                 parent=getattr(self, "_color_evaluation_window", None)
             )
             return
@@ -12835,6 +13854,11 @@ class PyFCSApp:
             "scale": 1.0,
             "offset_x": 0,
             "offset_y": 0,
+            "view_zoom": 1.0,
+            "view_cx": 0.0,
+            "view_cy": 0.0,
+            "display_img_w": 0,
+            "display_img_h": 0,
             "drag_start": None,
             "rect_id": None,
             "sample_rgb": None,
@@ -12938,7 +13962,7 @@ class PyFCSApp:
         canvas.pack(padx=12, pady=(0, 6))
 
         tip_var = tk.StringVar(
-            value="Click to sample one pixel, or drag to sample the average color of a region."
+            value="Mouse wheel to zoom. Click to sample one pixel, or drag to sample the average color of a region."
         )
 
         tk.Label(
@@ -13074,19 +14098,252 @@ class PyFCSApp:
 
             raise ValueError("Unsupported image format.")
 
-        def _canvas_to_image_xy(canvas_x, canvas_y):
+        def _clamp(value, min_value, max_value):
+            """Clamp a numeric value."""
+            return max(min_value, min(max_value, value))
+
+
+        def _is_point_inside_display(canvas_x, canvas_y):
+            """Return True if a canvas coordinate is inside the displayed image area."""
+            disp_w = state.get("display_img_w", 0)
+            disp_h = state.get("display_img_h", 0)
+
+            if disp_w <= 0 or disp_h <= 0:
+                return False
+
+            ox = state["offset_x"]
+            oy = state["offset_y"]
+
+            return (
+                ox <= canvas_x < ox + disp_w
+                and oy <= canvas_y < oy + disp_h
+            )
+
+
+        def _clamp_canvas_point_to_display(canvas_x, canvas_y):
+            """Clamp a canvas coordinate to the displayed image area."""
+            disp_w = max(1, state.get("display_img_w", 1))
+            disp_h = max(1, state.get("display_img_h", 1))
+
+            ox = state["offset_x"]
+            oy = state["offset_y"]
+
+            x = _clamp(canvas_x, ox, ox + disp_w - 1)
+            y = _clamp(canvas_y, oy, oy + disp_h - 1)
+
+            return x, y
+
+
+        def _get_view_crop_box():
+            """
+            Return the current visible crop box in full-image coordinates.
+
+            The canvas/display size stays fixed. Only this crop changes with zoom.
+            """
             if state["pil_img"] is None:
                 return None
 
-            x = int(round((canvas_x - state["offset_x"]) / state["scale"]))
-            y = int(round((canvas_y - state["offset_y"]) / state["scale"]))
+            img_w, img_h = state["pil_img"].size
 
-            w, h = state["pil_img"].size
+            zoom = max(1.0, float(state.get("view_zoom", 1.0)))
+            cx = float(state.get("view_cx", img_w / 2))
+            cy = float(state.get("view_cy", img_h / 2))
 
-            x = max(0, min(w - 1, x))
-            y = max(0, min(h - 1, y))
+            crop_w = max(1.0, img_w / zoom)
+            crop_h = max(1.0, img_h / zoom)
+
+            left = cx - crop_w / 2
+            top = cy - crop_h / 2
+
+            left = _clamp(left, 0, max(0, img_w - crop_w))
+            top = _clamp(top, 0, max(0, img_h - crop_h))
+
+            right = left + crop_w
+            bottom = top + crop_h
+
+            return left, top, right, bottom
+
+
+        def _render_preview():
+            """
+            Render the current zoom viewport into the fixed preview canvas.
+            """
+            if state["pil_img"] is None:
+                return
+
+            crop_box = _get_view_crop_box()
+            if crop_box is None:
+                return
+
+            left, top, right, bottom = crop_box
+
+            crop = state["pil_img"].crop((
+                int(round(left)),
+                int(round(top)),
+                int(round(right)),
+                int(round(bottom))
+            ))
+
+            disp_w = max(1, int(state["display_img_w"]))
+            disp_h = max(1, int(state["display_img_h"]))
+
+            resized = crop.resize((disp_w, disp_h), Image.Resampling.LANCZOS)
+            state["photo"] = ImageTk.PhotoImage(resized)
+
+            canvas.delete("image")
+            canvas.create_image(
+                state["offset_x"],
+                state["offset_y"],
+                image=state["photo"],
+                anchor="nw",
+                tags=("image",)
+            )
+
+            try:
+                canvas.tag_lower("image")
+            except Exception:
+                pass
+
+
+        def _canvas_to_image_xy(canvas_x, canvas_y):
+            """
+            Convert canvas coordinates to full-image coordinates,
+            taking the current zoom viewport into account.
+            """
+            if state["pil_img"] is None:
+                return None
+
+            disp_w = max(1, state.get("display_img_w", 1))
+            disp_h = max(1, state.get("display_img_h", 1))
+
+            canvas_x, canvas_y = _clamp_canvas_point_to_display(canvas_x, canvas_y)
+
+            rel_x = canvas_x - state["offset_x"]
+            rel_y = canvas_y - state["offset_y"]
+
+            crop_box = _get_view_crop_box()
+            if crop_box is None:
+                return None
+
+            left, top, right, bottom = crop_box
+
+            crop_w = right - left
+            crop_h = bottom - top
+
+            x = left + (rel_x / disp_w) * crop_w
+            y = top + (rel_y / disp_h) * crop_h
+
+            img_w, img_h = state["pil_img"].size
+
+            x = int(_clamp(x, 0, img_w - 1))
+            y = int(_clamp(y, 0, img_h - 1))
 
             return x, y
+
+
+        def _clear_preview_rectangle():
+            """Remove the current ROI rectangle from the preview canvas."""
+            if state["rect_id"] is not None:
+                try:
+                    canvas.delete(state["rect_id"])
+                except Exception:
+                    pass
+
+            state["rect_id"] = None
+            state["drag_start"] = None
+
+
+        def _apply_preview_zoom(factor=None, reset=False, event=None):
+            """
+            Apply zoom to the preview without changing the canvas size.
+
+            If the mouse is over the image, the zoom is centered around that point.
+            """
+            if state["pil_img"] is None:
+                return "break"
+
+            img_w, img_h = state["pil_img"].size
+
+            _clear_preview_rectangle()
+
+            if reset:
+                state["view_zoom"] = 1.0
+                state["view_cx"] = img_w / 2
+                state["view_cy"] = img_h / 2
+                _render_preview()
+                tip_var.set(
+                    "Mouse wheel to zoom. Click to sample one pixel, or drag to sample the average color of a region."
+                )
+                return "break"
+
+            if factor is None:
+                return "break"
+
+            old_zoom = float(state.get("view_zoom", 1.0))
+            new_zoom = _clamp(old_zoom * factor, 1.0, 16.0)
+
+            if abs(new_zoom - old_zoom) < 1e-9:
+                return "break"
+
+            point_info = None
+            if event is not None and _is_point_inside_display(event.x, event.y):
+                source_xy = _canvas_to_image_xy(event.x, event.y)
+                if source_xy is not None:
+                    disp_w = max(1, state.get("display_img_w", 1))
+                    disp_h = max(1, state.get("display_img_h", 1))
+
+                    rel_x = event.x - state["offset_x"]
+                    rel_y = event.y - state["offset_y"]
+
+                    point_info = (
+                        source_xy[0],
+                        source_xy[1],
+                        rel_x / disp_w,
+                        rel_y / disp_h
+                    )
+
+            state["view_zoom"] = new_zoom
+
+            if point_info is not None:
+                source_x, source_y, rel_fx, rel_fy = point_info
+
+                crop_w = max(1.0, img_w / new_zoom)
+                crop_h = max(1.0, img_h / new_zoom)
+
+                new_left = source_x - rel_fx * crop_w
+                new_top = source_y - rel_fy * crop_h
+
+                new_left = _clamp(new_left, 0, max(0, img_w - crop_w))
+                new_top = _clamp(new_top, 0, max(0, img_h - crop_h))
+
+                state["view_cx"] = new_left + crop_w / 2
+                state["view_cy"] = new_top + crop_h / 2
+
+            _render_preview()
+
+            tip_var.set(
+                f"Zoom: {new_zoom * 100:.0f}%. Click to sample one pixel, or drag to sample an average color."
+            )
+
+            return "break"
+
+
+        def _on_preview_mousewheel(event):
+            """Windows/macOS mouse wheel zoom."""
+            if event.delta > 0:
+                return _apply_preview_zoom(factor=1.15, event=event)
+            else:
+                return _apply_preview_zoom(factor=1 / 1.15, event=event)
+
+
+        def _on_preview_linux_zoom_in(event):
+            """Linux wheel up zoom."""
+            return _apply_preview_zoom(factor=1.15, event=event)
+
+
+        def _on_preview_linux_zoom_out(event):
+            """Linux wheel down zoom."""
+            return _apply_preview_zoom(factor=1 / 1.15, event=event)
 
         def _set_sample_rgb(rgb, source_text="image sample"):
             try:
@@ -13139,14 +14396,49 @@ class PyFCSApp:
             preview_canvas.itemconfig(preview_rect, fill="#d9d9d9")
             use_button.config(state="disabled")
 
+
+        def _get_best_sampler_source_pil(window_id):
+            """
+            Return the best available original PIL source for the sampler.
+
+            Important:
+            This Color Evaluation sampler should always sample from the real original image,
+            not from Color Mapping or Color Mapping All visualizations.
+            """
+            if (
+                hasattr(self, "pil_images_original")
+                and window_id in self.pil_images_original
+                and self.pil_images_original[window_id] is not None
+            ):
+                return _image_object_to_pil(self.pil_images_original[window_id])
+
+            # Fallback: reload from original file path if available.
+            if (
+                hasattr(self, "load_images_names")
+                and window_id in self.load_images_names
+                and self.load_images_names[window_id]
+                and os.path.exists(self.load_images_names[window_id])
+            ):
+                return Image.open(self.load_images_names[window_id]).convert("RGB")
+
+            # Last fallback only, in case old sessions do not have pil_images_original.
+            if (
+                hasattr(self, "images")
+                and window_id in self.images
+                and self.images[window_id] is not None
+            ):
+                return _image_object_to_pil(self.images[window_id])
+
+            raise ValueError("No valid original image source found.")
+
         def _load_selected_image(*_):
             window_id = _get_selected_window_id()
 
-            if window_id is None or window_id not in self.images:
+            if window_id is None:
                 return
 
             try:
-                pil_img = _image_object_to_pil(self.images[window_id])
+                pil_img = _get_best_sampler_source_pil(window_id)
             except Exception:
                 self.custom_warning(
                     "Image Error",
@@ -13169,20 +14461,24 @@ class PyFCSApp:
             state["scale"] = scale
             state["offset_x"] = int((canvas_w - disp_w) / 2)
             state["offset_y"] = int((canvas_h - disp_h) / 2)
+            state["display_img_w"] = disp_w
+            state["display_img_h"] = disp_h
 
-            resized = pil_img.resize((disp_w, disp_h), Image.LANCZOS)
-            state["photo"] = ImageTk.PhotoImage(resized)
+            # Reset viewport zoom for the newly selected image
+            state["view_zoom"] = 1.0
+            state["view_cx"] = img_w / 2
+            state["view_cy"] = img_h / 2
 
             canvas.delete("all")
-            canvas.create_image(
-                state["offset_x"],
-                state["offset_y"],
-                image=state["photo"],
-                anchor="nw",
-                tags=("image",)
-            )
+            state["rect_id"] = None
+            state["drag_start"] = None
 
+            _render_preview()
             _clear_sample()
+
+            tip_var.set(
+                "Mouse wheel to zoom. Click to sample one pixel, or drag to sample the average color of a region."
+            )
 
         def _sample_roi_from_canvas(x1, y1, x2, y2):
             if state["pil_img"] is None:
@@ -13223,7 +14519,12 @@ class PyFCSApp:
             if state["pil_img"] is None:
                 return
 
-            state["drag_start"] = (event.x, event.y)
+            if not _is_point_inside_display(event.x, event.y):
+                return
+
+            x, y = _clamp_canvas_point_to_display(event.x, event.y)
+
+            state["drag_start"] = (x, y)
 
             if state["rect_id"] is not None:
                 try:
@@ -13232,36 +14533,41 @@ class PyFCSApp:
                     pass
 
             state["rect_id"] = canvas.create_rectangle(
-                event.x,
-                event.y,
-                event.x,
-                event.y,
+                x,
+                y,
+                x,
+                y,
                 outline="#ffcc00",
                 width=2
             )
+
 
         def _on_mouse_drag(event):
             if state["drag_start"] is None or state["rect_id"] is None:
                 return
 
             x0, y0 = state["drag_start"]
+            x1, y1 = _clamp_canvas_point_to_display(event.x, event.y)
 
             canvas.coords(
                 state["rect_id"],
                 x0,
                 y0,
-                event.x,
-                event.y
+                x1,
+                y1
             )
+
 
         def _on_mouse_up(event):
             if state["drag_start"] is None:
                 return
 
             x0, y0 = state["drag_start"]
+            x1, y1 = _clamp_canvas_point_to_display(event.x, event.y)
+
             state["drag_start"] = None
 
-            _sample_roi_from_canvas(x0, y0, event.x, event.y)
+            _sample_roi_from_canvas(x0, y0, x1, y1)
 
         def _use_sampled_color():
             if (
@@ -13298,6 +14604,13 @@ class PyFCSApp:
         canvas.bind("<ButtonPress-1>", _on_mouse_down)
         canvas.bind("<B1-Motion>", _on_mouse_drag)
         canvas.bind("<ButtonRelease-1>", _on_mouse_up)
+
+        # Preview zoom with mouse wheel
+        canvas.bind("<MouseWheel>", _on_preview_mousewheel, add="+")
+        canvas.bind("<Button-4>", _on_preview_linux_zoom_in, add="+")
+        canvas.bind("<Button-5>", _on_preview_linux_zoom_out, add="+")
+
+        canvas.bind("<Double-Button-3>", lambda event: _apply_preview_zoom(reset=True))
 
         popup.bind("<Escape>", lambda e: popup.destroy())
 

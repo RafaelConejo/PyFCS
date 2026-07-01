@@ -4,6 +4,7 @@ from skimage import color
 import matplotlib.pyplot as plt
 import math, colorsys, numpy as np
 from sklearn.cluster import DBSCAN
+from PIL import Image
 
 ### my libraries ###
 from Source.interface.modules import UtilsTools  
@@ -520,67 +521,227 @@ class ImageManager:
 
 
 
-    def get_fcs_image(self, image, threshold=0.5, min_samples=160):
+    def get_fcs_image(
+        self,
+        image,
+        threshold=0.5,
+        min_samples=160,
+        max_pixels=80000,
+        max_side=650,
+        lab_quantization=1.0
+    ):
         """
         Detect the main colors in an image using DBSCAN clustering in LAB space.
 
-        Steps:
-          - Convert input PIL image to NumPy RGB array (discard alpha channel if present)
-          - Normalize RGB to [0, 1] and convert to LAB
-          - Flatten pixels into (N, 3) LAB samples
-          - Run DBSCAN with:
-              * eps = 1.5 - threshold
-              * min_samples = min_samples
-          - For each cluster (excluding noise label -1):
-              * Compute the mean LAB color
-              * Convert mean LAB back to RGB (0..255 integer)
-              * Append {"rgb": (R,G,B), "lab": (L,A,B)} to results
+        Optimized version:
+        - Uses a resized copy only for automatic detection.
+        - Limits the number of processed pixels to avoid MemoryError.
+        - Quantizes LAB values and uses DBSCAN sample_weight to reduce memory usage.
+        - Keeps the same output format: [{"rgb": (R,G,B), "lab": (L,A,B)}, ...].
 
-        Args:
-            image: PIL Image object to process.
-            threshold: Float controlling DBSCAN epsilon (higher threshold => smaller eps).
-            min_samples: Minimum samples required to form a cluster.
-
-        Returns:
-            List[dict]: [{"rgb": (R,G,B), "lab": (L,A,B)}, ...]
+        Parameters
+        ----------
+        image:
+            PIL image or array-like image.
+        threshold:
+            Detection threshold. Higher threshold means smaller DBSCAN eps.
+        min_samples:
+            Base DBSCAN min_samples.
+        max_pixels:
+            Maximum number of pixels used for clustering after resize/sampling.
+        max_side:
+            Maximum width or height used for automatic detection.
+        lab_quantization:
+            LAB quantization step. Higher values are faster and more compact.
+            Recommended: 0.5 to 2.0. Default 1.0 is a good balance.
         """
-        # Convert image to numpy array
-        img_np = np.array(image)
+        if image is None:
+            return []
 
-        # Handle alpha channel if present (RGBA -> RGB)
-        if img_np.shape[-1] == 4:
+        # ------------------------------------------------------------
+        # Convert input to RGB PIL image
+        # ------------------------------------------------------------
+        try:
+            if isinstance(image, Image.Image):
+                pil_img = image.convert("RGB")
+            else:
+                img_np = np.asarray(image)
+
+                if img_np.dtype != np.uint8:
+                    img_np = np.clip(img_np, 0, 255).astype(np.uint8)
+
+                if img_np.ndim == 2:
+                    pil_img = Image.fromarray(img_np, mode="L").convert("RGB")
+                elif img_np.ndim == 3:
+                    if img_np.shape[-1] == 4:
+                        pil_img = Image.fromarray(img_np, mode="RGBA").convert("RGB")
+                    else:
+                        pil_img = Image.fromarray(img_np[..., :3], mode="RGB")
+                else:
+                    return []
+        except Exception:
+            return []
+
+        original_w, original_h = pil_img.size
+        original_pixels = max(1, original_w * original_h)
+
+        # ------------------------------------------------------------
+        # Resize only for detection
+        # ------------------------------------------------------------
+        scale_by_side = 1.0
+        if max_side is not None and max_side > 0:
+            scale_by_side = min(1.0, float(max_side) / float(max(original_w, original_h)))
+
+        scale_by_pixels = 1.0
+        if max_pixels is not None and max_pixels > 0:
+            scale_by_pixels = min(1.0, math.sqrt(float(max_pixels) / float(original_pixels)))
+
+        scale = min(scale_by_side, scale_by_pixels)
+
+        if scale < 1.0:
+            new_w = max(1, int(round(original_w * scale)))
+            new_h = max(1, int(round(original_h * scale)))
+
+            try:
+                resample_filter = Image.Resampling.BILINEAR
+            except AttributeError:
+                resample_filter = Image.BILINEAR
+
+            pil_img = pil_img.resize((new_w, new_h), resample_filter)
+
+        # ------------------------------------------------------------
+        # RGB -> LAB
+        # ------------------------------------------------------------
+        img_np = np.asarray(pil_img, dtype=np.uint8)
+
+        if img_np.ndim == 2:
+            img_np = np.stack([img_np, img_np, img_np], axis=-1)
+        elif img_np.ndim == 3 and img_np.shape[-1] > 3:
             img_np = img_np[..., :3]
 
-        # Normalize pixel values to [0, 1]
-        img_np = img_np / 255.0
-        lab_img = color.rgb2lab(img_np)
+        img01 = img_np.astype(np.float32) / 255.0
+        lab_img = color.rgb2lab(img01).astype(np.float32, copy=False)
 
-        # Flatten the image into a list of pixels
         pixels = lab_img.reshape((-1, 3))
+        total_pixels = pixels.shape[0]
 
-        # Apply DBSCAN clustering
-        eps = 1.5 - threshold
-        dbscan = DBSCAN(eps=eps, min_samples=min_samples)
-        labels = dbscan.fit_predict(pixels)
+        if total_pixels == 0:
+            return []
 
-        # Extract representative colors (cluster centroids in LAB)
-        unique_labels = set(labels)
-        colors = []
-        for label in unique_labels:
-            if label == -1:  # Ignore noise
+        # ------------------------------------------------------------
+        # Safety pixel cap after resize
+        # ------------------------------------------------------------
+        if max_pixels is not None and max_pixels > 0 and total_pixels > max_pixels:
+            # Deterministic sampling to avoid random UI behavior
+            idx = np.linspace(0, total_pixels - 1, int(max_pixels), dtype=np.int64)
+            pixels = pixels[idx]
+            total_pixels = pixels.shape[0]
+
+        # ------------------------------------------------------------
+        # Quantize LAB and group repeated/similar values
+        # ------------------------------------------------------------
+        q = max(0.05, float(lab_quantization))
+
+        lab_q = np.round(pixels / q).astype(np.int32)
+
+        unique_lab_q, counts = np.unique(
+            lab_q,
+            axis=0,
+            return_counts=True
+        )
+
+        unique_pixels = unique_lab_q.astype(np.float32) * q
+
+        if unique_pixels.shape[0] == 0:
+            return []
+
+        # ------------------------------------------------------------
+        # DBSCAN on unique LAB values using sample weights
+        # ------------------------------------------------------------
+        eps = max(0.05, 1.5 - float(threshold))
+
+        effective_min_samples = max(5, int(min_samples))
+
+        # Avoid impossible min_samples on small sampled images
+        effective_min_samples = min(
+            effective_min_samples,
+            max(5, int(total_pixels * 0.10))
+        )
+
+        dbscan = DBSCAN(
+            eps=eps,
+            min_samples=effective_min_samples
+        )
+
+        try:
+            labels = dbscan.fit_predict(
+                unique_pixels,
+                sample_weight=counts
+            )
+        except MemoryError:
+            # Last-resort fallback: coarser quantization and fewer points
+            q = max(q * 2.0, 2.0)
+            lab_q = np.round(pixels / q).astype(np.int32)
+
+            unique_lab_q, counts = np.unique(
+                lab_q,
+                axis=0,
+                return_counts=True
+            )
+
+            unique_pixels = unique_lab_q.astype(np.float32) * q
+
+            labels = dbscan.fit_predict(
+                unique_pixels,
+                sample_weight=counts
+            )
+
+        # ------------------------------------------------------------
+        # Extract representative colors
+        # ------------------------------------------------------------
+        colors_found = []
+
+        for label in set(labels):
+            if label == -1:
                 continue
 
-            group = pixels[labels == label]
+            mask = labels == label
 
-            # Compute the mean LAB of the cluster
-            mean_color_lab = group.mean(axis=0)
+            if not np.any(mask):
+                continue
 
-            # Convert mean LAB to RGB (skimage expects a 2D array)
+            cluster_pixels = unique_pixels[mask]
+            cluster_weights = counts[mask].astype(np.float32)
+
+            if cluster_pixels.shape[0] == 0:
+                continue
+
+            # Weighted centroid in LAB
+            mean_color_lab = np.average(
+                cluster_pixels,
+                axis=0,
+                weights=cluster_weights
+            )
+
+            # Convert LAB -> RGB
             mean_color_rgb = color.lab2rgb([[mean_color_lab]])
-            mean_color_rgb = (mean_color_rgb[0, 0] * 255).astype(int)
+            mean_color_rgb = np.clip(mean_color_rgb[0, 0] * 255.0, 0, 255)
+            mean_color_rgb = np.round(mean_color_rgb).astype(int)
 
-            colors.append({"rgb": tuple(mean_color_rgb), "lab": tuple(mean_color_lab)})
+            colors_found.append({
+                "rgb": tuple(int(v) for v in mean_color_rgb),
+                "lab": tuple(float(v) for v in mean_color_lab),
+                "weight": int(np.sum(cluster_weights))
+            })
 
-        return colors
+        # Sort by cluster size, largest colors first
+        colors_found.sort(key=lambda item: item.get("weight", 0), reverse=True)
 
-
+        # Keep previous external format clean
+        return [
+            {
+                "rgb": item["rgb"],
+                "lab": item["lab"]
+            }
+            for item in colors_found
+        ]
