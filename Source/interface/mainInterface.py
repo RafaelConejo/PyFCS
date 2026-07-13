@@ -5157,9 +5157,16 @@ class PyFCSApp:
         Displays the color data in a visually improved scrollable table within the canvas.
         Updates the table with LAB values, editable labels and color previews.
         """
+        # Update the name entry only when a different color space is loaded.
+        # This avoids overwriting a name currently being edited by the user.
         if hasattr(self, "file_name_entry"):
-            self.file_name_entry.delete(0, "end")
-            self.file_name_entry.insert(0, getattr(self, "file_base_name", ""))
+            loaded_name = str(getattr(self, "file_base_name", "")).strip()
+            previous_loaded_name = getattr(self, "_data_name_source", None)
+
+            if previous_loaded_name != loaded_name:
+                self.file_name_entry.delete(0, tk.END)
+                self.file_name_entry.insert(0, loaded_name)
+                self._data_name_source = loaded_name
 
         # Destroy previous embedded widgets, such as editable label entries
         try:
@@ -5175,6 +5182,10 @@ class PyFCSApp:
 
         self.color_matrix = []
         self.hex_color = {}
+
+        # Keep references to the visible label editors so pending text
+        # can be committed immediately when Apply Changes is pressed.
+        self._data_label_editors = []
 
         # Update header counter
         if hasattr(self, "data_header_title"):
@@ -5337,6 +5348,18 @@ class PyFCSApp:
                     entry_var.set(old_name[:MAX_LABEL_CHARS])
                 return False
 
+            # The rename may already have been committed directly by
+            # Apply Changes before a delayed FocusOut event is processed.
+            if old_name not in self.edit_color_data:
+                if new_name in self.edit_color_data:
+                    if entry_var is not None:
+                        entry_var.set(new_name[:MAX_LABEL_CHARS])
+                    return False
+
+                if entry_var is not None:
+                    entry_var.set(old_name[:MAX_LABEL_CHARS])
+                return False
+
             if new_name in self.edit_color_data:
                 if entry_var is not None:
                     entry_var.set(old_name[:MAX_LABEL_CHARS])
@@ -5346,11 +5369,6 @@ class PyFCSApp:
                     f"The color '{new_name}' already exists.",
                     parent=getattr(self, "root", None)
                 )
-                return False
-
-            if old_name not in self.edit_color_data:
-                if entry_var is not None:
-                    entry_var.set(old_name[:MAX_LABEL_CHARS])
                 return False
 
             # Rebuild dict to preserve row order
@@ -5440,6 +5458,15 @@ class PyFCSApp:
 
             label_var = tk.StringVar(value=str(color_name)[:MAX_LABEL_CHARS])
 
+            # Mutable state shared by the Entry callbacks and Apply Changes.
+            # Updating old_name here prevents a delayed FocusOut event from
+            # trying to apply the same rename a second time.
+            editor_state = {
+                "old_name": color_name,
+                "variable": label_var
+            }
+            self._data_label_editors.append(editor_state)
+
             def _validate_label_text(proposed_text):
                 try:
                     return len(proposed_text) <= MAX_LABEL_CHARS
@@ -5462,16 +5489,28 @@ class PyFCSApp:
                 insertbackground="#222222"
             )
 
-            def _commit_label_change(event=None, old_name=color_name, var=label_var):
-                _rename_color_label(old_name, var.get(), entry_var=var)
+            def _commit_label_change(event=None, state=editor_state):
+                old_name = str(state["old_name"])
+                requested_name = str(state["variable"].get()).strip()
+
+                renamed = _rename_color_label(
+                    old_name,
+                    requested_name,
+                    entry_var=state["variable"]
+                )
+
+                if renamed:
+                    state["old_name"] = requested_name[:MAX_LABEL_CHARS]
 
             label_entry.bind("<Return>", _commit_label_change)
             label_entry.bind("<FocusOut>", _commit_label_change)
 
-            # Pressing Escape restores the original name
+            # Pressing Escape restores the last committed name
             label_entry.bind(
                 "<Escape>",
-                lambda event, old_name=color_name, var=label_var: var.set(str(old_name)[:MAX_LABEL_CHARS])
+                lambda event, state=editor_state: state["variable"].set(
+                    str(state["old_name"])[:MAX_LABEL_CHARS]
+                )
             )
 
             entry_w = label_width - 24
@@ -5658,9 +5697,30 @@ class PyFCSApp:
 
         self.data_window.configure(scrollregion=(0, 0, scroll_width, y))
 
+        # Store the geometry required to center the table
+        self._data_scroll_width = scroll_width
+        self._data_table_center_x = x_start + table_width / 2
+
         if not getattr(self, "_data_window_configure_bound", False):
-            self.data_window.bind("<Configure>", lambda event: self.display_data_window())
+            self.data_window.bind(
+                "<Configure>",
+                lambda event: self.display_data_window()
+            )
             self._data_window_configure_bound = True
+
+        # Center the horizontal view whenever the Data tab becomes visible
+        if not getattr(self, "_data_window_map_bound", False):
+            self.data_window.bind(
+                "<Map>",
+                lambda event: self.data_window.after_idle(
+                    self._center_data_horizontal_scroll
+                ),
+                add="+"
+            )
+            self._data_window_map_bound = True
+
+        # Also center it after the current table redraw
+        self.data_window.after_idle(self._center_data_horizontal_scroll)
 
 
 
@@ -5838,6 +5898,105 @@ class PyFCSApp:
         self.color_matrix = []
         self.hex_color = {}
 
+        self._data_name_source = None
+        self._data_scroll_width = 0
+        self._data_table_center_x = 0
+        self._data_label_editors = []
+
+
+
+    def _commit_pending_data_label_changes(self):
+        """
+        Commit all visible label edits before saving.
+
+        The Apply Changes button may run before Tkinter processes the
+        Entry FocusOut event. Reading the StringVar objects directly
+        guarantees that the latest text is included in the saved data.
+        """
+        editors = getattr(self, "_data_label_editors", [])
+        current_data = getattr(self, "edit_color_data", {})
+
+        if not editors or not current_data:
+            return True
+
+        max_label_chars = 16
+        rename_map = {}
+
+        # Read every visible Entry before modifying edit_color_data.
+        for editor in editors:
+            old_name = str(editor.get("old_name", "")).strip()
+            variable = editor.get("variable")
+
+            if variable is None or old_name not in current_data:
+                continue
+
+            new_name = str(variable.get()).strip()
+
+            if len(new_name) > max_label_chars:
+                new_name = new_name[:max_label_chars]
+                variable.set(new_name)
+
+            if not new_name:
+                variable.set(old_name[:max_label_chars])
+
+                self.custom_warning(
+                    "Invalid Color Name",
+                    "Color name cannot be empty.",
+                    parent=getattr(self, "root", None)
+                )
+                return False
+
+            rename_map[old_name] = new_name
+
+        # Validate the complete resulting list. This also supports several
+        # labels being edited before Apply Changes is pressed.
+        final_names = []
+
+        for old_name in current_data.keys():
+            final_name = rename_map.get(old_name, old_name)
+
+            if final_name in final_names:
+                self.custom_warning(
+                    "Duplicated Color Name",
+                    f"The color '{final_name}' already exists.",
+                    parent=getattr(self, "root", None)
+                )
+                return False
+
+            final_names.append(final_name)
+
+        if all(old_name == rename_map.get(old_name, old_name)
+               for old_name in current_data.keys()):
+            return True
+
+        # Rebuild the dictionary while preserving row order.
+        renamed_data = {}
+
+        for old_name, value in current_data.items():
+            new_name = rename_map.get(old_name, old_name)
+            renamed_data[new_name] = value
+
+        self.edit_color_data = renamed_data
+        self.color_matrix = list(renamed_data.keys())
+
+        # Keep related selection/edit references coherent.
+        selected_name = getattr(self, "selected_color_name", None)
+        if selected_name in rename_map:
+            self.selected_color_name = rename_map[selected_name]
+
+        current_edit_name = getattr(self, "current_color_to_edit", None)
+        if current_edit_name in rename_map:
+            self.current_color_to_edit = rename_map[current_edit_name]
+
+        # Keep callback state synchronized in case FocusOut is processed
+        # after the Apply Changes command.
+        for editor in editors:
+            old_name = str(editor.get("old_name", "")).strip()
+            if old_name in rename_map:
+                editor["old_name"] = rename_map[old_name]
+
+        return True
+
 
 
     def apply_changes(self):
@@ -5856,6 +6015,11 @@ class PyFCSApp:
                 "There is a process currently running. Please wait for it to finish or cancel it before applying changes.",
                 parent=getattr(self, "root", None)
             )
+            return
+
+        # Commit the current Entry text immediately, even when the user
+        # presses Apply Changes before the FocusOut event is processed.
+        if not self._commit_pending_data_label_changes():
             return
 
         try:
@@ -5903,6 +6067,9 @@ class PyFCSApp:
                 color_dict=color_dict,
                 apply_after_save=True
             )
+
+            self.file_base_name = output_name
+            self._data_name_source = output_name
 
         except Exception as e:
             self.custom_warning(
@@ -5983,6 +6150,48 @@ class PyFCSApp:
                 f"The Color Space could not be deleted: {e}",
                 parent=getattr(self, "root", None)
             )
+
+
+    def _center_data_horizontal_scroll(self):
+        """Center the Data table horizontally inside its canvas."""
+        if not hasattr(self, "data_window"):
+            return
+
+        try:
+            self.data_window.update_idletasks()
+
+            visible_width = float(self.data_window.winfo_width())
+            scroll_width = float(
+                getattr(self, "_data_scroll_width", visible_width)
+            )
+            table_center = float(
+                getattr(self, "_data_table_center_x", visible_width / 2)
+            )
+
+            if scroll_width <= visible_width or scroll_width <= 0:
+                self.data_window.xview_moveto(0.0)
+                return
+
+            # Position the viewport so that the table center is in the
+            # center of the visible canvas.
+            desired_left = table_center - visible_width / 2
+            maximum_left = scroll_width - visible_width
+
+            desired_left = max(0.0, min(desired_left, maximum_left))
+
+            self.data_window.xview_moveto(desired_left / scroll_width)
+
+        except Exception:
+            pass
+
+
+
+
+
+
+
+
+
 
 
 
