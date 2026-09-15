@@ -6,6 +6,7 @@ from Source.geometry.Volume import Volume
 from Source.geometry.GeometryTools import GeometryTools
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.geometry.Prototype import Prototype
+from Source.membership.MembershipFunction import MembershipFunction
 
 
 class FuzzyColor:
@@ -72,8 +73,16 @@ class FuzzyColor:
             for face in proto.voronoi_volume.getFaces():
                     FuzzyColor.add_face_to_core_support(face, Point(*proto.positive), core_volume, support_volume, scaling_factor)
 
-            core_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=core_volume)
-            support_volume_dict = Prototype(label=proto.label, positive=proto.positive, negatives=proto.negatives, voronoi_volume=support_volume)
+            core_volume_dict = Prototype(
+                label=proto.label,
+                positive=proto.positive,
+                voronoi_volume=core_volume,
+            )
+            support_volume_dict = Prototype(
+                label=proto.label,
+                positive=proto.positive,
+                voronoi_volume=support_volume,
+            )
             
             core_volumes.append(core_volume_dict)
             support_volumes.append(support_volume_dict)
@@ -162,7 +171,7 @@ class FuzzyColor:
 
 
     @staticmethod
-    def _raw_membership_for_index(new_color, i, function, pack):
+    def _raw_membership_for_index(new_color, i, pack):
         xyz = Point(new_color[0], new_color[1], new_color[2])
 
         domain_volume = pack["domain_volume"]
@@ -200,9 +209,8 @@ class FuzzyColor:
             return 0.0
         param_c = GeometryTools.euclidean_distance(rep, p_face)
 
-        function.setParam([param_a, param_b, param_c])
         d = GeometryTools.euclidean_distance(rep, xyz)
-        value = function.getValue(d)
+        value = MembershipFunction.evaluate(d, param_a, param_b, param_c)
 
         if value < 0.0:
             return 0.0
@@ -211,7 +219,7 @@ class FuzzyColor:
         return value
 
     @staticmethod
-    def get_membership_degree_mapping_all(new_color, prototypes, function, pack) -> int:
+    def get_membership_degree_mapping_all(new_color, prototypes, pack) -> int:
         xyz = Point(new_color[0], new_color[1], new_color[2])
 
         v_cores = pack["v_cores"]
@@ -228,7 +236,7 @@ class FuzzyColor:
         best_val = 0.0
 
         for i in range(len(prototypes)):
-            v = FuzzyColor._raw_membership_for_index(new_color, i, function, pack)
+            v = FuzzyColor._raw_membership_for_index(new_color, i, pack)
 
             if v > best_val:
                 best_val = v
@@ -237,7 +245,7 @@ class FuzzyColor:
         return best_idx if best_val > 0.0 else -1
 
     @staticmethod
-    def get_membership_degree(new_color, prototypes, function, pack):
+    def get_membership_degree(new_color, prototypes, pack):
         xyz = Point(*new_color)
 
         v_cores = pack["v_cores"]
@@ -264,7 +272,7 @@ class FuzzyColor:
         total = 0.0
 
         for i in range(len(prototypes)):
-            v = FuzzyColor._raw_membership_for_index(new_color, i, function, pack)
+            v = FuzzyColor._raw_membership_for_index(new_color, i, pack)
             if v > 0.0:
                 raw[prototypes[i].label] = v
                 total += v
@@ -279,7 +287,7 @@ class FuzzyColor:
         return {k: v / total for k, v in raw.items()}
 
     @staticmethod
-    def get_membership_degree_for_prototype(new_color, prototype, core, support, function):
+    def get_membership_degree_for_prototype(new_color, prototype, core, support):
         """
         Calculate fuzzy membership degree of a LAB color to a single prototype.
         """
@@ -327,8 +335,6 @@ class FuzzyColor:
             return 0.0
         param_c = GeometryTools.euclidean_distance(rep_s, p_face)
 
-        function.setParam([param_a, param_b, param_c])
         d = GeometryTools.euclidean_distance(rep_p, xyz)
-
-        value = function.getValue(d)
+        value = MembershipFunction.evaluate(d, param_a, param_b, param_c)
         return max(0.0, min(1.0, value))

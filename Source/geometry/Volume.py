@@ -25,6 +25,11 @@ class Volume:
         return False
 
     def isInside(self, xyz: Point, eps=GeometryTools.SMALL_NUM):
+        # An empty face set is not a valid bounded volume. Returning False is
+        # safer than the vacuous-true result of iterating over zero faces.
+        if not self.faces:
+            return False
+
         for face in self.faces:
             plane = face.getPlane()
             s_rep = plane.evaluatePoint(self.representative)

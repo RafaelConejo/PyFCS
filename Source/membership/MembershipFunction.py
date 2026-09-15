@@ -1,7 +1,8 @@
 from typing import Optional
 import math
 
-class MembershipFunction():
+
+class MembershipFunction:
     def __init__(self, a: float = 0, b: float = 0, c: float = 0, name: Optional[str] = None):
         self.a = a
         self.b = b
@@ -13,32 +14,48 @@ class MembershipFunction():
     def getDimension(self) -> int:
         return self.dimension
 
-    def getValue(self, o: object) -> float:
-        x = float(o)
+    @staticmethod
+    def evaluate(x, a, b, c) -> float:
+        """
+        Pure/thread-safe membership evaluation.
 
-        if not (math.isfinite(self.a) and math.isfinite(self.b) and math.isfinite(self.c)):
+        This is the preferred runtime path in PyFCS because it does not mutate
+        shared MembershipFunction state between calls or worker threads.
+        """
+        x = float(x)
+        a = float(a)
+        b = float(b)
+        c = float(c)
+
+        if not (math.isfinite(a) and math.isfinite(b) and math.isfinite(c)):
             return 0.0
 
-        if not (self.a <= self.b <= self.c):
+        if not (a <= b <= c):
             return 0.0
 
-        if x <= self.a:
+        if x <= a:
             return 1.0
-        if x > self.c:
+        if x > c:
             return 0.0
 
-        if self.a < x <= self.b:
-            denom = 2 * (self.b - self.a)
+        if a < x <= b:
+            denom = 2 * (b - a)
             if denom == 0:
                 return 1.0
-            return ((self.b - x) + (self.b - self.a)) / denom
-        else:
-            denom = 2 * (self.c - self.b)
-            if denom == 0:
-                return 0.0
-            return (self.c - x) / denom
+            return ((b - x) + (b - a)) / denom
+
+        denom = 2 * (c - b)
+        if denom == 0:
+            return 0.0
+        return (c - x) / denom
+
+    def getValue(self, o: object) -> float:
+        # Backwards-compatible instance API.
+        return self.evaluate(o, self.a, self.b, self.c)
 
     def setParam(self, p: Optional[list]) -> None:
+        # Retained for backwards compatibility. New PyFCS membership paths use
+        # evaluate() directly and therefore do not rely on mutable state.
         if p is not None and len(p) == 3:
             self.a = float(p[0])
             self.b = float(p[1])

@@ -63,7 +63,7 @@ class PyFCSApp:
         )
         self.fuzzy_manager = FuzzyColorSpaceManager(root=self.root)
         self.color_manager = ColorEvaluationManager(output_dir="test_results/Color_Evaluation")
-        self.volume_limits = ReferenceDomain(0, 100, -128, 127, -128, 127)
+        self.volume_limits = ReferenceDomain.default_voronoi_reference_domain()
 
         # ---------------------------------------------------------------------
         # Shared runtime state
@@ -2202,13 +2202,28 @@ class PyFCSApp:
                 )
 
 
-    def _on_apply_changes_saved_success(self, name, file_path, saved_color_data):
+    def _on_apply_changes_saved_success(
+        self,
+        name,
+        file_path,
+        saved_color_data,
+        fuzzy_color_space,
+    ):
         self.color_data = copy.deepcopy(saved_color_data)
         self.edit_color_data = copy.deepcopy(saved_color_data)
         self.file_path = file_path
         self.file_base_name = name
 
-        self.update_volumes()
+        # Reuse the exact geometry that InputFCS.write_file() has just built.
+        # This avoids a second Voronoi + core/support reconstruction after
+        # Apply Changes.
+        self.fuzzy_color_space = fuzzy_color_space
+        self.prototypes = fuzzy_color_space.get_prototypes()
+        self.fuzzy_color_space.precompute_pack()
+        self.cores = fuzzy_color_space.get_cores()
+        self.supports = fuzzy_color_space.get_supports()
+        self.update_prototypes_info()
+
         self.display_data_window()
 
         messagebox.showinfo(
@@ -2257,18 +2272,26 @@ class PyFCSApp:
         def run_save_process():
             try:
                 input_class = Input.instance(".fcs")
-                file_path = input_class.write_file(
+                save_result = input_class.write_file(
                     name,
                     color_dict,
-                    progress_callback=update_progress
+                    progress_callback=update_progress,
+                    return_fuzzy_space=apply_after_save,
                 )
 
                 if apply_after_save:
+                    file_path, fuzzy_color_space = save_result
                     self.root.after(
                         0,
-                        lambda: self._on_apply_changes_saved_success(name, file_path, saved_color_data)
+                        lambda: self._on_apply_changes_saved_success(
+                            name,
+                            file_path,
+                            saved_color_data,
+                            fuzzy_color_space,
+                        )
                     )
                 else:
+                    file_path = save_result
                     self.root.after(
                         0,
                         lambda: self._on_color_space_saved_success(name, file_path)
@@ -5322,7 +5345,7 @@ class PyFCSApp:
         # =========================
         # Editable label helpers
         # =========================
-        MAX_LABEL_CHARS = 16
+        MAX_LABEL_CHARS = 24
 
         def _rename_color_label(old_name, requested_name, entry_var=None):
             """Rename a color key in edit_color_data while preserving the current order."""
@@ -5737,28 +5760,9 @@ class PyFCSApp:
         color_name = self.color_matrix[index]
 
         if color_name in self.edit_color_data:
-            color_entry = self.edit_color_data[color_name]
-
-            if "positive_prototype" in color_entry:
-                removed_positive = np.array(color_entry["positive_prototype"])
-            elif "Color" in color_entry:
-                removed_positive = np.array(color_entry["Color"])
-            else:
-                return
-
-            for existing_color, data in self.edit_color_data.items():
-                if existing_color == color_name:
-                    continue
-
-                negatives = data.get("negative_prototypes", [])
-
-                filtered = [
-                    prototype for prototype in negatives
-                    if not np.array_equal(prototype, removed_positive)
-                ]
-
-                data["negative_prototypes"] = np.array(filtered)
-
+            # The optimized Voronoi engine derives competitors directly from
+            # the complete positive-prototype matrix, so removing a color no
+            # longer requires updating N redundant negative lists.
             del self.edit_color_data[color_name]
 
         self.display_data_window()
@@ -5820,39 +5824,35 @@ class PyFCSApp:
                 )
                 return
 
-            positive_prototype = np.array([L, A, B])
+            positive_prototype = np.array([L, A, B], dtype=float)
 
-            negative_prototypes = []
+            if not UtilsTools.is_valid_lab(positive_prototype):
+                input_vars["status_var"].set("LAB values are outside the valid domain.")
+                self.custom_warning(
+                    "Invalid LAB Values",
+                    "LAB values must be within L [0,100], a [-128,128], b [-128,128].",
+                    parent=dialog
+                )
+                return
 
-            for _, data in new_color_data.items():
-                if "positive_prototype" in data:
-                    negative_prototypes.append(np.array(data["positive_prototype"]))
-                elif "Color" in data:
-                    negative_prototypes.append(np.array(data["Color"]))
-
-            negative_prototypes = np.array(negative_prototypes)
+            duplicate_name = UtilsTools.find_duplicate_lab_name(
+                new_color_data,
+                positive_prototype,
+            )
+            if duplicate_name is not None:
+                input_vars["status_var"].set("A color with the same LAB prototype already exists.")
+                self.custom_warning(
+                    "Duplicated LAB Prototype",
+                    f"The color '{duplicate_name}' already uses the same LAB prototype. "
+                    "Voronoi prototypes must be unique.",
+                    parent=dialog
+                )
+                return
 
             new_color_data[clean_name] = {
                 "Color": [L, A, B],
                 "positive_prototype": positive_prototype,
-                "negative_prototypes": negative_prototypes
             }
-
-            for existing_color, data in new_color_data.items():
-                if existing_color == clean_name:
-                    continue
-
-                existing_negatives = data.get("negative_prototypes", [])
-
-                if len(existing_negatives) > 0:
-                    updated_negatives = np.vstack([
-                        existing_negatives,
-                        positive_prototype
-                    ])
-                else:
-                    updated_negatives = np.array([positive_prototype])
-
-                new_color_data[existing_color]["negative_prototypes"] = updated_negatives
 
             self.edit_color_data = new_color_data
 
@@ -5919,7 +5919,7 @@ class PyFCSApp:
         if not editors or not current_data:
             return True
 
-        max_label_chars = 16
+        max_label_chars = 24
         rename_map = {}
 
         # Read every visible Entry before modifying edit_color_data.
