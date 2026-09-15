@@ -10,114 +10,256 @@ class InputCNS(Input):
             "InputCNS is read-only. Use InputFCS to export the edited color space as .fcs."
         )
 
-    def is_number(self, s):
+    @staticmethod
+    def is_number(value):
         try:
-            float(s)
+            float(value)
             return True
-        except ValueError:
+        except (TypeError, ValueError):
             return False
 
-    def extract_colors(self, color_value, color_space):
-        positive_prototype = np.array(color_value['positive_prototype'])
-        negative_prototypes = np.array(color_value['negative_prototypes'])
+    @staticmethod
+    def _convert_to_lab(values, color_space):
+        """
+        Convert the complete prototype matrix to CIELAB once.
 
-        if color_space == 'RGB':
-            positive_prototype = color.rgb2lab(positive_prototype / 255.0)
-            aux_negative = negative_prototypes
-            negative_prototypes = [color.rgb2lab(proto / 255.0) for proto in aux_negative]
+        Parameters
+        ----------
+        values : array-like, shape (N, 3)
+            Original CNS prototype coordinates.
 
-        return positive_prototype, negative_prototypes
+        color_space : str
+            Color space declared by the CNS file.
+
+        Returns
+        -------
+        np.ndarray, shape (N, 3)
+            Prototype coordinates in CIELAB.
+        """
+        values = np.asarray(
+            values,
+            dtype=np.float64
+        )
+
+        if values.size == 0:
+            return np.empty(
+                (0, 3),
+                dtype=np.float64
+            )
+
+        values = values.reshape(-1, 3)
+
+        if str(color_space).upper() == "RGB":
+            return np.asarray(
+                color.rgb2lab(
+                    values / 255.0
+                ),
+                dtype=np.float64
+            )
+
+        # LAB CNS files already contain the coordinates
+        # required internally by PyFCS.
+        return values.copy()
 
     def read_file(self, file_path):
-        color_data = {
-            'color_values': [],
-            'color_names': [],
-            '_source_path': file_path,
-            '_source_type': '.cns'
-        }
+        """
+        Read a .cns crisp color space.
+
+        All prototype coordinates are converted to CIELAB once.
+        Voronoi construction works directly from the complete matrix of
+        positive prototypes, so redundant per-color negative lists are no
+        longer stored.
+        """
 
         try:
-            with open(file_path, 'r') as file:
+            with open(
+                file_path,
+                "r",
+                encoding="utf-8"
+            ) as file:
                 lines = file.readlines()
 
-                start_index = None
-                color_space = None
+            start_index = None
+            color_space = None
+
+            # ---------------------------------------------------------
+            # Locate color-space declaration
+            # ---------------------------------------------------------
+
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+
+                if "@colorSpace_" in stripped:
+                    start_index = i
+                    color_space = (
+                        stripped
+                        .split("_", 1)[1]
+                        .strip()
+                    )
+                    break
+
+            # Legacy CNS format
+            if color_space is None:
+                color_space = "RGB"
 
                 for i, line in enumerate(lines):
-                    if '@colorSpace_' in line:
+                    stripped = line.strip()
+
+                    if not stripped or stripped.startswith("#"):
+                        continue
+
+                    if "@crispColorSpaceType" in stripped:
                         start_index = i
-                        color_space = line.split('_')[1].strip()
                         break
 
-                if color_space is None:
-                    color_space = "RGB"
-                    for i, line in enumerate(lines):
-                        line_stripped = line.strip()
-                        if line_stripped.startswith('#') or not line_stripped:
-                            continue
-                        if '@crispColorSpaceType' in line_stripped:
-                            start_index = i
-                            break
+            if start_index is None:
+                raise ValueError(
+                    "Could not locate color space definition in the .cns file."
+                )
 
-                if start_index is None:
-                    raise ValueError("Could not locate color space definition in the .cns file.")
+            # ---------------------------------------------------------
+            # Header
+            # ---------------------------------------------------------
 
-                num_components = int(lines[start_index + 1].strip())
-                num_cases = int(lines[start_index + 2].strip())
+            try:
+                num_components = int(
+                    lines[start_index + 1].strip()
+                )
 
-                unique_lines = set()
+                num_cases = int(
+                    lines[start_index + 2].strip()
+                )
 
-                for i in range(start_index + 3, len(lines)):
-                    try:
-                        line_content = lines[i].strip()
-                        if not line_content:
-                            continue
+            except (IndexError, ValueError) as exc:
+                raise ValueError(
+                    "Invalid CNS header."
+                ) from exc
 
-                        if line_content in unique_lines:
-                            continue
+            if num_components != 3:
+                raise ValueError(
+                    f"PyFCS requires 3 color components, "
+                    f"but the CNS file declares {num_components}."
+                )
 
-                        unique_lines.add(line_content)
+            # ---------------------------------------------------------
+            # Parse coordinates and names
+            # ---------------------------------------------------------
 
-                        color_val = line_content.split()
-                        if len(color_val) == num_components and all(self.is_number(c) for c in color_val):
-                            color_val = list(map(float, color_val))
-                            color_data['color_values'].append({
-                                'Color': [color_val[0], color_val[1], color_val[2]],
-                                'positive_prototype': None,
-                                'negative_prototypes': []
-                            })
-                        else:
-                            name = line_content
-                            if (name.startswith('"') and name.endswith('"')) or (name.startswith("'") and name.endswith("'")):
-                                name = name[1:-1]
-                            color_data['color_names'].append(name)
+            raw_colors = []
+            color_names = []
 
-                    except (ValueError, IndexError):
-                        raise ValueError(f"Error processing line {i + 1} in the .cns file.")
+            unique_lines = set()
 
-                if len(color_data['color_values']) != len(color_data['color_names']):
-                    raise ValueError("Mismatch between the number of color values and color names.")
+            for line_number in range(
+                start_index + 3,
+                len(lines)
+            ):
+                line_content = lines[
+                    line_number
+                ].strip()
 
-                for idx, color_value in enumerate(color_data['color_values']):
-                    color_data['color_values'][idx]['positive_prototype'] = color_value['Color']
-                    color_data['color_values'][idx]['negative_prototypes'] = [
-                        color_['Color']
-                        for other_idx, color_ in enumerate(color_data['color_values'])
-                        if other_idx != idx
-                    ]
+                if not line_content:
+                    continue
 
-        except (ValueError, IndexError, KeyError) as e:
-            raise ValueError(f"Error reading .cns file: {str(e)}")
+                # Preserve current PyFCS behaviour:
+                # repeated identical CNS lines are ignored.
+                if line_content in unique_lines:
+                    continue
 
-        for idx, color_value in enumerate(color_data['color_values']):
-            color_data['color_values'][idx]['positive_prototype'], color_data['color_values'][idx]['negative_prototypes'] = self.extract_colors(color_value, color_space)
+                unique_lines.add(line_content)
 
-        color_data_restructured = {}
-        for color_value, color_name in zip(color_data['color_values'], color_data['color_names']):
-            color_data_restructured[color_name] = {
-                'Color': color_value['Color'],
-                'positive_prototype': color_value['positive_prototype'],
-                'negative_prototypes': color_value['negative_prototypes']
-            }
+                parts = line_content.split()
 
-        return color_data_restructured
+                is_coordinate = (
+                    len(parts) == num_components
+                    and all(
+                        self.is_number(value)
+                        for value in parts
+                    )
+                )
+
+                if is_coordinate:
+                    raw_colors.append(
+                        [
+                            float(parts[0]),
+                            float(parts[1]),
+                            float(parts[2]),
+                        ]
+                    )
+
+                else:
+                    name = line_content
+
+                    if (
+                        len(name) >= 2
+                        and (
+                            (
+                                name.startswith('"')
+                                and name.endswith('"')
+                            )
+                            or
+                            (
+                                name.startswith("'")
+                                and name.endswith("'")
+                            )
+                        )
+                    ):
+                        name = name[1:-1]
+
+                    color_names.append(name)
+
+            # ---------------------------------------------------------
+            # Validation
+            # ---------------------------------------------------------
+
+            if len(raw_colors) != len(color_names):
+                raise ValueError(
+                    "Mismatch between the number of color values "
+                    "and color names."
+                )
+
+            if num_cases != len(raw_colors):
+                raise ValueError(
+                    f"The CNS header declares {num_cases} colors, "
+                    f"but {len(raw_colors)} valid colors were found."
+                )
+
+            if not raw_colors:
+                return {}
+
+            # ---------------------------------------------------------
+            # Convert ALL colors to LAB only once
+            # ---------------------------------------------------------
+
+            raw_matrix = np.asarray(
+                raw_colors,
+                dtype=np.float64
+            )
+
+            lab_matrix = self._convert_to_lab(
+                raw_matrix,
+                color_space
+            )
+
+            # ---------------------------------------------------------
+            # Build PyFCS structure
+            # ---------------------------------------------------------
+
+            color_data = {}
+
+            for i, color_name in enumerate(color_names):
+                color_data[color_name] = {
+                    "Color": raw_matrix[i].tolist(),
+                    "positive_prototype": lab_matrix[i].copy(),
+                }
+
+            return color_data
+
+        except (
+            ValueError,
+            IndexError,
+            KeyError
+        ) as exc:
+            raise ValueError(
+                f"Error reading .cns file: {exc}"
+            ) from exc

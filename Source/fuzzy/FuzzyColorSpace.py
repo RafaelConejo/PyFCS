@@ -1,5 +1,4 @@
 ### my libraries ###
-from Source.membership.MembershipFunction import MembershipFunction
 from Source.fuzzy.FuzzyColor import FuzzyColor
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 
@@ -8,7 +7,6 @@ class FuzzyColorSpace(FuzzyColor):
     def __init__(self, space_name, prototypes, cores=None, supports=None, improve_geometry=True):
         self.space_name = space_name
         self.prototypes = prototypes
-        self.function = MembershipFunction()
 
         scaling_factor = 0.5
         if cores is None and supports is None:
@@ -26,8 +24,8 @@ class FuzzyColorSpace(FuzzyColor):
         domain_volume = ReferenceDomain.default_voronoi_reference_domain().get_volume()
 
         v_protos = [p.voronoi_volume for p in self.prototypes]
-        v_cores  = [c.voronoi_volume for c in self.cores]
-        v_supps  = [s.voronoi_volume for s in self.supports]
+        v_cores = [c.voronoi_volume for c in self.cores]
+        v_supps = [s.voronoi_volume for s in self.supports]
 
         rep = [v.getRepresentative() for v in v_protos]
 
@@ -44,7 +42,11 @@ class FuzzyColorSpace(FuzzyColor):
     def best_prototype_index_from_lab(self, lab_triplet):
         if self._precomputed is None:
             self.precompute_pack()
-        return FuzzyColor.get_membership_degree_mapping_all(lab_triplet, self.prototypes, self.function, self._precomputed)
+        return FuzzyColor.get_membership_degree_mapping_all(
+            lab_triplet,
+            self.prototypes,
+            self._precomputed,
+        )
 
     def clear_precompute(self):
         self._precomputed = None
@@ -55,8 +57,7 @@ class FuzzyColorSpace(FuzzyColor):
         return FuzzyColor.get_membership_degree(
             new_color,
             self.prototypes,
-            self.function,
-            self._precomputed
+            self._precomputed,
         )
 
     def calculate_membership_for_prototype(self, new_color, idx_proto):
@@ -65,7 +66,6 @@ class FuzzyColorSpace(FuzzyColor):
             self.prototypes[idx_proto],
             self.cores[idx_proto],
             self.supports[idx_proto],
-            self.function
         )
 
     def get_cores(self):

@@ -8,6 +8,7 @@ from PIL import Image
 
 ### my libraries ###
 from Source.interface.modules import UtilsTools  
+from Source.colorspace.ReferenceDomain import ReferenceDomain
 
 
 """
@@ -95,11 +96,11 @@ class ImageManager:
         ttk.Entry(form_frame, textvariable=l_value_var, width=10).grid(row=1, column=1, padx=5, pady=5)
 
         # A value field
-        ttk.Label(form_frame, text="A Value (-128 to 127):").grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(form_frame, text="A Value (-128 to 128):").grid(row=2, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=a_value_var, width=10).grid(row=2, column=1, padx=5, pady=5)
 
         # B value field
-        ttk.Label(form_frame, text="B Value (-128 to 127):").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(form_frame, text="B Value (-128 to 128):").grid(row=3, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(form_frame, textvariable=b_value_var, width=10).grid(row=3, column=1, padx=5, pady=5)
 
         def confirm_color():
@@ -109,8 +110,8 @@ class ImageManager:
             - Reads LAB values from the entry fields
             - Validates allowed ranges:
                 * L in [0, 100]
-                * A in [-128, 127]
-                * B in [-128, 127]
+                * A in [-128, 128]
+                * B in [-128, 128]
             - Builds the result and appends the color
             - Calls the UI update callback if provided
             - Closes the popup
@@ -126,12 +127,11 @@ class ImageManager:
                 # Validate inputs
                 # if not color_name:
                 #     raise ValueError("The color name cannot be empty.")
-                if not (0 <= l_value <= 100):
-                    raise ValueError("L value must be between 0 and 100.")
-                if not (-128 <= a_value <= 127):
-                    raise ValueError("A value must be between -128 and 127.")
-                if not (-128 <= b_value <= 127):
-                    raise ValueError("B value must be between -128 and 127.")
+                if not ReferenceDomain.is_valid_lab_values(l_value, a_value, b_value):
+                    raise ValueError(
+                        "LAB values must be within L [0,100], "
+                        "A [-128,128], B [-128,128]."
+                    )
                 # if color_name in colors:
                 #     raise ValueError(f"The color name '{color_name}' already exists.")
 

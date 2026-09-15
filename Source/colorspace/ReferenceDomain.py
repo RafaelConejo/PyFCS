@@ -5,6 +5,20 @@ from Source.geometry.Plane import Plane
 
 
 class ReferenceDomain:
+    """
+    Axis-aligned 3D reference domain used throughout PyFCS.
+
+    The default CIELAB bounds are defined here once so geometry, validation,
+    visualization, and UI helpers all share the same limits.
+    """
+
+    DEFAULT_L_MIN = 0.0
+    DEFAULT_L_MAX = 100.0
+    DEFAULT_A_MIN = -128.0
+    DEFAULT_A_MAX = 128.0
+    DEFAULT_B_MIN = -128.0
+    DEFAULT_B_MAX = 128.0
+
     def __init__(self, c1min, c1max, c2min, c2max, c3min, c3max):
         self.comp1 = [c1min, c1max]
         self.comp2 = [c2min, c2max]
@@ -14,9 +28,36 @@ class ReferenceDomain:
         self.reference = [self.comp1, self.comp2, self.comp3]
         self.volume = self.create_volume()
 
-    @staticmethod
-    def default_voronoi_reference_domain():
-        return ReferenceDomain(0, 100, -128, 128, -128, 128)
+    @classmethod
+    def default_voronoi_reference_domain(cls):
+        return cls(
+            cls.DEFAULT_L_MIN,
+            cls.DEFAULT_L_MAX,
+            cls.DEFAULT_A_MIN,
+            cls.DEFAULT_A_MAX,
+            cls.DEFAULT_B_MIN,
+            cls.DEFAULT_B_MAX,
+        )
+
+    @classmethod
+    def is_valid_lab_values(cls, L, a, b, eps=0.0):
+        return (
+            cls.DEFAULT_L_MIN - eps <= float(L) <= cls.DEFAULT_L_MAX + eps
+            and cls.DEFAULT_A_MIN - eps <= float(a) <= cls.DEFAULT_A_MAX + eps
+            and cls.DEFAULT_B_MIN - eps <= float(b) <= cls.DEFAULT_B_MAX + eps
+        )
+
+    def contains_coordinates(self, coordinates, eps=0.0):
+        try:
+            x, y, z = coordinates
+        except Exception:
+            return False
+
+        return (
+            self.comp1[0] - eps <= float(x) <= self.comp1[1] + eps
+            and self.comp2[0] - eps <= float(y) <= self.comp2[1] + eps
+            and self.comp3[0] - eps <= float(z) <= self.comp3[1] + eps
+        )
 
     def get_domain(self, dimension):
         return self.comp1 if dimension == 0 else (self.comp2 if dimension == 1 else self.comp3)
@@ -80,8 +121,4 @@ class ReferenceDomain:
         return self.dimension
 
     def is_inside(self, p):
-        return (
-            self.get_min(0) <= p.get_x() <= self.get_max(0) and
-            self.get_min(1) <= p.get_y() <= self.get_max(1) and
-            self.get_min(2) <= p.get_z() <= self.get_max(2)
-        )
+        return self.contains_coordinates((p.get_x(), p.get_y(), p.get_z()))

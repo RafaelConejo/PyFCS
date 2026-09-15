@@ -5,6 +5,7 @@ from Source.geometry.Volume import Volume
 from Source.geometry.Point import Point
 
 from Source.geometry.Prototype import Prototype
+from Source.geometry.Voronoi import Voronoi
 from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
 from Source.interface.modules.UtilsTools import get_base_path
 
@@ -16,15 +17,22 @@ import os
 
 class InputFCS(Input):
 
-    def write_file(self, name, selected_colors_lab, progress_callback=None):
-        # Step 1 & 2: Create Prototype objects
+    def write_file(self, name, selected_colors_lab, progress_callback=None, return_fuzzy_space=False):
+        # Step 1 & 2: Build the complete Voronoi diagram once, then create
+        # Prototype objects reusing the corresponding precomputed Volume.
+        color_items = list(selected_colors_lab.items())
+        labels = [color_name for color_name, _ in color_items]
+        points = np.asarray([lab_value for _, lab_value in color_items], dtype=float)
+
+        volumes = Voronoi.build_diagram(points)
+
         prototypes = [
             Prototype(
                 label=color_name,
-                positive=lab_value,
-                negatives=[lab for other_name, lab in selected_colors_lab.items() if other_name != color_name]
+                positive=points[i],
+                voronoi_volume=volumes[i],
             )
-            for color_name, lab_value in selected_colors_lab.items()
+            for i, color_name in enumerate(labels)
         ]
 
         # Step 3: Create the fuzzy color space
@@ -251,6 +259,8 @@ class InputFCS(Input):
                 os.fsync(file.fileno())
 
             os.replace(temp_file_path, file_path)
+            if return_fuzzy_space:
+                return file_path, fuzzy_color_space
             return file_path
 
         except Exception:
@@ -305,24 +315,14 @@ class InputFCS(Input):
                     L, A, B = map(float, parts[1:])
                     colors.append((color_name, L, A, B))
 
-                # Create color_data struct
+                # Create color_data struct. The complete point matrix is used
+                # by Voronoi when geometry must be rebuilt, so no redundant
+                # per-color negative prototype arrays are stored.
                 color_data = {}
-                for i in range(num_colors):
-                    color_name, L, A, B = colors[i]
-
-                    positive_prototype = np.array([L, A, B])
-
-                    negative_prototypes = []
-                    for j in range(num_colors):
-                        if i != j:
-                            _, L_neg, A_neg, B_neg = colors[j]
-                            negative_prototypes.append([L_neg, A_neg, B_neg])
-                    negative_prototypes = np.array(negative_prototypes)
-
+                for color_name, L, A, B in colors:
                     color_data[color_name] = {
                         'Color': [L, A, B],
-                        'positive_prototype': positive_prototype,
-                        'negative_prototypes': negative_prototypes
+                        'positive_prototype': np.array([L, A, B], dtype=float),
                     }
 
                 # Read Core, alpha-cut and support
@@ -358,10 +358,13 @@ class InputFCS(Input):
 
                                 line = next(lines).strip()
                                 if line.startswith("@voronoi"):
-                                    negatives = [color[1:] for idx, color in enumerate(colors) if idx != i]
                                     voronoi_volume = Volume(Point(*colors[i][1:]), faces)
 
-                                    cores.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume))
+                                    cores.append(Prototype(
+                                        label=colors[i][0],
+                                        positive=colors[i][1:],
+                                        voronoi_volume=voronoi_volume,
+                                    ))
 
                                     faces = []
                                     break
@@ -388,7 +391,11 @@ class InputFCS(Input):
                                 if line.startswith("@support"):
                                     voronoi_volume = Volume(Point(*colors[i][1:]), faces)
 
-                                    prototypes.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume))
+                                    prototypes.append(Prototype(
+                                        label=colors[i][0],
+                                        positive=colors[i][1:],
+                                        voronoi_volume=voronoi_volume,
+                                    ))
 
                                     faces = []
                                     break
@@ -414,7 +421,11 @@ class InputFCS(Input):
                                 line = next(lines).strip()
                                 if line.startswith("@core"):
                                     voronoi_volume = Volume(Point(*colors[i][1:]), faces)
-                                    supports.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume))
+                                    supports.append(Prototype(
+                                        label=colors[i][0],
+                                        positive=colors[i][1:],
+                                        voronoi_volume=voronoi_volume,
+                                    ))
 
                                     faces = []
                                     i += 1  # Activate Next Color
@@ -422,7 +433,11 @@ class InputFCS(Input):
 
                     except StopIteration:
                         voronoi_volume = Volume(Point(*colors[i][1:]), faces)
-                        supports.append(Prototype(colors[i][0], colors[i][1:], negatives, voronoi_volume))
+                        supports.append(Prototype(
+                            label=colors[i][0],
+                            positive=colors[i][1:],
+                            voronoi_volume=voronoi_volume,
+                        ))
                         break
 
                 return color_data, FuzzyColorSpace(fcs_name, prototypes, cores, supports)

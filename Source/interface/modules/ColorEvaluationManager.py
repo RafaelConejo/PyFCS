@@ -6,6 +6,7 @@ from scipy.spatial import distance
 
 ### my libraries ###
 from Source.geometry.Point import Point
+from Source.colorspace.ReferenceDomain import ReferenceDomain
 
 
 class ColorEvaluationManager:
@@ -1155,7 +1156,7 @@ class ColorEvaluationManager:
         if mode == "LAB":
             return {
                 "labels": ("L", "a", "b"),
-                "limits": "Valid range:L ∈ [0, 100], \na ∈ [-128, 127], b ∈ [-128, 127]",
+                "limits": "Valid range:L ∈ [0, 100], \na ∈ [-128, 128], b ∈ [-128, 128]",
                 "example": "Example: 54.2, 18.5, -32.1",
             }
 
@@ -1245,7 +1246,7 @@ class ColorEvaluationManager:
                 sample_lab = (float(L), float(a), float(b))
 
                 if not utils_tools.is_valid_lab(sample_lab):
-                    return False, "LAB values must be within L [0,100], a [-128,127], b [-128,127].", None, None, None
+                    return False, "LAB values must be within L [0,100], a [-128,128], b [-128,128].", None, None, None
 
                 sample_rgb = utils_tools.lab_to_rgb(sample_lab)
                 sample_rgb = utils_tools.safe_rgb_tuple(sample_rgb)
@@ -1300,12 +1301,7 @@ class ColorEvaluationManager:
                 except Exception:
                     pass
 
-        class DefaultLABVolumeLimits:
-            comp1 = (0, 100)
-            comp2 = (-128, 127)
-            comp3 = (-128, 127)
-
-        return DefaultLABVolumeLimits()
+        return ReferenceDomain.default_voronoi_reference_domain()
 
     @staticmethod
     def get_active_color_evaluation_sample(vars_dict):

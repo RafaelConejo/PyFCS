@@ -9,6 +9,8 @@ import colorsys
 ### my libraries ###
 from Source.input_output.Input import Input
 from Source.geometry.Prototype import Prototype
+from Source.geometry.Voronoi import Voronoi
+from Source.colorspace.ReferenceDomain import ReferenceDomain
 
 """
 Utility functions for PyFCS
@@ -266,16 +268,33 @@ def is_valid_rgb(rgb):
 
 
 def is_valid_lab(lab):
-    """
-    Return True if lab is a valid LAB tuple in the expected application range.
-    """
+    """Return True when LAB lies inside the shared PyFCS reference domain."""
     try:
         L, a, b = safe_lab_tuple(lab)
-
-        return 0 <= L <= 100 and -128 <= a <= 127 and -128 <= b <= 127
-
+        return ReferenceDomain.is_valid_lab_values(L, a, b)
     except Exception:
         return False
+
+
+def find_duplicate_lab_name(color_data, lab, atol=Voronoi.DEFAULT_MERGE_EPS):
+    """Return the label of an existing numerically identical LAB prototype."""
+    target = np.asarray(lab, dtype=np.float64).reshape(-1)
+    if target.size != 3:
+        return None
+
+    for name, data in (color_data or {}).items():
+        values = data.get("positive_prototype", data.get("Color"))
+        if values is None:
+            continue
+
+        current = np.asarray(values, dtype=np.float64).reshape(-1)
+        if current.size != 3:
+            continue
+
+        if np.linalg.norm(current - target) <= atol:
+            return name
+
+    return None
 
 
 def is_valid_hex(hex_value):
@@ -735,31 +754,32 @@ def prompt_file_selection(initial_subdir, parent=None):
 
 def process_prototypes(color_data):
     """
-    Create Prototype objects from parsed color data.
+    Create all Prototype objects using one optimized bounded Voronoi build.
 
-    Parameters
-    ----------
-    color_data : dict
-        Dictionary mapping color names to their data, including
-        'positive_prototype' and 'negative_prototypes'.
-
-    Returns
-    -------
-    list
-        List of Prototype instances.
+    The complete color-space point set is sent to Voronoi.build_diagram(),
+    which returns one Volume per color in the same order.  This avoids
+    rebuilding the same diagram independently for every Prototype.
     """
-    prototypes = []
+    if not color_data:
+        return []
 
-    for color_name, color_value in color_data.items():
-        positive_prototype = color_value["positive_prototype"]
-        negative_prototypes = color_value["negative_prototypes"]
+    items = list(color_data.items())
+    labels = [color_name for color_name, _ in items]
+    points = np.asarray(
+        [color_value["positive_prototype"] for _, color_value in items],
+        dtype=float,
+    )
 
-        prototype = Prototype(
-            label=color_name,
-            positive=positive_prototype,
-            negatives=negative_prototypes
+    volumes = Voronoi.build_diagram(points)
+
+    prototypes = [
+        Prototype(
+            label=label,
+            positive=points[i],
+            voronoi_volume=volumes[i],
         )
-        prototypes.append(prototype)
+        for i, label in enumerate(labels)
+    ]
 
     return prototypes
 
