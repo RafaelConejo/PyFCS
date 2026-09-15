@@ -987,15 +987,6 @@ class PyFCSApp:
 
 
 
-    def _ensure_creation_state(self):
-        """Lazy init for color-space creation workflow state."""
-        if not hasattr(self, "_creation_in_progress"):
-            self._creation_in_progress = False
-
-        if not hasattr(self, "_creation_windows"):
-            self._creation_windows = []
-
-
 
     def load_toolbar_icon(self, filename, size=None):
         if not hasattr(self, "ui_icons"):
@@ -1339,7 +1330,7 @@ class PyFCSApp:
 
         tk.Label(
             info_box,
-            text="Version 1.4.0",
+            text="Version 1.4.1",
             font=("Segoe UI", 10, "bold"),
             bg="#f8fafc",
             fg="#1f2937"
@@ -1607,21 +1598,45 @@ class PyFCSApp:
         """Close all creation-related windows and reset workflow state."""
         self._ensure_creation_state()
 
-        self._close_manual_picker_window()
+        popup_attrs = (
+            "_palette_popup",
+            "_manual_popup",
+            "_detected_popup",
+            "_manual_picker_win",
+            "_detected_picker_win",
+            "_manual_picker_window",
+            "_create_fcs_popup",
+            "_image_creation_tool_win",
+            "_image_creation_popup",
+        )
 
-        for win in list(self._creation_windows):
+        windows = list(self._creation_windows)
+        for attr in popup_attrs:
+            win = getattr(self, attr, None)
+            if win is not None:
+                windows.append(win)
+
+        seen = set()
+        for win in windows:
+            if win is None:
+                continue
+
+            window_id = id(win)
+            if window_id in seen:
+                continue
+            seen.add(window_id)
+
             try:
-                if win is not None and win.winfo_exists():
+                if win.winfo_exists():
                     win.destroy()
             except Exception:
                 pass
 
+        for attr in popup_attrs:
+            setattr(self, attr, None)
+
         self._creation_windows = []
         self._creation_in_progress = False
-
-        self._palette_popup = None
-        self._manual_popup = None
-        self._detected_popup = None
 
 
     def _can_start_new_creation(self):
@@ -1869,6 +1884,29 @@ class PyFCSApp:
     # ============================================================================================================================================================
 
     def update_volumes(self):
+        # An empty dataset means that no color space is currently loaded.
+        # Handle it explicitly so update_prototypes_info() cannot accidentally
+        # re-enable COLOR_SPACE after a Delete operation.
+        if not self.color_data:
+            self.prototypes = []
+            self.cores = []
+            self.supports = []
+            self.fuzzy_color_space = None
+
+            self.selected_centroids = {}
+            self.selected_alpha = []
+            self.selected_core = []
+            self.selected_support = []
+
+            self.COLOR_SPACE = False
+            self.CAN_APPLY_MAPPING = {key: False for key in self.CAN_APPLY_MAPPING}
+
+            if hasattr(self, "cm_cache_by_image"):
+                self.cm_cache_by_image.clear()
+            if hasattr(self, "proto_percentage_cache_by_image"):
+                self.proto_percentage_cache_by_image.clear()
+            return
+
         # Process color prototypes from the input color data
         self.prototypes = UtilsTools.process_prototypes(self.color_data)
 
@@ -2239,33 +2277,29 @@ class PyFCSApp:
         self.show_loading()
 
         def update_progress(current_line, total_lines):
-            """Safely update the progress bar if it exists."""
+            """Queue a loading-progress update on Tk's main thread."""
+            if total_lines <= 0:
+                return
+
+            progress_percentage = max(
+                0.0,
+                min(100.0, (current_line / total_lines) * 100.0),
+            )
+
+            def _ui(progress_value=progress_percentage):
+                try:
+                    if not hasattr(self, "progress") or self.progress is None:
+                        return
+                    if not hasattr(self, "load_window") or self.load_window is None:
+                        return
+                    if not self.progress.winfo_exists() or not self.load_window.winfo_exists():
+                        return
+                    self.progress["value"] = progress_value
+                except Exception:
+                    pass
+
             try:
-                if total_lines <= 0:
-                    return
-
-                if not hasattr(self, "progress") or self.progress is None:
-                    return
-
-                if not hasattr(self, "load_window") or self.load_window is None:
-                    return
-
-                try:
-                    if not self.progress.winfo_exists():
-                        return
-                except Exception:
-                    return
-
-                try:
-                    if not self.load_window.winfo_exists():
-                        return
-                except Exception:
-                    return
-
-                progress_percentage = (current_line / total_lines) * 100
-                self.progress["value"] = progress_percentage
-                self.load_window.update_idletasks()
-
+                self.root.after(0, _ui)
             except Exception:
                 pass
 
@@ -2382,29 +2416,6 @@ class PyFCSApp:
             "size": canvas_size,
         }
         return self._ui_cache[cache_key]
-
-
-    def _close_creation_windows(self):
-        """
-        Close any active fuzzy color space creation popups.
-        """
-        popup_attrs = (
-            "_manual_popup",
-            "_manual_picker_win",
-            "_palette_popup",
-            "_create_fcs_popup",
-        )
-
-        for attr in popup_attrs:
-            if hasattr(self, attr):
-                win = getattr(self, attr)
-                try:
-                    if win is not None and win.winfo_exists():
-                        win.destroy()
-                except Exception:
-                    pass
-                setattr(self, attr, None)
-
 
 
     def addColor_create_fcs(self, popup, colors, on_color_added=None):
@@ -2947,7 +2958,7 @@ class PyFCSApp:
 
         def rename_color(old_name, requested_name):
             """Rename a color in the local colors dictionary and color_checks."""
-            MAX_NAME_CHARS = 16
+            MAX_NAME_CHARS = 24
 
             old_name = str(old_name).strip()
             new_name = str(requested_name).strip()
@@ -3982,11 +3993,13 @@ class PyFCSApp:
                     win.after(0, finish_ok)
 
                 except Exception as e:
-                    def finish_error():
+                    error_msg = str(e)
+
+                    def finish_error(msg=error_msg):
                         try:
                             self.custom_warning(
                                 "Error",
-                                f"Could not detect colors from image: {e}",
+                                f"Could not detect colors from image: {msg}",
                                 parent=win
                             )
                         finally:
@@ -6136,6 +6149,11 @@ class PyFCSApp:
                 self._data_info_tooltip = None
 
             self.clear_data_window()
+
+            # Clear the Model 3D view and all cached 3D state.
+            self._reset_3d_canvas()
+            self._reset_3d_view_state()
+
             self.update_volumes()
 
             messagebox.showinfo(
@@ -7756,8 +7774,11 @@ class PyFCSApp:
             try:
                 target(cancel_event, job_id)
             except Exception as e:
-                def _ui_error():
-                    self.custom_warning("Process Error", f"Unexpected error: {e}")
+                error_msg = str(e)
+
+                def _ui_error(msg=error_msg):
+                    self.custom_warning("Process Error", f"Unexpected error: {msg}")
+
                 try:
                     self.image_canvas.after(0, _ui_error)
                 except Exception:
@@ -8459,9 +8480,23 @@ class PyFCSApp:
 
             except RuntimeError as e:
                 if str(e) != "__JOB_CANCELLED__":
-                    self.image_canvas.after(0, lambda: self.custom_warning("Error", f"Error in run_process: {e}"))
+                    error_msg = str(e)
+                    self.image_canvas.after(
+                        0,
+                        lambda msg=error_msg: self.custom_warning(
+                            "Error",
+                            f"Error in run_process: {msg}"
+                        )
+                    )
             except Exception as e:
-                self.image_canvas.after(0, lambda: self.custom_warning("Error", f"Error in run_process: {e}"))
+                error_msg = str(e)
+                self.image_canvas.after(
+                    0,
+                    lambda msg=error_msg: self.custom_warning(
+                        "Error",
+                        f"Error in run_process: {msg}"
+                    )
+                )
 
         job_id = self._start_window_job(window_id, "proto_percentage", run_process)
         if job_id is not None:
@@ -9015,14 +9050,22 @@ class PyFCSApp:
 
             except RuntimeError as e:
                 if str(e) != "__JOB_CANCELLED__":
+                    error_msg = str(e)
                     self.image_canvas.after(
                         0,
-                        lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}")
+                        lambda msg=error_msg: self.custom_warning(
+                            "Processing Error",
+                            f"Error in color mapping: {msg}"
+                        )
                     )
             except Exception as e:
+                error_msg = str(e)
                 self.image_canvas.after(
                     0,
-                    lambda: self.custom_warning("Processing Error", f"Error in color mapping: {e}")
+                    lambda msg=error_msg: self.custom_warning(
+                        "Processing Error",
+                        f"Error in color mapping: {msg}"
+                    )
                 )
 
         job_id = self._start_window_job(window_id, "color_mapping_all", run_process)
@@ -9088,12 +9131,31 @@ class PyFCSApp:
             self.show_loading()
 
         def update_progress(current_step, total_steps):
-            """
-            Update the loading progress bar.
-            """
-            progress_percentage = (current_step / total_steps) * 100
-            self.progress["value"] = progress_percentage
-            self.load_window.update_idletasks()
+            """Queue the AT/PT progress update on Tk's main thread."""
+            if total_steps <= 0:
+                return
+
+            progress_percentage = max(
+                0.0,
+                min(100.0, (current_step / total_steps) * 100.0),
+            )
+
+            def _ui(progress_value=progress_percentage):
+                try:
+                    if not hasattr(self, "progress") or self.progress is None:
+                        return
+                    if not hasattr(self, "load_window") or self.load_window is None:
+                        return
+                    if not self.progress.winfo_exists() or not self.load_window.winfo_exists():
+                        return
+                    self.progress["value"] = progress_value
+                except Exception:
+                    pass
+
+            try:
+                self.root.after(0, _ui)
+            except Exception:
+                pass
 
         def run_threshold_process():
             """
@@ -9103,9 +9165,9 @@ class PyFCSApp:
             try:
                 # Define the volume priority used for threshold filtering.
                 priority_map = {
-                    "Support": self.selected_core,
+                    "Support": self.selected_support,
                     "0.5-cut": self.selected_alpha,
-                    "Core": self.selected_support,
+                    "Core": self.selected_core,
                 }
 
                 selected_option = next(
@@ -9158,9 +9220,13 @@ class PyFCSApp:
                 self.root.after(0, redraw_filtered_plot)
 
             except Exception as e:
+                error_msg = str(e)
                 self.root.after(
                     0,
-                    lambda: self.custom_warning("Error", f"An error occurred while filtering points: {e}")
+                    lambda msg=error_msg: self.custom_warning(
+                        "Error",
+                        f"An error occurred while filtering points: {msg}"
+                    )
                 )
             finally:
                 self.root.after(0, self.hide_loading)
@@ -14907,6 +14973,8 @@ class PyFCSApp:
             Callback called as:
                 on_submit(name, sample_lab, sample_rgb, sample_hex, dialog, input_vars)
         """
+        MAX_NAME_CHARS = 24
+
         parent = self._get_valid_dialog_parent(
             parent or getattr(self, "_color_evaluation_window", self.root)
         )
@@ -14931,7 +14999,7 @@ class PyFCSApp:
 
         input_vars = {
             "mode_var": tk.StringVar(value="RGB"),
-            "name_var": tk.StringVar(value=default_name),
+            "name_var": tk.StringVar(value=str(default_name)[:MAX_NAME_CHARS]),
             "v1_var": tk.StringVar(value=""),
             "v2_var": tk.StringVar(value=""),
             "v3_var": tk.StringVar(value=""),
@@ -15027,11 +15095,18 @@ class PyFCSApp:
                 font=("Sans", 10, "bold")
             ).grid(row=current_row, column=0, sticky="w", pady=(2, 10))
 
+            def _validate_name_length(proposed_text):
+                return len(proposed_text) <= MAX_NAME_CHARS
+
+            name_vcmd = (dialog.register(_validate_name_length), "%P")
+
             name_entry = tk.Entry(
                 left_panel,
                 textvariable=input_vars["name_var"],
-                width=21,
-                font=("Sans", 10)
+                width=24,
+                font=("Sans", 10),
+                validate="key",
+                validatecommand=name_vcmd,
             )
             name_entry.grid(row=current_row, column=1, sticky="w", pady=(2, 10))
 
@@ -15250,6 +15325,9 @@ class PyFCSApp:
 
             if not name:
                 return False, "Enter a color name."
+
+            if len(name) > MAX_NAME_CHARS:
+                return False, f"Color name must contain at most {MAX_NAME_CHARS} characters."
 
             return True, ""
 

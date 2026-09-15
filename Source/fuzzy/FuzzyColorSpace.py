@@ -61,11 +61,17 @@ class FuzzyColorSpace(FuzzyColor):
         )
 
     def calculate_membership_for_prototype(self, new_color, idx_proto):
-        return FuzzyColor.get_membership_degree_for_prototype(
+        """Return membership for one prototype using the shared precomputed pack."""
+        if idx_proto < 0 or idx_proto >= len(self.prototypes):
+            raise IndexError("Prototype index is out of range.")
+
+        if self._precomputed is None:
+            self.precompute_pack()
+
+        return FuzzyColor._raw_membership_for_index(
             new_color,
-            self.prototypes[idx_proto],
-            self.cores[idx_proto],
-            self.supports[idx_proto],
+            idx_proto,
+            self._precomputed,
         )
 
     def get_cores(self):

@@ -21,7 +21,12 @@ class InputFCS(Input):
         # Step 1 & 2: Build the complete Voronoi diagram once, then create
         # Prototype objects reusing the corresponding precomputed Volume.
         color_items = list(selected_colors_lab.items())
-        labels = [color_name for color_name, _ in color_items]
+        labels = [str(color_name) for color_name, _ in color_items]
+
+        if not labels:
+            raise ValueError("A fuzzy color space must contain at least one color.")
+
+        self._validate_unique_labels(labels, max_chars=24)
         points = np.asarray([lab_value for _, lab_value in color_items], dtype=float)
 
         volumes = Voronoi.build_diagram(points)
@@ -106,6 +111,28 @@ class InputFCS(Input):
         )
 
         current_line = 0
+        last_reported_percent = -1
+
+        def report_progress(force=False):
+            """Report progress at most once per integer percentage point."""
+            nonlocal last_reported_percent
+
+            if not progress_callback or total_lines <= 0:
+                return
+
+            if force:
+                percent = 100
+                reported_line = total_lines
+            else:
+                percent = int((current_line * 100) / total_lines)
+                percent = max(0, min(100, percent))
+                reported_line = current_line
+
+            if percent == last_reported_percent:
+                return
+
+            last_reported_percent = percent
+            progress_callback(reported_line, total_lines)
 
         try:
             fd, temp_file_path = tempfile.mkstemp(
@@ -118,25 +145,21 @@ class InputFCS(Input):
             with open(temp_file_path, "w", encoding="utf-8", newline="\n") as file:
                 file.write(f"@name {name}\n")
                 current_line += 1
-                if progress_callback:
-                    progress_callback(current_line, total_lines)
+                report_progress()
 
                 file.write("@colorSpaceLAB\n")
                 current_line += 1
-                if progress_callback:
-                    progress_callback(current_line, total_lines)
+                report_progress()
 
                 file.write(f"@numberOfColors {len(prototypes)}\n")
                 current_line += 1
-                if progress_callback:
-                    progress_callback(current_line, total_lines)
+                report_progress()
 
                 for color_name, lab_value in selected_colors_lab.items():
                     safe_name = str(color_name).replace('"', '\\"')
                     file.write(f"\"{safe_name}\" {lab_value[0]} {lab_value[1]} {lab_value[2]}\n")
                     current_line += 1
-                    if progress_callback:
-                        progress_callback(current_line, total_lines)
+                    report_progress()
 
                 c = vol = s = 0
 
@@ -144,8 +167,7 @@ class InputFCS(Input):
                     if cores_planes:
                         file.write("@core\n")
                         current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
+                        report_progress()
 
                         c += 1
                         while c < len(cores_planes) and not isinstance(cores_planes[c], str):
@@ -160,19 +182,16 @@ class InputFCS(Input):
 
                             file.write(f"{plane_str}\n")
                             current_line += 1
-                            if progress_callback:
-                                progress_callback(current_line, total_lines)
+                            report_progress()
 
                             file.write(f"{num_vertex}\n")
                             current_line += 1
-                            if progress_callback:
-                                progress_callback(current_line, total_lines)
+                            report_progress()
 
                             for v in vertices:
                                 file.write(f"{v[0]} {v[1]} {v[2]}\n")
                                 current_line += 1
-                                if progress_callback:
-                                    progress_callback(current_line, total_lines)
+                                report_progress()
 
                             c += 3
 
@@ -182,8 +201,7 @@ class InputFCS(Input):
                     if voronoi_planes:
                         file.write("@voronoi\n")
                         current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
+                        report_progress()
 
                         vol += 1
                         while vol < len(voronoi_planes) and not isinstance(voronoi_planes[vol], str):
@@ -198,19 +216,16 @@ class InputFCS(Input):
 
                             file.write(f"{plane_str}\n")
                             current_line += 1
-                            if progress_callback:
-                                progress_callback(current_line, total_lines)
+                            report_progress()
 
                             file.write(f"{num_vertex}\n")
                             current_line += 1
-                            if progress_callback:
-                                progress_callback(current_line, total_lines)
+                            report_progress()
 
                             for v in vertices:
                                 file.write(f"{v[0]} {v[1]} {v[2]}\n")
                                 current_line += 1
-                                if progress_callback:
-                                    progress_callback(current_line, total_lines)
+                                report_progress()
 
                             vol += 3
 
@@ -220,8 +235,7 @@ class InputFCS(Input):
                     if supports_planes:
                         file.write("@support\n")
                         current_line += 1
-                        if progress_callback:
-                            progress_callback(current_line, total_lines)
+                        report_progress()
 
                         s += 1
                         while s < len(supports_planes) and not isinstance(supports_planes[s], str):
@@ -236,25 +250,23 @@ class InputFCS(Input):
 
                             file.write(f"{plane_str}\n")
                             current_line += 1
-                            if progress_callback:
-                                progress_callback(current_line, total_lines)
+                            report_progress()
 
                             file.write(f"{num_vertex}\n")
                             current_line += 1
-                            if progress_callback:
-                                progress_callback(current_line, total_lines)
+                            report_progress()
 
                             for v in vertices:
                                 file.write(f"{v[0]} {v[1]} {v[2]}\n")
                                 current_line += 1
-                                if progress_callback:
-                                    progress_callback(current_line, total_lines)
+                                report_progress()
 
                             s += 3
 
                         del supports_planes[:s]
                         s = 0
 
+                report_progress(force=True)
                 file.flush()
                 os.fsync(file.fileno())
 
@@ -274,179 +286,270 @@ class InputFCS(Input):
     
     def _parse_point_line(self, line):
         vals = list(map(float, line.strip().split()))
+        if len(vals) != 3:
+            raise ValueError(
+                f"Invalid vertex line (expected 3 coordinates): {line.strip()}"
+            )
         return Point(*vals)
 
+    @staticmethod
+    def _validate_unique_labels(labels, max_chars=24):
+        seen = set()
+        duplicates = set()
+        for label in labels:
+            if label in seen:
+                duplicates.add(label)
+            else:
+                seen.add(label)
+
+        if duplicates:
+            duplicates = sorted(duplicates)
+            raise ValueError(
+                "Duplicated color labels were found in the FCS file: "
+                + ", ".join(duplicates)
+            )
+
+        too_long = [label for label in labels if len(label) > max_chars]
+        if too_long:
+            raise ValueError(
+                f"Color labels may contain at most {max_chars} characters. "
+                f"Invalid label: '{too_long[0]}'."
+            )
+
+    def _read_volume_section(self, lines, index, marker, representative):
+        """Read one @core/@voronoi/@support block and return (Volume, new_index)."""
+        total = len(lines)
+
+        while index < total and not lines[index].strip():
+            index += 1
+
+        if index >= total:
+            raise ValueError(f"Missing {marker} section.")
+
+        found_marker = lines[index].strip()
+        if found_marker != marker:
+            raise ValueError(
+                f"Expected {marker} section, but found '{found_marker or '<blank>'}'."
+            )
+
+        index += 1
+        faces = []
+
+        while index < total:
+            line = lines[index].strip()
+
+            if not line:
+                index += 1
+                continue
+
+            if line.startswith("@"):
+                break
+
+            plane_data = line.split()
+            if len(plane_data) < 5:
+                raise ValueError(
+                    f"Invalid plane definition in {marker}: '{line}'."
+                )
+
+            try:
+                plane_values = [float(value) for value in plane_data[:4]]
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid numeric plane definition in {marker}: '{line}'."
+                ) from exc
+
+            infinity_token = plane_data[4].strip().lower()
+            if infinity_token not in {"true", "false"}:
+                raise ValueError(
+                    f"Invalid infinity flag in {marker}: '{plane_data[4]}'."
+                )
+
+            plane = Plane(*plane_values)
+            infinity = infinity_token == "true"
+            index += 1
+
+            if index >= total:
+                raise ValueError(
+                    f"Unexpected end of file while reading vertex count in {marker}."
+                )
+
+            try:
+                num_vertex = int(lines[index].strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid vertex count in {marker}: '{lines[index].strip()}'."
+                ) from exc
+
+            if num_vertex < 0:
+                raise ValueError(
+                    f"Invalid negative vertex count in {marker}: {num_vertex}."
+                )
+
+            index += 1
+            vertices = []
+
+            for _ in range(num_vertex):
+                if index >= total:
+                    raise ValueError(
+                        f"Unexpected end of file while reading vertices in {marker}."
+                    )
+                vertices.append(self._parse_point_line(lines[index]))
+                index += 1
+
+            faces.append(Face(plane, vertices, infinity))
+
+        return Volume(representative, faces), index
+
     def read_file(self, file_path):
+        """Read and validate a PyFCS .fcs file."""
         try:
-            with open(file_path, 'r') as file:
-                lines = iter(file.readlines())
+            with open(file_path, "r", encoding="utf-8") as file:
+                lines = file.readlines()
 
-                fcs_name = None
-                cs = None
-                num_colors = None
+            fcs_name = None
+            cs = None
+            num_colors = None
+            data_start = None
 
-                for line in lines:
-                    if fcs_name is None:
-                        match = re.search(r'^@name\s*(.+)\s*$', line)
-                        if match:
-                            fcs_name = match.group(1).strip()
+            for index, line in enumerate(lines):
+                if fcs_name is None:
+                    match = re.search(r'^@name\s*(.+)\s*$', line)
+                    if match:
+                        fcs_name = match.group(1).strip()
 
-                    if cs is None:
-                        match = re.search(r'^@colorSpace(?:LAB)?\s*(.*)\s*$', line)
-                        if match:
-                            cs = match.group(1).strip() or "LAB"
+                if cs is None:
+                    match = re.search(r'^@colorSpace(?:LAB)?\s*(.*)\s*$', line)
+                    if match:
+                        cs = match.group(1).strip() or "LAB"
 
-                    if num_colors is None:
-                        match = re.search(r'^@numberOfColors\s*(\d+)\s*$', line)
-                        if match:
-                            num_colors = int(match.group(1))
+                if num_colors is None:
+                    match = re.search(r'^@numberOfColors\s*(\d+)\s*$', line)
+                    if match:
+                        num_colors = int(match.group(1))
 
-                    if fcs_name and cs and num_colors is not None:
-                        break
+                if fcs_name is not None and cs is not None and num_colors is not None:
+                    data_start = index + 1
+                    break
 
-                colors = []
-                for _ in range(num_colors):
-                    raw = next(lines).strip()
+            if fcs_name is None:
+                raise ValueError("Missing @name field.")
+            if cs is None:
+                raise ValueError("Missing @colorSpaceLAB field.")
+            if num_colors is None:
+                raise ValueError("Missing @numberOfColors field.")
+            if num_colors <= 0:
+                raise ValueError("@numberOfColors must be greater than zero.")
+            if data_start is None:
+                raise ValueError("Invalid FCS header.")
+
+            colors = []
+            index = data_start
+
+            for color_index in range(num_colors):
+                while index < len(lines) and not lines[index].strip():
+                    index += 1
+
+                if index >= len(lines):
+                    raise ValueError(
+                        f"Unexpected end of file while reading color {color_index + 1} of {num_colors}."
+                    )
+
+                raw = lines[index].strip()
+                index += 1
+
+                try:
                     parts = shlex.split(raw)
-                    if len(parts) != 4:
-                        raise ValueError(f"Invalid color line (expected 4 tokens): {raw}")
+                except ValueError as exc:
+                    raise ValueError(f"Invalid quoted color line: {raw}") from exc
 
-                    color_name = parts[0]
+                if len(parts) != 4:
+                    raise ValueError(
+                        f"Invalid color line (expected label + 3 LAB values): {raw}"
+                    )
+
+                color_name = parts[0]
+                try:
                     L, A, B = map(float, parts[1:])
-                    colors.append((color_name, L, A, B))
+                except ValueError as exc:
+                    raise ValueError(f"Invalid LAB values in color line: {raw}") from exc
 
-                # Create color_data struct. The complete point matrix is used
-                # by Voronoi when geometry must be rebuilt, so no redundant
-                # per-color negative prototype arrays are stored.
-                color_data = {}
-                for color_name, L, A, B in colors:
-                    color_data[color_name] = {
-                        'Color': [L, A, B],
-                        'positive_prototype': np.array([L, A, B], dtype=float),
-                    }
+                colors.append((color_name, L, A, B))
 
-                # Read Core, alpha-cut and support
-                faces = []
-                cores = []
-                prototypes = []
-                supports = []
+            labels = [item[0] for item in colors]
+            self._validate_unique_labels(labels, max_chars=24)
 
-                i = 0
-                line = next(lines)
-                while True:
-                    try:
-                        line = line.strip()
+            color_data = {
+                color_name: {
+                    "Color": [L, A, B],
+                    "positive_prototype": np.array([L, A, B], dtype=float),
+                }
+                for color_name, L, A, B in colors
+            }
 
-                        if line == "@core":
-                            line = next(lines)
-                            while True:
-                                plane_data = line.split()
-                                if not plane_data:
-                                    break
+            cores = []
+            prototypes = []
+            supports = []
 
-                                # Create Plane
-                                plane_values = list(map(float, plane_data[:4]))
-                                plane = Plane(*plane_values)
-                                infinity = plane_data[4].lower() == "true"
+            for color_name, L, A, B in colors:
+                representative = Point(L, A, B)
 
-                                # Get Vertex
-                                num_vertex = int(next(lines).strip())
-                                vertex = [self._parse_point_line(next(lines)) for _ in range(num_vertex)]
+                core_volume, index = self._read_volume_section(
+                    lines, index, "@core", representative
+                )
+                voronoi_volume, index = self._read_volume_section(
+                    lines, index, "@voronoi", representative
+                )
+                support_volume, index = self._read_volume_section(
+                    lines, index, "@support", representative
+                )
 
-                                # Create Face
-                                faces.append(Face(plane, vertex, infinity))
+                positive = (L, A, B)
+                cores.append(
+                    Prototype(
+                        label=color_name,
+                        positive=positive,
+                        voronoi_volume=core_volume,
+                    )
+                )
+                prototypes.append(
+                    Prototype(
+                        label=color_name,
+                        positive=positive,
+                        voronoi_volume=voronoi_volume,
+                    )
+                )
+                supports.append(
+                    Prototype(
+                        label=color_name,
+                        positive=positive,
+                        voronoi_volume=support_volume,
+                    )
+                )
 
-                                line = next(lines).strip()
-                                if line.startswith("@voronoi"):
-                                    voronoi_volume = Volume(Point(*colors[i][1:]), faces)
+            trailing = [line.strip() for line in lines[index:] if line.strip()]
+            if trailing:
+                raise ValueError(
+                    f"Unexpected content after the last support section: '{trailing[0]}'."
+                )
 
-                                    cores.append(Prototype(
-                                        label=colors[i][0],
-                                        positive=colors[i][1:],
-                                        voronoi_volume=voronoi_volume,
-                                    ))
+            if not (
+                len(cores) == len(prototypes) == len(supports) == num_colors
+            ):
+                raise ValueError(
+                    "Incomplete FCS geometry: the number of core, Voronoi and support "
+                    "blocks does not match @numberOfColors."
+                )
 
-                                    faces = []
-                                    break
+            return color_data, FuzzyColorSpace(
+                fcs_name,
+                prototypes,
+                cores,
+                supports,
+            )
 
-                            line = next(lines)
-                            while True:
-                                plane_data = line.split()
-                                if not plane_data:
-                                    break
-
-                                # Create Plane
-                                plane_values = list(map(float, plane_data[:4]))
-                                plane = Plane(*plane_values)
-                                infinity = plane_data[4].lower() == "true"
-
-                                # Get Vertex
-                                num_vertex = int(next(lines).strip())
-                                vertex = [self._parse_point_line(next(lines)) for _ in range(num_vertex)]
-
-                                # Create Face
-                                faces.append(Face(plane, vertex, infinity))
-
-                                line = next(lines).strip()
-                                if line.startswith("@support"):
-                                    voronoi_volume = Volume(Point(*colors[i][1:]), faces)
-
-                                    prototypes.append(Prototype(
-                                        label=colors[i][0],
-                                        positive=colors[i][1:],
-                                        voronoi_volume=voronoi_volume,
-                                    ))
-
-                                    faces = []
-                                    break
-
-                            line = next(lines)
-                            while True:
-                                plane_data = line.split()
-                                if not plane_data:
-                                    break
-
-                                # Create Plane
-                                plane_values = list(map(float, plane_data[:4]))
-                                plane = Plane(*plane_values)
-                                infinity = plane_data[4].lower() == "true"
-
-                                # Get Vertex
-                                num_vertex = int(next(lines).strip())
-                                vertex = [self._parse_point_line(next(lines)) for _ in range(num_vertex)]
-
-                                # Create Face
-                                faces.append(Face(plane, vertex, infinity))
-
-                                line = next(lines).strip()
-                                if line.startswith("@core"):
-                                    voronoi_volume = Volume(Point(*colors[i][1:]), faces)
-                                    supports.append(Prototype(
-                                        label=colors[i][0],
-                                        positive=colors[i][1:],
-                                        voronoi_volume=voronoi_volume,
-                                    ))
-
-                                    faces = []
-                                    i += 1  # Activate Next Color
-                                    break
-
-                    except StopIteration:
-                        voronoi_volume = Volume(Point(*colors[i][1:]), faces)
-                        supports.append(Prototype(
-                            label=colors[i][0],
-                            positive=colors[i][1:],
-                            voronoi_volume=voronoi_volume,
-                        ))
-                        break
-
-                return color_data, FuzzyColorSpace(fcs_name, prototypes, cores, supports)
-
-        except (ValueError, IndexError, KeyError) as e:
-            raise ValueError(f"Error reading .fcs file: {str(e)}")
-
-            
-
+        except (ValueError, IndexError, KeyError, TypeError, StopIteration, OSError) as exc:
+            message = str(exc).strip() or "The file is incomplete or malformed."
+            raise ValueError(f"Error reading .fcs file: {message}") from exc
 
 
     def extract_planes_and_vertex(self, prototypes):

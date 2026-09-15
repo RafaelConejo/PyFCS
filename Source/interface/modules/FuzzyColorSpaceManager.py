@@ -1,4 +1,4 @@
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import tkinter as tk
 import os
 import numpy as np
@@ -64,7 +64,23 @@ class FuzzyColorSpaceManager:
         # CNS files return only color_data
         if extension == '.cns':
             color_data = input_class.read_file(filename)
-            return {'type': 'cns', 'color_data': color_data}
+
+            warning_message = getattr(
+                input_class,
+                "last_warning",
+                None
+            )
+
+            if warning_message:
+                messagebox.showwarning(
+                    "CNS File Warning",
+                    warning_message
+                )
+
+            return {
+                'type': 'cns',
+                'color_data': color_data
+            }
 
         # FCS files return color_data + fuzzy_color_space
         elif extension == '.fcs':
@@ -102,7 +118,7 @@ class FuzzyColorSpaceManager:
             Callback called as:
                 final_name = on_name_change(old_name, new_name)
         """
-        MAX_NAME_CHARS = 18
+        MAX_NAME_CHARS = 24
 
         # ------------------------------------------------------------------
         # Normalize LAB
@@ -198,7 +214,7 @@ class FuzzyColorSpaceManager:
                 top_line,
                 textvariable=name_var,
                 font=("Helvetica", 10),
-                width=18,
+                width=24,
                 relief="solid",
                 bd=1,
                 bg="white",
@@ -247,7 +263,7 @@ class FuzzyColorSpaceManager:
                 bg="#f4f4f4",
                 fg="#222222",
                 anchor="w",
-                width=18
+                width=24
             ).pack(side="left", padx=(0, 14))
 
         # ----- LAB values -----

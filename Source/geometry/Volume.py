@@ -25,8 +25,13 @@ class Volume:
         return False
 
     def isInside(self, xyz: Point, eps=GeometryTools.SMALL_NUM):
-        # An empty face set is not a valid bounded volume. Returning False is
-        # safer than the vacuous-true result of iterating over zero faces.
+        """Return True when *xyz* lies inside or on the boundary of the volume.
+
+        The representative normally determines the interior side of every face.
+        For the rare case in which the representative lies exactly on a face
+        (for example, a prototype located on the CIELAB domain boundary), the
+        interior side is inferred from another vertex of the same polyhedron.
+        """
         if not self.faces:
             return False
 
@@ -35,8 +40,40 @@ class Volume:
             s_rep = plane.evaluatePoint(self.representative)
             s_xyz = plane.evaluatePoint(xyz)
 
-            if s_rep * s_xyz < -eps:
+            if abs(s_rep) > eps:
+                if s_rep * s_xyz < -eps:
+                    return False
+                continue
+
+            # Degenerate orientation case: the representative is on this face.
+            # Infer the interior half-space from any polyhedron vertex that is
+            # clearly not coplanar with the current face. This fallback is only
+            # used for boundary representatives, so it does not affect the hot
+            # membership path for ordinary prototypes.
+            interior_sign = 0.0
+            for other_face in self.faces:
+                vertices = other_face.getArrayVertex()
+                if not vertices:
+                    continue
+
+                for vertex in vertices:
+                    s_vertex = plane.evaluatePoint(vertex)
+                    if abs(s_vertex) > eps:
+                        interior_sign = 1.0 if s_vertex > 0.0 else -1.0
+                        break
+
+                if interior_sign != 0.0:
+                    break
+
+            # If every known vertex is coplanar, this face cannot provide a
+            # reliable half-space constraint, so leave the decision to the
+            # remaining faces.
+            if interior_sign == 0.0:
+                continue
+
+            if interior_sign * s_xyz < -eps:
                 return False
+
         return True
 
     def addFace(self, face: Face):

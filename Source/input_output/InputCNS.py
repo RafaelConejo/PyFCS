@@ -1,9 +1,11 @@
 from Source.input_output.Input import Input
 from skimage import color
 import numpy as np
+import re
 
 
 class InputCNS(Input):
+    MAX_LABEL_CHARS = 24
 
     def write_file(self, file_path):
         raise NotImplementedError(
@@ -12,11 +14,25 @@ class InputCNS(Input):
 
     @staticmethod
     def is_number(value):
-        try:
-            float(value)
-            return True
-        except (TypeError, ValueError):
+        """
+        Return True only if value is a valid finite decimal/scientific number.
+
+        This avoids calling float() on labels such as 'Memories', which may
+        appear in CNS color names with the same number of tokens as the
+        number of color-space components.
+        """
+        if value is None:
             return False
+
+        value = str(value).strip()
+
+        if not value:
+            return False
+
+        return re.fullmatch(
+            r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?",
+            value
+        ) is not None
 
     @staticmethod
     def _convert_to_lab(values, color_space):
@@ -70,6 +86,7 @@ class InputCNS(Input):
         positive prototypes, so redundant per-color negative lists are no
         longer stored.
         """
+        self.last_warning = None
 
         try:
             with open(
@@ -218,11 +235,41 @@ class InputCNS(Input):
                     "and color names."
                 )
 
-            if num_cases != len(raw_colors):
+            seen_labels = set()
+            duplicated_labels = set()
+            for name in color_names:
+                if name in seen_labels:
+                    duplicated_labels.add(name)
+                else:
+                    seen_labels.add(name)
+
+            if duplicated_labels:
+                duplicated_labels = sorted(duplicated_labels)
                 raise ValueError(
-                    f"The CNS header declares {num_cases} colors, "
-                    f"but {len(raw_colors)} valid colors were found."
+                    "Duplicated color labels were found in the CNS file: "
+                    + ", ".join(duplicated_labels)
                 )
+
+            too_long_labels = [
+                name for name in color_names
+                if len(name) > self.MAX_LABEL_CHARS
+            ]
+            if too_long_labels:
+                raise ValueError(
+                    f"Color labels may contain at most {self.MAX_LABEL_CHARS} characters. "
+                    f"Invalid label: '{too_long_labels[0]}'."
+                )
+
+            if num_cases != len(raw_colors):
+                self.last_warning = (
+                    f"The CNS header declares {num_cases} colors, "
+                    f"but {len(raw_colors)} valid colors were found.\n\n"
+                    f"PyFCS will continue using the {len(raw_colors)} valid colors."
+                )
+
+                # From this point onward, use the actual number
+                # of valid colors found in the file.
+                num_cases = len(raw_colors)
 
             if not raw_colors:
                 return {}
