@@ -39,6 +39,7 @@ from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
 from Source.interface.modules.ImageManager import ImageManager
 from Source.interface.modules.FuzzyColorSpaceManager import FuzzyColorSpaceManager
 from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
+from Source.interface.modules.ColorInspectionManager import ColorInspectionManager
 
 import Source.interface.modules.UtilsTools as UtilsTools
 
@@ -63,6 +64,8 @@ class PyFCSApp:
         )
         self.fuzzy_manager = FuzzyColorSpaceManager(root=self.root)
         self.color_manager = ColorEvaluationManager(output_dir="test_results/Color_Evaluation")
+        self._color_inspection_controller = None
+        self._color_inspection_window = None
         self.volume_limits = ReferenceDomain.default_voronoi_reference_domain()
 
         # ---------------------------------------------------------------------
@@ -337,45 +340,114 @@ class PyFCSApp:
             canvas.bind("<Enter>", bind_events)
             canvas.bind("<Leave>", unbind_events)
 
-        # ---------------------------------------------------------------------
+                # ---------------------------------------------------------------------
         # Menu bar
         # ---------------------------------------------------------------------
         self.menubar = Menu(self.root)
         self.root.config(menu=self.menubar)
 
+        # =============================================================
+        # File
+        # =============================================================
         file_menu = Menu(self.menubar, tearoff=0)
-        file_menu.add_command(label="Exit", command=self.exit_app)
-        self.menubar.add_cascade(label="File", menu=file_menu)
 
+        file_menu.add_command(
+            label="Exit",
+            command=self.exit_app
+        )
+
+        self.menubar.add_cascade(
+            label="File",
+            menu=file_menu
+        )
+
+        # =============================================================
+        # Image Manager
+        # =============================================================
         img_menu = Menu(self.menubar, tearoff=0)
-        img_menu.add_command(label="Open Image", command=self.open_image)
-        img_menu.add_command(label="Save Image", command=self.save_image)
-        img_menu.add_command(label="Close All", command=self.close_all_image)
-        self.menubar.add_cascade(label="Image Manager", menu=img_menu)
 
+        img_menu.add_command(
+            label="Open Image",
+            command=self.open_image
+        )
+
+        img_menu.add_command(
+            label="Save Image",
+            command=self.save_image
+        )
+
+        # Separate normal image actions from the destructive/global action.
+        img_menu.add_separator()
+
+        img_menu.add_command(
+            label="Close All",
+            command=self.close_all_image
+        )
+
+        self.menubar.add_cascade(
+            label="Image Manager",
+            menu=img_menu
+        )
+
+        # =============================================================
+        # Fuzzy Color Space Manager
+        # =============================================================
         fuzzy_menu = Menu(self.menubar, tearoff=0)
-        fuzzy_menu.add_command(label="New Color Space", command=self.show_menu_create_fcs)
-        fuzzy_menu.add_command(label="Load Color Space", command=self.load_color_space)
-        self.menubar.add_cascade(label="Fuzzy Color Space Manager", menu=fuzzy_menu)
 
-        self.menubar.add_command(
+        fuzzy_menu.add_command(
+            label="New Color Space",
+            command=self.show_menu_create_fcs
+        )
+
+        fuzzy_menu.add_separator()
+
+        fuzzy_menu.add_command(
+            label="Load Color Space",
+            command=self.load_color_space
+        )
+
+        self.menubar.add_cascade(
+            label="Fuzzy Color Space Manager",
+            menu=fuzzy_menu
+        )
+
+        # =============================================================
+        # Color Analysis
+        # =============================================================
+        analysis_menu = Menu(self.menubar, tearoff=0)
+
+        # Exploratory inspection tool.
+        analysis_menu.add_command(
+            label="Color Inspection",
+            command=self.open_color_inspection
+        )
+
+        # Keep inspection and formal evaluation visually separated.
+        analysis_menu.add_separator()
+
+        analysis_menu.add_command(
             label="Color Evaluation",
             command=self.color_evaluation
         )
 
-        help_menu = Menu(self.menubar, tearoff=0)
-        help_menu.add_command(label="About", command=self.about_info)
-        self.menubar.add_cascade(label="Help", menu=help_menu)
-
-        # Submenu used by the "New Color Space" button
-        self.menu_create_fcs = Menu(self.root, tearoff=0)
-        self.menu_create_fcs.add_command(
-            label="Palette-Based Creation",
-            command=self.palette_based_creation
+        self.menubar.add_cascade(
+            label="Color Analysis",
+            menu=analysis_menu
         )
-        self.menu_create_fcs.add_command(
-            label="Image-Based Creation",
-            command=self.image_based_creation
+
+        # =============================================================
+        # Help
+        # =============================================================
+        help_menu = Menu(self.menubar, tearoff=0)
+
+        help_menu.add_command(
+            label="About",
+            command=self.about_info
+        )
+
+        self.menubar.add_cascade(
+            label="Help",
+            menu=help_menu
         )
 
         # ---------------------------------------------------------------------
@@ -1788,7 +1860,7 @@ class PyFCSApp:
         """
         try:
             plot_dir = self._get_temp_plot_dir()
-            max_files = int(getattr(self, "self.TEMP_PLOT_MAX_FILES", 30))
+            max_files = int(getattr(self, "TEMP_PLOT_MAX_FILES", 30))
 
             if max_files <= 0:
                 return
@@ -1836,7 +1908,7 @@ class PyFCSApp:
         self._temp_plot_creation_count = current_count
 
         try:
-            cleanup_every = int(getattr(self, "self.TEMP_PLOT_CLEANUP_EVERY", 5))
+            cleanup_every = int(getattr(self, "TEMP_PLOT_CLEANUP_EVERY", 5))
         except Exception:
             cleanup_every = 5
 
@@ -1844,6 +1916,39 @@ class PyFCSApp:
 
         if current_count % cleanup_every == 0:
             self._cleanup_temp_plot_files()
+
+
+    def open_color_inspection(self, initial_info=None):
+        """
+        Open the persistent Color Inspection workspace.
+
+        A loaded fuzzy color space is required, but an image is not.
+        If initial_info is provided, Color Inspection starts from that selected
+        pixel/ROI. Otherwise it opens in general inspection mode.
+        """
+
+        # Color Inspection requires an active fuzzy color space.
+        if (
+            not getattr(self, "COLOR_SPACE", False)
+            or getattr(self, "fuzzy_color_space", None) is None
+        ):
+            self.custom_warning(
+                "Color Inspection",
+                "Load a fuzzy color space before opening Color Inspection.",
+                parent=self._get_active_dialog_parent()
+            )
+            return
+
+        self._ensure_threshold_settings()
+        self._close_color_inspection_window()
+
+        controller = ColorInspectionManager(
+            self,
+            initial_info if isinstance(initial_info, dict) else {}
+        )
+
+        self._color_inspection_controller = controller
+        self._color_inspection_window = controller.win
 
 
 
@@ -1960,9 +2065,6 @@ class PyFCSApp:
             )
             return
         
-        # Close pixel/ROI info window because its content belongs to the previous color space
-        self._close_more_info_window()
-
         if filename is None:
             filename = UtilsTools.prompt_file_selection(
                 "fuzzy_color_spaces/",
@@ -1972,6 +2074,9 @@ class PyFCSApp:
             )
         if not filename:
             return
+
+        # The active fuzzy color space is really going to change.
+        self._reset_color_inspection_state()
 
         if not hasattr(self, "mapping_locked_until_original"):
             self.mapping_locked_until_original = {}
@@ -2247,6 +2352,8 @@ class PyFCSApp:
         saved_color_data,
         fuzzy_color_space,
     ):
+        self._reset_color_inspection_state()
+
         self.color_data = copy.deepcopy(saved_color_data)
         self.edit_color_data = copy.deepcopy(saved_color_data)
         self.file_path = file_path
@@ -6122,6 +6229,8 @@ class PyFCSApp:
         if not confirm:
             return
 
+        self._reset_color_inspection_state()
+
         try:
             if file_path and os.path.exists(file_path):
                 os.remove(file_path)
@@ -7606,7 +7715,8 @@ class PyFCSApp:
                     x_original,
                     y_original,
                     pixel_lab,
-                    is_average=False
+                    is_average=False,
+                    image_id=window_id
                 )
 
             return "break"
@@ -9581,7 +9691,7 @@ class PyFCSApp:
         Shared threshold UI builder.
 
         variant:
-            - 'result'  -> like More Info: config + colored result card
+            - 'result'  -> like Color Inspection: config + colored result card
             - 'summary' -> like Color Evaluation: config + textual summary
         """
         threshold_panel = tk.Frame(parent, bg="white", bd=1, relief="solid")
@@ -9982,92 +10092,8 @@ class PyFCSApp:
         return refs
 
 
-    def _apply_more_info_threshold_result_style(self, refs, status):
-        """
-        Apply the same formal threshold result style used in Color Evaluation.
-        """
-        self._apply_threshold_result_style(refs, status)
 
 
-    def _refresh_more_info_threshold_ui(self, vars_dict, refs, proto_lab=None, sample_lab=None):
-        """
-        Refresh the More Info threshold UI.
-
-        It keeps the formal result style and uses the existing informative
-        summary sentence generated by ColorEvaluationManager, without showing
-        the component breakdown.
-        """
-        original_variant = refs.get("variant", "more_info")
-
-        try:
-            refs["variant"] = "summary"
-            self._refresh_shared_threshold_ui(
-                vars_dict=vars_dict,
-                refs=refs,
-                proto_lab=None,
-                sample_lab=None
-            )
-        finally:
-            refs["variant"] = original_variant
-
-        if proto_lab is None or sample_lab is None:
-            vars_dict["threshold_result_title_var"].set("Select a prototype to evaluate")
-            vars_dict["threshold_result_detail_var"].set("")
-            vars_dict["threshold_result_summary_var"].set("")
-            self._apply_more_info_threshold_result_style(refs, "unavailable")
-            return
-
-        evaluation = self.evaluate_color_difference_threshold(
-            sample_lab=sample_lab,
-            prototype_lab=proto_lab,
-            metric=self.threshold_settings.get("metric", "CIEDE2000"),
-            threshold_settings=self.threshold_settings
-        )
-
-        metric_value = evaluation.get("metric_value", evaluation.get("delta_e"))
-        status = evaluation.get("status", "unavailable")
-        metric_name = self.threshold_settings.get("metric", "Metric")
-
-        if metric_value is None:
-            vars_dict["threshold_result_title_var"].set(
-                evaluation.get("evaluation", "Metric not available")
-            )
-            vars_dict["threshold_result_detail_var"].set(
-                "Unable to compute selected metric"
-            )
-
-            summary_text = evaluation.get("summary_visual", evaluation.get("summary", ""))
-            short_summary = str(summary_text).strip().splitlines()[0] if str(summary_text).strip() else ""
-
-            vars_dict["threshold_result_summary_var"].set(short_summary)
-            self._apply_more_info_threshold_result_style(refs, status)
-            return
-
-        vars_dict["threshold_result_title_var"].set(
-            evaluation.get("evaluation", "No evaluation available")
-        )
-
-        vars_dict["threshold_result_detail_var"].set(
-            evaluation.get(
-                "detail",
-                f"{metric_name} = {metric_value:.3f}"
-            )
-        )
-
-        # Use only the first informative line:
-        # "Invalid threshold using CIEDE2000."
-        # and discard the following "Component breakdown..." lines.
-        summary_text = evaluation.get("summary_visual", evaluation.get("summary", ""))
-        summary_text = str(summary_text).strip()
-
-        if summary_text:
-            short_summary = summary_text.splitlines()[0].strip()
-        else:
-            short_summary = f"{evaluation.get('evaluation', 'Result')} using {metric_name}."
-
-        vars_dict["threshold_result_summary_var"].set(short_summary)
-
-        self._apply_more_info_threshold_result_style(refs, status)
 
 
 
@@ -10417,7 +10443,7 @@ class PyFCSApp:
             pixel_lab = UtilsTools.srgb_to_lab(r, g, b)
 
             if self.COLOR_SPACE:
-                self.display_pixel_value(full_x, full_y, pixel_lab, is_average=False, selection_info=None)
+                self.display_pixel_value(full_x, full_y, pixel_lab, is_average=False, selection_info=None, image_id=window_id)
 
             return "break"
 
@@ -10485,18 +10511,19 @@ class PyFCSApp:
                 cy,
                 pixel_lab,
                 is_average=True,
-                selection_info=selection_info
+                selection_info=selection_info,
+                image_id=window_id
             )
 
         return "break"
 
 
 
-    def display_pixel_value(self, x_original, y_original, pixel_lab, is_average=False, selection_info=None):
+    def display_pixel_value(self, x_original, y_original, pixel_lab, is_average=False, selection_info=None, image_id=None):
         """
         Display selected pixel/ROI LAB information in a compact floating info bar.
-        Shows coordinates, LAB value, selected prototype and a More Info action.
-        Stores pixel/ROI info for the More Info popup.
+        Shows coordinates, LAB value, selected prototype and a Color Inspection action.
+        Stores pixel/ROI info for Color Inspection.
         """
         # ---------------------------------------------------------------------
         # Create compact floating info bar only once
@@ -10567,7 +10594,7 @@ class PyFCSApp:
 
             search_icon = self.load_toolbar_icon("Search.png", (17, 17))
 
-            more_info_button = tk.Label(
+            inspection_button = tk.Label(
                 self.lab_value_frame,
                 image=search_icon,
                 bg=BAR_BG,
@@ -10575,24 +10602,24 @@ class PyFCSApp:
                 padx=5,
                 pady=2
             )
-            more_info_button.image = search_icon
-            more_info_button.bind("<Button-1>", lambda e: self.show_more_info_pixel())
+            inspection_button.image = search_icon
+            inspection_button.bind("<Button-1>", lambda e: self.show_color_inspection_pixel())
 
             def _search_enter(_event):
                 try:
-                    more_info_button.configure(bg="#f1f5f9")
+                    inspection_button.configure(bg="#f1f5f9")
                 except Exception:
                     pass
 
             def _search_leave(_event):
                 try:
-                    more_info_button.configure(bg=BAR_BG)
+                    inspection_button.configure(bg=BAR_BG)
                 except Exception:
                     pass
 
-            more_info_button.bind("<Enter>", _search_enter)
-            more_info_button.bind("<Leave>", _search_leave)
-            more_info_button.pack(side="right", padx=(2, 8), pady=4)
+            inspection_button.bind("<Enter>", _search_enter)
+            inspection_button.bind("<Leave>", _search_leave)
+            inspection_button.pack(side="right", padx=(2, 8), pady=4)
 
         # ---------------------------------------------------------------------
         # Membership computation
@@ -10609,7 +10636,7 @@ class PyFCSApp:
             top_memberships = []
 
         # ---------------------------------------------------------------------
-        # Store data for the "More Info" popup
+        # Store data for Color Inspection
         # ---------------------------------------------------------------------
         self._last_pixel_info = {
             "x": x_original,
@@ -10621,6 +10648,11 @@ class PyFCSApp:
             "winner_mu": winner_mu,
             "top_memberships": top_memberships,
             "all_memberships": top_memberships,
+            "image_id": image_id,
+            "image_path": (
+                getattr(self, "load_images_names", {}).get(image_id)
+                if image_id is not None else None
+            ),
         }
 
         # ---------------------------------------------------------------------
@@ -10657,166 +10689,71 @@ class PyFCSApp:
 
 
 
-    def _close_more_info_window(self):
-        """Close the 'More Info' window if it is currently open."""
-        if hasattr(self, "_more_info_window") and self._more_info_window is not None:
+    def _close_color_inspection_window(self):
+        """Close the persistent Color Inspection window if it is open."""
+        controller = getattr(self, "_color_inspection_controller", None)
+        if controller is not None:
             try:
-                if self._more_info_window.winfo_exists():
-                    self._more_info_window.destroy()
+                controller.close()
             except Exception:
                 pass
-            finally:
-                self._more_info_window = None
+
+        self._color_inspection_controller = None
+        self._color_inspection_window = None
 
 
+    def _reset_color_inspection_state(self):
+        """
+        Close Color Inspection and discard pixel/ROI information associated
+        with the previous fuzzy color space.
+        """
+        self._close_color_inspection_window()
+        self._last_pixel_info = None
 
-    def show_more_info_pixel(self):
-        """Show detailed info for the last clicked pixel/ROI with clickable prototype preview."""
+        lab_frame = getattr(self, "lab_value_frame", None)
+        if lab_frame is not None:
+            try:
+                if lab_frame.winfo_exists():
+                    lab_frame.destroy()
+            except Exception:
+                pass
+
+        for attr in (
+            "lab_value_frame",
+            "coord_value",
+            "lab_value_print",
+            "proto_value_text",
+        ):
+            try:
+                if hasattr(self, attr):
+                    delattr(self, attr)
+            except Exception:
+                pass
+
+
+    def show_color_inspection_pixel(self):
+        """
+        Open Color Inspection using the sample currently selected in an image.
+        This is the entry point used by the magnifying-glass button.
+        """
         info = getattr(self, "_last_pixel_info", None)
+
         if not info:
             messagebox.showinfo(
-                "More Info",
+                "Color Inspection",
                 "Click on an image pixel first.",
                 parent=self._get_active_dialog_parent()
             )
             return
 
-        self._ensure_threshold_settings()
-
-        # Close any previous More Info window first
-        self._close_more_info_window()
-
-        win = tk.Toplevel(self.root)
-        self._more_info_window = win
-
-        win.title("More Info")
-
-        WIN_W, WIN_H = 980, 640
-        win.geometry(f"{WIN_W}x{WIN_H}")
-        win.resizable(False, False)
-        win.configure(bg="#f2f2f2")
-
-        # Ensure reference is released if user closes the window manually
-        win.protocol("WM_DELETE_WINDOW", lambda: self._on_close_more_info_window())
-
-        ui = self._build_more_info_pixel_window(win, info)
-
-        # Modal-like behavior
-        win.transient(self.root)
-        win.grab_set()
-        win.focus_set()
-
-        win.update_idletasks()
-        root_x = self.root.winfo_rootx()
-        root_y = self.root.winfo_rooty()
-        root_w = self.root.winfo_width()
-        root_h = self.root.winfo_height()
-
-        x = root_x + (root_w - WIN_W) // 2
-        y = root_y + (root_h - WIN_H) // 2
-        win.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
+        self.open_color_inspection(initial_info=info)
 
 
 
-    def _on_close_more_info_window(self):
-        """Handle manual closing of the More Info window."""
-        try:
-            if hasattr(self, "_more_info_window") and self._more_info_window is not None:
-                if self._more_info_window.winfo_exists():
-                    self._more_info_window.destroy()
-        except Exception:
-            pass
-        finally:
-            self._more_info_window = None
-
-
-    def _build_more_info_pixel_window(self, win, info):
-        """
-        Build the full 'More Info' window UI and wire all interactions.
-        Returns a dictionary with relevant UI references.
-        """
-        base_data = self._get_more_info_base_data(info)
-        self._ensure_threshold_settings()
-
-        vars_dict = self._create_more_info_vars(base_data)
-
-        main = tk.Frame(win, bg="#f2f2f2")
-        main.pack(fill="both", expand=True, padx=10, pady=10)
-
-        self._build_more_info_header(main, base_data)
-
-        content_refs = self._build_more_info_content(main, base_data, vars_dict)
-
-        self._populate_more_info_memberships(
-            base_data=base_data,
-            vars_dict=vars_dict,
-            refs=content_refs
-        )
-
-        btns = tk.Frame(main, bg="#f2f2f2")
-        btns.pack(fill="x", pady=(10, 0))
-        tk.Button(btns, text="Close", command=self._on_close_more_info_window, width=12).pack(side="right")
-
-        return {
-            "base_data": base_data,
-            "vars_dict": vars_dict,
-            "refs": content_refs
-        }
 
 
 
-    def _get_more_info_base_data(self, info):
-        """Extract and normalize the base data used by the More Info window."""
-        lab = info.get("lab", (0, 0, 0))
-        selection_info = info.get("selection_info")
-        is_average = bool(info.get("is_average", False))
 
-        if selection_info and selection_info.get("mean_rgb") is not None:
-            sampled_rgb = selection_info["mean_rgb"]
-        else:
-            try:
-                sampled_rgb = UtilsTools.lab_to_rgb(lab)
-            except Exception:
-                sampled_rgb = (200, 200, 200)
-
-        memberships = info.get("all_memberships")
-        if not memberships:
-            memberships = info.get("top_memberships", [])
-
-        winner_label = info.get("winner_label", "None")
-        winner_mu = float(info.get("winner_mu", 0.0))
-
-        sampled_hex = self._safe_hex_from_rgb(sampled_rgb)
-        sampled_title = "Mean Color" if is_average else "Selected Color"
-
-        if selection_info and selection_info.get("type") == "roi":
-            coord_text = (
-                f"ROI: ({selection_info['x1']}, {selection_info['y1']}) "
-                f"→ ({selection_info['x2']}, {selection_info['y2']})"
-            )
-            roi_text = (
-                f"Size: {selection_info['width']} x {selection_info['height']} px"
-                f"    |    Pixels: {selection_info['pixels']}"
-                f"    |    Center: ({selection_info['center_x']}, {selection_info['center_y']})"
-            )
-        else:
-            coord_text = f"Coordinates: ({info.get('x', 0)}, {info.get('y', 0)})"
-            roi_text = None
-
-        return {
-            "info": info,
-            "lab": lab,
-            "selection_info": selection_info,
-            "is_average": is_average,
-            "sampled_rgb": sampled_rgb,
-            "sampled_hex": sampled_hex,
-            "sampled_title": sampled_title,
-            "memberships": memberships,
-            "winner_label": winner_label,
-            "winner_mu": winner_mu,
-            "coord_text": coord_text,
-            "roi_text": roi_text,
-        }
 
 
 
@@ -10859,870 +10796,22 @@ class PyFCSApp:
         return self._safe_hex_from_rgb(self._get_proto_rgb(label))
 
 
-    def _create_more_info_vars(self, base_data):
-        """Create and return all Tk variables used by the More Info window."""
-        vars_dict = {
-            "selected_label_var": tk.StringVar(
-                value=base_data["winner_label"] if base_data["winner_label"] != "None" else ""
-            ),
-            "selected_rgb_var": tk.StringVar(value=""),
-            "selected_hex_var": tk.StringVar(value=""),
-            "selected_lab_var": tk.StringVar(value=""),
-        }
 
-        return self._merge_threshold_vars(vars_dict)
 
 
-    def _build_more_info_header(self, parent, base_data):
-        """Build the top header section of the More Info window."""
-        header = tk.Frame(parent, bg="white", bd=1, relief="solid")
-        header.pack(fill="x", pady=(0, 10))
 
-        tk.Label(
-            header,
-            text=base_data["coord_text"],
-            anchor="w",
-            bg="white",
-            font=("Sans", 11, "bold"),
-            padx=12,
-            pady=6
-        ).pack(fill="x")
 
-        if base_data["roi_text"]:
-            tk.Label(
-                header,
-                text=base_data["roi_text"],
-                anchor="w",
-                bg="white",
-                font=("Sans", 10),
-                padx=12,
-                pady=0
-            ).pack(fill="x", pady=(0, 4))
 
-        lab = base_data["lab"]
-        sampled_rgb = base_data["sampled_rgb"]
-        sampled_hex = base_data["sampled_hex"]
 
-        lab_text = f"{float(lab[0]):.2f}, {float(lab[1]):.2f}, {float(lab[2]):.2f}"
-        rgb_text = f"{int(sampled_rgb[0])}, {int(sampled_rgb[1])}, {int(sampled_rgb[2])}"
-        hex_text = sampled_hex.upper()
 
-        tk.Label(
-            header,
-            text=f"LAB: {lab_text}    |    RGB: {rgb_text}    |    HEX: {hex_text}",
-            anchor="w",
-            bg="white",
-            font=("Sans", 10),
-            padx=12,
-            pady=0
-        ).pack(fill="x", pady=(0, 8))
 
 
-    def _build_more_info_content(self, parent, base_data, vars_dict):
-        """Build the main content area and return references to important widgets."""
-        content = tk.Frame(parent, bg="#f2f2f2")
-        content.pack(fill="both", expand=True)
 
-        top_content = tk.Frame(content, bg="#f2f2f2")
-        top_content.pack(fill="x", anchor="n")
 
-        left = tk.Frame(top_content, bg="white", bd=1, relief="solid", width=320, height=280)
-        left.pack(side="left", fill="y", padx=(0, 6), anchor="n")
-        left.pack_propagate(False)
 
-        center = tk.Frame(top_content, bg="white", bd=1, relief="solid", height=270)
-        center.pack(side="left", fill="x", expand=True, padx=(6, 0), anchor="n")
-        center.pack_propagate(False)
 
-        membership_refs = self._build_more_info_membership_panel(left, base_data)
-        prototype_refs = self._build_more_info_prototype_panel(center, base_data, vars_dict)
-        threshold_refs = self._build_more_info_threshold_panel(content, vars_dict)
 
-        return {
-            "content": content,
-            "left": left,
-            "center": center,
-            "membership_refs": membership_refs,
-            "prototype_refs": prototype_refs,
-            "threshold_refs": threshold_refs,
-        }
 
-
-
-    def _build_more_info_membership_panel(self, parent, base_data):
-        """Build the left memberships panel."""
-        tk.Label(
-            parent,
-            text="Membership Degree (μ)",
-            font=("Sans", 11, "bold"),
-            anchor="w",
-            bg="white",
-            padx=12,
-            pady=10
-        ).pack(fill="x")
-
-        tk.Label(
-            parent,
-            text=f"Winner: {base_data['winner_label']}    |    μ = {base_data['winner_mu']:.4f}",
-            anchor="w",
-            bg="white",
-            padx=12
-        ).pack(fill="x", pady=(0, 10))
-
-        tk.Label(
-            parent,
-            text="Memberships:",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white",
-            padx=12
-        ).pack(fill="x", pady=(0, 6))
-
-        memberships_box = tk.Frame(parent, bg="white", bd=1, relief="solid", height=140)
-        memberships_box.pack(fill="x", padx=12, pady=(0, 8))
-        memberships_box.pack_propagate(False)
-
-        list_canvas = tk.Canvas(
-            memberships_box,
-            bg="white",
-            highlightthickness=0,
-            bd=0
-        )
-        list_scroll = ttk.Scrollbar(
-            memberships_box,
-            orient="vertical",
-            command=list_canvas.yview
-        )
-        list_inner = tk.Frame(list_canvas, bg="white")
-
-        list_inner.bind(
-            "<Configure>",
-            lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all"))
-        )
-
-        list_canvas.create_window((0, 0), window=list_inner, anchor="nw")
-        list_canvas.configure(yscrollcommand=list_scroll.set)
-
-        list_canvas.pack(side="left", fill="both", expand=True)
-        list_scroll.pack(side="right", fill="y")
-
-        def _on_membership_mousewheel(event):
-            list_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        list_canvas.bind("<Enter>", lambda e: list_canvas.bind_all("<MouseWheel>", _on_membership_mousewheel))
-        list_canvas.bind("<Leave>", lambda e: list_canvas.unbind_all("<MouseWheel>"))
-
-        tip_container = tk.Frame(parent, bg="white")
-        tip_container.pack(fill="x", side="bottom", padx=12, pady=(0, 10))
-
-        tk.Frame(tip_container, bg="#d0d0d0", height=1).pack(fill="x", pady=(0, 6))
-
-        tk.Label(
-            tip_container,
-            text="ℹ Click a color to inspect it.",
-            justify="center",
-            anchor="center",
-            wraplength=260,
-            bg="white",
-            fg="#555555",
-            font=("Sans", 9, "italic"),
-            pady=6
-        ).pack(fill="x")
-
-        return {
-            "memberships_box": memberships_box,
-            "list_canvas": list_canvas,
-            "list_inner": list_inner,
-            "membership_rows": {},
-        }
-
-
-
-    def _build_more_info_prototype_panel(self, parent, base_data, vars_dict):
-        """Build the center prototype/sample comparison panel."""
-        SWATCH_W = 100
-        SWATCH_H = 75
-        PAD_X = 10
-        PAD_Y = 10
-
-        canvas_w = SWATCH_W + 2 * PAD_X
-        canvas_h = SWATCH_H + 2 * PAD_Y
-
-        top_colors = tk.Frame(parent, bg="white")
-        top_colors.pack(fill="x", pady=(8, 6), padx=10)
-
-        left_card = tk.Frame(top_colors, bg="white")
-        left_card.pack(side="left", fill="both", expand=True, padx=(0, 8))
-
-        right_card = tk.Frame(top_colors, bg="white")
-        right_card.pack(side="left", fill="both", expand=True, padx=(8, 0))
-
-        tk.Label(
-            left_card,
-            text="Selected Prototype",
-            font=("Sans", 11, "bold"),
-            bg="white"
-        ).pack(fill="x")
-
-        selected_name_label = tk.Label(
-            left_card,
-            textvariable=vars_dict["selected_label_var"],
-            bg="white",
-            font=("Sans", 10, "bold")
-        )
-        selected_name_label.pack(pady=(6, 2))
-
-        selected_proto_canvas = tk.Canvas(
-            left_card,
-            width=canvas_w,
-            height=canvas_h,
-            bg="white",
-            highlightthickness=0
-        )
-        selected_proto_canvas.pack(pady=(4, 8))
-
-        selected_proto_rect = selected_proto_canvas.create_rectangle(
-            PAD_X,
-            PAD_Y,
-            PAD_X + SWATCH_W,
-            PAD_Y + SWATCH_H,
-            fill="#cccccc",
-            outline="#606060",
-            width=1
-        )
-
-        tk.Label(
-            left_card,
-            textvariable=vars_dict["selected_lab_var"],
-            bg="white",
-            font=("Sans", 10),
-            justify="center",
-            wraplength=240
-        ).pack()
-
-        tk.Label(
-            left_card,
-            textvariable=vars_dict["selected_rgb_var"],
-            bg="white",
-            font=("Sans", 10)
-        ).pack()
-
-        tk.Label(
-            left_card,
-            textvariable=vars_dict["selected_hex_var"],
-            bg="white",
-            font=("Sans", 10)
-        ).pack(pady=(2, 0))
-
-        tk.Label(
-            right_card,
-            text=base_data["sampled_title"],
-            font=("Sans", 11, "bold"),
-            bg="white"
-        ).pack(fill="x")
-
-        sampled_canvas = tk.Canvas(
-            right_card,
-            width=canvas_w,
-            height=canvas_h,
-            bg="white",
-            highlightthickness=0
-        )
-        sampled_canvas.pack(pady=(28, 8))
-
-        sampled_canvas.create_rectangle(
-            PAD_X,
-            PAD_Y,
-            PAD_X + SWATCH_W,
-            PAD_Y + SWATCH_H,
-            fill=base_data["sampled_hex"],
-            outline="#606060",
-            width=1
-        )
-
-        lab = base_data["lab"]
-        sampled_rgb = base_data["sampled_rgb"]
-
-        tk.Label(
-            right_card,
-            text=f"LAB: {float(lab[0]):.2f}, {float(lab[1]):.2f}, {float(lab[2]):.2f}",
-            bg="white",
-            font=("Sans", 10)
-        ).pack()
-
-        tk.Label(
-            right_card,
-            text=f"RGB: {int(sampled_rgb[0])}, {int(sampled_rgb[1])}, {int(sampled_rgb[2])}",
-            bg="white",
-            font=("Sans", 10)
-        ).pack()
-
-        tk.Label(
-            right_card,
-            text=f"HEX: {base_data['sampled_hex'].upper()}",
-            bg="white",
-            font=("Sans", 10)
-        ).pack(pady=(2, 0))
-
-        return {
-            "selected_proto_canvas": selected_proto_canvas,
-            "selected_proto_rect": selected_proto_rect,
-        }
-
-
-
-    def _build_more_info_threshold_panel(self, parent, vars_dict):
-        """
-        Build a compact Threshold panel for the More Info window.
-
-        This keeps the same shared threshold variables/settings, but uses a
-        narrower layout and a simplified result card.
-        """
-        threshold_panel = tk.Frame(parent, bg="white", bd=1, relief="solid")
-        threshold_panel.pack(fill="x", pady=(6, 0), anchor="n")
-
-        tk.Label(
-            threshold_panel,
-            text="Threshold",
-            font=("Segoe UI", 11, "bold"),
-            anchor="w",
-            bg="white",
-            fg="#1f2937",
-            padx=12,
-            pady=8
-        ).pack(fill="x")
-
-        threshold_body = tk.Frame(threshold_panel, bg="white")
-        threshold_body.pack(fill="x", padx=12, pady=(0, 10))
-
-        # Compact 3-block layout:
-        # Metric | Configuration | Result
-        threshold_body.grid_columnconfigure(0, minsize=230, weight=0)
-        threshold_body.grid_columnconfigure(1, minsize=1, weight=0)
-        threshold_body.grid_columnconfigure(2, minsize=330, weight=1)
-        threshold_body.grid_columnconfigure(3, minsize=1, weight=0)
-        threshold_body.grid_columnconfigure(4, minsize=230, weight=0)
-
-        section_selection = tk.Frame(threshold_body, bg="white", width=230)
-        section_selection.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
-        section_selection.grid_propagate(False)
-
-        tk.Frame(threshold_body, bg="#e5e7eb", width=1, height=118).grid(
-            row=0, column=1, sticky="ns", padx=(0, 10), pady=2
-        )
-
-        section_config = tk.Frame(threshold_body, bg="white")
-        section_config.grid(row=0, column=2, sticky="nsew", padx=(0, 10))
-
-        tk.Frame(threshold_body, bg="#e5e7eb", width=1, height=118).grid(
-            row=0, column=3, sticky="ns", padx=(0, 10), pady=2
-        )
-
-        section_output = tk.Frame(threshold_body, bg="white", width=230)
-        section_output.grid(row=0, column=4, sticky="nsew")
-        section_output.grid_propagate(False)
-
-        manager = self._get_color_evaluation_manager()
-
-        # ------------------------------------------------------------------
-        # Metric selection
-        # ------------------------------------------------------------------
-        tk.Label(
-            section_selection,
-            text="Metric Family",
-            font=("Segoe UI", 9, "bold"),
-            anchor="w",
-            bg="white",
-            fg="#1f2937"
-        ).pack(anchor="w", pady=(0, 3))
-
-        metric_family_combo = ttk.Combobox(
-            section_selection,
-            textvariable=vars_dict["threshold_metric_family_var"],
-            state="readonly",
-            width=24,
-            values=manager.get_metric_families()
-        )
-        metric_family_combo.pack(anchor="w", fill="x", pady=(0, 7))
-
-        tk.Label(
-            section_selection,
-            text="Metric",
-            font=("Segoe UI", 9, "bold"),
-            anchor="w",
-            bg="white",
-            fg="#1f2937"
-        ).pack(anchor="w", pady=(0, 3))
-
-        metric_combo = ttk.Combobox(
-            section_selection,
-            textvariable=vars_dict["threshold_metric_var"],
-            state="readonly",
-            width=24,
-            values=manager.get_metrics_for_family(
-                vars_dict["threshold_metric_family_var"].get()
-            )
-        )
-        metric_combo.pack(anchor="w", fill="x", pady=(0, 5))
-
-        metric_help_label = tk.Label(
-            section_selection,
-            textvariable=vars_dict["threshold_metric_help_var"],
-            bg="white",
-            fg="#6b7280",
-            anchor="w",
-            justify="left",
-            wraplength=210,
-            font=("Segoe UI", 8, "italic")
-        )
-        metric_help_label.pack(anchor="w", fill="x")
-
-        # ------------------------------------------------------------------
-        # Configuration
-        # ------------------------------------------------------------------
-        tk.Label(
-            section_config,
-            text="Configuration",
-            font=("Segoe UI", 9, "bold"),
-            anchor="w",
-            bg="white",
-            fg="#1f2937"
-        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 7))
-
-        section_config.grid_columnconfigure(0, minsize=98, weight=0)
-        section_config.grid_columnconfigure(1, minsize=90, weight=1)
-        section_config.grid_columnconfigure(2, minsize=95, weight=0)
-        section_config.grid_columnconfigure(3, minsize=70, weight=1)
-
-        mode_label = tk.Label(
-            section_config,
-            text="Threshold type:",
-            bg="white",
-            fg="#1f2937",
-            anchor="w",
-            font=("Segoe UI", 9)
-        )
-
-        mode_combo = ttk.Combobox(
-            section_config,
-            textvariable=vars_dict["threshold_mode_var"],
-            state="readonly",
-            width=20,
-            values=["default", "custom"]
-        )
-
-        mode_label.grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 8))
-        mode_combo.grid(row=1, column=1, columnspan=3, sticky="ew", pady=(0, 6))
-
-        preset_label = tk.Label(
-            section_config,
-            text="Default preset:",
-            bg="white",
-            fg="#1f2937",
-            anchor="w",
-            font=("Segoe UI", 9)
-        )
-
-        preset_combo = ttk.Combobox(
-            section_config,
-            textvariable=vars_dict["threshold_preset_var"],
-            state="readonly",
-            width=20,
-            values=[
-                "Perceptibility Threshold",
-                "Acceptability Threshold",
-                "Perceptibility + Acceptability"
-            ]
-        )
-
-        custom_type_label = tk.Label(
-            section_config,
-            text="Custom mode:",
-            bg="white",
-            fg="#1f2937",
-            anchor="w",
-            font=("Segoe UI", 9)
-        )
-
-        custom_type_combo = ttk.Combobox(
-            section_config,
-            textvariable=vars_dict["threshold_custom_type_var"],
-            state="readonly",
-            width=20,
-            values=[
-                "Single threshold",
-                "Lower and upper thresholds"
-            ]
-        )
-
-        single_label = tk.Label(
-            section_config,
-            text="Threshold:",
-            bg="white",
-            fg="#1f2937",
-            anchor="w",
-            font=("Segoe UI", 9)
-        )
-        single_entry = tk.Entry(
-            section_config,
-            textvariable=vars_dict["threshold_single_var"],
-            width=9,
-            font=("Segoe UI", 9)
-        )
-
-        lower_label = tk.Label(
-            section_config,
-            text="Lower:",
-            bg="white",
-            fg="#1f2937",
-            anchor="w",
-            font=("Segoe UI", 9)
-        )
-        lower_entry = tk.Entry(
-            section_config,
-            textvariable=vars_dict["threshold_lower_var"],
-            width=8,
-            font=("Segoe UI", 9)
-        )
-
-        upper_label = tk.Label(
-            section_config,
-            text="Upper:",
-            bg="white",
-            fg="#1f2937",
-            anchor="w",
-            font=("Segoe UI", 9)
-        )
-        upper_entry = tk.Entry(
-            section_config,
-            textvariable=vars_dict["threshold_upper_var"],
-            width=8,
-            font=("Segoe UI", 9)
-        )
-
-        config_hint_label = tk.Label(
-            section_config,
-            textvariable=vars_dict["config_hint_var"],
-            bg="white",
-            fg="#6b7280",
-            anchor="w",
-            justify="left",
-            wraplength=310,
-            font=("Segoe UI", 8, "italic")
-        )
-
-        def _update_config_hint_wrap(event=None):
-            try:
-                available_width = max(section_config.winfo_width() - 20, 220)
-                config_hint_label.configure(wraplength=available_width)
-            except Exception:
-                pass
-
-        section_config.bind("<Configure>", _update_config_hint_wrap)
-
-        # ------------------------------------------------------------------
-        # Result: formal card, same style as Color Evaluation, but shorter
-        # ------------------------------------------------------------------
-        tk.Label(
-            section_output,
-            text="Results",
-            font=("Segoe UI", 9, "bold"),
-            anchor="w",
-            bg="white",
-            fg="#1f2937"
-        ).pack(anchor="w", pady=(0, 7))
-
-        result_card = tk.Frame(
-            section_output,
-            bg="#f7f7f7",
-            bd=0,
-            relief="flat",
-            highlightthickness=2,
-            highlightbackground="#bdbdbd",
-            highlightcolor="#bdbdbd"
-        )
-        result_card.pack(fill="both", expand=True)
-
-        result_header = tk.Frame(result_card, bg="#eeeeee")
-        result_header.pack(fill="x")
-
-        result_status_dot = tk.Canvas(
-            result_header,
-            width=18,
-            height=18,
-            bg="#eeeeee",
-            highlightthickness=0,
-            bd=0
-        )
-        result_status_dot.pack(side="left", padx=(10, 6), pady=8)
-
-        result_status_dot_oval = result_status_dot.create_oval(
-            3, 3, 15, 15,
-            fill="#bdbdbd",
-            outline="#bdbdbd"
-        )
-
-        result_title_label = tk.Label(
-            result_header,
-            textvariable=vars_dict["threshold_result_title_var"],
-            anchor="w",
-            justify="left",
-            bg="#eeeeee",
-            font=("Segoe UI", 10, "bold"),
-            wraplength=170
-        )
-        result_title_label.pack(
-            side="left",
-            fill="x",
-            expand=True,
-            padx=(0, 10),
-            pady=8
-        )
-
-        result_body = tk.Frame(result_card, bg="#f7f7f7")
-        result_body.pack(fill="both", expand=True, padx=12, pady=(10, 10))
-
-        result_value_label = tk.Label(
-            result_body,
-            textvariable=vars_dict["threshold_result_detail_var"],
-            anchor="w",
-            justify="left",
-            bg="#f7f7f7",
-            fg="#666666",
-            font=("Segoe UI", 9, "bold"),
-            wraplength=185
-        )
-        result_value_label.pack(anchor="w", fill="x", pady=(0, 9))
-
-        result_separator = tk.Frame(
-            result_body,
-            bg="#dddddd",
-            height=2
-        )
-        result_separator.pack(fill="x", padx=4, pady=(0, 8))
-
-        result_summary_row = tk.Frame(result_body, bg="#f7f7f7")
-        result_summary_row.pack(fill="x")
-
-        result_summary_icon = tk.Canvas(
-            result_summary_row,
-            width=20,
-            height=20,
-            bg="#f7f7f7",
-            highlightthickness=0,
-            bd=0
-        )
-        result_summary_icon.pack(side="left", padx=(0, 7), anchor="n")
-
-        result_summary_icon_circle = result_summary_icon.create_oval(
-            2, 2, 18, 18,
-            outline="#666666",
-            width=2
-        )
-
-        result_summary_icon_text = result_summary_icon.create_text(
-            10, 10,
-            text="!",
-            fill="#666666",
-            font=("Segoe UI", 9, "bold")
-        )
-
-        result_text_container = tk.Frame(result_summary_row, bg="#f7f7f7")
-        result_text_container.pack(side="left", fill="both", expand=True)
-
-        result_summary_label = tk.Label(
-            result_text_container,
-            textvariable=vars_dict["threshold_result_summary_var"],
-            anchor="w",
-            justify="left",
-            bg="#f7f7f7",
-            wraplength=165,
-            font=("Segoe UI", 8)
-        )
-        result_summary_label.pack(anchor="w", fill="x")
-
-        refs = {
-            "metric_family_combo": metric_family_combo,
-            "metric_combo": metric_combo,
-            "metric_help_label": metric_help_label,
-
-            "mode_label": mode_label,
-            "mode_combo": mode_combo,
-
-            "preset_label": preset_label,
-            "preset_combo": preset_combo,
-
-            "custom_type_label": custom_type_label,
-            "custom_type_combo": custom_type_combo,
-
-            "single_label": single_label,
-            "single_entry": single_entry,
-
-            "lower_label": lower_label,
-            "lower_entry": lower_entry,
-
-            "upper_label": upper_label,
-            "upper_entry": upper_entry,
-
-            "config_hint_label": config_hint_label,
-
-            "variant": "more_info",
-
-            "result_card": result_card,
-            "result_header": result_header,
-            "result_status_dot": result_status_dot,
-            "result_status_dot_oval": result_status_dot_oval,
-            "result_title_label": result_title_label,
-            "result_body": result_body,
-            "result_value_label": result_value_label,
-            "result_separator": result_separator,
-            "result_summary_row": result_summary_row,
-            "result_summary_icon": result_summary_icon,
-            "result_summary_icon_circle": result_summary_icon_circle,
-            "result_summary_icon_text": result_summary_icon_text,
-            "result_summary_label": result_summary_label,
-        }
-
-        return refs
-
-
-
-    def _populate_more_info_memberships(self, base_data, vars_dict, refs):
-        """Populate memberships list and wire row selection + shared threshold refresh."""
-        membership_refs = refs["membership_refs"]
-        prototype_refs = refs["prototype_refs"]
-        threshold_refs = refs["threshold_refs"]
-
-        membership_rows = membership_refs["membership_rows"]
-        list_inner = membership_refs["list_inner"]
-
-        memberships = base_data["memberships"]
-        sample_lab = base_data["lab"]
-
-        def highlight_selected_row(active_label):
-            for lbl, row in membership_rows.items():
-                bg = "#e8f0ff" if lbl == active_label else "white"
-                row.configure(bg=bg)
-                for child in row.winfo_children():
-                    try:
-                        child.configure(bg=bg)
-                    except Exception:
-                        pass
-
-        def refresh_threshold_section(proto_lab=None):
-            if threshold_refs.get("variant") == "more_info":
-                self._refresh_more_info_threshold_ui(
-                    vars_dict=vars_dict,
-                    refs=threshold_refs,
-                    proto_lab=proto_lab,
-                    sample_lab=sample_lab
-                )
-            else:
-                self._refresh_shared_threshold_ui(
-                    vars_dict=vars_dict,
-                    refs=threshold_refs,
-                    proto_lab=proto_lab,
-                    sample_lab=sample_lab
-                )
-
-        def select_membership(label):
-            vars_dict["selected_label_var"].set(label)
-
-            proto_rgb = self._get_proto_rgb(label)
-            proto_hex = self._safe_hex_from_rgb(proto_rgb)
-            proto_lab = self._get_proto_lab(label)
-
-            prototype_refs["selected_proto_canvas"].itemconfig(
-                prototype_refs["selected_proto_rect"],
-                fill=proto_hex
-            )
-
-            if proto_lab is not None:
-                vars_dict["selected_lab_var"].set(
-                    f"LAB: {proto_lab[0]:.2f}, {proto_lab[1]:.2f}, {proto_lab[2]:.2f}"
-                )
-            else:
-                vars_dict["selected_lab_var"].set("LAB: not available")
-
-            vars_dict["selected_rgb_var"].set(
-                f"RGB: {int(proto_rgb[0])}, {int(proto_rgb[1])}, {int(proto_rgb[2])}"
-            )
-            vars_dict["selected_hex_var"].set(f"HEX: {proto_hex.upper()}")
-
-            self._current_threshold_proto_lab = proto_lab
-            refresh_threshold_section(proto_lab=proto_lab)
-            highlight_selected_row(label)
-
-        for widget in (
-            threshold_refs["metric_family_combo"],
-            threshold_refs["metric_combo"],
-            threshold_refs["mode_combo"],
-            threshold_refs["preset_combo"],
-            threshold_refs["custom_type_combo"],
-        ):
-            widget.bind(
-                "<<ComboboxSelected>>",
-                lambda e: refresh_threshold_section(
-                    proto_lab=getattr(self, "_current_threshold_proto_lab", None)
-                )
-            )
-
-        for widget in (
-            threshold_refs["single_entry"],
-            threshold_refs["lower_entry"],
-            threshold_refs["upper_entry"],
-        ):
-            widget.bind(
-                "<KeyRelease>",
-                lambda e: refresh_threshold_section(
-                    proto_lab=getattr(self, "_current_threshold_proto_lab", None)
-                )
-            )
-
-        if memberships:
-            for lbl, mu in memberships:
-                row = tk.Frame(list_inner, bg="white", cursor="hand2", bd=0, highlightthickness=0)
-                row.pack(fill="x", pady=1, padx=2)
-
-                membership_rows[lbl] = row
-
-                proto_hex = self._get_proto_hex(lbl)
-
-                swatch = tk.Canvas(row, width=16, height=16, bg="white", highlightthickness=0)
-                swatch.pack(side="left", padx=(4, 6), pady=2)
-                swatch.create_rectangle(1, 1, 15, 15, fill=proto_hex, outline="#707070")
-
-                lbl_name = tk.Label(row, text=str(lbl), anchor="w", bg="white", font=("Sans", 10))
-                lbl_name.pack(side="left", fill="x", expand=True)
-
-                lbl_mu = tk.Label(row, text=f"μ = {float(mu):.4f}", anchor="e", bg="white", font=("Sans", 10))
-                lbl_mu.pack(side="right", padx=(6, 4))
-
-                for widget in (row, swatch, lbl_name, lbl_mu):
-                    widget.bind(
-                        "<Button-1>",
-                        lambda e, label=lbl: select_membership(label)
-                    )
-        else:
-            tk.Label(
-                list_inner,
-                text="No memberships available.",
-                anchor="w",
-                bg="white"
-            ).pack(fill="x")
-
-        if memberships:
-            initial_label = (
-                base_data["winner_label"]
-                if base_data["winner_label"] not in (None, "None", "")
-                else memberships[0][0]
-            )
-            if initial_label not in dict(memberships):
-                initial_label = memberships[0][0]
-
-            select_membership(initial_label)
-        else:
-            refresh_threshold_section(proto_lab=None)
 
 
     def _parse_positive_threshold(self, value):
@@ -11887,7 +10976,7 @@ class PyFCSApp:
         currently active tool window instead of the main root.
         """
         candidates = [
-            getattr(self, "_more_info_window", None),
+            getattr(self, "_color_inspection_window", None),
             getattr(self, "_color_evaluation_window", None),
             fallback,
             self.root,
