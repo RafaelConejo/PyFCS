@@ -23,7 +23,7 @@ class Voronoi:
     """
     Optimized 3D Euclidean Voronoi-cell builder for PyFCS.
 
-    The implementation is specialized for bounded CIELAB Voronoi cells.  Each
+    The implementation is specialized for bounded CIELAB Voronoi cells. Each
     cell starts as the reference-domain box and is incrementally clipped by the
     perpendicular-bisector half-spaces between the selected prototype and the
     remaining prototypes.

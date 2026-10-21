@@ -39,7 +39,7 @@ from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
 from Source.interface.modules.ImageManager import ImageManager
 from Source.interface.modules.FuzzyColorSpaceManager import FuzzyColorSpaceManager
 from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
-from Source.interface.modules.ColorInspectionManager import ColorInspectionManager
+from Source.interface.modules.ImageInspectionManager import ImageInspectionManager
 
 import Source.interface.modules.UtilsTools as UtilsTools
 
@@ -64,8 +64,8 @@ class PyFCSApp:
         )
         self.fuzzy_manager = FuzzyColorSpaceManager(root=self.root)
         self.color_manager = ColorEvaluationManager(output_dir="test_results/Color_Evaluation")
-        self._color_inspection_controller = None
-        self._color_inspection_window = None
+        self._image_inspection_controller = None
+        self._image_inspection_window = None
         self.volume_limits = ReferenceDomain.default_voronoi_reference_domain()
 
         # ---------------------------------------------------------------------
@@ -376,7 +376,14 @@ class PyFCSApp:
             command=self.save_image
         )
 
-        # Separate normal image actions from the destructive/global action.
+        img_menu.add_separator()
+
+        img_menu.add_command(
+            label="Image Inspection",
+            command=self.open_image_inspection
+        )
+
+        # Separate inspection/actions from the destructive global action.
         img_menu.add_separator()
 
         img_menu.add_command(
@@ -411,19 +418,21 @@ class PyFCSApp:
             menu=fuzzy_menu
         )
 
+        # Submenu used by the "New Color Space" menu/toolbar action.
+        self.menu_create_fcs = Menu(self.root, tearoff=0)
+        self.menu_create_fcs.add_command(
+            label="Palette-Based Creation",
+            command=self.palette_based_creation
+        )
+        self.menu_create_fcs.add_command(
+            label="Image-Based Creation",
+            command=self.image_based_creation
+        )
+
         # =============================================================
         # Color Analysis
         # =============================================================
         analysis_menu = Menu(self.menubar, tearoff=0)
-
-        # Exploratory inspection tool.
-        analysis_menu.add_command(
-            label="Color Inspection",
-            command=self.open_color_inspection
-        )
-
-        # Keep inspection and formal evaluation visually separated.
-        analysis_menu.add_separator()
 
         analysis_menu.add_command(
             label="Color Evaluation",
@@ -473,9 +482,9 @@ class PyFCSApp:
         icon_size = (30, 30)
         load_image_icon = self.load_toolbar_icon("LoadImage.png", icon_size)
         save_image_icon = self.load_toolbar_icon("SaveImage.png", icon_size)
+        image_inspection_icon = self.load_toolbar_icon("ColorInspection.png", icon_size)
         new_fcs_icon = self.load_toolbar_icon("NewFCS1.png", icon_size)
         load_fcs_icon = self.load_toolbar_icon("LoadFCS.png", icon_size)
-        at_icon = self.load_toolbar_icon("AT.png", icon_size)
         pt_icon = self.load_toolbar_icon("PT.png", icon_size)
         evaluate_icon = self.load_toolbar_icon("evaluateColor.png", icon_size)
 
@@ -498,6 +507,12 @@ class PyFCSApp:
             text="Save Image",
             image=save_image_icon,
             command=self.save_image
+        )
+        create_toolbar_button(
+            image_manager_frame,
+            text="Image Inspection",
+            image=image_inspection_icon,
+            command=self.open_image_inspection
         )
 
         add_toolbar_separator(toolbar_inner)
@@ -533,18 +548,24 @@ class PyFCSApp:
         )
         color_evaluation_frame.pack(side="left", fill="y", expand=False, padx=(0, 0))
 
-        create_toolbar_button(
-            color_evaluation_frame,
-            text="Display PT",
-            image=pt_icon,
+        # Threshold display menu: PT and AT share one toolbar action.
+        self.menu_display_threshold = Menu(self.root, tearoff=0)
+        self.menu_display_threshold.add_command(
+            label="Perceptibility Threshold (PT)",
             command=self.deploy_pt
         )
-        create_toolbar_button(
-            color_evaluation_frame,
-            text="Display AT",
-            image=at_icon,
+        self.menu_display_threshold.add_command(
+            label="Acceptability Threshold (AT)",
             command=self.deploy_at
         )
+
+        self.display_threshold_button = create_toolbar_button(
+            color_evaluation_frame,
+            text="Display Threshold ▼",
+            image=pt_icon,
+            command=self.show_menu_display_threshold
+        )
+
         create_toolbar_button(
             color_evaluation_frame,
             text="Color Evaluation",
@@ -1478,6 +1499,78 @@ class PyFCSApp:
         self.menu_create_fcs.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
 
 
+    def show_menu_display_threshold(self):
+        """Display the PT/AT selection menu directly below its toolbar button."""
+        try:
+            button = self.display_threshold_button
+            x = button.winfo_rootx()
+            y = button.winfo_rooty() + button.winfo_height()
+            self.menu_display_threshold.post(x, y)
+        except Exception:
+            self.menu_display_threshold.post(
+                self.root.winfo_pointerx(),
+                self.root.winfo_pointery()
+            )
+
+
+    def _ensure_image_loaded_for_feature(self, feature_name):
+        """
+        Ensure that at least one workspace image is loaded.
+
+        If no image is available, offer to open one using the normal PyFCS
+        image-loading workflow. Returns True only when an image is available.
+        """
+        if bool(getattr(self, "load_images_names", {})):
+            return True
+
+        load_now = messagebox.askyesno(
+            feature_name,
+            f"{feature_name} requires a loaded image.\n\n"
+            "Do you want to open an image now?",
+            parent=self._get_active_dialog_parent(),
+            icon="warning"
+        )
+
+        if not load_now:
+            return False
+
+        self.open_image()
+
+        return bool(getattr(self, "load_images_names", {}))
+
+
+    def _ensure_fuzzy_color_space_loaded_for_feature(self, feature_name):
+        """
+        Ensure that a Fuzzy Color Space is loaded.
+
+        If none is active, offer to load one using the normal PyFCS
+        color-space-loading workflow. Returns True only when loading succeeds.
+        """
+        if (
+            getattr(self, "COLOR_SPACE", False)
+            and getattr(self, "fuzzy_color_space", None) is not None
+        ):
+            return True
+
+        load_now = messagebox.askyesno(
+            feature_name,
+            f"{feature_name} requires a loaded Fuzzy Color Space.\n\n"
+            "Do you want to load one now?",
+            parent=self._get_active_dialog_parent(),
+            icon="warning"
+        )
+
+        if not load_now:
+            return False
+
+        self.load_color_space()
+
+        return (
+            getattr(self, "COLOR_SPACE", False)
+            and getattr(self, "fuzzy_color_space", None) is not None
+        )
+
+
     def on_mouse_wheel(self, event, target):
         """
         Scroll a widget using the mouse wheel in a cross-platform way.
@@ -1918,37 +2011,31 @@ class PyFCSApp:
             self._cleanup_temp_plot_files()
 
 
-    def open_color_inspection(self, initial_info=None):
+    def open_image_inspection(self, initial_info=None):
         """
-        Open the persistent Color Inspection workspace.
+        Open the persistent Image Inspection workspace.
 
-        A loaded fuzzy color space is required, but an image is not.
-        If initial_info is provided, Color Inspection starts from that selected
+        A loaded Fuzzy Color Space is required, but an image is not. If no
+        color space is active, the user is offered the normal load workflow.
+        If initial_info is provided, Image Inspection starts from that selected
         pixel/ROI. Otherwise it opens in general inspection mode.
         """
 
-        # Color Inspection requires an active fuzzy color space.
-        if (
-            not getattr(self, "COLOR_SPACE", False)
-            or getattr(self, "fuzzy_color_space", None) is None
-        ):
-            self.custom_warning(
-                "Color Inspection",
-                "Load a fuzzy color space before opening Color Inspection.",
-                parent=self._get_active_dialog_parent()
-            )
+        # Option A: an image is not required here. The inspection workspace can
+        # open empty and its own Open Image action can be used afterwards.
+        if not self._ensure_fuzzy_color_space_loaded_for_feature("Image Inspection"):
             return
 
         self._ensure_threshold_settings()
-        self._close_color_inspection_window()
+        self._close_image_inspection_window()
 
-        controller = ColorInspectionManager(
+        controller = ImageInspectionManager(
             self,
             initial_info if isinstance(initial_info, dict) else {}
         )
 
-        self._color_inspection_controller = controller
-        self._color_inspection_window = controller.win
+        self._image_inspection_controller = controller
+        self._image_inspection_window = controller.win
 
 
 
@@ -2076,7 +2163,7 @@ class PyFCSApp:
             return
 
         # The active fuzzy color space is really going to change.
-        self._reset_color_inspection_state()
+        self._reset_image_inspection_state()
 
         if not hasattr(self, "mapping_locked_until_original"):
             self.mapping_locked_until_original = {}
@@ -2352,7 +2439,7 @@ class PyFCSApp:
         saved_color_data,
         fuzzy_color_space,
     ):
-        self._reset_color_inspection_state()
+        self._reset_image_inspection_state()
 
         self.color_data = copy.deepcopy(saved_color_data)
         self.edit_color_data = copy.deepcopy(saved_color_data)
@@ -2911,9 +2998,11 @@ class PyFCSApp:
         - a palette-like window, initially empty, where selected colors are collected;
         - a secondary image tool window docked to the right for manual sampling
         and automatic color detection.
+
+        If no workspace image is loaded, offer to open one first and continue
+        automatically when the image-loading workflow succeeds.
         """
-        if not hasattr(self, "load_images_names") or not self.load_images_names:
-            self.custom_warning(message="No images are currently available to display.")
+        if not self._ensure_image_loaded_for_feature("Image-Based Creation"):
             return
 
         if not self._can_start_new_creation():
@@ -6229,7 +6318,7 @@ class PyFCSApp:
         if not confirm:
             return
 
-        self._reset_color_inspection_state()
+        self._reset_image_inspection_state()
 
         try:
             if file_path and os.path.exists(file_path):
@@ -9691,7 +9780,7 @@ class PyFCSApp:
         Shared threshold UI builder.
 
         variant:
-            - 'result'  -> like Color Inspection: config + colored result card
+            - 'result'  -> like Image Inspection: config + colored result card
             - 'summary' -> like Color Evaluation: config + textual summary
         """
         threshold_panel = tk.Frame(parent, bg="white", bd=1, relief="solid")
@@ -10522,8 +10611,8 @@ class PyFCSApp:
     def display_pixel_value(self, x_original, y_original, pixel_lab, is_average=False, selection_info=None, image_id=None):
         """
         Display selected pixel/ROI LAB information in a compact floating info bar.
-        Shows coordinates, LAB value, selected prototype and a Color Inspection action.
-        Stores pixel/ROI info for Color Inspection.
+        Shows coordinates, LAB value, selected prototype and a Image Inspection action.
+        Stores pixel/ROI info for Image Inspection.
         """
         # ---------------------------------------------------------------------
         # Create compact floating info bar only once
@@ -10603,7 +10692,7 @@ class PyFCSApp:
                 pady=2
             )
             inspection_button.image = search_icon
-            inspection_button.bind("<Button-1>", lambda e: self.show_color_inspection_pixel())
+            inspection_button.bind("<Button-1>", lambda e: self.show_image_inspection_pixel())
 
             def _search_enter(_event):
                 try:
@@ -10636,7 +10725,7 @@ class PyFCSApp:
             top_memberships = []
 
         # ---------------------------------------------------------------------
-        # Store data for Color Inspection
+        # Store data for Image Inspection
         # ---------------------------------------------------------------------
         self._last_pixel_info = {
             "x": x_original,
@@ -10689,25 +10778,25 @@ class PyFCSApp:
 
 
 
-    def _close_color_inspection_window(self):
-        """Close the persistent Color Inspection window if it is open."""
-        controller = getattr(self, "_color_inspection_controller", None)
+    def _close_image_inspection_window(self):
+        """Close the persistent Image Inspection window if it is open."""
+        controller = getattr(self, "_image_inspection_controller", None)
         if controller is not None:
             try:
                 controller.close()
             except Exception:
                 pass
 
-        self._color_inspection_controller = None
-        self._color_inspection_window = None
+        self._image_inspection_controller = None
+        self._image_inspection_window = None
 
 
-    def _reset_color_inspection_state(self):
+    def _reset_image_inspection_state(self):
         """
-        Close Color Inspection and discard pixel/ROI information associated
+        Close Image Inspection and discard pixel/ROI information associated
         with the previous fuzzy color space.
         """
-        self._close_color_inspection_window()
+        self._close_image_inspection_window()
         self._last_pixel_info = None
 
         lab_frame = getattr(self, "lab_value_frame", None)
@@ -10731,22 +10820,22 @@ class PyFCSApp:
                 pass
 
 
-    def show_color_inspection_pixel(self):
+    def show_image_inspection_pixel(self):
         """
-        Open Color Inspection using the sample currently selected in an image.
+        Open Image Inspection using the sample currently selected in an image.
         This is the entry point used by the magnifying-glass button.
         """
         info = getattr(self, "_last_pixel_info", None)
 
         if not info:
             messagebox.showinfo(
-                "Color Inspection",
+                "Image Inspection",
                 "Click on an image pixel first.",
                 parent=self._get_active_dialog_parent()
             )
             return
 
-        self.open_color_inspection(initial_info=info)
+        self.open_image_inspection(initial_info=info)
 
 
 
@@ -10976,7 +11065,7 @@ class PyFCSApp:
         currently active tool window instead of the main root.
         """
         candidates = [
-            getattr(self, "_color_inspection_window", None),
+            getattr(self, "_image_inspection_window", None),
             getattr(self, "_color_evaluation_window", None),
             fallback,
             self.root,

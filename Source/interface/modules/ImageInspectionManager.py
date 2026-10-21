@@ -9,13 +9,13 @@ from PIL import Image, ImageTk
 import Source.interface.modules.UtilsTools as UtilsTools
 
 
-class ColorInspectionManager:
+class ImageInspectionManager:
     """
-    Persistent image/FCS inspector used by PyFCS Color Inspection.
+    Persistent image/FCS inspector used by PyFCS Image Inspection.
 
     Design goals
     ------------
-    - Keep Color Inspection conceptually separate from Color Evaluation.
+    - Keep Image Inspection conceptually separate from Color Evaluation.
     - Inspect many pixels without closing/reopening the window.
     - Navigate through workspace images and temporary external images.
     - Keep membership degrees independent from comparison metric/threshold.
@@ -53,7 +53,7 @@ class ColorInspectionManager:
         self.manager = app.color_manager
 
         self.win = tk.Toplevel(self.root)
-        self.win.title("Color Inspection")
+        self.win.title("Image Inspection")
         self.win.configure(bg=self.BG)
         self.win.minsize(1120, 700)
         self.win.protocol("WM_DELETE_WINDOW", self.close)
@@ -136,8 +136,8 @@ class ColorInspectionManager:
             pass
 
         try:
-            self.app._color_inspection_controller = None
-            self.app._color_inspection_window = None
+            self.app._image_inspection_controller = None
+            self.app._image_inspection_window = None
         except Exception:
             pass
 
@@ -254,7 +254,7 @@ class ColorInspectionManager:
         # Title
         tk.Label(
             inner,
-            text="Color Inspection",
+            text="Image Inspection",
             font=("Segoe UI", 13, "bold"),
             bg=self.CARD,
             fg=self.TEXT,
@@ -929,7 +929,7 @@ class ColorInspectionManager:
             initial_dir = base_path
 
         path = filedialog.askopenfilename(
-            title="Open image for Color Inspection",
+            title="Open image for Image Inspection",
             initialdir=initial_dir,
             parent=self.win,
             filetypes=[
