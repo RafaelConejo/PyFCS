@@ -7,6 +7,7 @@ from scipy.spatial import distance
 ### my libraries ###
 from Source.geometry.Point import Point
 from Source.colorspace.ReferenceDomain import ReferenceDomain
+import Source.interface.modules.UtilsTools as UtilsTools
 
 
 class ColorEvaluationManager:
@@ -332,26 +333,14 @@ class ColorEvaluationManager:
 
     @staticmethod
     def lab_to_rgb_approx(lab):
-        L, a, b = ColorEvaluationManager._safe_lab_array(lab)
-        Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
-        fy = (L + 16.0) / 116.0
-        fx = fy + (a / 500.0)
-        fz = fy - (b / 200.0)
+        """
+        Backwards-compatible LAB -> RGB helper.
 
-        def finv(t):
-            t3 = t ** 3
-            return t3 if t3 > 0.008856 else (t - 16.0 / 116.0) / 7.787
-
-        X, Y, Z = Xn * finv(fx), Yn * finv(fy), Zn * finv(fz)
-        R =  3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z
-        G = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z
-        B =  0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z
-
-        def gamma(u):
-            u = max(0.0, min(1.0, float(u)))
-            return 12.92 * u if u <= 0.0031308 else 1.055 * (u ** (1.0 / 2.4)) - 0.055
-
-        return tuple(max(0, min(255, int(round(gamma(v) * 255.0)))) for v in (R, G, B))
+        The old local approximation has been replaced by the shared PyFCS
+        conversion so RGB-based metrics and the rest of the interface use the
+        same CIELAB/sRGB convention.
+        """
+        return UtilsTools.safe_rgb_tuple(UtilsTools.lab_to_rgb(lab))
     
 
     @staticmethod

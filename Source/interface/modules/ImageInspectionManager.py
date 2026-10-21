@@ -1,7 +1,8 @@
 import os
+import copy
 import platform
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog
 
 import numpy as np
 from PIL import Image, ImageTk
@@ -153,15 +154,32 @@ class ImageInspectionManager:
         self.inspection_mode_var = tk.StringVar(value="inspect")
         self.inspection_mode_display_var = tk.StringVar(value="Inspect")
         self.inspection_help_var = tk.StringVar(
-            value="Click: pixel · Drag: mean area · Right-drag: pan · Wheel: zoom"
+            value="Click: pixel · Drag: mean area · Right-drag: move · Wheel: zoom"
         )
         self.zoom_var = tk.StringVar(value="Fit")
 
         self.sample_title_var = tk.StringVar(value="No sample selected")
         self.sample_coord_var = tk.StringVar(value="Click a pixel in the image")
+        self.sample_filters_var = tk.StringVar(value="")
         self.sample_lab_var = tk.StringVar(value="LAB: —")
         self.sample_rgb_var = tk.StringVar(value="RGB: —")
         self.sample_hex_var = tk.StringVar(value="HEX: —")
+
+        # Optional LAB filters used only when a dragged ROI is summarized.
+        # Single-pixel and Live inspection always preserve the exact pixel.
+        self.filter_l_min_enabled = tk.BooleanVar(value=False)
+        self.filter_l_max_enabled = tk.BooleanVar(value=False)
+        self.filter_a_min_enabled = tk.BooleanVar(value=False)
+        self.filter_a_max_enabled = tk.BooleanVar(value=False)
+        self.filter_b_min_enabled = tk.BooleanVar(value=False)
+        self.filter_b_max_enabled = tk.BooleanVar(value=False)
+
+        self.filter_l_min_var = tk.StringVar(value="0.0")
+        self.filter_l_max_var = tk.StringVar(value="100.0")
+        self.filter_a_min_var = tk.StringVar(value="-128.0")
+        self.filter_a_max_var = tk.StringVar(value="128.0")
+        self.filter_b_min_var = tk.StringVar(value="-128.0")
+        self.filter_b_max_var = tk.StringVar(value="128.0")
 
         self.winner_summary_var = tk.StringVar(value="Close Prototype: —")
         self.proto_title_var = tk.StringVar(value="Close Prototype")
@@ -401,6 +419,23 @@ class ImageInspectionManager:
         self.inspection_mode_combo.pack(side="left", padx=(7, 6))
         self.inspection_mode_combo.bind("<<ComboboxSelected>>", self._on_inspection_mode_changed)
 
+        self.filters_button = tk.Button(
+            left_controls,
+            text="Filters...",
+            command=self._open_lab_filters,
+            font=self.FONT,
+            bg="#f8fafc",
+            fg=self.TEXT,
+            activebackground="#eef2f7",
+            activeforeground=self.TEXT,
+            relief="solid",
+            bd=1,
+            padx=9,
+            pady=3,
+            cursor="hand2",
+        )
+        self.filters_button.pack(side="left", padx=(0, 6))
+
         tk.Button(
             left_controls,
             text="☆ Pin Sample",
@@ -554,6 +589,10 @@ class ImageInspectionManager:
             sample_info, textvariable=self.sample_coord_var, font=self.FONT_SMALL,
             bg=self.CARD, fg=self.MUTED, anchor="w", justify="left", wraplength=250
         ).pack(fill="x", pady=(2, 0))
+        self.sample_filters_label = tk.Label(
+            sample_info, textvariable=self.sample_filters_var, font=self.FONT_SMALL,
+            bg=self.CARD, fg=self.BLUE, anchor="w", justify="left", wraplength=280
+        )
 
         tk.Label(
             values, textvariable=self.sample_lab_var, font=self.FONT,
@@ -787,6 +826,23 @@ class ImageInspectionManager:
     def _load_workspace_sources(self):
         load_names = getattr(self.app, "load_images_names", {}) or {}
         originals = getattr(self.app, "pil_images_original", {}) or {}
+        active_workspace_keys = {f"workspace:{window_id}" for window_id in load_names}
+
+        # Remove main-workspace images that were closed after Image Inspection
+        # was opened. Temporary local images remain available until this window
+        # closes.
+        stale_keys = [
+            key for key in self._source_order
+            if key.startswith("workspace:") and key not in active_workspace_keys
+        ]
+        for key in stale_keys:
+            self._sources.pop(key, None)
+            self._view_state.pop(key, None)
+            self._last_sample.pop(key, None)
+            try:
+                self._source_order.remove(key)
+            except ValueError:
+                pass
 
         for window_id, path in load_names.items():
             key = f"workspace:{window_id}"
@@ -815,6 +871,15 @@ class ImageInspectionManager:
 
         self._rebuild_source_combo()
 
+        if self.current_source_key not in self._sources:
+            self.current_source_key = None
+            if self._source_order:
+                self._switch_source(self._source_order[0], restore_sample=True)
+            else:
+                self.source_var.set("")
+                self._clear_sample_ui()
+                self._render_image()
+
     def _refresh_workspace_sources(self):
         self._load_workspace_sources()
 
@@ -832,7 +897,7 @@ class ImageInspectionManager:
             used[base] = used.get(base, 0) + 1
             display = base if used[base] == 1 else f"{base} ({used[base]})"
             if src.get("external"):
-                display += "  [external]"
+                display += "  [local]"
             self._display_to_key[display] = key
             self._key_to_display[key] = display
             values.append(display)
@@ -942,12 +1007,13 @@ class ImageInspectionManager:
             return
 
         try:
-            pil = Image.open(path).convert("RGBA")
+            with Image.open(path) as img:
+                pil = img.convert("RGBA")
         except Exception as exc:
-            messagebox.showerror(
+            self.app.custom_warning(
                 "Open Image",
                 f"Could not open image:\n{exc}",
-                parent=self.win
+                parent=self.win,
             )
             return
 
@@ -1165,6 +1231,107 @@ class ImageInspectionManager:
         return "break"
 
     # ======================================================================
+    # LAB FILTERS
+    # ======================================================================
+    def _lab_filter_bindings(self):
+        return {
+            "L_min": (self.filter_l_min_enabled, self.filter_l_min_var),
+            "L_max": (self.filter_l_max_enabled, self.filter_l_max_var),
+            "a_min": (self.filter_a_min_enabled, self.filter_a_min_var),
+            "a_max": (self.filter_a_max_enabled, self.filter_a_max_var),
+            "b_min": (self.filter_b_min_enabled, self.filter_b_min_var),
+            "b_max": (self.filter_b_max_enabled, self.filter_b_max_var),
+        }
+
+    def _lab_filter_theme(self):
+        return {
+            "bg": self.BG,
+            "card": self.CARD,
+            "text": self.TEXT,
+            "muted": self.MUTED,
+            "blue": self.BLUE,
+            "blue_soft": self.BLUE_SOFT,
+            "font": self.FONT,
+            "font_bold": self.FONT_BOLD,
+            "font_small": self.FONT_SMALL,
+            "font_small_bold": self.FONT_SMALL_BOLD,
+            "font_section": self.FONT_SECTION,
+        }
+
+    def _active_lab_filters(self):
+        return UtilsTools.read_lab_filter_bindings(
+            self._lab_filter_bindings(),
+            strict=False,
+        )
+
+    def _update_inspection_help(self):
+        mode = self.inspection_mode_var.get().strip().lower()
+        if mode == "live":
+            text = "Move over image to inspect · Right-drag: move · Wheel: zoom"
+        else:
+            drag_text = "filtered mean" if self._active_lab_filters() else "mean area"
+            text = f"Click: pixel · Drag: {drag_text} · Right-drag: move · Wheel: zoom"
+        self.inspection_help_var.set(text)
+
+    def _update_filter_ui(self):
+        filters = self._active_lab_filters()
+        try:
+            count = len(filters)
+            self.filters_button.configure(
+                text="Filters..." if count == 0 else f"Filters ({count})"
+            )
+        except Exception:
+            pass
+        self._update_inspection_help()
+
+    def _open_lab_filters(self):
+        existing = getattr(self, "_filters_window", None)
+        try:
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                existing.focus_force()
+                return
+        except Exception:
+            pass
+
+        def on_close():
+            self._filters_window = None
+
+        self._filters_window = UtilsTools.open_lab_filters_dialog(
+            parent=self.win,
+            filter_bindings=self._lab_filter_bindings(),
+            on_apply=self._on_lab_filters_applied,
+            on_close=on_close,
+            warning_callback=self.app.custom_warning,
+            description=(
+                "Enabled limits apply to dragged area averages. "
+                "Single-pixel inspection is never filtered."
+            ),
+            theme=self._lab_filter_theme(),
+        )
+
+    def _on_lab_filters_applied(self, _filters=None):
+        self._update_filter_ui()
+
+        # Recompute the active ROI immediately so the displayed color,
+        # memberships and comparison always correspond to the new limits.
+        current = self._current_sample
+        selection = current.get("selection_info") if current else None
+        if (
+            current
+            and current.get("is_average")
+            and selection
+            and selection.get("type") == "roi"
+        ):
+            self._inspect_roi(
+                selection.get("x1", 0),
+                selection.get("y1", 0),
+                selection.get("x2", 0),
+                selection.get("y2", 0),
+            )
+
+
+    # ======================================================================
     # SAMPLE INSPECTION
     # ======================================================================
     def _on_inspection_mode_changed(self, _event=None):
@@ -1178,11 +1345,7 @@ class ImageInspectionManager:
 
         self.inspection_mode_var.set(mode)
 
-        help_texts = {
-            "inspect": "Click: pixel · Drag: mean area · Right-drag: pan · Wheel: zoom",
-            "live": "Move over image to inspect · Right-drag: pan · Wheel: zoom",
-        }
-        self.inspection_help_var.set(help_texts[mode])
+        self._update_inspection_help()
 
         # Abort any unfinished manual area selection when changing mode.
         self._roi_drag_start = None
@@ -1328,12 +1491,29 @@ class ImageInspectionManager:
             return
 
         visible = rgba[..., 3] > 0
-        valid_count = int(np.count_nonzero(visible))
-        if valid_count == 0:
+        total_count = int(np.count_nonzero(visible))
+        if total_count == 0:
             return
 
         rgb_pixels = rgba[..., :3][visible].astype(np.float32)
-        mean_rgb_arr = np.mean(rgb_pixels, axis=0)
+        filters = self._active_lab_filters()
+        mean_rgb_arr, used_count = UtilsTools.mean_rgb_with_lab_filters(
+            rgb_pixels,
+            filters,
+        )
+
+        if used_count <= 0 or mean_rgb_arr is None:
+            self.app.custom_warning(
+                "No Valid Pixels",
+                "No pixels in the selected area satisfy the active LAB filters.",
+                parent=self.win,
+            )
+            self._current_sample = None
+            self._selected_proto_label = None
+            self._clear_sample_ui()
+            self._render_image()
+            return
+
         mean_rgb = tuple(int(round(v)) for v in mean_rgb_arr[:3])
         mean_lab = tuple(float(v) for v in UtilsTools.rgb_to_lab(mean_rgb))
 
@@ -1341,6 +1521,7 @@ class ImageInspectionManager:
         height = bottom - top + 1
         cx = int(round((left + right) / 2.0))
         cy = int(round((top + bottom) / 2.0))
+        filters_applied = bool(filters)
 
         selection_info = {
             "type": "roi",
@@ -1350,7 +1531,13 @@ class ImageInspectionManager:
             "y2": bottom,
             "width": width,
             "height": height,
-            "pixels": valid_count,
+            "pixels": int(used_count),
+            "total_pixels": int(total_count),
+            "filtered_out": int(total_count - used_count),
+            "filters_applied": filters_applied,
+            "filters": dict(filters),
+            "filter_summary": UtilsTools.format_lab_filters(filters, prefix=True)
+            if filters_applied else "",
             "mean_rgb": mean_rgb,
         }
 
@@ -1400,9 +1587,22 @@ class ImageInspectionManager:
         self._update_prototype_ui()
         self._render_image()
 
+    def _set_sample_filter_summary(self, text):
+        text = str(text or "").strip()
+        self.sample_filters_var.set(text)
+        try:
+            if text:
+                if not self.sample_filters_label.winfo_manager():
+                    self.sample_filters_label.pack(fill="x", pady=(2, 0))
+            else:
+                self.sample_filters_label.pack_forget()
+        except Exception:
+            pass
+
     def _clear_sample_ui(self):
         self.sample_title_var.set("No sample selected")
         self.sample_coord_var.set("Click a pixel in the image")
+        self._set_sample_filter_summary("")
         self.sample_lab_var.set("LAB: —")
         self.sample_rgb_var.set("RGB: —")
         self.sample_hex_var.set("HEX: —")
@@ -1432,13 +1632,33 @@ class ImageInspectionManager:
         selection = s.get("selection_info")
         if s.get("is_average") and selection and selection.get("type") == "roi":
             self.sample_title_var.set("Mean Color")
+
+            if selection.get("filters_applied"):
+                pixel_text = (
+                    f"{selection.get('pixels', 0)} / "
+                    f"{selection.get('total_pixels', selection.get('pixels', 0))} pixels used"
+                )
+                filter_summary = str(selection.get("filter_summary", "")).strip()
+                if not filter_summary:
+                    filter_summary = UtilsTools.format_lab_filters(
+                        selection.get("filters", {}),
+                        prefix=True,
+                    )
+                self._set_sample_filter_summary(
+                    "" if filter_summary == "No filters applied" else filter_summary
+                )
+            else:
+                pixel_text = f"{selection.get('pixels', 0)} pixels"
+                self._set_sample_filter_summary("")
+
             self.sample_coord_var.set(
                 f"ROI ({selection['x1']}, {selection['y1']}) → ({selection['x2']}, {selection['y2']})\n"
-                f"{selection['width']} × {selection['height']} px · {selection['pixels']} pixels"
+                f"{selection['width']} × {selection['height']} px · {pixel_text}"
             )
         else:
             self.sample_title_var.set("Selected Color")
             self.sample_coord_var.set(f"Pixel ({s['x']}, {s['y']})")
+            self._set_sample_filter_summary("")
 
         lab = s["lab"]
         rgb = s["rgb"]
@@ -1844,7 +2064,7 @@ class ImageInspectionManager:
     def _pin_current_sample(self):
         if not self._current_sample:
             return
-        sample = dict(self._current_sample)
+        sample = copy.deepcopy(self._current_sample)
         self._pinned_samples.append(sample)
         self._refresh_pin_tree()
 
@@ -1873,7 +2093,7 @@ class ImageInspectionManager:
             return
         try:
             idx = int(selected[0])
-            sample = dict(self._pinned_samples[idx])
+            sample = copy.deepcopy(self._pinned_samples[idx])
         except Exception:
             return
         self._set_current_sample(sample, remember=True, show_tooltip=False)

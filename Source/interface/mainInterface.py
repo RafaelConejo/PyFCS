@@ -25,7 +25,6 @@ import webbrowser
 import numpy as np
 import tkinter as tk
 from pathlib import Path
-from skimage import color
 from matplotlib.figure import Figure
 from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageEnhance
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -40,6 +39,8 @@ from Source.interface.modules.ImageManager import ImageManager
 from Source.interface.modules.FuzzyColorSpaceManager import FuzzyColorSpaceManager
 from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
 from Source.interface.modules.ImageInspectionManager import ImageInspectionManager
+from Source.interface.modules.ImageBasedCreationManager import ImageBasedCreationManager
+from Source.interface.modules.PaletteBasedCreationManager import PaletteBasedCreationManager
 
 import Source.interface.modules.UtilsTools as UtilsTools
 
@@ -66,6 +67,10 @@ class PyFCSApp:
         self.color_manager = ColorEvaluationManager(output_dir="test_results/Color_Evaluation")
         self._image_inspection_controller = None
         self._image_inspection_window = None
+        self._image_based_creation_controller = None
+        self._image_based_creation_window = None
+        self._palette_based_creation_controller = None
+        self._palette_based_creation_window = None
         self.volume_limits = ReferenceDomain.default_voronoi_reference_domain()
 
         # ---------------------------------------------------------------------
@@ -401,9 +406,20 @@ class PyFCSApp:
         # =============================================================
         fuzzy_menu = Menu(self.menubar, tearoff=0)
 
-        fuzzy_menu.add_command(
+        # Native submenu in the application menu.
+        new_color_space_menu = Menu(fuzzy_menu, tearoff=0)
+        new_color_space_menu.add_command(
+            label="Palette-Based Creation",
+            command=self.palette_based_creation
+        )
+        new_color_space_menu.add_command(
+            label="Image-Based Creation",
+            command=self.image_based_creation
+        )
+
+        fuzzy_menu.add_cascade(
             label="New Color Space",
-            command=self.show_menu_create_fcs
+            menu=new_color_space_menu
         )
 
         fuzzy_menu.add_separator()
@@ -418,7 +434,7 @@ class PyFCSApp:
             menu=fuzzy_menu
         )
 
-        # Submenu used by the "New Color Space" menu/toolbar action.
+        # Matching dropdown used by the toolbar button.
         self.menu_create_fcs = Menu(self.root, tearoff=0)
         self.menu_create_fcs.add_command(
             label="Palette-Based Creation",
@@ -525,9 +541,9 @@ class PyFCSApp:
         )
         fuzzy_manager_frame.pack(side="left", fill="y", expand=False, padx=(0, 10))
 
-        create_toolbar_button(
+        self.new_color_space_button = create_toolbar_button(
             fuzzy_manager_frame,
-            text="New Color Space",
+            text="New Color Space ▼",
             image=new_fcs_icon,
             command=self.show_menu_create_fcs
         )
@@ -1104,8 +1120,8 @@ class PyFCSApp:
 
     def custom_warning(self, title="Warning", message="Warning", parent=None):
         """
-        Creates a custom warning message window with improved visual style.
-        Uses self.center_popup for positioning.
+        Creates a custom warning window whose size adapts automatically
+        to the rendered message.
         """
 
         parent_win = self._get_active_dialog_parent(parent)
@@ -1115,14 +1131,7 @@ class PyFCSApp:
         warning_win.configure(bg="#eeeeee")
         warning_win.resizable(False, False)
 
-        WIN_W = 400
-        WIN_H = 120
-
         message_text = str(message)
-        if len(message_text) > 120:
-            WIN_H = 145
-        if len(message_text) > 220:
-            WIN_H = 175
 
         # ------------------------------------------------------------
         # Main panel
@@ -1144,9 +1153,11 @@ class PyFCSApp:
         body = tk.Frame(panel, bg="white")
         body.pack(fill="both", expand=True, padx=14, pady=(12, 8))
 
-        # Warning icon from Source/external/icons
         try:
-            warning_icon = self.load_toolbar_icon("warning.png", size=(45, 40))
+            warning_icon = self.load_toolbar_icon(
+                "warning.png",
+                size=(45, 40)
+            )
 
             icon_label = tk.Label(
                 body,
@@ -1155,7 +1166,11 @@ class PyFCSApp:
                 bd=0
             )
             icon_label.image = warning_icon
-            icon_label.pack(side="left", anchor="n", padx=(0, 12), pady=(0, 0))
+            icon_label.pack(
+                side="left",
+                anchor="n",
+                padx=(0, 12)
+            )
 
         except Exception:
             icon_label = tk.Label(
@@ -1170,24 +1185,37 @@ class PyFCSApp:
                 bd=1,
                 anchor="center"
             )
-            icon_label.pack(side="left", anchor="n", padx=(0, 12), pady=(0, 0))
+            icon_label.pack(
+                side="left",
+                anchor="n",
+                padx=(0, 12)
+            )
 
-        tk.Label(
+        message_label = tk.Label(
             body,
             text=message_text,
             font=("Sans", 10),
             fg="#333333",
             bg="white",
             justify="left",
-            anchor="w",
-            wraplength=290
-        ).pack(side="left", fill="both", expand=True)
+            anchor="nw",
+            wraplength=430
+        )
+        message_label.pack(
+            side="left",
+            fill="both",
+            expand=True
+        )
 
         # ------------------------------------------------------------
         # Button row
         # ------------------------------------------------------------
         footer = tk.Frame(panel, bg="white")
-        footer.pack(fill="x", padx=14, pady=(0, 10))
+        footer.pack(
+            fill="x",
+            padx=14,
+            pady=(0, 10)
+        )
 
         btn_ok = tk.Button(
             footer,
@@ -1206,18 +1234,35 @@ class PyFCSApp:
         )
         btn_ok.pack(side="right")
 
-        warning_win.bind("<Return>", lambda event: warning_win.destroy())
-        warning_win.bind("<Escape>", lambda event: warning_win.destroy())
+        warning_win.bind(
+            "<Return>",
+            lambda event: warning_win.destroy()
+        )
+        warning_win.bind(
+            "<Escape>",
+            lambda event: warning_win.destroy()
+        )
 
         btn_ok.focus_set()
 
         # ------------------------------------------------------------
-        # Important: center after layout is already calculated
+        # Calculate REAL required size
         # ------------------------------------------------------------
         warning_win.update_idletasks()
-        self.center_popup(warning_win, WIN_W, WIN_H)
 
-        # Keep this after centering, like your original function
+        required_width = warning_win.winfo_reqwidth()
+        required_height = warning_win.winfo_reqheight()
+
+        # Keep warnings visually consistent while allowing them to grow
+        WIN_W = max(430, min(required_width, 560))
+        WIN_H = max(145, required_height)
+
+        self.center_popup(
+            warning_win,
+            WIN_W,
+            WIN_H
+        )
+
         warning_win.transient(parent_win)
         warning_win.grab_set()
 
@@ -1423,7 +1468,7 @@ class PyFCSApp:
 
         tk.Label(
             info_box,
-            text="Version 1.4.1",
+            text="Version 1.4.2",
             font=("Segoe UI", 10, "bold"),
             bg="#f8fafc",
             fg="#1f2937"
@@ -1496,7 +1541,17 @@ class PyFCSApp:
 
 
     def show_menu_create_fcs(self):
-        self.menu_create_fcs.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        """Display the creation-mode menu directly below New Color Space."""
+        try:
+            button = self.new_color_space_button
+            x = button.winfo_rootx()
+            y = button.winfo_rooty() + button.winfo_height()
+            self.menu_create_fcs.post(x, y)
+        except Exception:
+            self.menu_create_fcs.post(
+                self.root.winfo_pointerx(),
+                self.root.winfo_pointery()
+            )
 
 
     def show_menu_display_threshold(self):
@@ -1732,11 +1787,8 @@ class PyFCSApp:
                 self._creation_in_progress = False
 
             for attr in (
-                "_palette_popup",
-                "_manual_popup",
-                "_detected_popup",
-                "_manual_picker_win",
-                "_detected_picker_win",
+                "_palette_based_creation_window",
+                "_image_based_creation_window",
             ):
                 if getattr(self, attr, None) is window:
                     setattr(self, attr, None)
@@ -1747,32 +1799,13 @@ class PyFCSApp:
             pass
 
 
-    def _close_manual_picker_window(self):
-        """Close the manual/custom color picker dialog if it is currently open."""
-        try:
-            if hasattr(self, "_manual_picker_window") and self._manual_picker_window is not None:
-                if self._manual_picker_window.winfo_exists():
-                    self._manual_picker_window.destroy()
-        except Exception:
-            pass
-        finally:
-            self._manual_picker_window = None
-
-
     def _close_creation_windows(self):
         """Close all creation-related windows and reset workflow state."""
         self._ensure_creation_state()
 
         popup_attrs = (
-            "_palette_popup",
-            "_manual_popup",
-            "_detected_popup",
-            "_manual_picker_win",
-            "_detected_picker_win",
-            "_manual_picker_window",
-            "_create_fcs_popup",
-            "_image_creation_tool_win",
-            "_image_creation_popup",
+            "_image_based_creation_window",
+            "_palette_based_creation_window",
         )
 
         windows = list(self._creation_windows)
@@ -1802,6 +1835,10 @@ class PyFCSApp:
 
         self._creation_windows = []
         self._creation_in_progress = False
+        self._image_based_creation_controller = None
+        self._image_based_creation_window = None
+        self._palette_based_creation_controller = None
+        self._palette_based_creation_window = None
 
 
     def _can_start_new_creation(self):
@@ -2143,15 +2180,19 @@ class PyFCSApp:
 
     def load_color_space(self, filename=None):
         """
-        Load a fuzzy color space file and update the application state.
+        Load a color-space source and update the application state.
+
+        File parsing and geometry preparation happen before the active workspace
+        is reset. A corrupt/invalid source therefore leaves the current FCS
+        untouched.
         """
         if self._has_any_active_job():
             self.custom_warning(
                 "Process Running",
                 "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
             )
-            return
-        
+            return False
+
         if filename is None:
             filename = UtilsTools.prompt_file_selection(
                 "fuzzy_color_spaces/",
@@ -2160,63 +2201,90 @@ class PyFCSApp:
                 )
             )
         if not filename:
-            return
-
-        # The active fuzzy color space is really going to change.
-        self._reset_image_inspection_state()
-
-        if not hasattr(self, "mapping_locked_until_original"):
-            self.mapping_locked_until_original = {}
-
-        if hasattr(self, "floating_images") and self.floating_images:
-            for window_id in list(self.floating_images.keys()):
-                mode = getattr(self, "window_mapping_mode", {}).get(window_id)
-
-                if mode == "single":
-                    self.show_original_image(window_id)
-
-                elif mode == "all":
-                    # Keep the displayed image and its options visible,
-                    # but mark it as belonging to an old color space.
-                    self.mapping_locked_until_original[window_id] = True
-                    self.CAN_APPLY_MAPPING[window_id] = False
-
-                    try:
-                        self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
-                    except Exception:
-                        pass
+            return False
 
         self.show_loading_color_space()
 
         try:
+            # ----------------------------------------------------------
+            # PREPARE: do all file/geometry work against temporary state.
+            # ----------------------------------------------------------
             data = self.fuzzy_manager.load_color_file(filename)
+            if not isinstance(data, dict) or "color_data" not in data or "type" not in data:
+                raise ValueError("The selected file did not return valid color-space data.")
+
+            new_color_data = data["color_data"]
+            source_type = str(data["type"]).lower()
+
+            if source_type == "cns":
+                new_prototypes = UtilsTools.process_prototypes(new_color_data)
+                new_fuzzy_color_space = FuzzyColorSpace(
+                    space_name=" ",
+                    prototypes=new_prototypes,
+                )
+                new_fuzzy_color_space.precompute_pack()
+                new_cores = new_fuzzy_color_space.get_cores()
+                new_supports = new_fuzzy_color_space.get_supports()
+
+            elif source_type == "fcs":
+                new_fuzzy_color_space = data.get("fuzzy_color_space")
+                if new_fuzzy_color_space is None:
+                    raise ValueError("The selected FCS file does not contain a valid fuzzy color space.")
+                new_fuzzy_color_space.precompute_pack()
+                new_prototypes = new_fuzzy_color_space.prototypes
+                new_cores = new_fuzzy_color_space.cores
+                new_supports = new_fuzzy_color_space.supports
+
+            else:
+                raise ValueError(f"Unsupported color-space type: {data['type']}")
+
+            # ----------------------------------------------------------
+            # COMMIT: preparation succeeded, so the active FCS may change.
+            # ----------------------------------------------------------
+            self._reset_image_inspection_state()
+
+            if not hasattr(self, "mapping_locked_until_original"):
+                self.mapping_locked_until_original = {}
+
+            if hasattr(self, "floating_images") and self.floating_images:
+                for window_id in list(self.floating_images.keys()):
+                    mode = getattr(self, "window_mapping_mode", {}).get(window_id)
+
+                    if mode == "single":
+                        self.show_original_image(window_id)
+
+                    elif mode == "all":
+                        # Keep the displayed image, but mark its mapping as
+                        # belonging to the previous color space.
+                        self.mapping_locked_until_original[window_id] = True
+                        self.CAN_APPLY_MAPPING[window_id] = False
+                        try:
+                            self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
+                        except Exception:
+                            pass
 
             self.file_path = filename
             self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
+            self.color_data = new_color_data
+            self.edit_color_data = copy.deepcopy(new_color_data)
+            self.fuzzy_color_space = new_fuzzy_color_space
+            self.prototypes = new_prototypes
+            self.cores = new_cores
+            self.supports = new_supports
 
             if hasattr(self, "cm_cache_by_image"):
                 self.cm_cache_by_image.clear()
             if hasattr(self, "proto_percentage_cache_by_image"):
                 self.proto_percentage_cache_by_image.clear()
 
-            self.color_data = data["color_data"]
-            self.edit_color_data = copy.deepcopy(self.color_data)
             self.display_data_window()
             self._reset_3d_canvas()
+            self.update_prototypes_info()
+            return True
 
-            if data["type"] == "cns":
-                self.update_volumes()
-
-            elif data["type"] == "fcs":
-                self.fuzzy_color_space = data["fuzzy_color_space"]
-                self.cores = self.fuzzy_color_space.cores
-                self.supports = self.fuzzy_color_space.supports
-                self.prototypes = self.fuzzy_color_space.prototypes
-                self.fuzzy_color_space.precompute_pack()
-                self.update_prototypes_info()
-
-        except ValueError as e:
-            self.custom_warning("File Error", str(e))
+        except Exception as exc:
+            self.custom_warning("File Error", str(exc))
+            return False
 
         finally:
             self.hide_loading()
@@ -2255,6 +2323,50 @@ class PyFCSApp:
                 "Warning",
                 "At least two colors must be selected to create the Color Space.",
                 parent=parent_win
+            )
+            return False
+
+        # Validate the selected prototypes using the same reference domain and
+        # merge tolerance as the shared geometry utilities.
+        invalid_colors = [
+            name
+            for name, lab in selected_colors_lab.items()
+            if not UtilsTools.is_valid_lab(lab)
+        ]
+        if invalid_colors:
+            preview = ", ".join(invalid_colors[:6])
+            if len(invalid_colors) > 6:
+                preview += f", ... (+{len(invalid_colors) - 6})"
+            self.custom_warning(
+                "Invalid LAB Colors",
+                "The selected colors contain LAB values outside the PyFCS reference domain:\n\n"
+                + preview,
+                parent=parent_win,
+            )
+            return False
+
+        duplicate_lab_pairs = UtilsTools.find_duplicate_lab_pairs(selected_colors_lab)
+
+        if duplicate_lab_pairs:
+            lines = []
+            max_lines = 6
+            for name_a, name_b, lab in duplicate_lab_pairs[:max_lines]:
+                lines.append(
+                    f"• {name_a} / {name_b}  "
+                    f"(L*={lab[0]:.4f}, a*={lab[1]:.4f}, b*={lab[2]:.4f})"
+                )
+
+            if len(duplicate_lab_pairs) > max_lines:
+                lines.append(
+                    f"• ... and {len(duplicate_lab_pairs) - max_lines} more duplicate pair(s)"
+                )
+
+            self.custom_warning(
+                "Duplicate LAB Colors",
+                "A Color Space cannot contain two selected colors whose CIELAB "
+                "prototypes collide within the Voronoi merge tolerance.\n\n"
+                + "\n".join(lines),
+                parent=parent_win,
             )
             return False
 
@@ -2612,891 +2724,69 @@ class PyFCSApp:
         return self._ui_cache[cache_key]
 
 
-    def addColor_create_fcs(self, popup, colors, on_color_added=None):
-        """
-        Add a new custom color to the palette used for fuzzy color space creation.
-        The new color is automatically selected.
-        """
-
-        def on_submit(color_name, sample_lab, sample_rgb, sample_hex, dialog, input_vars):
-            clean_name = color_name.strip()
-
-            if not clean_name:
-                input_vars["status_var"].set("Enter a color name.")
-                self.custom_warning(
-                    "Invalid Color Name",
-                    "Enter a color name.",
-                    parent=dialog
-                )
-                return
-
-            if clean_name in colors:
-                input_vars["status_var"].set("A color with this name already exists.")
-                self.custom_warning(
-                    "Duplicated Color Name",
-                    f"The color '{clean_name}' already exists in the palette.",
-                    parent=dialog
-                )
-                return
-
-            colors[clean_name] = {
-                "rgb": sample_rgb,
-                "lab": sample_lab,
-                "hex": sample_hex,
-            }
-
-            self.fuzzy_manager.create_color_display_frame(
-                parent=self.scroll_palette_create_fcs,
-                color_name=clean_name,
-                rgb=sample_rgb,
-                lab=sample_lab,
-                color_checks=self.color_checks,
-                selected=True,
-                on_toggle=on_color_added
-            )
-
-            if callable(on_color_added):
-                on_color_added()
-
-            dialog.destroy()
-
-            try:
-                self.scroll_palette_create_fcs.update_idletasks()
-            except Exception:
-                pass
-
-        self._open_custom_color_dialog(
-            parent=popup,
-            title="Add New Color",
-            subtitle="Create a palette color from RGB, LAB or HEX",
-            submit_text="Add Color",
-            require_name=True,
-            default_name="New Color",
-            on_submit=on_submit
-        )
-        
-
-
     # ============================================================================
     # Palette-Based Fuzzy Color Space Creation
-    # ----------------------------------------------------------------------------
-    # This section implements the workflow for creating a fuzzy color space
-    # using a predefined color palette. It allows the user to:
-    #
-    #   - Load a predefined color palette from a .cns file.
-    #   - Open a popup window displaying all available palette colors.
-    #   - Visually inspect each color in RGB and LAB color spaces.
-    #   - Select multiple colors using checkboxes.
-    #   - Add new custom colors to the palette.
-    #   - Create a new fuzzy color space from the selected colors.
-    #
-    # The popup interface provides a scrollable layout to handle large palettes
-    # and includes action buttons for extending the palette or finalizing the
-    # color space creation. UI components are styled consistently to ensure
-    # clarity and usability.
     # ============================================================================
     def palette_based_creation(self):
         """
-        Logic for creating a new fuzzy color space using a predefined palette.
-        Allows the user to select colors through a popup and creates a new fuzzy color space.
+        Open the single-window Palette-Based Color Space Creation workspace.
         """
         if not self._can_start_new_creation():
             return
 
-        color_space_path = os.path.join(
-            BASE_PATH,
-            "fuzzy_color_spaces",
-            "cns",
-            "ISCC_NBS_BASIC.cns"
-        )
-        colors = UtilsTools.load_color_data(color_space_path)
-
-        popup = tk.Toplevel(self.root)
-        popup.title("Palette-Based Color Space Creation")
-        popup.configure(bg="#eeeeee")
-        popup.resizable(False, False)
-        popup.transient(self.root)
-
-        WIN_W, WIN_H = 620, 620
-        self.center_popup(popup, WIN_W, WIN_H)
-
-        self._palette_popup = popup
-        self._register_creation_window(popup)
-
-        def on_close():
-            self._close_manual_picker_window()
-            self._palette_popup = None
-            popup.destroy()
-
-        popup.protocol("WM_DELETE_WINDOW", on_close)
-
-        self.color_checks = {}
-
-        # ------------------------------------------------------------------
-        # Styles
-        # ------------------------------------------------------------------
-        style = ttk.Style(popup)
-
         try:
-            style.configure(
-                "Palette.Primary.TButton",
-                font=("Helvetica", 10, "bold"),
-                padding=(12, 8)
-            )
-            style.configure(
-                "Palette.Secondary.TButton",
-                font=("Helvetica", 10),
-                padding=(10, 7)
-            )
-            style.configure(
-                "Palette.Row.TFrame",
-                background="#ffffff"
-            )
+            controller = PaletteBasedCreationManager(self)
         except Exception:
-            pass
+            self._creation_in_progress = False
+            raise
 
-        # ------------------------------------------------------------------
-        # Main shell
-        # ------------------------------------------------------------------
-        outer = tk.Frame(popup, bg="#eeeeee")
-        outer.pack(fill="both", expand=True, padx=14, pady=14)
-
-        panel = tk.Frame(outer, bg="white", bd=1, relief="solid")
-        panel.pack(fill="both", expand=True)
-
-        # ------------------------------------------------------------------
-        # Header
-        # ------------------------------------------------------------------
-        header = tk.Frame(panel, bg="#f6f6f6", height=68)
-        header.pack(fill="x")
-        header.pack_propagate(False)
-
-        tk.Label(
-            header,
-            text="Select Colors for your Color Space",
-            font=("Sans", 13, "bold"),
-            bg="#f6f6f6",
-            fg="#222222",
-            anchor="w",
-            padx=16
-        ).pack(side="left", fill="y")
-
-        tk.Label(
-            header,
-            text="Choose palette colors or add custom ones",
-            font=("Sans", 10, "italic"),
-            bg="#f6f6f6",
-            fg="#666666",
-            anchor="e",
-            padx=16
-        ).pack(side="right", fill="y")
-
-        # ------------------------------------------------------------------
-        # Toolbar
-        # ------------------------------------------------------------------
-        toolbar = tk.Frame(panel, bg="white")
-        toolbar.pack(fill="x", padx=16, pady=(14, 8))
-
-        selected_count_var = tk.StringVar(value="0 selected")
-
-        def update_selected_count():
-            try:
-                selected = sum(
-                    1 for item in self.color_checks.values()
-                    if item["var"].get()
-                )
-                total = len(self.color_checks)
-                selected_count_var.set(f"{selected} of {total} selected")
-            except Exception:
-                selected_count_var.set("0 selected")
-
-        def select_all_colors():
-            for item in self.color_checks.values():
-                try:
-                    item["var"].set(True)
-                except Exception:
-                    pass
-            update_selected_count()
-
-        def deselect_all_colors():
-            for item in self.color_checks.values():
-                try:
-                    item["var"].set(False)
-                except Exception:
-                    pass
-            update_selected_count()
-
-        ttk.Button(
-            toolbar,
-            text="Select All",
-            command=select_all_colors,
-            style="Palette.Secondary.TButton"
-        ).pack(side="left", padx=(0, 8))
-
-        ttk.Button(
-            toolbar,
-            text="Deselect All",
-            command=deselect_all_colors,
-            style="Palette.Secondary.TButton"
-        ).pack(side="left", padx=(0, 8))
-
-        tk.Label(
-            toolbar,
-            textvariable=selected_count_var,
-            bg="white",
-            fg="#666666",
-            font=("Sans", 9, "italic"),
-            anchor="e"
-        ).pack(side="right")
-
-        # ------------------------------------------------------------------
-        # List card
-        # ------------------------------------------------------------------
-        list_card = tk.Frame(panel, bg="#fafafa", bd=1, relief="solid")
-        list_card.pack(fill="both", expand=True, padx=16, pady=(0, 12))
-
-        list_header = tk.Frame(list_card, bg="#f2f2f2", height=34)
-        list_header.pack(fill="x")
-        list_header.pack_propagate(False)
-
-        tk.Label(
-            list_header,
-            text="Available Colors",
-            bg="#f2f2f2",
-            fg="#222222",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            padx=12
-        ).pack(side="left", fill="y")
-
-        tk.Label(
-            list_header,
-            text="LAB values",
-            bg="#f2f2f2",
-            fg="#666666",
-            font=("Sans", 9, "italic"),
-            anchor="e",
-            padx=12
-        ).pack(side="right", fill="y")
-
-        # ------------------------------------------------------------------
-        # Scrollable area
-        # ------------------------------------------------------------------
-        canvas = tk.Canvas(
-            list_card,
-            bg="#fafafa",
-            highlightthickness=0,
-            bd=0
-        )
-
-        scrollbar = ttk.Scrollbar(
-            list_card,
-            orient="vertical",
-            command=canvas.yview
-        )
-
-        self.scroll_palette_create_fcs = tk.Frame(canvas, bg="#fafafa")
-
-        scroll_window = canvas.create_window(
-            (0, 0),
-            window=self.scroll_palette_create_fcs,
-            anchor="nw"
-        )
-
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        def _on_frame_configure(event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def _on_canvas_configure(event):
-            canvas.itemconfig(scroll_window, width=event.width)
-
-        self.scroll_palette_create_fcs.bind("<Configure>", _on_frame_configure)
-        canvas.bind("<Configure>", _on_canvas_configure)
-
-        def _on_mousewheel(event):
-            try:
-                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            except Exception:
-                pass
-
-        canvas.bind("<MouseWheel>", _on_mousewheel)
-        self.scroll_palette_create_fcs.bind("<MouseWheel>", _on_mousewheel)
-
-        # ------------------------------------------------------------------
-        # Load colors
-        # ------------------------------------------------------------------
-        for color_name, data in colors.items():
-            self.fuzzy_manager.create_color_display_frame(
-                parent=self.scroll_palette_create_fcs,
-                color_name=color_name,
-                rgb=data["rgb"],
-                lab=data["lab"],
-                color_checks=self.color_checks,
-                selected=False,
-                on_toggle=update_selected_count
-            )
-
-        update_selected_count()
-
-        def create_color_space_and_close():
-            """Create the color space and close the palette window if creation succeeds."""
-            try:
-                result = self.create_color_space(parent=popup)
-
-                # If creation was cancelled or failed, keep this window open.
-                if result is False:
-                    return
-
-                self._palette_popup = None
-
-                try:
-                    popup.destroy()
-                except Exception:
-                    pass
-
-            except Exception as e:
-                self.custom_warning(
-                    "Error",
-                    f"The Color Space could not be created: {e}",
-                    parent=popup
-                )
-
-        # ------------------------------------------------------------------
-        # Footer buttons
-        # ------------------------------------------------------------------
-        footer = tk.Frame(panel, bg="white")
-        footer.pack(fill="x", padx=16, pady=(0, 14))
-
-        ttk.Button(
-            footer,
-            text="Add New Color",
-            command=lambda: self.addColor_create_fcs(
-                popup=popup,
-                colors=colors,
-                on_color_added=update_selected_count
-            ),
-            style="Palette.Secondary.TButton"
-        ).pack(side="left")
-
-        ttk.Button(
-            footer,
-            text="Create Color Space",
-            command=create_color_space_and_close,
-            style="Palette.Primary.TButton"
-        ).pack(side="right")
+        self._palette_based_creation_controller = controller
+        self._palette_based_creation_window = controller.win
 
 
     def image_based_creation(self):
         """
-        Unified image-based fuzzy color space creation.
+        Open the single-workspace Image-Based Color Space Creation tool.
 
-        Opens:
-        - a palette-like window, initially empty, where selected colors are collected;
-        - a secondary image tool window docked to the right for manual sampling
-        and automatic color detection.
-
-        If no workspace image is loaded, offer to open one first and continue
-        automatically when the image-loading workflow succeeds.
+        Existing workspace images are available automatically. If none is
+        loaded, offer to open one specifically for this creation workspace.
+        Images opened from Image-Based Creation are temporary and are not added
+        to the main Image Display.
         """
-        if not self._ensure_image_loaded_for_feature("Image-Based Creation"):
-            return
+        has_workspace_images = bool(getattr(self, "load_images_names", {}))
+        open_image_on_start = False
+
+        if not has_workspace_images:
+            open_image_on_start = messagebox.askyesno(
+                "Image-Based Creation",
+                "Image-Based Creation requires an image.\n\n"
+                "Do you want to open one now?",
+                parent=self._get_active_dialog_parent(),
+                icon="warning",
+            )
+
+            if not open_image_on_start:
+                return
 
         if not self._can_start_new_creation():
             return
 
         self.FIRST_DBSCAN = True
-        self._open_unified_image_based_creation()
-
-
-
-    def _open_unified_image_based_creation(self):
-        """
-        Open the unified image-based creation workspace.
-
-        Left/main popup:
-            - collected colors
-            - editable color names
-            - Select All / Deselect All / Remove Color
-            - Image Color Tools / Add New Color
-            - Create Color Space
-
-        Right popup:
-            - image selector
-            - manual color picker from image
-            - automatic color detection
-        """
-        colors = {}
-
-        popup = tk.Toplevel(self.root)
-        popup.title("Image-Based Color Space Creation")
-        popup.configure(bg="#eeeeee")
-        popup.resizable(False, False)
-
-        WIN_W, WIN_H = 620, 620
-        self.center_popup(popup, WIN_W, WIN_H)
-
-        self._manual_popup = popup
-        self._image_creation_popup = popup
-        self._register_creation_window(popup)
-
-        self.color_checks = {}
-
-        def on_close():
-            self._close_manual_picker_window()
-
-            if hasattr(self, "_image_creation_tool_win"):
-                try:
-                    if self._image_creation_tool_win and self._image_creation_tool_win.winfo_exists():
-                        self._image_creation_tool_win.destroy()
-                except Exception:
-                    pass
-                self._image_creation_tool_win = None
-
-            self._manual_popup = None
-            self._image_creation_popup = None
-            popup.destroy()
-
-        popup.protocol("WM_DELETE_WINDOW", on_close)
-
-        # ------------------------------------------------------------------
-        # Styles
-        # ------------------------------------------------------------------
-        style = ttk.Style(popup)
 
         try:
-            style.configure(
-                "ImageCreate.Primary.TButton",
-                font=("Helvetica", 10, "bold"),
-                padding=(12, 8)
-            )
-            style.configure(
-                "ImageCreate.Secondary.TButton",
-                font=("Helvetica", 10),
-                padding=(10, 7)
+            controller = ImageBasedCreationManager(
+                self,
+                open_image_on_start=open_image_on_start,
             )
         except Exception:
-            pass
+            self._creation_in_progress = False
+            raise
 
-        # ------------------------------------------------------------------
-        # Main shell
-        # ------------------------------------------------------------------
-        outer = tk.Frame(popup, bg="#eeeeee")
-        outer.pack(fill="both", expand=True, padx=14, pady=14)
+        self._image_based_creation_controller = controller
+        self._image_based_creation_window = controller.win
 
-        panel = tk.Frame(outer, bg="white", bd=1, relief="solid")
-        panel.pack(fill="both", expand=True)
 
-        # ------------------------------------------------------------------
-        # Header
-        # ------------------------------------------------------------------
-        header = tk.Frame(panel, bg="#f6f6f6", height=68)
-        header.pack(fill="x")
-        header.pack_propagate(False)
 
-        tk.Label(
-            header,
-            text="Select Colors",
-            font=("Sans", 13, "bold"),
-            bg="#f6f6f6",
-            fg="#222222",
-            anchor="w",
-            padx=16
-        ).pack(side="left", fill="y")
-
-        tk.Label(
-            header,
-            text="Sample manually or detect colors automatically from images",
-            font=("Sans", 10, "italic"),
-            bg="#f6f6f6",
-            fg="#666666",
-            anchor="e",
-            padx=16
-        ).pack(side="right", fill="y")
-
-        # ------------------------------------------------------------------
-        # Toolbar
-        # ------------------------------------------------------------------
-        toolbar = tk.Frame(panel, bg="white")
-        toolbar.pack(fill="x", padx=16, pady=(14, 8))
-
-        selected_count_var = tk.StringVar(value="0 of 0 selected")
-
-        def update_selected_count():
-            try:
-                selected = sum(
-                    1 for item in self.color_checks.values()
-                    if item["var"].get()
-                )
-                total = len(self.color_checks)
-                selected_count_var.set(f"{selected} of {total} selected")
-            except Exception:
-                selected_count_var.set("0 of 0 selected")
-
-        def select_all_colors():
-            for item in self.color_checks.values():
-                try:
-                    item["var"].set(True)
-                except Exception:
-                    pass
-            update_selected_count()
-
-        def deselect_all_colors():
-            for item in self.color_checks.values():
-                try:
-                    item["var"].set(False)
-                except Exception:
-                    pass
-            update_selected_count()
-
-        def rename_color(old_name, requested_name):
-            """Rename a color in the local colors dictionary and color_checks."""
-            MAX_NAME_CHARS = 24
-
-            old_name = str(old_name).strip()
-            new_name = str(requested_name).strip()
-
-            if len(new_name) > MAX_NAME_CHARS:
-                new_name = new_name[:MAX_NAME_CHARS]
-
-            if not new_name:
-                self.custom_warning(
-                    "Invalid Color Name",
-                    "Color name cannot be empty.",
-                    parent=popup
-                )
-                return old_name
-
-            if new_name == old_name:
-                return old_name
-
-            if new_name in colors:
-                self.custom_warning(
-                    "Duplicated Color Name",
-                    f"The color '{new_name}' already exists.",
-                    parent=popup
-                )
-                return old_name
-
-            if old_name not in colors:
-                return old_name
-
-            colors[new_name] = colors.pop(old_name)
-
-            if old_name in self.color_checks:
-                self.color_checks[new_name] = self.color_checks.pop(old_name)
-
-            update_selected_count()
-            return new_name
-
-        def redraw_color_list():
-            """
-            Redraw the collected color list from the local colors dictionary.
-            Used after adding/removing/renaming colors.
-            """
-            previous_selected = {}
-
-            try:
-                for name, item in self.color_checks.items():
-                    previous_selected[name] = bool(item["var"].get())
-            except Exception:
-                previous_selected = {}
-
-            try:
-                for widget in self.scroll_palette_create_fcs.winfo_children():
-                    widget.destroy()
-            except Exception:
-                pass
-
-            self.color_checks = {}
-
-            for color_name, data in colors.items():
-                try:
-                    rgb = data.get("rgb")
-                    lab = data.get("lab")
-
-                    if isinstance(lab, dict):
-                        lab = (
-                            float(lab.get("L", 0.0)),
-                            float(lab.get("A", lab.get("a", 0.0))),
-                            float(lab.get("B", lab.get("b", 0.0)))
-                        )
-                    elif lab is not None:
-                        lab_arr = np.array(lab, dtype=float).reshape(-1)
-                        lab = (
-                            float(lab_arr[0]),
-                            float(lab_arr[1]),
-                            float(lab_arr[2])
-                        )
-
-                    if rgb is None and lab is not None:
-                        rgb = UtilsTools.lab_to_rgb(lab)
-
-                    if rgb is None:
-                        rgb = (217, 217, 217)
-
-                    selected = previous_selected.get(color_name, True)
-
-                    self.fuzzy_manager.create_color_display_frame(
-                        parent=self.scroll_palette_create_fcs,
-                        color_name=color_name,
-                        rgb=rgb,
-                        lab=lab,
-                        color_checks=self.color_checks,
-                        selected=selected,
-                        on_toggle=update_selected_count,
-                        editable_name=True,
-                        on_name_change=rename_color
-                    )
-
-                except Exception:
-                    continue
-
-            update_selected_count()
-
-        def remove_selected_colors():
-            """Remove selected colors from the current image-based color list."""
-            selected_names = []
-
-            for color_name, item in list(self.color_checks.items()):
-                try:
-                    if item["var"].get():
-                        selected_names.append(color_name)
-                except Exception:
-                    pass
-
-            if not selected_names:
-                self.custom_warning(
-                    "No Color Selected",
-                    "Select at least one color to remove.",
-                    parent=popup
-                )
-                return
-
-            for color_name in selected_names:
-                colors.pop(color_name, None)
-
-            redraw_color_list()
-
-        ttk.Button(
-            toolbar,
-            text="Select All",
-            command=select_all_colors,
-            style="ImageCreate.Secondary.TButton"
-        ).pack(side="left", padx=(0, 8))
-
-        ttk.Button(
-            toolbar,
-            text="Deselect All",
-            command=deselect_all_colors,
-            style="ImageCreate.Secondary.TButton"
-        ).pack(side="left", padx=(0, 8))
-
-        ttk.Button(
-            toolbar,
-            text="Remove Color",
-            command=remove_selected_colors,
-            style="ImageCreate.Secondary.TButton"
-        ).pack(side="left", padx=(0, 8))
-
-        tk.Label(
-            toolbar,
-            textvariable=selected_count_var,
-            bg="white",
-            fg="#666666",
-            font=("Sans", 9, "italic"),
-            anchor="e"
-        ).pack(side="right")
-
-        # ------------------------------------------------------------------
-        # List card
-        # ------------------------------------------------------------------
-        list_card = tk.Frame(panel, bg="#fafafa", bd=1, relief="solid")
-        list_card.pack(fill="both", expand=True, padx=16, pady=(0, 12))
-
-        list_header = tk.Frame(list_card, bg="#f2f2f2", height=34)
-        list_header.pack(fill="x")
-        list_header.pack_propagate(False)
-
-        tk.Label(
-            list_header,
-            text="Selected Colors",
-            bg="#f2f2f2",
-            fg="#222222",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            padx=12
-        ).pack(side="left", fill="y")
-
-        tk.Label(
-            list_header,
-            text="Name and LAB values",
-            bg="#f2f2f2",
-            fg="#666666",
-            font=("Sans", 9, "italic"),
-            anchor="e",
-            padx=12
-        ).pack(side="right", fill="y")
-
-        canvas = tk.Canvas(
-            list_card,
-            bg="#fafafa",
-            highlightthickness=0,
-            bd=0
-        )
-
-        scrollbar = ttk.Scrollbar(
-            list_card,
-            orient="vertical",
-            command=canvas.yview
-        )
-
-        self.scroll_palette_create_fcs = tk.Frame(canvas, bg="#fafafa")
-
-        scroll_window = canvas.create_window(
-            (0, 0),
-            window=self.scroll_palette_create_fcs,
-            anchor="nw"
-        )
-
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        def _on_frame_configure(event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def _on_canvas_configure(event):
-            canvas.itemconfig(scroll_window, width=event.width)
-
-        self.scroll_palette_create_fcs.bind("<Configure>", _on_frame_configure)
-        canvas.bind("<Configure>", _on_canvas_configure)
-
-        canvas.bind(
-            "<MouseWheel>",
-            lambda event: self.on_mouse_wheel(event, canvas)
-        )
-        self.scroll_palette_create_fcs.bind(
-            "<MouseWheel>",
-            lambda event: self.on_mouse_wheel(event, canvas)
-        )
-
-        def reopen_image_color_tools():
-            """
-            Open the Image Color Tools window.
-
-            If it is already open, close it first and open a fresh one.
-            This reloads the available image list in case new images were loaded.
-            """
-            try:
-                if (
-                    hasattr(self, "_image_creation_tool_win")
-                    and self._image_creation_tool_win is not None
-                    and self._image_creation_tool_win.winfo_exists()
-                ):
-                    self._image_creation_tool_win.destroy()
-            except Exception:
-                pass
-
-            self._image_creation_tool_win = None
-            self._manual_picker_win = None
-
-            self._open_image_creation_tool_window(
-                parent_popup=popup,
-                colors=colors,
-                target_frame=self.scroll_palette_create_fcs,
-                update_selected_count=redraw_color_list
-            )
-
-        def create_color_space_and_close():
-            """Create the color space and close the image-based creation windows if creation succeeds."""
-            try:
-                selected_colors = [
-                    color_name
-                    for color_name, item in self.color_checks.items()
-                    if item["var"].get()
-                ]
-
-                if len(selected_colors) < 2:
-                    self.custom_warning(
-                        "Not Enough Colors",
-                        "At least two colors must be selected to create the Color Space.",
-                        parent=popup
-                    )
-                    return
-
-                result = self.create_color_space(parent=popup)
-
-                # If create_color_space explicitly returns False, keep the window open.
-                if result is False:
-                    return
-
-                try:
-                    if (
-                        hasattr(self, "_image_creation_tool_win")
-                        and self._image_creation_tool_win is not None
-                        and self._image_creation_tool_win.winfo_exists()
-                    ):
-                        self._image_creation_tool_win.destroy()
-                except Exception:
-                    pass
-
-                self._image_creation_tool_win = None
-                self._manual_picker_win = None
-                self._manual_popup = None
-                self._image_creation_popup = None
-
-                try:
-                    popup.destroy()
-                except Exception:
-                    pass
-
-            except Exception as e:
-                self.custom_warning(
-                    "Error",
-                    f"The Color Space could not be created: {e}",
-                    parent=popup
-                )
-
-        # ------------------------------------------------------------------
-        # Footer buttons
-        # ------------------------------------------------------------------
-        footer = tk.Frame(panel, bg="white")
-        footer.pack(fill="x", padx=16, pady=(0, 14))
-
-        ttk.Button(
-            footer,
-            text="Image Color Tools",
-            command=reopen_image_color_tools,
-            style="ImageCreate.Secondary.TButton"
-        ).pack(side="left", padx=(0, 8))
-
-        ttk.Button(
-            footer,
-            text="Add New Color",
-            command=lambda: self.addColor_create_fcs(
-                popup=popup,
-                colors=colors,
-                on_color_added=redraw_color_list
-            ),
-            style="ImageCreate.Secondary.TButton"
-        ).pack(side="left")
-
-        ttk.Button(
-            footer,
-            text="Create Color Space",
-            command=create_color_space_and_close,
-            style="ImageCreate.Primary.TButton"
-        ).pack(side="right")
-
-        # Open image tool window to the right
-        reopen_image_color_tools()
-
-        update_selected_count()
 
 
     def _get_best_image_source_pil(self, window_id, prefer_current_view=True, rgb=True):
@@ -3570,1438 +2860,46 @@ class PyFCSApp:
         raise ValueError(f"No valid image source found for window_id: {window_id}")
 
 
-    def _open_image_creation_tool_window(self, parent_popup, colors, target_frame, update_selected_count):
-        """
-        Open the right-side image tool window.
-
-        It supports:
-        - selecting image;
-        - manual sampling by click or rectangle;
-        - automatic color detection;
-        - adding sampled/detected colors to the main color list.
-        """
-        if not hasattr(self, "load_images_names") or not self.load_images_names:
-            self.custom_warning(message="No images are currently available to display.")
-            return
-
-        if hasattr(self, "_image_creation_tool_win"):
-            try:
-                if self._image_creation_tool_win and self._image_creation_tool_win.winfo_exists():
-                    self._image_creation_tool_win.lift()
-                    self._image_creation_tool_win.focus_force()
-                    return
-            except Exception:
-                pass
-
-        win = tk.Toplevel(parent_popup)
-        win.title("Image Color Tools")
-        win.configure(bg="#eeeeee")
-        win.resizable(False, False)
-        win.transient(parent_popup)
-
-        self._image_creation_tool_win = win
-        self._manual_picker_win = win
-
-        self._manual_dragging = False
-        self._manual_drag_start = None
-        self._manual_rect_id = None
-        self._picked_rgb = None
-        self._picked_lab = None
-
-        WIN_W, WIN_H = 560, 625
-
-        def dock_tool_window(event=None):
-            """Keep the tool window docked next to the image-based creation window."""
-            try:
-                if not parent_popup.winfo_exists() or not win.winfo_exists():
-                    return
-
-                parent_popup.update_idletasks()
-                win.update_idletasks()
-
-                px = parent_popup.winfo_rootx()
-                py = parent_popup.winfo_rooty()
-                pw = parent_popup.winfo_width()
-
-                gap = 12
-
-                x = px + pw + gap
-                y = py
-
-                screen_w = parent_popup.winfo_screenwidth()
-                screen_h = parent_popup.winfo_screenheight()
-
-                if x + WIN_W > screen_w:
-                    x = max(0, px - WIN_W - gap)
-
-                if y + WIN_H > screen_h:
-                    y = max(0, screen_h - WIN_H - 40)
-
-                win.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
-
-            except Exception:
-                pass
-
-        dock_tool_window()
-
-        try:
-            dock_bind_id = parent_popup.bind("<Configure>", dock_tool_window, add="+")
-        except Exception:
-            dock_bind_id = None
-
-        style = ttk.Style(win)
-
-        try:
-            style.configure(
-                "ImageTool.Primary.TButton",
-                font=("Helvetica", 10, "bold"),
-                padding=(12, 8)
-            )
-            style.configure(
-                "ImageTool.Secondary.TButton",
-                font=("Helvetica", 10),
-                padding=(10, 7)
-            )
-            style.configure(
-                "ImageTool.CompactPrimary.TButton",
-                font=("Helvetica", 9, "bold"),
-                padding=(8, 5)
-            )
-        except Exception:
-            pass
-
-        outer = tk.Frame(win, bg="#eeeeee")
-        outer.pack(fill="both", expand=True, padx=12, pady=12)
-
-        panel = tk.Frame(outer, bg="white", bd=1, relief="solid")
-        panel.pack(fill="both", expand=True)
-
-        # ------------------------------------------------------------------
-        # Header
-        # ------------------------------------------------------------------
-        header = tk.Frame(panel, bg="#f6f6f6", height=60)
-        header.pack(fill="x")
-        header.pack_propagate(False)
-
-        tk.Label(
-            header,
-            text="Image Color Tools",
-            font=("Sans", 13, "bold"),
-            bg="#f6f6f6",
-            fg="#222222",
-            anchor="w",
-            padx=16
-        ).pack(side="left", fill="y")
-
-        tk.Label(
-            header,
-            text="Manual sampling and automatic detection",
-            font=("Sans", 9, "italic"),
-            bg="#f6f6f6",
-            fg="#666666",
-            padx=16
-        ).pack(side="right", fill="y")
-
-        body = tk.Frame(panel, bg="white")
-        body.pack(fill="both", expand=True, padx=14, pady=12)
-
-        # ------------------------------------------------------------------
-        # Compact top controls: image selector + mode selector
-        # ------------------------------------------------------------------
-        selector_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
-        selector_card.pack(fill="x", pady=(0, 10))
-
-        selector_row = tk.Frame(selector_card, bg="#fafafa")
-        selector_row.pack(fill="x", padx=12, pady=8)
-
-        tk.Label(
-            selector_row,
-            text="Image:",
-            bg="#fafafa",
-            fg="#222222",
-            font=("Sans", 10, "bold")
-        ).pack(side="left", padx=(0, 8))
-
-        image_names = []
-        image_ids = []
-
-        for wid, path in self.load_images_names.items():
-            image_ids.append(wid)
-            image_names.append(os.path.basename(path))
-
-        selected_image_var = tk.StringVar(value=image_names[0] if image_names else "")
-
-        image_combo = ttk.Combobox(
-            selector_row,
-            textvariable=selected_image_var,
-            state="readonly",
-            values=image_names,
-            width=27
-        )
-        image_combo.pack(side="left", fill="x", expand=True)
-
-        tk.Label(
-            selector_row,
-            text="Mode:",
-            bg="#fafafa",
-            fg="#222222",
-            font=("Sans", 10, "bold")
-        ).pack(side="left", padx=(12, 6))
-
-        mode_var = tk.StringVar(value="Manual")
-
-        mode_combo = ttk.Combobox(
-            selector_row,
-            textvariable=mode_var,
-            state="readonly",
-            values=["Manual", "Automatic"],
-            width=12
-        )
-        mode_combo.pack(side="left")
-
-        # ------------------------------------------------------------------
-        # Image canvas
-        # ------------------------------------------------------------------
-        image_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
-        image_card.pack(fill="x", pady=(0, 10))
-
-        tk.Label(
-            image_card,
-            text="Image Preview",
-            bg="#fafafa",
-            fg="#222222",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            padx=12,
-            pady=7
-        ).pack(fill="x")
-
-        self._manual_img_canvas = tk.Canvas(
-            image_card,
-            width=465,
-            height=285,
-            bg="white",
-            highlightthickness=0,
-            bd=0
-        )
-        self._manual_img_canvas.pack(padx=12, pady=(0, 8))
-
-        tip_var = tk.StringVar(
-            value="Manual: click for a pixel or drag a rectangle to sample an average color."
-        )
-
-        tk.Label(
-            image_card,
-            textvariable=tip_var,
-            bg="#fafafa",
-            fg="#666666",
-            font=("Sans", 9, "italic"),
-            wraplength=455,
-            justify="left",
-            padx=12,
-            pady=0
-        ).pack(fill="x", pady=(0, 8))
-
-        # ------------------------------------------------------------------
-        # Manual card
-        # ------------------------------------------------------------------
-        manual_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
-        manual_card.pack(fill="x", pady=(0, 10))
-
-        tk.Label(
-            manual_card,
-            text="Manual Selected Color",
-            bg="#fafafa",
-            fg="#222222",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            padx=12,
-            pady=7
-        ).pack(fill="x")
-
-        manual_row = tk.Frame(manual_card, bg="#fafafa")
-        manual_row.pack(fill="x", padx=12, pady=(0, 10))
-
-        values_frame = tk.Frame(manual_row, bg="#fafafa")
-        values_frame.pack(side="left", fill="x", expand=True)
-
-        self._picked_rgb_var = tk.StringVar(value="RGB: -")
-        self._picked_lab_var = tk.StringVar(value="LAB: -")
-
-        tk.Label(
-            values_frame,
-            textvariable=self._picked_rgb_var,
-            bg="#fafafa",
-            fg="#333333",
-            font=("Sans", 9),
-            anchor="w"
-        ).pack(anchor="w")
-
-        tk.Label(
-            values_frame,
-            textvariable=self._picked_lab_var,
-            bg="#fafafa",
-            fg="#333333",
-            font=("Sans", 9),
-            anchor="w"
-        ).pack(anchor="w", pady=(2, 0))
-
-        self._picked_preview = tk.Canvas(
-            manual_row,
-            width=135,
-            height=38,
-            bg="#fafafa",
-            highlightthickness=0,
-            bd=0
-        )
-        self._picked_preview.pack(side="left", padx=(14, 14))
-
-        self._picked_preview_rect = self._picked_preview.create_rectangle(
-            8, 6, 127, 32,
-            fill="#d9d9d9",
-            outline="#555555",
-            width=1
-        )
-
-        manual_add_button = ttk.Button(
-            manual_row,
-            text="Add",
-            command=lambda: self._image_creation_add_picked_color(
-                colors=colors,
-                target_frame=target_frame,
-                update_selected_count=update_selected_count
-            ),
-            style="ImageTool.Primary.TButton"
-        )
-        manual_add_button.pack(side="right")
-
-        # ------------------------------------------------------------------
-        # Automatic card
-        # ------------------------------------------------------------------
-        auto_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
-        auto_card.pack(fill="x")
-
-        tk.Label(
-            auto_card,
-            text="Automatic Detection",
-            bg="#fafafa",
-            fg="#222222",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            padx=12,
-            pady=7
-        ).pack(fill="x")
-
-        auto_controls = tk.Frame(auto_card, bg="#fafafa")
-        auto_controls.pack(fill="x", padx=12, pady=(0, 6))
-
-        threshold = tk.DoubleVar(value=0.50)
-        min_samples = tk.IntVar(value=160)
-
-        threshold_text = tk.StringVar(value="Threshold: 0.50")
-
-        def update_threshold_label():
-            threshold_text.set(f"Threshold: {threshold.get():.2f}")
-
-        def decrease_threshold():
-            threshold.set(max(0.0, threshold.get() - 0.05))
-            min_samples.set(min_samples.get() + 15)
-            update_threshold_label()
-
-        def increase_threshold():
-            threshold.set(min(1.0, threshold.get() + 0.05))
-            min_samples.set(max(15, min_samples.get() - 15))
-            update_threshold_label()
-
-        tk.Label(
-            auto_controls,
-            textvariable=threshold_text,
-            bg="#fafafa",
-            fg="#333333",
-            font=("Sans", 9)
-        ).pack(side="left")
-
-        minus_button = tk.Button(
-            auto_controls,
-            text="-",
-            width=3,
-            bg="#f8d7da",
-            fg="#8a1f1f",
-            relief="solid",
-            bd=1,
-            command=decrease_threshold
-        )
-        minus_button.pack(side="left", padx=(12, 4))
-
-        plus_button = tk.Button(
-            auto_controls,
-            text="+",
-            width=3,
-            bg="#e0f2e9",
-            fg="#1f5f3a",
-            relief="solid",
-            bd=1,
-            command=increase_threshold
-        )
-        plus_button.pack(side="left", padx=(0, 12))
-
-        tk.Label(
-            auto_card,
-            text=(
-                "If too many colors are detected, try decreasing it; "
-                "if too few are detected, try increasing it."
-            ),
-            bg="#fafafa",
-            fg="#666666",
-            font=("Sans", 8, "italic"),
-            wraplength=505,
-            justify="left",
-            anchor="w",
-            padx=12,
-            pady=0
-        ).pack(fill="x", pady=(0, 8))
-
-        busy_state = {
-            "running": False,
-            "angle": 0
-        }
-
-        def draw_loading_overlay():
-            """Draw a loading overlay over the image canvas."""
-            try:
-                self._manual_img_canvas.delete("auto_spinner")
-
-                cw = int(self._manual_img_canvas["width"])
-                ch = int(self._manual_img_canvas["height"])
-
-                cx = cw // 2
-                cy = ch // 2
-
-                self._manual_img_canvas.create_rectangle(
-                    cx - 82,
-                    cy - 46,
-                    cx + 82,
-                    cy + 50,
-                    fill="white",
-                    outline="#cfcfcf",
-                    tags=("auto_spinner",)
-                )
-
-                self._manual_img_canvas.create_arc(
-                    cx - 18,
-                    cy - 26,
-                    cx + 18,
-                    cy + 10,
-                    start=busy_state["angle"],
-                    extent=285,
-                    style="arc",
-                    width=4,
-                    outline="#1f5fa8",
-                    tags=("auto_spinner",)
-                )
-
-                self._manual_img_canvas.create_text(
-                    cx,
-                    cy + 28,
-                    text="Detecting...",
-                    fill="#333333",
-                    font=("Sans", 9, "bold"),
-                    tags=("auto_spinner",)
-                )
-
-            except Exception:
-                pass
-
-        def animate_loading_overlay():
-            """Animate the loading overlay while automatic detection is running."""
-            if not busy_state["running"]:
-                try:
-                    self._manual_img_canvas.delete("auto_spinner")
-                except Exception:
-                    pass
-                return
-
-            busy_state["angle"] = (busy_state["angle"] + 18) % 360
-            draw_loading_overlay()
-
-            try:
-                win.after(70, animate_loading_overlay)
-            except Exception:
-                pass
-
-        def set_tool_busy(is_busy):
-            """Block/unblock the image tool controls."""
-            busy_state["running"] = bool(is_busy)
-
-            try:
-                image_combo.config(state="disabled" if is_busy else "readonly")
-                mode_combo.config(state="disabled" if is_busy else "readonly")
-                manual_add_button.config(state="disabled" if is_busy else "normal")
-                minus_button.config(state="disabled" if is_busy else "normal")
-                plus_button.config(state="disabled" if is_busy else "normal")
-                detect_button.config(state="disabled" if is_busy else "normal")
-            except Exception:
-                pass
-
-            if is_busy:
-                animate_loading_overlay()
-            else:
-                try:
-                    self._manual_img_canvas.delete("auto_spinner")
-                except Exception:
-                    pass
-
-        def add_detected_colors_to_list(detected_colors, window_id):
-            """Add detected colors to the main selected-colors list."""
-            if not detected_colors:
-                self.custom_warning(
-                    "No Colors Detected",
-                    "No colors were detected with the current threshold.",
-                    parent=win
-                )
-                return
-
-            added = 0
-
-            for item in detected_colors:
-                try:
-                    rgb = item.get("rgb")
-
-                    if hasattr(rgb, "tolist"):
-                        rgb = rgb.tolist()
-
-                    if isinstance(rgb, list) and len(rgb) == 1 and isinstance(rgb[0], (list, tuple, np.ndarray)):
-                        rgb = rgb[0]
-
-                    rgb = tuple(int(v) for v in rgb[:3])
-
-                    if "lab" in item:
-                        lab_value = item["lab"]
-
-                        if isinstance(lab_value, dict):
-                            lab = (
-                                float(lab_value["L"]),
-                                float(lab_value["A"]),
-                                float(lab_value["B"])
-                            )
-                        else:
-                            lab_arr = np.array(lab_value, dtype=float).reshape(-1)
-                            lab = (
-                                float(lab_arr[0]),
-                                float(lab_arr[1]),
-                                float(lab_arr[2])
-                            )
-                    else:
-                        lab = UtilsTools.srgb_to_lab(rgb[0], rgb[1], rgb[2])
-                        lab = (
-                            float(lab[0]),
-                            float(lab[1]),
-                            float(lab[2])
-                        )
-
-                    base_name = item.get("name", f"Detected Color {len(colors) + 1}")
-                    name = base_name
-                    suffix = 2
-
-                    while name in colors:
-                        name = f"{base_name}_{suffix}"
-                        suffix += 1
-
-                    colors[name] = {
-                        "rgb": rgb,
-                        "lab": lab,
-                        "source_image": window_id,
-                        "source": "auto_image"
-                    }
-
-                    self.fuzzy_manager.create_color_display_frame(
-                        parent=target_frame,
-                        color_name=name,
-                        rgb=rgb,
-                        lab=lab,
-                        color_checks=self.color_checks,
-                        selected=True,
-                        on_toggle=update_selected_count
-                    )
-
-                    added += 1
-
-                except Exception:
-                    continue
-
-            if callable(update_selected_count):
-                update_selected_count()
-
-            if added == 0:
-                self.custom_warning(
-                    "No Colors Added",
-                    "Detected colors could not be converted into valid colors.",
-                    parent=win
-                )
-
-        def run_auto_detection():
-            """Run automatic color detection in a background thread."""
-            if busy_state["running"]:
-                return
-
-            window_id = get_selected_window_id()
-
-            if window_id is None:
-                self.custom_warning("No Image Selected", "Select an image first.", parent=win)
-                return
-
-            try:
-                detection_img = self._get_best_image_source_pil(
-                    window_id,
-                    prefer_current_view=False,
-                    rgb=True
-                )
-            except Exception as e:
-                self.custom_warning(
-                    "Image Not Available",
-                    f"Selected image is not available:\n{e}",
-                    parent=win
-                )
-                return
-
-            set_tool_busy(True)
-
-            current_threshold = float(threshold.get())
-            current_min_samples = int(min_samples.get())
-
-            def worker():
-                try:
-                    detected_colors = self.image_manager.get_fcs_image(
-                        detection_img,
-                        current_threshold,
-                        current_min_samples,
-                        max_pixels=120000,
-                        max_side=800,
-                        lab_quantization=0.75
-                    )
-
-                    def finish_ok():
-                        try:
-                            add_detected_colors_to_list(detected_colors, window_id)
-                        finally:
-                            set_tool_busy(False)
-
-                    win.after(0, finish_ok)
-
-                except Exception as e:
-                    error_msg = str(e)
-
-                    def finish_error(msg=error_msg):
-                        try:
-                            self.custom_warning(
-                                "Error",
-                                f"Could not detect colors from image: {msg}",
-                                parent=win
-                            )
-                        finally:
-                            set_tool_busy(False)
-
-                    win.after(0, finish_error)
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        detect_button = ttk.Button(
-            auto_controls,
-            text="Detect and Add Colors",
-            command=run_auto_detection,
-            style="ImageTool.CompactPrimary.TButton"
-        )
-        detect_button.pack(side="right")
-
-        # ------------------------------------------------------------------
-        # Behavior
-        # ------------------------------------------------------------------
-        def get_selected_window_id():
-            current_name = selected_image_var.get()
-            if current_name in image_names:
-                return image_ids[image_names.index(current_name)]
-            return image_ids[0] if image_ids else None
-
-        def load_selected_image(*_):
-            window_id = get_selected_window_id()
-            if window_id is None:
-                return
-            self._manual_load_image_from_window_id(window_id)
-
-        def on_mode_change(*_):
-            mode = mode_var.get().strip().lower()
-
-            if mode == "manual":
-                tip_var.set("Manual: click for a pixel or drag a rectangle to sample an average color.")
-                auto_card.pack_forget()
-                manual_card.pack(fill="x", pady=(0, 10))
-            else:
-                tip_var.set("Automatic: press 'Detect and Add Colors' to add detected colors to the list.")
-                manual_card.pack_forget()
-                auto_card.pack(fill="x")
-
-        image_combo.bind("<<ComboboxSelected>>", load_selected_image)
-
-        mode_var.trace_add("write", on_mode_change)
-        mode_combo.bind("<<ComboboxSelected>>", on_mode_change)
-
-        self._manual_img_canvas.bind("<ButtonPress-1>", self._manual_on_mouse_down)
-        self._manual_img_canvas.bind("<B1-Motion>", self._manual_on_mouse_drag)
-        self._manual_img_canvas.bind("<ButtonRelease-1>", self._manual_on_mouse_up)
-
-        # Manual picker zoom
-        self._manual_img_canvas.bind("<MouseWheel>", self._manual_on_mousewheel, add="+")
-        self._manual_img_canvas.bind("<Button-4>", self._manual_on_linux_zoom_in, add="+")
-        self._manual_img_canvas.bind("<Button-5>", self._manual_on_linux_zoom_out, add="+")
-
-        # Optional reset zoom
-        self._manual_img_canvas.bind(
-            "<Double-Button-3>",
-            lambda event: self._manual_apply_zoom(reset=True)
-        )
-
-        def on_close():
-            if busy_state.get("running", False):
-                return
-
-            try:
-                if dock_bind_id is not None and parent_popup.winfo_exists():
-                    parent_popup.unbind("<Configure>", dock_bind_id)
-            except Exception:
-                pass
-
-            self._image_creation_tool_win = None
-            self._manual_picker_win = None
-
-            try:
-                win.destroy()
-            except Exception:
-                pass
-
-        win.protocol("WM_DELETE_WINDOW", on_close)
-
-        load_selected_image()
-        on_mode_change()
-
-
-
-    def _image_creation_add_picked_color(self, colors, target_frame, update_selected_count=None):
-        """Add the currently sampled image color to the main color list with an automatic name."""
-        if target_frame is None or not target_frame.winfo_exists():
-            self.custom_warning(message="The color list window is closed. Open it again to add colors.")
-            return
-
-        if not hasattr(self, "_picked_rgb") or not hasattr(self, "_picked_lab"):
-            self.custom_warning(message="Pick a color from the image first.")
-            return
-
-        if self._picked_rgb is None or self._picked_lab is None:
-            self.custom_warning(message="Pick a color from the image first.")
-            return
-
-        # Automatic unique name
-        base_name = "Image Color"
-        index = len(colors) + 1
-        name = f"{base_name} {index}"
-
-        while name in colors:
-            index += 1
-            name = f"{base_name} {index}"
-
-        try:
-            lab = (
-                float(self._picked_lab[0]),
-                float(self._picked_lab[1]),
-                float(self._picked_lab[2])
-            )
-
-            rgb = tuple(int(v) for v in self._picked_rgb[:3])
-
-        except Exception:
-            self.custom_warning("Invalid Color", "The selected color could not be converted correctly.")
-            return
-
-        colors[name] = {
-            "rgb": rgb,
-            "lab": lab,
-            "source_image": getattr(self, "_manual_image_id", None),
-            "source": "manual_image"
-        }
-
-        self.fuzzy_manager.create_color_display_frame(
-            parent=target_frame,
-            color_name=name,
-            rgb=rgb,
-            lab=lab,
-            color_checks=self.color_checks,
-            selected=True,
-            on_toggle=update_selected_count
-        )
-
-        if callable(update_selected_count):
-            update_selected_count()
-
-
-
-    def _image_creation_detect_and_add_colors(
-        self,
-        colors,
-        target_frame,
-        update_selected_count=None,
-        threshold=0.5,
-        min_samples=160
-    ):
-        """Detect colors from the selected image and add them directly to the main color list."""
-        if target_frame is None or not target_frame.winfo_exists():
-            self.custom_warning(message="The color list window is closed. Open it again to add colors.")
-            return
-
-        window_id = getattr(self, "_manual_image_id", None)
-
-        if not window_id:
-            self.custom_warning(message="Select an image first.")
-            return
-
-        try:
-            detection_img = self._get_best_image_source_pil(
-                window_id,
-                prefer_current_view=False,
-                rgb=True
-            )
-        except Exception:
-            self.custom_warning(message="Selected image is not available.")
-            return
-
-        try:
-            detected_colors = self.image_manager.get_fcs_image(
-                detection_img,
-                threshold,
-                min_samples
-            )
-        except Exception as e:
-            self.custom_warning("Error", f"Could not detect colors from image: {e}")
-            return
-
-        if not detected_colors:
-            self.custom_warning(
-                "No Colors Detected",
-                "No colors were detected with the current threshold."
-            )
-            return
-
-        added = 0
-
-        for item in detected_colors:
-            try:
-                rgb = item.get("rgb")
-
-                if hasattr(rgb, "tolist"):
-                    rgb = rgb.tolist()
-
-                if isinstance(rgb, list) and len(rgb) == 1 and isinstance(rgb[0], (list, tuple, np.ndarray)):
-                    rgb = rgb[0]
-
-                rgb = tuple(int(v) for v in rgb[:3])
-
-                if "lab" in item:
-                    lab_value = item["lab"]
-
-                    if isinstance(lab_value, dict):
-                        lab = (
-                            float(lab_value["L"]),
-                            float(lab_value["A"]),
-                            float(lab_value["B"])
-                        )
-                    else:
-                        lab_arr = np.array(lab_value, dtype=float).reshape(-1)
-                        lab = (
-                            float(lab_arr[0]),
-                            float(lab_arr[1]),
-                            float(lab_arr[2])
-                        )
-                else:
-                    lab = UtilsTools.srgb_to_lab(rgb[0], rgb[1], rgb[2])
-                    lab = (
-                        float(lab[0]),
-                        float(lab[1]),
-                        float(lab[2])
-                    )
-
-                base_name = item.get("name", f"Detected Color {len(colors) + 1}")
-                name = base_name
-                suffix = 2
-
-                while name in colors:
-                    name = f"{base_name}_{suffix}"
-                    suffix += 1
-
-                colors[name] = {
-                    "rgb": rgb,
-                    "lab": lab,
-                    "source_image": window_id,
-                    "source": "auto_image"
-                }
-
-                self.fuzzy_manager.create_color_display_frame(
-                    parent=target_frame,
-                    color_name=name,
-                    rgb=rgb,
-                    lab=lab,
-                    color_checks=self.color_checks,
-                    selected=True,
-                    on_toggle=update_selected_count
-                )
-
-                added += 1
-
-            except Exception:
-                continue
-
-        if callable(update_selected_count):
-            update_selected_count()
-
-        if added == 0:
-            self.custom_warning(
-                "No Colors Added",
-                "Detected colors could not be converted into valid colors."
-            )
-
-
-
-
-
-    def _manual_load_image_from_window_id(self, window_id):
-        """
-        Load an image into the manual picker canvas using the best available source.
-
-        This version keeps compatibility with the existing manual handlers and
-        initializes viewport zoom state.
-        """
-        if not hasattr(self, "_manual_img_canvas") or self._manual_img_canvas is None:
-            return
-
-        try:
-            pil_img = self._get_best_image_source_pil(
-                window_id,
-                prefer_current_view=False,
-                rgb=True
-            )
-        except Exception:
-            self.custom_warning(message="Selected image is not available.")
-            return
-
-        self._manual_image_id = window_id
-
-        # Main source used by click/drag/zoom.
-        self._manual_pil_full = pil_img
-        self._manual_pil_img = pil_img
-        self._manual_source_img = pil_img
-
-        canvas = self._manual_img_canvas
-
-        try:
-            canvas.delete("all")
-        except Exception:
-            pass
-
-        img_w, img_h = pil_img.size
-
-        try:
-            canvas_w = int(canvas["width"])
-            canvas_h = int(canvas["height"])
-        except Exception:
-            canvas_w, canvas_h = 465, 285
-
-        scale = min(canvas_w / img_w, canvas_h / img_h)
-
-        draw_w = max(1, int(round(img_w * scale)))
-        draw_h = max(1, int(round(img_h * scale)))
-
-        offset_x = int((canvas_w - draw_w) / 2)
-        offset_y = int((canvas_h - draw_h) / 2)
-
-        # Legacy names used by your existing handlers.
-        self._manual_scale = scale
-        self._manual_offset_x = offset_x
-        self._manual_offset_y = offset_y
-        self._manual_draw_w = draw_w
-        self._manual_draw_h = draw_h
-
-        # Extra aliases from the newer code.
-        self._manual_image_scale = scale
-        self._manual_image_offset_x = offset_x
-        self._manual_image_offset_y = offset_y
-        self._manual_display_w = draw_w
-        self._manual_display_h = draw_h
-
-        # Viewport zoom state.
-        self._manual_zoom = 1.0
-        self._manual_view_cx = img_w / 2
-        self._manual_view_cy = img_h / 2
-
-        self._manual_dragging = False
-        self._manual_drag_start = None
-        self._manual_rect_id = None
-
-        self._picked_rgb = None
-        self._picked_lab = None
-
-        try:
-            self._picked_rgb_var.set("RGB: -")
-            self._picked_lab_var.set("LAB: -")
-        except Exception:
-            pass
-
-        try:
-            self._picked_preview.itemconfig(
-                self._picked_preview_rect,
-                fill="#d9d9d9"
-            )
-        except Exception:
-            pass
-
-        self._manual_render_preview()
-
-    def _manual_clamp(self, value, min_value, max_value):
-        """Clamp a numeric value."""
-        return max(min_value, min(max_value, value))
-
-
-    def _manual_is_inside_display(self, canvas_x, canvas_y):
-        """Return True if the canvas point is inside the displayed manual image."""
-        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
-            return False
-
-        ox = getattr(self, "_manual_offset_x", 0)
-        oy = getattr(self, "_manual_offset_y", 0)
-        dw = getattr(self, "_manual_draw_w", 0)
-        dh = getattr(self, "_manual_draw_h", 0)
-
-        return ox <= canvas_x < ox + dw and oy <= canvas_y < oy + dh
-
-
-    def _manual_clamp_canvas_to_display(self, canvas_x, canvas_y):
-        """Clamp a canvas point to the visible manual image area."""
-        ox = getattr(self, "_manual_offset_x", 0)
-        oy = getattr(self, "_manual_offset_y", 0)
-        dw = max(1, getattr(self, "_manual_draw_w", 1))
-        dh = max(1, getattr(self, "_manual_draw_h", 1))
-
-        x = self._manual_clamp(canvas_x, ox, ox + dw - 1)
-        y = self._manual_clamp(canvas_y, oy, oy + dh - 1)
-
-        return x, y
-
-
-    def _manual_get_view_crop_box(self):
-        """
-        Return the current crop box in full-image coordinates for the manual picker.
-        """
-        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
-            return None
-
-        img_w, img_h = self._manual_pil_full.size
-
-        zoom = max(1.0, float(getattr(self, "_manual_zoom", 1.0)))
-        cx = float(getattr(self, "_manual_view_cx", img_w / 2))
-        cy = float(getattr(self, "_manual_view_cy", img_h / 2))
-
-        crop_w = max(1.0, img_w / zoom)
-        crop_h = max(1.0, img_h / zoom)
-
-        left = cx - crop_w / 2
-        top = cy - crop_h / 2
-
-        left = self._manual_clamp(left, 0, max(0, img_w - crop_w))
-        top = self._manual_clamp(top, 0, max(0, img_h - crop_h))
-
-        right = left + crop_w
-        bottom = top + crop_h
-
-        return left, top, right, bottom
-
-
-    def _manual_render_preview(self):
-        """
-        Render the current manual picker viewport into the fixed canvas size.
-        """
-        if not hasattr(self, "_manual_img_canvas") or self._manual_img_canvas is None:
-            return
-
-        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
-            return
-
-        crop_box = self._manual_get_view_crop_box()
-        if crop_box is None:
-            return
-
-        left, top, right, bottom = crop_box
-
-        crop = self._manual_pil_full.crop((
-            int(round(left)),
-            int(round(top)),
-            int(round(right)),
-            int(round(bottom))
-        ))
-
-        draw_w = max(1, int(getattr(self, "_manual_draw_w", 1)))
-        draw_h = max(1, int(getattr(self, "_manual_draw_h", 1)))
-
-        resized = crop.resize((draw_w, draw_h), Image.Resampling.LANCZOS)
-
-        self._manual_photo = ImageTk.PhotoImage(resized)
-
-        canvas = self._manual_img_canvas
-
-        try:
-            canvas.delete("manual_image")
-        except Exception:
-            pass
-
-        canvas.create_image(
-            getattr(self, "_manual_offset_x", 0),
-            getattr(self, "_manual_offset_y", 0),
-            image=self._manual_photo,
-            anchor="nw",
-            tags=("manual_image",)
-        )
-
-        try:
-            canvas.tag_lower("manual_image")
-        except Exception:
-            pass
-
-
-    def _manual_canvas_to_image_xy(self, canvas_x, canvas_y, require_inside=True):
-        """
-        Convert manual picker canvas coordinates to full-image coordinates,
-        taking viewport zoom into account.
-        """
-        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
-            return None
-
-        if require_inside and not self._manual_is_inside_display(canvas_x, canvas_y):
-            return None
-
-        canvas_x, canvas_y = self._manual_clamp_canvas_to_display(canvas_x, canvas_y)
-
-        ox = getattr(self, "_manual_offset_x", 0)
-        oy = getattr(self, "_manual_offset_y", 0)
-        dw = max(1, getattr(self, "_manual_draw_w", 1))
-        dh = max(1, getattr(self, "_manual_draw_h", 1))
-
-        rel_x = canvas_x - ox
-        rel_y = canvas_y - oy
-
-        crop_box = self._manual_get_view_crop_box()
-        if crop_box is None:
-            return None
-
-        left, top, right, bottom = crop_box
-
-        crop_w = right - left
-        crop_h = bottom - top
-
-        img_x = left + (rel_x / dw) * crop_w
-        img_y = top + (rel_y / dh) * crop_h
-
-        img_w, img_h = self._manual_pil_full.size
-
-        img_x = int(self._manual_clamp(img_x, 0, img_w - 1))
-        img_y = int(self._manual_clamp(img_y, 0, img_h - 1))
-
-        return img_x, img_y
-
-
-    def _manual_clear_selection_rectangle(self):
-        """Clear the manual picker ROI rectangle."""
-        if getattr(self, "_manual_rect_id", None) is not None:
-            try:
-                self._manual_img_canvas.delete(self._manual_rect_id)
-            except Exception:
-                pass
-
-        self._manual_rect_id = None
-        self._manual_dragging = False
-        self._manual_drag_start = None
-
-
-    def _manual_apply_zoom(self, factor=None, reset=False, event=None):
-        """
-        Apply viewport zoom in the manual image picker without changing canvas size.
-        """
-        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
-            return "break"
-
-        img_w, img_h = self._manual_pil_full.size
-
-        self._manual_clear_selection_rectangle()
-
-        if reset:
-            self._manual_zoom = 1.0
-            self._manual_view_cx = img_w / 2
-            self._manual_view_cy = img_h / 2
-            self._manual_render_preview()
-            return "break"
-
-        if factor is None:
-            return "break"
-
-        old_zoom = float(getattr(self, "_manual_zoom", 1.0))
-        new_zoom = self._manual_clamp(old_zoom * factor, 1.0, 16.0)
-
-        if abs(new_zoom - old_zoom) < 1e-9:
-            return "break"
-
-        point_info = None
-
-        if event is not None and self._manual_is_inside_display(event.x, event.y):
-            xy = self._manual_canvas_to_image_xy(event.x, event.y, require_inside=True)
-
-            if xy is not None:
-                ox = getattr(self, "_manual_offset_x", 0)
-                oy = getattr(self, "_manual_offset_y", 0)
-                dw = max(1, getattr(self, "_manual_draw_w", 1))
-                dh = max(1, getattr(self, "_manual_draw_h", 1))
-
-                rel_fx = (event.x - ox) / dw
-                rel_fy = (event.y - oy) / dh
-
-                point_info = (xy[0], xy[1], rel_fx, rel_fy)
-
-        self._manual_zoom = new_zoom
-
-        if point_info is not None:
-            source_x, source_y, rel_fx, rel_fy = point_info
-
-            crop_w = max(1.0, img_w / new_zoom)
-            crop_h = max(1.0, img_h / new_zoom)
-
-            new_left = source_x - rel_fx * crop_w
-            new_top = source_y - rel_fy * crop_h
-
-            new_left = self._manual_clamp(new_left, 0, max(0, img_w - crop_w))
-            new_top = self._manual_clamp(new_top, 0, max(0, img_h - crop_h))
-
-            self._manual_view_cx = new_left + crop_w / 2
-            self._manual_view_cy = new_top + crop_h / 2
-
-        self._manual_render_preview()
-
-        return "break"
-
-
-    def _manual_on_mousewheel(self, event):
-        """Windows/macOS mouse wheel zoom for the manual image picker."""
-        if event.delta > 0:
-            return self._manual_apply_zoom(factor=1.15, event=event)
-        return self._manual_apply_zoom(factor=1 / 1.15, event=event)
-
-
-    def _manual_on_linux_zoom_in(self, event):
-        """Linux wheel-up zoom for the manual image picker."""
-        return self._manual_apply_zoom(factor=1.15, event=event)
-
-
-    def _manual_on_linux_zoom_out(self, event):
-        """Linux wheel-down zoom for the manual image picker."""
-        return self._manual_apply_zoom(factor=1 / 1.15, event=event)
-
-
-    def _manual_on_image_click(self, event):
-        """Pick the pixel under the cursor, compute LAB, and update the UI preview."""
-        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
-            return
-
-        xy = self._manual_canvas_to_image_xy(event.x, event.y, require_inside=True)
-        if xy is None:
-            return
-
-        full_x, full_y = xy
-
-        pixel = self._manual_pil_full.getpixel((full_x, full_y))
-
-        if isinstance(pixel, int):
-            r = g = b = int(pixel)
-        else:
-            r, g, b = pixel[:3]
-
-        lab = UtilsTools.srgb_to_lab(r, g, b)
-        lab = np.array(lab, dtype=float).reshape(-1)
-
-        self._picked_rgb = (int(r), int(g), int(b))
-        self._picked_lab = (
-            float(lab[0]),
-            float(lab[1]),
-            float(lab[2])
-        )
-
-        self._picked_rgb_var.set(f"RGB: ({r}, {g}, {b})")
-        self._picked_lab_var.set(
-            f"LAB: ({self._picked_lab[0]:.2f}, {self._picked_lab[1]:.2f}, {self._picked_lab[2]:.2f})"
-        )
-
-        hex_color = f"#{int(r):02x}{int(g):02x}{int(b):02x}"
-
-        try:
-            self._picked_preview.itemconfig(self._picked_preview_rect, fill=hex_color)
-        except Exception:
-            pass
-
-
-    def _manual_on_mouse_down(self, event):
-        """Start rectangle selection on the preview canvas."""
-        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
-            return
-
-        if not self._manual_is_inside_display(event.x, event.y):
-            return
-
-        x, y = self._manual_clamp_canvas_to_display(event.x, event.y)
-
-        self._manual_dragging = True
-        self._manual_drag_start = (x, y)
-
-        if getattr(self, "_manual_rect_id", None) is not None:
-            try:
-                self._manual_img_canvas.delete(self._manual_rect_id)
-            except Exception:
-                pass
-            self._manual_rect_id = None
-
-        self._manual_rect_id = self._manual_img_canvas.create_rectangle(
-            x,
-            y,
-            x,
-            y,
-            outline="#ff0000",
-            width=2
-        )
-
-
-    def _manual_on_mouse_drag(self, event):
-        """Update rectangle while dragging."""
-        if not getattr(self, "_manual_dragging", False):
-            return
-
-        if self._manual_rect_id is None:
-            return
-
-        x0, y0 = self._manual_drag_start
-        x1, y1 = self._manual_clamp_canvas_to_display(event.x, event.y)
-
-        self._manual_img_canvas.coords(
-            self._manual_rect_id,
-            x0,
-            y0,
-            x1,
-            y1
-        )
-
-
-    def _manual_on_mouse_up(self, event):
-        """Finish selection, compute average color in the selected rectangle or one pixel."""
-        if not getattr(self, "_manual_dragging", False):
-            return
-
-        self._manual_dragging = False
-
-        if not hasattr(self, "_manual_pil_full") or self._manual_pil_full is None:
-            return
-
-        if self._manual_drag_start is None:
-            return
-
-        x0, y0 = self._manual_drag_start
-        x1, y1 = self._manual_clamp_canvas_to_display(event.x, event.y)
-
-        left_c = min(x0, x1)
-        right_c = max(x0, x1)
-        top_c = min(y0, y1)
-        bottom_c = max(y0, y1)
-
-        # Tiny selection: treat as single-pixel click.
-        if (right_c - left_c) < 3 and (bottom_c - top_c) < 3:
-            fake_event = type("E", (), {"x": x1, "y": y1})
-            self._manual_on_image_click(fake_event)
-
-            if self._manual_rect_id is not None:
-                try:
-                    self._manual_img_canvas.delete(self._manual_rect_id)
-                except Exception:
-                    pass
-                self._manual_rect_id = None
-
-            self._manual_drag_start = None
-            return
-
-        p1 = self._manual_canvas_to_image_xy(left_c, top_c, require_inside=False)
-        p2 = self._manual_canvas_to_image_xy(right_c, bottom_c, require_inside=False)
-
-        if p1 is None or p2 is None:
-            self._manual_drag_start = None
-            return
-
-        ix1, iy1 = p1
-        ix2, iy2 = p2
-
-        full_left = min(ix1, ix2)
-        full_right = max(ix1, ix2)
-        full_top = min(iy1, iy2)
-        full_bottom = max(iy1, iy2)
-
-        full_w, full_h = self._manual_pil_full.size
-
-        full_left = max(0, min(full_w - 1, full_left))
-        full_right = max(0, min(full_w - 1, full_right))
-        full_top = max(0, min(full_h - 1, full_top))
-        full_bottom = max(0, min(full_h - 1, full_bottom))
-
-        if full_right <= full_left or full_bottom <= full_top:
-            self._manual_drag_start = None
-            return
-
-        crop = self._manual_pil_full.crop((
-            full_left,
-            full_top,
-            full_right + 1,
-            full_bottom + 1
-        ))
-
-        arr = np.asarray(crop, dtype=np.float32)
-
-        if arr.ndim == 2:
-            mean_value = int(round(float(np.mean(arr))))
-            r = g = b = mean_value
-        else:
-            mean_rgb = arr.reshape(-1, arr.shape[-1])[:, :3].mean(axis=0)
-            r = int(round(mean_rgb[0]))
-            g = int(round(mean_rgb[1]))
-            b = int(round(mean_rgb[2]))
-
-        lab = UtilsTools.srgb_to_lab(r, g, b)
-        lab = np.array(lab, dtype=float).reshape(-1)
-
-        self._picked_rgb = (r, g, b)
-        self._picked_lab = (
-            float(lab[0]),
-            float(lab[1]),
-            float(lab[2])
-        )
-
-        self._picked_rgb_var.set(f"RGB (avg): ({r}, {g}, {b})")
-        self._picked_lab_var.set(
-            f"LAB (avg): ({self._picked_lab[0]:.2f}, {self._picked_lab[1]:.2f}, {self._picked_lab[2]:.2f})"
-        )
-
-        hex_color = f"#{r:02x}{g:02x}{b:02x}"
-
-        try:
-            self._picked_preview.itemconfig(self._picked_preview_rect, fill=hex_color)
-        except Exception:
-            pass
-
-        self._manual_drag_start = None
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -6324,7 +4222,7 @@ class PyFCSApp:
             if file_path and os.path.exists(file_path):
                 os.remove(file_path)
 
-            self.COLOR_SPACE = None
+            self.COLOR_SPACE = False
             self.color_data = {}
             self.edit_color_data = {}
             self.file_path = None
@@ -7796,8 +5694,7 @@ class PyFCSApp:
             else:
                 pixel_rgb = pixel_value
 
-            pixel_rgb_np = np.array([[pixel_rgb]], dtype=np.uint8)
-            pixel_lab = color.rgb2lab(pixel_rgb_np)[0][0]
+            pixel_lab = UtilsTools.rgb_to_lab(pixel_rgb)
 
             if self.COLOR_SPACE:
                 self.display_pixel_value(
@@ -10529,7 +8426,7 @@ class PyFCSApp:
             full_y = max(0, min(full_h - 1, full_y))
 
             r, g, b = pil.getpixel((full_x, full_y))
-            pixel_lab = UtilsTools.srgb_to_lab(r, g, b)
+            pixel_lab = UtilsTools.rgb_to_lab((r, g, b))
 
             if self.COLOR_SPACE:
                 self.display_pixel_value(full_x, full_y, pixel_lab, is_average=False, selection_info=None, image_id=window_id)
@@ -10574,7 +8471,7 @@ class PyFCSApp:
         g = int(round(mean_rgb[1]))
         b = int(round(mean_rgb[2]))
 
-        pixel_lab = UtilsTools.srgb_to_lab(r, g, b)
+        pixel_lab = UtilsTools.rgb_to_lab((r, g, b))
 
         # Representative coordinates = rectangle center
         cx = (full_left + full_right) // 2
@@ -11065,6 +8962,7 @@ class PyFCSApp:
         currently active tool window instead of the main root.
         """
         candidates = [
+            getattr(self, "_image_based_creation_window", None),
             getattr(self, "_image_inspection_window", None),
             getattr(self, "_color_evaluation_window", None),
             fallback,
@@ -14151,7 +12049,7 @@ class PyFCSApp:
             Callback called as:
                 on_submit(name, sample_lab, sample_rgb, sample_hex, dialog, input_vars)
         """
-        MAX_NAME_CHARS = 24
+        MAX_NAME_CHARS = UtilsTools.MAX_COLOR_NAME_CHARS
 
         parent = self._get_valid_dialog_parent(
             parent or getattr(self, "_color_evaluation_window", self.root)

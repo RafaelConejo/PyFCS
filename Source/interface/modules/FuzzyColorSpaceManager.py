@@ -118,7 +118,7 @@ class FuzzyColorSpaceManager:
             Callback called as:
                 final_name = on_name_change(old_name, new_name)
         """
-        MAX_NAME_CHARS = 24
+        MAX_NAME_CHARS = UtilsTools.MAX_COLOR_NAME_CHARS
 
         # ------------------------------------------------------------------
         # Normalize LAB
