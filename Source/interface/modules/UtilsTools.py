@@ -1,20 +1,17 @@
 import os
 import sys
+import tempfile
 import numpy as np
 from skimage import color
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog
 import colorsys
-from scipy.spatial import cKDTree
 
 ### my libraries ###
 from Source.input_output.Input import Input
 from Source.geometry.Prototype import Prototype
 from Source.geometry.Voronoi import Voronoi
 from Source.colorspace.ReferenceDomain import ReferenceDomain
-
-MAX_COLOR_NAME_CHARS = 24
-
 
 """
 Utility functions for PyFCS
@@ -37,19 +34,94 @@ and data preparation.
 
 def get_base_path():
     """
-    Return the base directory of the application.
+    Return the writable/application base directory.
 
-    Behavior depends on how the application is executed:
-    - When running as a .py file -> returns the project root directory.
-    - When running as a frozen .exe, e.g. via PyInstaller -> returns the
-      directory containing the executable.
+    - Source execution: project root.
+    - Frozen PyInstaller build: directory containing the executable.
+
+    This function is intentionally different from :func:`get_resource_path`:
+    bundled read-only resources in a one-file build live under ``sys._MEIPASS``
+    and must not be treated as the normal user/application data directory.
     """
     if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
+        return os.path.dirname(os.path.abspath(sys.executable))
 
     return os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..")
     )
+
+
+def get_resource_path(relative_path):
+    """
+    Resolve a PyFCS read-only resource in both source and frozen builds.
+
+    Resolution order
+    ----------------
+    Source execution
+        ``<project root>/<relative_path>``.  This preserves the normal
+        ``Source/external`` development layout on Windows, Linux and macOS.
+
+    Frozen PyInstaller execution
+        1. ``<executable dir>/<relative_path>`` if it exists.  This is an
+           optional external override, useful for development/debug builds.
+        2. ``sys._MEIPASS/<relative_path>`` for resources bundled inside the
+           executable/app by PyInstaller.
+
+    The external override means a packaged PyFCS can still be run with an
+    explicit ``Source/external`` folder if desired, while a normal release can
+    remain a true single-file application.
+    """
+    relative_path = os.path.normpath(str(relative_path))
+
+    if os.path.isabs(relative_path):
+        return relative_path
+
+    app_candidate = os.path.join(get_base_path(), relative_path)
+
+    if not getattr(sys, "frozen", False):
+        return app_candidate
+
+    # Optional resource override beside the frozen executable.
+    if os.path.exists(app_candidate):
+        return app_candidate
+
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        bundled_candidate = os.path.join(bundle_root, relative_path)
+        if os.path.exists(bundled_candidate):
+            return bundled_candidate
+        # Return the expected bundled location so any later FileNotFoundError
+        # clearly points to the missing packaged resource.
+        return bundled_candidate
+
+    return app_candidate
+
+
+def get_runtime_temp_dir(*parts, create=True):
+    """
+    Return a writable directory for temporary PyFCS runtime files.
+
+    Source execution keeps runtime artifacts under ``Source/external/temp``.
+    Frozen builds use the operating system's temp directory so a one-file
+    executable never needs an external Source folder.
+
+    Parameters
+    ----------
+    *parts : str
+        Optional path components below the PyFCS runtime-temp root.
+    create : bool, optional
+        Create the directory immediately. Set to ``False`` when the caller
+        only needs the target path and wants to create it lazily on first use.
+    """
+    if getattr(sys, "frozen", False):
+        base_dir = os.path.join(tempfile.gettempdir(), "PyFCS")
+    else:
+        base_dir = os.path.join(get_base_path(), "Source", "external", "temp")
+
+    path = os.path.join(base_dir, *[str(part) for part in parts if part])
+    if create:
+        os.makedirs(path, exist_ok=True)
+    return path
 
 
 # ============================================================================================================================================================
@@ -281,12 +353,10 @@ def is_valid_lab(lab):
 
 
 def find_duplicate_lab_name(color_data, lab, atol=Voronoi.DEFAULT_MERGE_EPS):
-    """Return the label of an existing LAB prototype within the Voronoi merge tolerance."""
+    """Return the label of an existing numerically identical LAB prototype."""
     target = np.asarray(lab, dtype=np.float64).reshape(-1)
-    if target.size != 3 or not np.all(np.isfinite(target)):
+    if target.size != 3:
         return None
-
-    tolerance = max(0.0, float(atol))
 
     for name, data in (color_data or {}).items():
         values = data.get("positive_prototype", data.get("Color"))
@@ -294,539 +364,13 @@ def find_duplicate_lab_name(color_data, lab, atol=Voronoi.DEFAULT_MERGE_EPS):
             continue
 
         current = np.asarray(values, dtype=np.float64).reshape(-1)
-        if current.size != 3 or not np.all(np.isfinite(current)):
+        if current.size != 3:
             continue
 
-        if np.linalg.norm(current - target) <= tolerance:
+        if np.linalg.norm(current - target) <= atol:
             return name
 
     return None
-
-
-def find_duplicate_lab_pairs(named_labs, atol=Voronoi.DEFAULT_MERGE_EPS):
-    """
-    Return LAB prototype pairs that collide within the shared Voronoi tolerance.
-
-    Parameters
-    ----------
-    named_labs : mapping or iterable
-        Either ``{name: lab}`` or an iterable of ``(name, lab)`` pairs.
-    atol : float
-        Euclidean LAB tolerance. Defaults to ``Voronoi.DEFAULT_MERGE_EPS`` so
-        creation validation uses the same numerical rule as the geometry layer.
-
-    Notes
-    -----
-    A KD-tree keeps the check close to O(n log n), avoiding the quadratic
-    all-pairs loop when automatic detection produces hundreds or thousands of
-    candidate colors. Invalid/non-finite LAB entries are ignored here and should
-    be reported separately by the caller's normal domain validation.
-    """
-    if named_labs is None:
-        return []
-
-    items = list(named_labs.items()) if hasattr(named_labs, "items") else list(named_labs)
-    names = []
-    labs = []
-
-    for name, lab in items:
-        try:
-            arr = np.asarray(lab, dtype=np.float64).reshape(-1)
-        except Exception:
-            continue
-
-        if arr.size != 3 or not np.all(np.isfinite(arr)):
-            continue
-
-        names.append(str(name))
-        labs.append(arr[:3])
-
-    if len(labs) < 2:
-        return []
-
-    matrix = np.asarray(labs, dtype=np.float64)
-    tolerance = max(0.0, float(atol))
-
-    if tolerance == 0.0:
-        buckets = {}
-        pair_indices = []
-        for idx, row in enumerate(matrix):
-            key = tuple(float(v) for v in row)
-            for previous in buckets.get(key, []):
-                pair_indices.append((previous, idx))
-            buckets.setdefault(key, []).append(idx)
-    else:
-        tree = cKDTree(matrix)
-        pair_indices = sorted(tree.query_pairs(r=tolerance))
-
-    return [
-        (names[i], names[j], matrix[i].copy())
-        for i, j in pair_indices
-    ]
-
-
-def make_unique_color_name(requested_name, existing_names=(), ignore_name=None, max_chars=MAX_COLOR_NAME_CHARS):
-    """Return a normalized unique color name using the shared ``Name (2)`` style."""
-    try:
-        max_chars = max(1, int(max_chars))
-    except Exception:
-        max_chars = MAX_COLOR_NAME_CHARS
-
-    existing = {str(name) for name in (existing_names or ())}
-    if ignore_name is not None:
-        existing.discard(str(ignore_name))
-
-    base = safe_text(requested_name) or "Color"
-    base = base[:max_chars].rstrip() or "Color"[:max_chars]
-
-    if base not in existing:
-        return base
-
-    index = 2
-    while True:
-        suffix = f" ({index})"
-        room = max(1, max_chars - len(suffix))
-        prefix = base[:room].rstrip() or "C"
-        candidate = f"{prefix}{suffix}"
-        if candidate not in existing:
-            return candidate
-        index += 1
-
-
-
-# ============================================================================================================================================================
-#  SHARED LAB FILTER HELPERS
-# ============================================================================================================================================================
-
-LAB_FILTER_DEFAULTS = {
-    "L_min": "0.0",
-    "L_max": "100.0",
-    "a_min": "-128.0",
-    "a_max": "128.0",
-    "b_min": "-128.0",
-    "b_max": "128.0",
-}
-
-LAB_FILTER_LABELS = {
-    "L_min": "L* minimum",
-    "L_max": "L* maximum",
-    "a_min": "a* minimum",
-    "a_max": "a* maximum",
-    "b_min": "b* minimum",
-    "b_max": "b* maximum",
-}
-
-
-def read_lab_filter_bindings(filter_bindings, strict=True):
-    """
-    Read enabled LAB filters from Tk variable bindings.
-
-    Parameters
-    ----------
-    filter_bindings : dict
-        Mapping such as ``{"L_min": (enabled_var, value_var), ...}``.
-    strict : bool
-        When True, invalid enabled values raise ValueError. When False,
-        malformed enabled values are ignored; this is useful for passive UI
-        summaries while the user is editing another control.
-    """
-    values = {}
-
-    for key in LAB_FILTER_DEFAULTS:
-        pair = (filter_bindings or {}).get(key)
-        if not pair or len(pair) != 2:
-            continue
-
-        enabled_var, value_var = pair
-        try:
-            enabled = bool(enabled_var.get())
-        except Exception:
-            enabled = False
-
-        if not enabled:
-            continue
-
-        try:
-            raw = value_var.get()
-        except Exception:
-            raw = ""
-
-        parsed = safe_float(raw)
-        if parsed is None:
-            if strict:
-                raise ValueError(
-                    f"Enter a valid numeric value for {LAB_FILTER_LABELS.get(key, key)}."
-                )
-            continue
-
-        values[key] = float(parsed)
-
-    for component, low_key, high_key in (
-        ("L*", "L_min", "L_max"),
-        ("a*", "a_min", "a_max"),
-        ("b*", "b_min", "b_max"),
-    ):
-        low = values.get(low_key)
-        high = values.get(high_key)
-        if low is not None and high is not None and low > high:
-            if strict:
-                raise ValueError(f"{component} minimum cannot be greater than its maximum.")
-            # Passive reads should not return a contradictory pair.
-            values.pop(low_key, None)
-            values.pop(high_key, None)
-
-    return values
-
-
-def format_lab_filters(filters, prefix=True):
-    """Return a compact human-readable summary of active LAB limits."""
-    filters = filters or {}
-    parts = []
-
-    if "L_min" in filters:
-        parts.append(f"L* ≥ {float(filters['L_min']):.2f}")
-    if "L_max" in filters:
-        parts.append(f"L* ≤ {float(filters['L_max']):.2f}")
-    if "a_min" in filters:
-        parts.append(f"a* ≥ {float(filters['a_min']):.2f}")
-    if "a_max" in filters:
-        parts.append(f"a* ≤ {float(filters['a_max']):.2f}")
-    if "b_min" in filters:
-        parts.append(f"b* ≥ {float(filters['b_min']):.2f}")
-    if "b_max" in filters:
-        parts.append(f"b* ≤ {float(filters['b_max']):.2f}")
-
-    if not parts:
-        return "No filters applied" if prefix else ""
-
-    body = " · ".join(parts)
-    return f"Filters: {body}" if prefix else body
-
-
-def lab_passes_filters(lab, filters):
-    """Return True when one LAB triplet satisfies every enabled limit."""
-    if not filters:
-        return True
-
-    try:
-        L, a, b = safe_lab_tuple(lab)
-    except Exception:
-        return False
-
-    if "L_min" in filters and L < filters["L_min"]:
-        return False
-    if "L_max" in filters and L > filters["L_max"]:
-        return False
-    if "a_min" in filters and a < filters["a_min"]:
-        return False
-    if "a_max" in filters and a > filters["a_max"]:
-        return False
-    if "b_min" in filters and b < filters["b_min"]:
-        return False
-    if "b_max" in filters and b > filters["b_max"]:
-        return False
-    return True
-
-
-def mean_rgb_with_lab_filters(rgb_pixels, filters=None, chunk_size=250000):
-    """
-    Compute an RGB mean after applying optional LAB limits pixel-by-pixel.
-
-    The RGB input is expected in [0, 255]. Conversion to CIELAB is vectorized
-    in chunks so large ROIs do not require a large temporary LAB image.
-
-    Returns
-    -------
-    (mean_rgb, used_count)
-        ``mean_rgb`` is a float RGB vector or None when no pixels survive.
-    """
-    pixels = np.asarray(rgb_pixels, dtype=np.float32).reshape(-1, 3)
-    total = int(pixels.shape[0])
-
-    if total == 0:
-        return None, 0
-
-    filters = dict(filters or {})
-    if not filters:
-        return np.mean(pixels, axis=0), total
-
-    rgb_sum = np.zeros(3, dtype=np.float64)
-    used_count = 0
-    chunk_size = max(1, int(chunk_size))
-
-    for start in range(0, total, chunk_size):
-        chunk = pixels[start:start + chunk_size]
-        lab_chunk = color.rgb2lab(
-            (chunk / 255.0).reshape(-1, 1, 3)
-        ).reshape(-1, 3)
-
-        mask = np.ones(lab_chunk.shape[0], dtype=bool)
-        L = lab_chunk[:, 0]
-        a = lab_chunk[:, 1]
-        b = lab_chunk[:, 2]
-
-        if "L_min" in filters:
-            mask &= L >= filters["L_min"]
-        if "L_max" in filters:
-            mask &= L <= filters["L_max"]
-        if "a_min" in filters:
-            mask &= a >= filters["a_min"]
-        if "a_max" in filters:
-            mask &= a <= filters["a_max"]
-        if "b_min" in filters:
-            mask &= b >= filters["b_min"]
-        if "b_max" in filters:
-            mask &= b <= filters["b_max"]
-
-        if np.any(mask):
-            accepted = chunk[mask]
-            rgb_sum += np.sum(accepted, axis=0, dtype=np.float64)
-            used_count += int(accepted.shape[0])
-
-    if used_count == 0:
-        return None, 0
-
-    return rgb_sum / float(used_count), used_count
-
-
-def open_lab_filters_dialog(
-    parent,
-    filter_bindings,
-    on_apply=None,
-    on_close=None,
-    warning_callback=None,
-    description="Enabled limits apply to manual area averages.",
-    title="LAB Filters",
-    theme=None,
-):
-    """
-    Open the shared compact LAB Filters dialog used by PyFCS image tools.
-
-    The dialog edits temporary variables. Active bindings are changed only
-    after a successful Apply, so Cancel/X always leave the current filters
-    untouched.
-    """
-    theme = dict(theme or {})
-    bg = theme.get("bg", "#f5f6f8")
-    card = theme.get("card", "#ffffff")
-    text_color = theme.get("text", "#1f2937")
-    muted = theme.get("muted", "#6b7280")
-    blue = theme.get("blue", "#1f4e8c")
-    blue_soft = theme.get("blue_soft", "#e8f0fe")
-    font = theme.get("font", ("Segoe UI", 9))
-    font_bold = theme.get("font_bold", ("Segoe UI", 9, "bold"))
-    font_small = theme.get("font_small", ("Segoe UI", 8))
-    font_small_bold = theme.get("font_small_bold", ("Segoe UI", 8, "bold"))
-    font_section = theme.get("font_section", ("Segoe UI", 10, "bold"))
-
-    win = tk.Toplevel(parent)
-    win.title(title)
-    win.configure(bg=bg)
-    win.resizable(False, False)
-    try:
-        win.transient(parent)
-    except Exception:
-        pass
-
-    temp_bindings = {}
-    for key, default_value in LAB_FILTER_DEFAULTS.items():
-        pair = (filter_bindings or {}).get(key)
-        if pair and len(pair) == 2:
-            enabled_var, value_var = pair
-            try:
-                enabled = bool(enabled_var.get())
-            except Exception:
-                enabled = False
-            try:
-                value = str(value_var.get())
-            except Exception:
-                value = default_value
-        else:
-            enabled = False
-            value = default_value
-
-        temp_bindings[key] = (
-            tk.BooleanVar(win, value=enabled),
-            tk.StringVar(win, value=value),
-        )
-
-    outer = tk.Frame(win, bg=bg)
-    outer.pack(fill="both", expand=True, padx=12, pady=12)
-
-    panel = tk.LabelFrame(
-        outer,
-        text=f" {title} ",
-        font=font_section,
-        bg=card,
-        fg=text_color,
-        bd=1,
-        relief="solid",
-        padx=10,
-        pady=8,
-        labelanchor="nw",
-    )
-    panel.pack(fill="both", expand=True)
-
-    tk.Label(
-        panel,
-        text=description,
-        font=font_small,
-        bg=card,
-        fg=muted,
-        anchor="w",
-        justify="left",
-    ).grid(row=0, column=0, columnspan=5, sticky="ew", pady=(0, 7))
-
-    tk.Label(panel, text="Component", font=font_small_bold, bg=card, fg=text_color).grid(
-        row=1, column=0, sticky="w", padx=(0, 12)
-    )
-    tk.Label(panel, text="Minimum", font=font_small_bold, bg=card, fg=text_color).grid(
-        row=1, column=1, columnspan=2, sticky="w"
-    )
-    tk.Label(panel, text="Maximum", font=font_small_bold, bg=card, fg=text_color).grid(
-        row=1, column=3, columnspan=2, sticky="w", padx=(12, 0)
-    )
-
-    rows = (
-        ("L*", "L_min", "L_max"),
-        ("a*", "a_min", "a_max"),
-        ("b*", "b_min", "b_max"),
-    )
-
-    for row_index, (label, min_key, max_key) in enumerate(rows, start=2):
-        min_enabled, min_value = temp_bindings[min_key]
-        max_enabled, max_value = temp_bindings[max_key]
-
-        tk.Label(
-            panel, text=label, font=font_bold, bg=card, fg=text_color,
-            width=5, anchor="w"
-        ).grid(row=row_index, column=0, sticky="w", pady=3)
-
-        tk.Checkbutton(
-            panel, variable=min_enabled, bg=card, activebackground=card,
-            selectcolor=card
-        ).grid(row=row_index, column=1, sticky="w")
-        tk.Entry(panel, textvariable=min_value, width=9, font=font).grid(
-            row=row_index, column=2, sticky="w"
-        )
-
-        tk.Checkbutton(
-            panel, variable=max_enabled, bg=card, activebackground=card,
-            selectcolor=card
-        ).grid(row=row_index, column=3, sticky="w", padx=(12, 0))
-        tk.Entry(panel, textvariable=max_value, width=9, font=font).grid(
-            row=row_index, column=4, sticky="w"
-        )
-
-    buttons = tk.Frame(panel, bg=card)
-    buttons.grid(row=5, column=0, columnspan=5, sticky="ew", pady=(10, 0))
-
-    def _warn(message):
-        if callable(warning_callback):
-            try:
-                warning_callback("Invalid Filter", message, parent=win)
-                return
-            except TypeError:
-                try:
-                    warning_callback("Invalid Filter", message)
-                    return
-                except Exception:
-                    pass
-            except Exception:
-                pass
-        messagebox.showwarning("Invalid Filter", message, parent=win)
-
-    closed = {"done": False}
-
-    def _finish_close():
-        if closed["done"]:
-            return
-        closed["done"] = True
-        try:
-            if callable(on_close):
-                on_close()
-        finally:
-            try:
-                if win.winfo_exists():
-                    win.destroy()
-            except Exception:
-                pass
-
-    def reset_filters():
-        for key, default_value in LAB_FILTER_DEFAULTS.items():
-            enabled_var, value_var = temp_bindings[key]
-            enabled_var.set(False)
-            value_var.set(default_value)
-
-    def apply_filters():
-        try:
-            filters = read_lab_filter_bindings(temp_bindings, strict=True)
-        except ValueError as exc:
-            _warn(str(exc))
-            return
-
-        for key, (target_enabled, target_value) in (filter_bindings or {}).items():
-            if key not in temp_bindings:
-                continue
-            source_enabled, source_value = temp_bindings[key]
-            try:
-                target_enabled.set(bool(source_enabled.get()))
-                target_value.set(str(source_value.get()).strip().replace(",", "."))
-            except Exception:
-                pass
-
-        # Close the modal dialog before running the caller callback. The
-        # callback may need to show its own warning (for example when a ROI has
-        # no pixels after filtering), and nested grabs are much safer this way.
-        _finish_close()
-        if callable(on_apply):
-            on_apply(dict(filters))
-
-    tk.Button(
-        buttons, text="Reset", command=reset_filters, font=font,
-        relief="solid", bd=1, padx=12, pady=4
-    ).pack(side="left")
-
-    tk.Button(
-        buttons, text="Cancel", command=_finish_close, font=font,
-        relief="solid", bd=1, padx=12, pady=4
-    ).pack(side="right", padx=(8, 0))
-
-    tk.Button(
-        buttons, text="Apply", command=apply_filters, font=font_bold,
-        bg=blue_soft, fg=blue, activebackground="#d7e5fb",
-        activeforeground=blue, relief="solid", bd=1, padx=14, pady=4
-    ).pack(side="right")
-
-    win.protocol("WM_DELETE_WINDOW", _finish_close)
-    win.bind("<Escape>", lambda _e: _finish_close())
-    win.update_idletasks()
-
-    dialog_w = max(390, win.winfo_reqwidth() + 8)
-    dialog_h = max(220, win.winfo_reqheight() + 8)
-
-    try:
-        parent.update_idletasks()
-        px = parent.winfo_rootx()
-        py = parent.winfo_rooty()
-        pw = max(1, parent.winfo_width())
-        ph = max(1, parent.winfo_height())
-        x = px + max(0, (pw - dialog_w) // 2)
-        y = py + max(0, (ph - dialog_h) // 2)
-        win.geometry(f"{dialog_w}x{dialog_h}+{x}+{y}")
-    except Exception:
-        sw = win.winfo_screenwidth()
-        sh = win.winfo_screenheight()
-        win.geometry(
-            f"{dialog_w}x{dialog_h}+{max(0, (sw - dialog_w) // 2)}+{max(0, (sh - dialog_h) // 2)}"
-        )
-
-    try:
-        win.grab_set()
-    except Exception:
-        pass
-    win.focus_set()
-    return win
 
 
 def is_valid_hex(hex_value):
@@ -953,16 +497,50 @@ def lab_to_rgb(lab):
 
 def srgb_to_lab(r, g, b):
     """
-    Convert one 8-bit sRGB color to CIELAB using the same scikit-image
-    conversion used by PyFCS image processing.
+    Convert sRGB values to CIELAB using manual linearization and XYZ conversion.
 
-    Keeping scalar and vectorized image conversion on the same implementation
-    avoids small module-dependent numerical differences.
+    Parameters
+    ----------
+    r, g, b : int
+        sRGB channel values in the range [0, 255].
+
+    Returns
+    -------
+    tuple
+        (L, a, b) values in CIELAB space.
     """
     r, g, b = safe_rgb_tuple((r, g, b))
-    rgb01 = np.asarray([[[r, g, b]]], dtype=np.float64) / 255.0
-    lab = color.rgb2lab(rgb01)[0, 0]
-    return tuple(float(v) for v in lab)
+
+    def inv_gamma(u):
+        u = u / 255.0
+        return u / 12.92 if u <= 0.04045 else ((u + 0.055) / 1.055) ** 2.4
+
+    R = inv_gamma(r)
+    G = inv_gamma(g)
+    B = inv_gamma(b)
+
+    # Linear RGB to XYZ, D65
+    X = R * 0.4124564 + G * 0.3575761 + B * 0.1804375
+    Y = R * 0.2126729 + G * 0.7151522 + B * 0.0721750
+    Z = R * 0.0193339 + G * 0.1191920 + B * 0.9503041
+
+    # D65 reference white
+    Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
+
+    x = X / Xn
+    y = Y / Yn
+    z = Z / Zn
+
+    def f(t):
+        return t ** (1 / 3) if t > 0.008856 else (7.787 * t + 16 / 116)
+
+    fx, fy, fz = f(x), f(y), f(z)
+
+    L = 116 * fy - 16
+    a = 500 * (fx - fy)
+    bb = 200 * (fy - fz)
+
+    return (L, a, bb)
 
 
 def rgb_to_lab(rgb):
@@ -1236,7 +814,19 @@ def prompt_file_selection(initial_subdir, parent=None):
     base_path = get_base_path()
     initial_directory = os.path.join(base_path, initial_subdir)
 
-    filetypes = [("All Files", "*.*")]
+    # A one-file release does not need to ship a writable
+    # ``fuzzy_color_spaces`` directory beside the executable.  If the suggested
+    # folder does not exist, simply start the dialog from the application
+    # directory (or the current working directory as a final fallback).
+    if not os.path.isdir(initial_directory):
+        initial_directory = base_path if os.path.isdir(base_path) else os.getcwd()
+
+    filetypes = [
+        ("PyFCS Color Spaces", "*.fcs *.cns *.FCS *.CNS"),
+        ("Fuzzy Color Space", "*.fcs *.FCS"),
+        ("Color Name System", "*.cns *.CNS"),
+        ("All Files", "*.*"),
+    ]
 
     return filedialog.askopenfilename(
         title="Select Fuzzy Color Space File",

@@ -54,7 +54,9 @@ class PyFCSApp:
         # ---------------------------------------------------------------------
         self.root = root
 
-        logo_path = os.path.join(BASE_PATH, "Source", "external", "icons", "logo.png")
+        logo_path = UtilsTools.get_resource_path(
+            os.path.join("Source", "external", "icons", "logo.png")
+        )
         self.logo = tk.PhotoImage(file=logo_path)
         self.root.iconphoto(True, self.logo)
 
@@ -64,13 +66,31 @@ class PyFCSApp:
             center_popup=self.center_popup if hasattr(self, "center_popup") else None,
         )
         self.fuzzy_manager = FuzzyColorSpaceManager(root=self.root)
-        self.color_manager = ColorEvaluationManager(output_dir="test_results/Color_Evaluation")
+        # Threshold CSV files are runtime-generated artifacts, just like the
+        # temporary Plotly HTML files.  Source execution keeps them under
+        # Source/external/temp/threshold_results, while frozen builds use the
+        # operating-system temp directory (e.g. %TEMP%/PyFCS on Windows).
+        self.color_manager = ColorEvaluationManager(
+            output_dir=UtilsTools.get_runtime_temp_dir("threshold_results", create=False)
+        )
         self._image_inspection_controller = None
         self._image_inspection_window = None
         self._image_based_creation_controller = None
         self._image_based_creation_window = None
         self._palette_based_creation_controller = None
         self._palette_based_creation_window = None
+
+        # Image Display workspace state.
+        # ``grid`` keeps cards automatically arranged; dragging/resizing a card
+        # switches to ``manual`` until the user presses Grid again.
+        self._image_workspace_layout_mode = "grid"
+        self._image_workspace_focus_id = None
+        self._image_workspace_active_id = None
+        self._image_workspace_focus_return_mode = "grid"
+        self._image_workspace_focus_saved_state = None
+        self._image_workspace_focus_saved_collapsed = None
+        self._image_workspace_callbacks = {}
+
         self.volume_limits = ReferenceDomain.default_voronoi_reference_domain()
 
         # ---------------------------------------------------------------------
@@ -100,8 +120,8 @@ class PyFCSApp:
         # Centralized image/icon references to avoid garbage collection
         self.ui_icons = {}
 
-        # Temporary external Plotly output
-        self.TEMP_PLOT_DIR = os.path.join("external", "temp", "plots")
+        # Temporary external Plotly output.  Source runs keep using
+        # Source/external/temp; frozen builds use the OS temp directory.
         self.TEMP_PLOT_MAX_FILES = 30
         self.TEMP_PLOT_CLEANUP_EVERY = 5
         self._temp_plot_creation_count = 0
@@ -303,47 +323,8 @@ class PyFCSApp:
             return btn
 
         def bind_vertical_mousewheel(canvas):
-            """
-            Enable mouse wheel scrolling only while the pointer is inside the target canvas.
-            Compatible with Windows, macOS and Linux.
-            """
-            system_name = platform.system()
-
-            def on_mousewheel(event):
-                if system_name == "Darwin":
-                    step = -1 if event.delta > 0 else 1
-                else:
-                    step = int(-1 * (event.delta / 120))
-                    if step == 0:
-                        step = -1 if event.delta > 0 else 1
-
-                canvas.yview_scroll(step, "units")
-                return "break"
-
-            def on_mousewheel_linux_up(event):
-                canvas.yview_scroll(-1, "units")
-                return "break"
-
-            def on_mousewheel_linux_down(event):
-                canvas.yview_scroll(1, "units")
-                return "break"
-
-            def bind_events(_event):
-                if system_name in ("Windows", "Darwin"):
-                    canvas.bind_all("<MouseWheel>", on_mousewheel)
-                else:
-                    canvas.bind_all("<Button-4>", on_mousewheel_linux_up)
-                    canvas.bind_all("<Button-5>", on_mousewheel_linux_down)
-
-            def unbind_events(_event):
-                if system_name in ("Windows", "Darwin"):
-                    canvas.unbind_all("<MouseWheel>")
-                else:
-                    canvas.unbind_all("<Button-4>")
-                    canvas.unbind_all("<Button-5>")
-
-            canvas.bind("<Enter>", bind_events)
-            canvas.bind("<Leave>", unbind_events)
+            """Register a scrollable canvas without using bind_all()/unbind_all()."""
+            self._register_vertical_mousewheel_canvas(canvas)
 
                 # ---------------------------------------------------------------------
         # Menu bar
@@ -363,7 +344,8 @@ class PyFCSApp:
 
         self.menubar.add_cascade(
             label="File",
-            menu=file_menu
+            menu=file_menu,
+            underline=0,  # F
         )
 
         # =============================================================
@@ -397,8 +379,9 @@ class PyFCSApp:
         )
 
         self.menubar.add_cascade(
-            label="Image Manager",
-            menu=img_menu
+            label="Image",
+            menu=img_menu,
+            underline=0,  # I
         )
 
         # =============================================================
@@ -430,8 +413,9 @@ class PyFCSApp:
         )
 
         self.menubar.add_cascade(
-            label="Fuzzy Color Space Manager",
-            menu=fuzzy_menu
+            label="Fuzzy Color Space",
+            menu=fuzzy_menu,
+            underline=6,  # C
         )
 
         # Matching dropdown used by the toolbar button.
@@ -457,7 +441,8 @@ class PyFCSApp:
 
         self.menubar.add_cascade(
             label="Color Analysis",
-            menu=analysis_menu
+            menu=analysis_menu,
+            underline=6,  # A
         )
 
         # =============================================================
@@ -472,8 +457,48 @@ class PyFCSApp:
 
         self.menubar.add_cascade(
             label="Help",
-            menu=help_menu
+            menu=help_menu,
+            underline=0,  # H
         )
+
+        # ---------------------------------------------------------------------
+        # Menu mnemonics
+        # ---------------------------------------------------------------------
+        # Tk uses the underline metadata natively where supported.
+        #
+        # On Windows and Linux we also bind Alt+key explicitly so the
+        # mnemonics remain reliable across Tk themes/window managers.
+        #
+        # On macOS we deliberately do NOT bind Option+key: Option is commonly
+        # used for text input and Tk/Aqua integrates the application menu with
+        # the native macOS menubar differently.
+        if platform.system() != "Darwin":
+            def _open_top_menu(index):
+                try:
+                    self.menubar.postcascade(index)
+                except Exception:
+                    pass
+                return "break"
+
+            menu_mnemonics = {
+                "f": 0,  # File
+                "i": 1,  # Image
+                "c": 2,  # Fuzzy Color Space
+                "a": 3,  # Color Analysis
+                "h": 4,  # Help
+            }
+
+            for key, index in menu_mnemonics.items():
+                self.root.bind_all(
+                    f"<Alt-KeyPress-{key}>",
+                    lambda _event, idx=index: _open_top_menu(idx),
+                    add="+",
+                )
+                self.root.bind_all(
+                    f"<Alt-KeyPress-{key.upper()}>",
+                    lambda _event, idx=index: _open_top_menu(idx),
+                    add="+",
+                )
 
         # ---------------------------------------------------------------------
         # Toolbar area
@@ -610,14 +635,94 @@ class PyFCSApp:
             pady=10
         )
 
+        # Image workspace controls. The canvas still owns all image rendering,
+        # mapping and ROI interactions, but card placement is now automatic.
+        image_workspace_bar = tk.Frame(image_area_frame, bg=CARD_BG)
+        image_workspace_bar.pack(fill="x", pady=(0, 7))
+
+        self.image_workspace_status_var = tk.StringVar(value="No images open")
+        tk.Label(
+            image_workspace_bar,
+            textvariable=self.image_workspace_status_var,
+            font=FONT_SMALL,
+            bg=CARD_BG,
+            fg=MUTED,
+            anchor="w",
+        ).pack(side="left")
+
+        self.image_workspace_grid_button = tk.Button(
+            image_workspace_bar,
+            text="Grid",
+            command=self._arrange_image_workspace_grid,
+            font=FONT_SMALL_BOLD,
+            bg="#f8fafc",
+            fg=TEXT,
+            activebackground=BLUE_BG,
+            relief="solid",
+            bd=1,
+            padx=9,
+            pady=2,
+            cursor="hand2",
+        )
+        self.image_workspace_grid_button.pack(side="right")
+
+        self.image_workspace_focus_button = tk.Button(
+            image_workspace_bar,
+            text="Focus",
+            command=self._focus_active_image_workspace_card,
+            font=FONT_SMALL_BOLD,
+            bg="#f8fafc",
+            fg=TEXT,
+            activebackground=BLUE_BG,
+            relief="solid",
+            bd=1,
+            padx=9,
+            pady=2,
+            cursor="hand2",
+            state="disabled",
+        )
+        self.image_workspace_focus_button.pack(side="right", padx=(0, 6))
+
+        image_canvas_shell = tk.Frame(image_area_frame, bg=PANEL_BG)
+        image_canvas_shell.pack(fill="both", expand=True)
+        image_canvas_shell.grid_rowconfigure(0, weight=1)
+        image_canvas_shell.grid_columnconfigure(0, weight=1)
+
         self.image_canvas = tk.Canvas(
-            image_area_frame,
+            image_canvas_shell,
             bg=PANEL_BG,
             borderwidth=1,
             relief="solid",
-            highlightthickness=0
+            highlightthickness=0,
+            yscrollincrement=24,
         )
-        self.image_canvas.pack(fill="both", expand=True)
+        self.image_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.image_workspace_vscroll = ttk.Scrollbar(
+            image_canvas_shell,
+            orient="vertical",
+            command=self.image_canvas.yview,
+        )
+        self.image_workspace_vscroll.grid(row=0, column=1, sticky="ns")
+        self.image_canvas.configure(yscrollcommand=self.image_workspace_vscroll.set)
+
+        # Mapping controls are embedded in the corresponding image card.
+        # No separate dock/window is used, so image + mapping controls always
+        # move, minimize and stack as one visual unit.
+        self.image_mapping_dock = None
+        self.image_mapping_dock_visible = False
+        self._mapping_all_palette_by_window = {}
+
+        self._image_workspace_focus_id = None
+        self._image_workspace_active_id = None
+        self._image_workspace_reflow_after_id = None
+        self._image_workspace_callbacks = {}
+
+        self.image_canvas.bind(
+            "<Configure>",
+            lambda _e: self._schedule_image_workspace_reflow(),
+            add="+",
+        )
 
         # Right pane: notebook area
         notebook_container = tk.Frame(
@@ -1097,6 +1202,97 @@ class PyFCSApp:
 
 
 
+    def _register_vertical_mousewheel_canvas(self, canvas):
+        """
+        Register a main-window canvas for cross-platform vertical wheel scrolling.
+
+        A single dispatcher is bound to the main Toplevel. It checks which
+        registered canvas is actually under the pointer, so no component needs
+        bind_all()/unbind_all() and one scrollable area cannot remove another
+        component's wheel/zoom bindings.
+        """
+        if canvas is None:
+            return
+
+        if not hasattr(self, "_vertical_wheel_canvases"):
+            self._vertical_wheel_canvases = []
+
+        if canvas not in self._vertical_wheel_canvases:
+            self._vertical_wheel_canvases.append(canvas)
+
+        if not hasattr(self, "_vertical_wheel_bound_toplevels"):
+            self._vertical_wheel_bound_toplevels = set()
+
+        try:
+            top = canvas.winfo_toplevel()
+            top_key = str(top)
+        except Exception:
+            top = self.root
+            top_key = str(self.root)
+
+        if top_key in self._vertical_wheel_bound_toplevels:
+            return
+
+        top.bind("<MouseWheel>", self._dispatch_vertical_mousewheel, add="+")
+        top.bind("<Button-4>", self._dispatch_vertical_mousewheel, add="+")
+        top.bind("<Button-5>", self._dispatch_vertical_mousewheel, add="+")
+        self._vertical_wheel_bound_toplevels.add(top_key)
+
+
+    def _dispatch_vertical_mousewheel(self, event):
+        """Scroll only the registered canvas currently under the mouse pointer."""
+        canvases = list(getattr(self, "_vertical_wheel_canvases", []) or [])
+        if not canvases:
+            return None
+
+        try:
+            pointer_x = self.root.winfo_pointerx()
+            pointer_y = self.root.winfo_pointery()
+        except Exception:
+            return None
+
+        alive = []
+        target = None
+        for canvas in canvases:
+            try:
+                if not canvas.winfo_exists():
+                    continue
+                alive.append(canvas)
+                x0 = canvas.winfo_rootx()
+                y0 = canvas.winfo_rooty()
+                x1 = x0 + canvas.winfo_width()
+                y1 = y0 + canvas.winfo_height()
+                if x0 <= pointer_x < x1 and y0 <= pointer_y < y1:
+                    target = canvas
+            except Exception:
+                continue
+
+        self._vertical_wheel_canvases = alive
+        if target is None:
+            return None
+
+        system_name = platform.system()
+        try:
+            if getattr(event, "num", None) == 4:
+                step = -1
+            elif getattr(event, "num", None) == 5:
+                step = 1
+            else:
+                delta = int(getattr(event, "delta", 0) or 0)
+                if delta == 0:
+                    return None
+                if system_name == "Darwin":
+                    step = -1 if delta > 0 else 1
+                else:
+                    step = int(-delta / 120)
+                    if step == 0:
+                        step = -1 if delta > 0 else 1
+            target.yview_scroll(step, "units")
+            return "break"
+        except Exception:
+            return None
+
+
     def load_toolbar_icon(self, filename, size=None):
         if not hasattr(self, "ui_icons"):
             self.ui_icons = {}
@@ -1106,7 +1302,9 @@ class PyFCSApp:
         if key in self.ui_icons:
             return self.ui_icons[key]
 
-        icon_path = os.path.join(BASE_PATH, "Source", "external", "icons", filename)
+        icon_path = UtilsTools.get_resource_path(
+            os.path.join("Source", "external", "icons", filename)
+        )
         img = Image.open(icon_path)
 
         if size is not None:
@@ -1627,27 +1825,26 @@ class PyFCSApp:
 
 
     def on_mouse_wheel(self, event, target):
-        """
-        Scroll a widget using the mouse wheel in a cross-platform way.
+        """Scroll a widget using Windows, macOS or X11/Linux wheel events."""
+        num = getattr(event, "num", None)
+        delta = int(getattr(event, "delta", 0) or 0)
 
-        Supported cases:
-        - Windows / macOS: <MouseWheel> events use event.delta
-        - Linux: <Button-4> and <Button-5> events are used instead
-
-        Args:
-            event: Tkinter mouse wheel event.
-            target: Scrollable widget supporting xview_scroll() or yview_scroll().
-        """
-        if event.num == 4:          # Linux scroll up
+        if num == 4:
             step = -1
-        elif event.num == 5:        # Linux scroll down
+        elif num == 5:
             step = 1
-        elif event.delta != 0:      # Windows / macOS
-            step = -int(event.delta / 120)
+        elif delta:
+            if platform.system() == "Darwin":
+                step = -1 if delta > 0 else 1
+            else:
+                step = int(-delta / 120)
+                if step == 0:
+                    step = -1 if delta > 0 else 1
         else:
-            return
+            return None
 
         target.yview_scroll(step, "units")
+        return "break"
 
 
 
@@ -1869,27 +2066,6 @@ class PyFCSApp:
         return True
 
 
-    def _start_image_based_mode_and_close_popup(self, popup, mode):
-        """Start image-based creation and close the mode selector safely."""
-        try:
-            if popup is not None and popup.winfo_exists():
-                popup.destroy()
-        except Exception:
-            pass
-
-        self._start_image_based_mode(popup, mode=mode)
-
-
-    def _recalculate_detected_colors(self, popup, colors, threshold, min_samples):
-        """Close current detected-colors popup and continue with recalculate flow."""
-        try:
-            if popup is not None and popup.winfo_exists():
-                popup.destroy()
-        except Exception:
-            pass
-
-        self.get_fcs_image_recalculate(colors, threshold, min_samples, popup=None)
-
 
     def _open_plotly_figure_in_browser(self, fig, filename_prefix="plot"):
         """
@@ -1945,24 +2121,19 @@ class PyFCSApp:
 
     def _get_temp_plot_dir(self):
         """
-        Return the folder used for temporary external Plotly plots.
+        Return the writable folder used for temporary external Plotly files.
 
-        The default target is:
-            external/temp/plots/
+        Source execution:
+            <project>/Source/external/temp/plots/
 
-        If the app is running from Source/interface, this resolves to:
-            Source/external/temp/plots/
+        Frozen PyInstaller execution:
+            <OS temp>/PyFCS/plots/
+
+        This keeps the familiar external folder during development while
+        allowing the distributed one-file application to run without any
+        Source/external directory beside it.
         """
-        try:
-            # mainInterface.py suele estar en Source/interface/
-            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        except Exception:
-            base_dir = os.getcwd()
-
-        plot_dir = os.path.join(base_dir, self.TEMP_PLOT_DIR)
-        os.makedirs(plot_dir, exist_ok=True)
-
-        return plot_dir
+        return UtilsTools.get_runtime_temp_dir("plots")
 
 
     def _safe_plot_filename_prefix(self, filename_prefix):
@@ -1986,7 +2157,7 @@ class PyFCSApp:
         Delete the oldest temporary plot HTML files if the folder exceeds
         self.TEMP_PLOT_MAX_FILES.
 
-        Only .html files inside external/temp/plots are affected.
+        Only .html files inside the PyFCS temporary plots directory are affected.
         """
         try:
             plot_dir = self._get_temp_plot_dir()
@@ -2130,10 +2301,7 @@ class PyFCSApp:
             self.COLOR_SPACE = False
             self.CAN_APPLY_MAPPING = {key: False for key in self.CAN_APPLY_MAPPING}
 
-            if hasattr(self, "cm_cache_by_image"):
-                self.cm_cache_by_image.clear()
-            if hasattr(self, "proto_percentage_cache_by_image"):
-                self.proto_percentage_cache_by_image.clear()
+            self._invalidate_mapping_caches()
             return
 
         # Process color prototypes from the input color data
@@ -2157,7 +2325,11 @@ class PyFCSApp:
     def update_prototypes_info(self):
         # Update 3D graph flags and application state variables
         self.COLOR_SPACE = True
-        self.CAN_APPLY_MAPPING = {key: True for key in self.CAN_APPLY_MAPPING}
+        locked = getattr(self, "mapping_locked_until_original", {}) or {}
+        self.CAN_APPLY_MAPPING = {
+            key: not bool(locked.get(key, False))
+            for key in self.CAN_APPLY_MAPPING
+        }
 
         # Display selection control buttons
         if not self.select_all_button.winfo_ismapped():
@@ -2176,6 +2348,46 @@ class PyFCSApp:
         # Trigger update based on the selected options
         self.on_option_select()
 
+
+
+    def _prepare_open_images_for_color_space_change(self):
+        """
+        Detach current image mappings from the color space that produced them.
+
+        Single-prototype mappings return to Original immediately. Mapping-All
+        views may stay visible, but are explicitly locked as results of the old
+        color space until the user chooses a valid view/mapping for the new one.
+        """
+        if not hasattr(self, "mapping_locked_until_original"):
+            self.mapping_locked_until_original = {}
+
+        if not hasattr(self, "floating_images") or not self.floating_images:
+            return
+
+        for window_id in list(self.floating_images.keys()):
+            mode = getattr(self, "window_mapping_mode", {}).get(window_id)
+
+            if mode == "single":
+                try:
+                    self.show_original_image(window_id)
+                except Exception:
+                    pass
+
+            elif mode == "all":
+                self.mapping_locked_until_original[window_id] = True
+                self.CAN_APPLY_MAPPING[window_id] = False
+                try:
+                    self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
+                except Exception:
+                    pass
+
+
+    def _invalidate_mapping_caches(self):
+        """Invalidate all results whose memberships depend on the active FCS."""
+        if hasattr(self, "cm_cache_by_image"):
+            self.cm_cache_by_image.clear()
+        if hasattr(self, "proto_percentage_cache_by_image"):
+            self.proto_percentage_cache_by_image.clear()
 
 
     def load_color_space(self, filename=None):
@@ -2243,25 +2455,7 @@ class PyFCSApp:
             # ----------------------------------------------------------
             self._reset_image_inspection_state()
 
-            if not hasattr(self, "mapping_locked_until_original"):
-                self.mapping_locked_until_original = {}
-
-            if hasattr(self, "floating_images") and self.floating_images:
-                for window_id in list(self.floating_images.keys()):
-                    mode = getattr(self, "window_mapping_mode", {}).get(window_id)
-
-                    if mode == "single":
-                        self.show_original_image(window_id)
-
-                    elif mode == "all":
-                        # Keep the displayed image, but mark its mapping as
-                        # belonging to the previous color space.
-                        self.mapping_locked_until_original[window_id] = True
-                        self.CAN_APPLY_MAPPING[window_id] = False
-                        try:
-                            self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
-                        except Exception:
-                            pass
+            self._prepare_open_images_for_color_space_change()
 
             self.file_path = filename
             self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
@@ -2272,10 +2466,7 @@ class PyFCSApp:
             self.cores = new_cores
             self.supports = new_supports
 
-            if hasattr(self, "cm_cache_by_image"):
-                self.cm_cache_by_image.clear()
-            if hasattr(self, "proto_percentage_cache_by_image"):
-                self.proto_percentage_cache_by_image.clear()
+            self._invalidate_mapping_caches()
 
             self.display_data_window()
             self._reset_3d_canvas()
@@ -2552,6 +2743,8 @@ class PyFCSApp:
         fuzzy_color_space,
     ):
         self._reset_image_inspection_state()
+        self._prepare_open_images_for_color_space_change()
+        self._invalidate_mapping_caches()
 
         self.color_data = copy.deepcopy(saved_color_data)
         self.edit_color_data = copy.deepcopy(saved_color_data)
@@ -4338,12 +4531,19 @@ class PyFCSApp:
     # ============================================================================================================================================================
     #  FUNCTIONS IMAGE DISPLAY
     # ============================================================================================================================================================
-    def save_image(self):
+    def save_image(self, window_id=None):
         """
-        Save the currently displayed image for a selected window.
+        Save the currently displayed image.
 
-        If the selected image is a Color Mapping All result, also save a standalone
-        legend image using the current palette scheme.
+        Parameters
+        ----------
+        window_id : str or None
+            When provided (for example from an image card's context menu), save
+            that image directly. When omitted, keep the toolbar/menu behavior
+            and ask the user which open image should be saved.
+
+        If the target is a Color Mapping All result, a standalone legend image
+        is saved beside it using the palette currently displayed.
         """
         if not hasattr(self, "load_images_names") or not self.load_images_names:
             self.custom_warning(message="There are currently no images available to save.")
@@ -4356,20 +4556,9 @@ class PyFCSApp:
             )
             return
 
-        popup, listbox = UtilsTools.create_selection_popup(
-            parent=self.image_canvas,
-            title="Select an Image to Save",
-            width=220,
-            height=220,
-            items=[os.path.basename(filename) for filename in self.load_images_names.values()]
-        )
-
-        self.center_popup(popup, 220, 220)
-
         def _build_legend_pil(labels, colors, box_size=28, padding=10, row_gap=6):
             """Build a standalone legend image from labels and RGB uint8 colors."""
             font = ImageFont.load_default()
-
             max_text_w = 0
             for lbl in labels:
                 lbl = str(lbl)
@@ -4381,10 +4570,8 @@ class PyFCSApp:
 
             width = padding * 2 + box_size + 10 + max_text_w
             height = padding * 2 + len(labels) * (box_size + row_gap) - row_gap
-
             legend = Image.new("RGB", (max(1, width), max(1, height)), "white")
             draw = ImageDraw.Draw(legend)
-
             y = padding
 
             for lbl, col in zip(labels, colors):
@@ -4395,82 +4582,85 @@ class PyFCSApp:
 
                 draw.rectangle(
                     [padding, y, padding + box_size, y + box_size],
-                    fill=(r, g, b),
-                    outline=(0, 0, 0)
+                    fill=(r, g, b), outline=(0, 0, 0)
                 )
-
                 draw.text(
                     (padding + box_size + 10, y + 7),
-                    str(lbl),
-                    fill="black",
-                    font=font
+                    str(lbl), fill="black", font=font
                 )
-
                 y += box_size + row_gap
 
             return legend
 
-        def _get_mapping_all_legend_data(window_id):
-            """
-            Return labels and current palette colors for a Color Mapping All window.
-
-            Supports the current cache-based implementation:
-            self.cm_cache_by_image[(image_key, color_space_key)]["last_pack"]
-            """
-            # Must currently be a Color Mapping All result
-            if getattr(self, "window_mapping_mode", {}).get(window_id) != "all":
+        def _get_mapping_all_legend_data(target_window_id):
+            """Return the labels and palette that are actually visible now."""
+            if getattr(self, "window_mapping_mode", {}).get(target_window_id) != "all":
                 return None, None
 
-            if not hasattr(self, "window_image_key") or window_id not in self.window_image_key:
+            # Most reliable source: the rows currently rendered in the card's
+            # Mapping-All legend. These rows are rebuilt every time Alt. Colors
+            # changes, so exporting them guarantees that _legend.png matches
+            # exactly what the user is seeing.
+            panel_info = getattr(self, "proto_options", {}).get(target_window_id)
+            if isinstance(panel_info, dict) and panel_info.get("kind") == "all":
+                rows = list(panel_info.get("rows", []) or [])
+                if rows:
+                    labels = []
+                    colors = []
+                    for prototype, rgb in rows:
+                        labels.append(str(getattr(prototype, "label", prototype)))
+                        try:
+                            rgb_values = np.asarray(rgb, dtype=np.uint8).reshape(-1)[:3]
+                            if rgb_values.size != 3:
+                                raise ValueError("Invalid RGB legend color")
+                            colors.append(tuple(int(v) for v in rgb_values))
+                        except Exception:
+                            colors.append((0, 0, 0))
+                    return labels, np.asarray(colors, dtype=np.uint8)
+
+            labels = [p.label for p in getattr(self, "prototypes", []) or []]
+            if not labels:
                 return None, None
 
-            if not hasattr(self, "cm_cache_by_image"):
+            # Secondary source: palette stored when the current Mapping All
+            # view was drawn. This also reflects an Alt. Colors toggle.
+            palette = getattr(self, "_mapping_all_palette_by_window", {}).get(target_window_id)
+            if palette is not None:
+                try:
+                    palette = np.asarray(palette, dtype=np.uint8)
+                    if len(palette) >= len(labels):
+                        return labels, palette[:len(labels)]
+                except Exception:
+                    pass
+
+            # Fallback for older/cached views.
+            if not hasattr(self, "window_image_key") or target_window_id not in self.window_image_key:
                 return None, None
 
-            image_key = self.window_image_key.get(window_id)
+            image_key = self.window_image_key.get(target_window_id)
             color_space_key = getattr(self, "file_path", None)
-            cache_scope = (image_key, color_space_key)
-
-            scope_cache = self.cm_cache_by_image.get(cache_scope)
-            if not scope_cache:
-                return None, None
-
-            cache_pack = scope_cache.get("last_pack")
+            scope_cache = getattr(self, "cm_cache_by_image", {}).get((image_key, color_space_key))
+            cache_pack = scope_cache.get("last_pack") if scope_cache else None
             if not cache_pack:
                 return None, None
 
             palettes = cache_pack.get("palettes")
             scheme = cache_pack.get("scheme")
-
             if not palettes or not scheme or scheme not in palettes:
                 return None, None
 
-            colors = palettes[scheme]
+            return labels, np.asarray(palettes[scheme], dtype=np.uint8)[:len(labels)]
 
-            labels = []
-            if hasattr(self, "prototypes") and self.prototypes:
-                labels = [p.label for p in self.prototypes]
-
-            if not labels:
-                return None, None
-
-            return labels, colors
-
-        def on_select(event):
-            selection = listbox.curselection()
-            if not selection:
+        def _save_window(target_window_id, parent_to_close=None):
+            if target_window_id not in self.load_images_names:
+                self.custom_warning("Error", "The selected image is no longer open.")
                 return
 
-            index = selection[0]
-            window_ids = list(self.load_images_names.keys())
-
-            if index >= len(window_ids):
-                self.custom_warning("Error", "Invalid selection index.")
-                return
-
-            window_id = window_ids[index]
-
+            source_name = os.path.basename(self.load_images_names.get(target_window_id, "image"))
+            stem = os.path.splitext(source_name)[0] or "image"
             save_path = filedialog.asksaveasfilename(
+                parent=self._get_active_dialog_parent(),
+                initialfile=f"{stem}.png",
                 defaultextension=".png",
                 filetypes=[
                     ("PNG files", "*.png"),
@@ -4478,61 +4668,324 @@ class PyFCSApp:
                     ("All Files", "*.*")
                 ]
             )
-
             if not save_path:
                 return
 
             try:
-                if not hasattr(self, "display_pil") or window_id not in self.display_pil:
+                # Export the complete current image mode, independent of zoom/pan.
+                # image_view_source is Original / Color Mapping / Mapping All at
+                # its full processing resolution; display_pil is only the current
+                # viewport/card rendering and must never define exported content.
+                img_to_save = getattr(self, "image_view_source", {}).get(target_window_id)
+                if img_to_save is None:
+                    img_to_save = getattr(self, "display_pil", {}).get(target_window_id)
+                if img_to_save is None:
                     self.custom_warning("Error", "No displayed image available to save for this window.")
                     return
-
-                # Save current displayed image
-                img_to_save = self.display_pil[window_id]
-
-                # JPEG does not support alpha
+                img_to_save = img_to_save.copy()
                 ext = os.path.splitext(save_path)[1].lower()
                 if ext in (".jpg", ".jpeg") and img_to_save.mode in ("RGBA", "LA"):
                     img_to_save = img_to_save.convert("RGB")
-
                 img_to_save.save(save_path)
 
-                # Save legend only for Color Mapping All
                 legend_path = None
-                labels, legend_colors = _get_mapping_all_legend_data(window_id)
-
+                labels, legend_colors = _get_mapping_all_legend_data(target_window_id)
                 if labels is not None and legend_colors is not None:
                     legend_img = _build_legend_pil(labels, legend_colors)
-
                     base, _ext = os.path.splitext(save_path)
                     legend_path = base + "_legend.png"
-
                     legend_img.save(legend_path)
 
                 if legend_path:
                     messagebox.showinfo(
                         "Success",
+                        f"Image saved successfully at:\n{save_path}\n\nLegend saved at:\n{legend_path}",
+                        parent=self._get_active_dialog_parent(),
+                    )
+                elif getattr(self, "window_mapping_mode", {}).get(target_window_id) == "all":
+                    messagebox.showinfo(
+                        "Success",
                         f"Image saved successfully at:\n{save_path}\n\n"
-                        f"Legend saved at:\n{legend_path}"
+                        "The Mapping All legend could not be reconstructed for export.",
+                        parent=self._get_active_dialog_parent(),
                     )
                 else:
                     messagebox.showinfo(
                         "Success",
-                        f"Image saved successfully at:\n{save_path}"
+                        f"Image saved successfully at:\n{save_path}",
+                        parent=self._get_active_dialog_parent(),
                     )
-
-            except Exception as e:
-                self.custom_warning("Error", f"Failed to save image:\n{str(e)}")
-
+            except Exception as exc:
+                self.custom_warning("Error", f"Failed to save image:\n{exc}")
             finally:
-                try:
-                    popup.destroy()
-                except Exception:
-                    pass
+                if parent_to_close is not None:
+                    try:
+                        parent_to_close.destroy()
+                    except Exception:
+                        pass
 
-        listbox.bind("<<ListboxSelect>>", on_select)
+        # Context-menu path: the image is already known, so do not ask again.
+        if window_id is not None:
+            _save_window(window_id)
+            return
 
-    
+        # Toolbar/main-menu path: use a styled image picker instead of the
+        # legacy Listbox popup. This makes it clear which current view will be
+        # exported and whether Mapping All will also generate a legend file.
+        window_ids = list(self.load_images_names.keys())
+        parent = self._get_active_dialog_parent()
+
+        popup = tk.Toplevel(parent)
+        popup.title("Save Image")
+        popup.configure(bg="#eeeeee")
+        popup.resizable(False, False)
+        popup.transient(parent)
+        popup.grab_set()
+
+        selected_id = {"value": None}
+        row_refs = {}
+        thumb_refs = []
+        # Keep PhotoImage thumbnails alive after save_image() returns.
+        popup._thumb_refs = thumb_refs
+
+        outer = tk.Frame(popup, bg="#eeeeee")
+        outer.pack(fill="both", expand=True, padx=12, pady=12)
+
+        panel = tk.Frame(outer, bg="white", bd=1, relief="solid")
+        panel.pack(fill="both", expand=True)
+
+        header = tk.Frame(panel, bg="#f6f6f6", height=58)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+
+        tk.Label(
+            header,
+            text="Save Image",
+            font=("Sans", 13, "bold"),
+            bg="#f6f6f6",
+            fg="#222222",
+            anchor="w",
+            padx=16,
+        ).pack(side="left", fill="y")
+
+        tk.Label(
+            header,
+            text="Choose an open image to export",
+            font=("Sans", 9, "italic"),
+            bg="#f6f6f6",
+            fg="#666666",
+            padx=16,
+        ).pack(side="right", fill="y")
+
+        body = tk.Frame(panel, bg="white")
+        body.pack(fill="both", expand=True, padx=14, pady=(12, 8))
+
+        list_canvas = tk.Canvas(
+            body,
+            bg="white",
+            highlightthickness=0,
+            bd=0,
+            width=430,
+            height=min(300, max(92, len(window_ids) * 78)),
+        )
+        list_canvas.pack(side="left", fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=list_canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        list_canvas.configure(yscrollcommand=scrollbar.set)
+
+        rows_frame = tk.Frame(list_canvas, bg="white")
+        rows_window = list_canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+
+        def _mode_text(wid):
+            mode = getattr(self, "window_mapping_mode", {}).get(wid)
+            if mode == "single":
+                return "Color Mapping"
+            if mode == "all":
+                return "Color Mapping All · legend included"
+            return "Original Image"
+
+        def _set_selected(wid):
+            if wid not in row_refs:
+                return
+            selected_id["value"] = wid
+            for item_id, refs in row_refs.items():
+                chosen = item_id == wid
+                refs["frame"].configure(
+                    bg="#eef4ff" if chosen else "white",
+                    highlightbackground="#6f9ee8" if chosen else "#d9dde3",
+                    highlightthickness=1,
+                )
+                refs["text_frame"].configure(bg="#eef4ff" if chosen else "white")
+                refs["name"].configure(bg="#eef4ff" if chosen else "white")
+                refs["mode"].configure(bg="#eef4ff" if chosen else "white")
+            save_btn.configure(state="normal")
+
+        def _save_selected(_event=None):
+            wid = selected_id.get("value")
+            if wid is None:
+                return
+            _save_window(wid, parent_to_close=popup)
+
+        for index, wid in enumerate(window_ids):
+            filename = self.load_images_names.get(wid, "image")
+            row = tk.Frame(
+                rows_frame,
+                bg="white",
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#d9dde3",
+                cursor="hand2",
+            )
+            row.pack(fill="x", padx=1, pady=(0, 7))
+
+            # Thumbnail of exactly the current displayed view.
+            pil_thumb = getattr(self, "display_pil", {}).get(wid)
+            if pil_thumb is None:
+                pil_thumb = getattr(self, "pil_images_original", {}).get(wid)
+            if pil_thumb is not None:
+                thumb = pil_thumb.convert("RGB").copy()
+                thumb.thumbnail((72, 54), Image.Resampling.LANCZOS)
+                thumb_bg = Image.new("RGB", (72, 54), "white")
+                tx = (72 - thumb.width) // 2
+                ty = (54 - thumb.height) // 2
+                thumb_bg.paste(thumb, (tx, ty))
+                thumb_tk = ImageTk.PhotoImage(thumb_bg)
+                thumb_refs.append(thumb_tk)
+                thumb_label = tk.Label(row, image=thumb_tk, bg="white", bd=1, relief="solid")
+            else:
+                thumb_label = tk.Label(row, text="No preview", width=10, height=3, bg="#f5f5f5")
+            thumb_label.pack(side="left", padx=8, pady=7)
+
+            text_frame = tk.Frame(row, bg="white")
+            text_frame.pack(side="left", fill="both", expand=True, padx=(2, 10), pady=7)
+
+            name_label = tk.Label(
+                text_frame,
+                text=os.path.basename(filename),
+                font=("Sans", 10, "bold"),
+                fg="#1f2937",
+                bg="white",
+                anchor="w",
+            )
+            name_label.pack(fill="x")
+
+            mode_label = tk.Label(
+                text_frame,
+                text=_mode_text(wid),
+                font=("Sans", 8),
+                fg="#1f4e8c" if getattr(self, "window_mapping_mode", {}).get(wid) else "#6b7280",
+                bg="white",
+                anchor="w",
+            )
+            mode_label.pack(fill="x", pady=(4, 0))
+
+            row_refs[wid] = {
+                "frame": row,
+                "text_frame": text_frame,
+                "name": name_label,
+                "mode": mode_label,
+            }
+
+            for widget in (row, thumb_label, text_frame, name_label, mode_label):
+                widget.bind("<Button-1>", lambda _e, w=wid: _set_selected(w))
+                widget.bind("<Double-Button-1>", lambda _e, w=wid: (_set_selected(w), _save_selected()))
+
+        rows_frame.update_idletasks()
+        list_canvas.configure(scrollregion=list_canvas.bbox("all"))
+        list_canvas.itemconfigure(rows_window, width=max(1, list_canvas.winfo_reqwidth()))
+
+        def _sync_rows_width(event):
+            try:
+                list_canvas.itemconfigure(rows_window, width=max(1, event.width - 2))
+            except Exception:
+                pass
+        list_canvas.bind("<Configure>", _sync_rows_width)
+
+        def _wheel_list(event):
+            try:
+                px = popup.winfo_pointerx()
+                py = popup.winfo_pointery()
+                x0 = list_canvas.winfo_rootx()
+                y0 = list_canvas.winfo_rooty()
+                x1 = x0 + list_canvas.winfo_width()
+                y1 = y0 + list_canvas.winfo_height()
+                if not (x0 <= px < x1 and y0 <= py < y1):
+                    return None
+
+                if getattr(event, "num", None) == 4:
+                    step = -1
+                elif getattr(event, "num", None) == 5:
+                    step = 1
+                else:
+                    delta = int(getattr(event, "delta", 0) or 0)
+                    if delta == 0:
+                        return None
+                    if platform.system() == "Darwin":
+                        step = -1 if delta > 0 else 1
+                    else:
+                        step = int(-delta / 120)
+                        if step == 0:
+                            step = -1 if delta > 0 else 1
+                list_canvas.yview_scroll(step, "units")
+                return "break"
+            except Exception:
+                return None
+        popup.bind("<MouseWheel>", _wheel_list, add="+")
+        popup.bind("<Button-4>", _wheel_list, add="+")
+        popup.bind("<Button-5>", _wheel_list, add="+")
+
+        footer = tk.Frame(panel, bg="white")
+        footer.pack(fill="x", padx=14, pady=(0, 12))
+
+        tk.Button(
+            footer,
+            text="Cancel",
+            font=("Helvetica", 9),
+            bg="#f2f2f2",
+            fg="#333333",
+            relief="solid",
+            bd=1,
+            padx=14,
+            pady=4,
+            command=popup.destroy,
+        ).pack(side="right", padx=(8, 0))
+
+        save_btn = tk.Button(
+            footer,
+            text="Save Selected",
+            font=("Helvetica", 9, "bold"),
+            bg="#E8F0FE",
+            fg="#1f4e8c",
+            activebackground="#D7E5FB",
+            activeforeground="#1f4e8c",
+            relief="solid",
+            bd=1,
+            padx=16,
+            pady=4,
+            state="disabled",
+            command=_save_selected,
+        )
+        save_btn.pack(side="right")
+
+        popup.bind("<Escape>", lambda _e: popup.destroy())
+        popup.bind("<Return>", _save_selected)
+
+        popup.update_idletasks()
+        dialog_w = 500
+        dialog_h = min(440, max(190, popup.winfo_reqheight()))
+        try:
+            self.center_popup_to_parent(popup, dialog_w, dialog_h, parent=parent)
+        except Exception:
+            self.center_popup(popup, dialog_w, dialog_h)
+
+        # Preselect the active card when available; otherwise choose the first.
+        initial = getattr(self, "_image_workspace_active_id", None)
+        if initial not in window_ids and window_ids:
+            initial = window_ids[0]
+        if initial is not None:
+            _set_selected(initial)
+
 
 
     def close_all_image(self):
@@ -4616,6 +5069,10 @@ class PyFCSApp:
                 "image_view_source",
                 "image_view_state",
                 "_image_zoom_callbacks",
+                "CAN_APPLY_MAPPING",
+                "SHOW_ORIGINAL",
+                "modified_image",
+                "mapping_locked_until_original",
             ):
                 if hasattr(self, attr_name):
                     d = getattr(self, attr_name)
@@ -4631,10 +5088,559 @@ class PyFCSApp:
         if hasattr(self, "original_image_dimensions"):
             self.original_image_dimensions.clear()
 
+        self._clear_image_display_selection()
+        self._image_workspace_focus_id = None
+        self._image_workspace_active_id = None
+        self._image_workspace_focus_saved_state = None
+        self._image_workspace_focus_saved_collapsed = None
+        self._image_workspace_callbacks = {}
+        self._image_view_pan_state = None
+        try:
+            self._mapping_all_palette_by_window.clear()
+        except Exception:
+            pass
+        self._schedule_image_workspace_reflow(delay=0)
+
 
     
+    def _image_workspace_window_ids(self):
+        """Return live image-window ids in stable opening order."""
+        ids = []
+        names = getattr(self, "load_images_names", {}) or {}
+        states = getattr(self, "floating_window_state", {}) or {}
+        for window_id in names.keys():
+            if window_id in states and self._window_exists(window_id):
+                ids.append(window_id)
+        return ids
+
+
+    def _update_image_workspace_status(self):
+        ids = self._image_workspace_window_ids()
+        count = len(ids)
+        focus_id = getattr(self, "_image_workspace_focus_id", None)
+        layout_mode = getattr(self, "_image_workspace_layout_mode", "grid")
+
+        if count == 0:
+            text = "No images open"
+        elif focus_id in ids:
+            filename = os.path.basename(self.load_images_names.get(focus_id, "Image"))
+            text = f"Focus view · {filename}"
+        elif layout_mode == "manual":
+            text = f"{count} image{'s' if count != 1 else ''} · manual layout · Grid to arrange"
+        else:
+            text = f"{count} image{'s' if count != 1 else ''} · automatic layout"
+
+        try:
+            self.image_workspace_status_var.set(text)
+        except Exception:
+            pass
+
+        try:
+            focus_active = focus_id in ids
+            self.image_workspace_focus_button.configure(
+                state="disabled" if (not count or focus_active) else "normal"
+            )
+            self.image_workspace_grid_button.configure(
+                state="normal" if count else "disabled"
+            )
+        except Exception:
+            pass
+
+
+    def _schedule_image_workspace_reflow(self, delay=35):
+        """Debounce workspace layout after resize/open/close/state changes."""
+        if not hasattr(self, "image_canvas"):
+            return
+
+        previous = getattr(self, "_image_workspace_reflow_after_id", None)
+        if previous is not None:
+            try:
+                self.image_canvas.after_cancel(previous)
+            except Exception:
+                pass
+
+        try:
+            self._image_workspace_reflow_after_id = self.image_canvas.after(
+                max(0, int(delay)), self._reflow_image_workspace
+            )
+        except Exception:
+            self._image_workspace_reflow_after_id = None
+
+
+    def _set_image_workspace_active(self, window_id):
+        if window_id not in self._image_workspace_window_ids():
+            return
+        self._image_workspace_active_id = window_id
+        self._focus_floating_window(window_id)
+        self._update_image_workspace_status()
+
+
+    def _toggle_mapping_all_palette(self, window_id):
+        if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
+            self.custom_warning("Old Color Space",
+                                "This Color Mapping All result belongs to a previous Color Space. Press Original to use the new one.")
+            return
+        if not hasattr(self, "window_image_key") or window_id not in self.window_image_key:
+            return
+        cache_scope = (self.window_image_key[window_id], getattr(self, "file_path", None))
+        scope_cache = getattr(self, "cm_cache_by_image", {}).get(cache_scope)
+        pack = scope_cache.get("last_pack") if scope_cache else None
+        if not pack:
+            return
+        new_scheme = "original" if pack.get("scheme") == "alt" else "alt"
+        pack["scheme"] = new_scheme
+        palette = pack["palettes"][new_scheme]
+        recolored = self.image_manager.recolor_label_map(pack["label_map"], palette)
+        self._display_mapping_all_result(window_id, recolored, palette)
+
+
+    def _arrange_image_workspace_grid(self):
+        """Return to automatic non-overlapping card layout."""
+        # A selection rectangle is expressed in the previous card geometry.
+        # Grid can resize/reposition every card, so never carry that selection
+        # into the new layout.
+        self._clear_image_display_selection()
+
+        self._image_workspace_focus_id = None
+        self._image_workspace_layout_mode = "grid"
+        self._image_workspace_focus_return_mode = "grid"
+        self._image_workspace_focus_saved_state = None
+        self._image_workspace_focus_saved_collapsed = None
+        self._reflow_image_workspace()
+
+
+    def _set_image_workspace_manual(self):
+        """Keep the current geometry but stop automatic card repositioning."""
+        if getattr(self, "_image_workspace_focus_id", None) is not None:
+            return
+        self._image_workspace_layout_mode = "manual"
+        self._update_image_workspace_status()
+
+
+    def _focus_active_image_workspace_card(self):
+        ids = self._image_workspace_window_ids()
+        if not ids:
+            return
+
+        # Focus is an exclusive workspace mode. Once active, Grid is the only
+        # supported way back to the multi-image workspace. This avoids running
+        # the focus geometry twice and accumulating size/viewport drift.
+        if getattr(self, "_image_workspace_focus_id", None) in ids:
+            return
+
+        active = getattr(self, "_image_workspace_active_id", None)
+        if active not in ids:
+            active = ids[0]
+        self._set_image_workspace_focus(active)
+
+
+    def _set_image_workspace_focus(self, window_id=None):
+        """Maximize one image card inside Image Display."""
+        ids = self._image_workspace_window_ids()
+        if window_id is None or window_id not in ids:
+            return
+
+        # Do not allow Focus -> Focus. Re-entering this path used to resize the
+        # same card repeatedly and could desynchronize the viewport geometry.
+        # Grid is deliberately the only exit from Focus mode.
+        if getattr(self, "_image_workspace_focus_id", None) is not None:
+            return
+
+        # Focus changes both position and displayed dimensions. Any pixel/ROI
+        # marker belongs to the old geometry and must not survive the switch.
+        self._clear_image_display_selection()
+
+        # Remember the exact manual rectangle so leaving Focus does not destroy
+        # a user-positioned/resized layout. Grid layouts can simply be recomputed.
+        self._image_workspace_focus_return_mode = getattr(
+            self, "_image_workspace_layout_mode", "grid"
+        )
+        self._image_workspace_focus_saved_state = None
+        state = getattr(self, "floating_window_state", {}).get(window_id)
+        self._image_workspace_focus_saved_collapsed = bool(
+            state.get("collapsed", False)
+        ) if state else False
+
+        if self._image_workspace_focus_return_mode == "manual" and state:
+            self._image_workspace_focus_saved_state = dict(state)
+
+        # Focus always opens the selected card. The minimize control is hidden
+        # while focused, so there is no conflicting collapsed/focus geometry.
+        if state:
+            state["collapsed"] = False
+
+        self._image_workspace_focus_id = window_id
+        self._image_workspace_active_id = window_id
+        self._reflow_image_workspace()
+
+
+
+    def _toggle_image_workspace_focus(self, window_id):
+        """Enter Focus when possible; Grid is the only supported exit."""
+        if getattr(self, "_image_workspace_focus_id", None) is not None:
+            return
+        self._set_image_workspace_focus(window_id)
+
+
+    def _is_workspace_card_collapsed(self, window_id):
+        state = getattr(self, "floating_window_state", {}).get(window_id, {})
+        return bool(state.get("collapsed", False))
+
+
+    def _sync_workspace_card_item_states(self, window_id):
+        """Apply collapsed/focus state without changing image data or callbacks."""
+        if window_id not in getattr(self, "floating_window_state", {}):
+            return
+
+        collapsed = self._is_workspace_card_collapsed(window_id)
+        focus_id = getattr(self, "_image_workspace_focus_id", None)
+        hidden_by_focus = focus_id is not None and focus_id != window_id
+
+        if hidden_by_focus:
+            try:
+                self.image_canvas.itemconfigure(window_id, state="hidden")
+            except Exception:
+                pass
+            return
+
+        try:
+            self.image_canvas.itemconfigure(window_id, state="normal")
+        except Exception:
+            pass
+
+        content_state = "hidden" if collapsed else "normal"
+        for tag in (
+            f"{window_id}_img_item",
+            f"{window_id}_click_image",
+            f"{window_id}_pct_text",
+            f"{window_id}_selection_rect",
+            f"{window_id}_legend",
+        ):
+            try:
+                self.image_canvas.itemconfigure(tag, state=content_state)
+            except Exception:
+                pass
+
+        # Resize is a manual display action. It is available in Grid/Manual view;
+        # grabbing it switches to manual layout. Focus View uses the whole panel.
+        resize_state = "hidden" if collapsed or focus_id == window_id else "normal"
+        try:
+            self.image_canvas.itemconfigure(f"{window_id}_resize_handle", state=resize_state)
+        except Exception:
+            pass
+
+        minimize_state = "hidden" if focus_id == window_id else "normal"
+        for tag in (f"{window_id}_minimize_rect", f"{window_id}_minimize_text"):
+            try:
+                self.image_canvas.itemconfigure(tag, state=minimize_state)
+            except Exception:
+                pass
+
+        try:
+            self.image_canvas.itemconfigure(
+                f"{window_id}_minimize_text",
+                text="+" if collapsed else "−"
+            )
+        except Exception:
+            pass
+
+
+    def _set_workspace_card_visibility(self, window_id, visible=True):
+        state = "normal" if visible else "hidden"
+        try:
+            self.image_canvas.itemconfigure(window_id, state=state)
+        except Exception:
+            pass
+
+        if visible:
+            self._sync_workspace_card_item_states(window_id)
+
+
+    def _workspace_legend_width(self, window_id):
+        """Mapping panels are stacked below the image, so they add no side width."""
+        return 0
+
+
+    def _workspace_legend_height(self, window_id):
+        """Return a compact content-sized height for the mapping panel."""
+        info = getattr(self, "proto_options", {}).get(window_id)
+        if not isinstance(info, dict):
+            return 0
+
+        # Keep the selector visually compact: at most four rows are visible.
+        # Larger spaces use the internal scrollbar instead of reserving empty
+        # vertical space. Short lists shrink to exactly the rows they contain.
+        row_count = len(info.get("rows", []) or [])
+        visible_rows = max(1, min(row_count if row_count else 1, 4))
+        row_h = 24
+        pad_top = 5
+        footer_h = 40 if info.get("kind", "single") == "all" else 4
+        bottom_pad = 4
+        return pad_top + visible_rows * row_h + footer_h + bottom_pad
+
+
+    def _workspace_legend_extra_height(self, window_id):
+        """Vertical footprint added by a mapping panel stacked below the image."""
+        legend_h = self._workspace_legend_height(window_id)
+        if legend_h <= 0:
+            return 0
+
+        # The normal card already reserves 50 px below the image. The mapping
+        # panel begins after the percentage/status line and then needs a small
+        # bottom margin, so almost its full height is additional card space.
+        return legend_h + 4
+
+
+    def _toggle_image_card_minimize(self, window_id):
+        """Collapse/restore one card while preserving all image/mapping state."""
+        if self._has_active_job(window_id):
+            return
+
+        if getattr(self, "_image_workspace_focus_id", None) == window_id:
+            return
+
+        state = getattr(self, "floating_window_state", {}).get(window_id)
+        if not state:
+            return
+
+        state["collapsed"] = not bool(state.get("collapsed", False))
+        self._schedule_image_workspace_reflow(delay=0)
+
+
+    def _update_manual_workspace_scrollregion(self):
+        """Keep manually moved cards reachable through the Image Display scrollbars."""
+        try:
+            bbox = self.image_canvas.bbox("all")
+            canvas_w = max(1, int(self.image_canvas.winfo_width()))
+            canvas_h = max(1, int(self.image_canvas.winfo_height()))
+            if bbox:
+                _x1, _y1, x2, y2 = bbox
+                self.image_canvas.configure(
+                    scrollregion=(0, 0, max(canvas_w, x2 + 20), max(canvas_h, y2 + 20))
+                )
+            else:
+                self.image_canvas.configure(scrollregion=(0, 0, canvas_w, canvas_h))
+        except Exception:
+            pass
+
+
+    def _reflow_image_workspace(self):
+        """
+        Arrange image cards while preserving all existing image functionality.
+
+        Modes
+        -----
+        grid:
+            Automatic non-overlapping cards.
+        manual:
+            User positions/resizes cards freely. Pressing Grid restores the
+            automatic arrangement.
+        focus:
+            One card temporarily uses almost the whole Image Display area.
+        """
+        self._image_workspace_reflow_after_id = None
+
+        # Avoid resizing/repositioning a card while a mapping worker is writing
+        # its result. The layout is retried immediately after the job settles.
+        try:
+            if self._has_any_active_job():
+                self._schedule_image_workspace_reflow(delay=160)
+                return
+        except Exception:
+            pass
+
+        ids = self._image_workspace_window_ids()
+        if not ids:
+            try:
+                self.image_canvas.configure(scrollregion=(0, 0, 1, 1))
+                self.image_canvas.yview_moveto(0.0)
+            except Exception:
+                pass
+            self._image_workspace_focus_id = None
+            self._image_workspace_active_id = None
+            self._image_workspace_layout_mode = "grid"
+            self._update_image_workspace_status()
+            return
+
+        if getattr(self, "_image_workspace_active_id", None) not in ids:
+            self._image_workspace_active_id = ids[0]
+
+        focus_id = getattr(self, "_image_workspace_focus_id", None)
+        if focus_id not in ids:
+            focus_id = None
+            self._image_workspace_focus_id = None
+
+        try:
+            self.image_canvas.update_idletasks()
+            canvas_w = max(320, int(self.image_canvas.winfo_width()))
+            canvas_h = max(260, int(self.image_canvas.winfo_height()))
+        except Exception:
+            canvas_w, canvas_h = 620, 520
+
+        outer = 14
+        gap_x = 14
+        gap_y = 14
+        title_pad_x = 24
+        card_footer = 50
+        collapsed_h = 34
+
+        callbacks = getattr(self, "_image_workspace_callbacks", {})
+
+        # --------------------------------------------------------------
+        # Focus / maximize view
+        # --------------------------------------------------------------
+        if focus_id is not None:
+            # The main window itself may have been resized while Focus is active.
+            # Clear transient selection before recomputing focused geometry.
+            self._clear_image_display_selection(focus_id)
+
+            state = self.floating_window_state.get(focus_id)
+            if state:
+                state["collapsed"] = False
+
+            for wid in ids:
+                self._set_workspace_card_visibility(wid, wid == focus_id)
+
+            legend_extra = self._workspace_legend_extra_height(focus_id)
+            legend_width = self._workspace_legend_width(focus_id)
+            available_w = max(180, canvas_w - (outer * 2))
+            available_h = max(160, canvas_h - (outer * 2) - card_footer - legend_extra)
+
+            target_w = min(max(160, available_w - title_pad_x - legend_width), 1100)
+            target_h = min(max(140, available_h), 800)
+
+            cb = callbacks.get(focus_id, {})
+            resize_cb = cb.get("resize")
+            relayout_cb = cb.get("relayout")
+
+            if callable(resize_cb):
+                resize_cb(focus_id, target_w, target_h, reset_view=False)
+
+            state = self.floating_window_state.get(focus_id)
+            if state:
+                state["x"] = outer
+                state["y"] = outer
+
+            if callable(relayout_cb):
+                relayout_cb(focus_id)
+
+            self._sync_workspace_card_item_states(focus_id)
+            content_h = max(
+                canvas_h,
+                outer * 2
+                + (state.get("h", 250) if state else 250)
+                + card_footer
+                + self._workspace_legend_extra_height(focus_id)
+            )
+            try:
+                self.image_canvas.configure(scrollregion=(0, 0, canvas_w, content_h))
+                self.image_canvas.yview_moveto(0.0)
+            except Exception:
+                pass
+
+            self._image_workspace_active_id = focus_id
+            self._focus_floating_window(focus_id)
+            self._update_image_workspace_status()
+            return
+
+        # --------------------------------------------------------------
+        # Manual layout: preserve exact user geometry.
+        # --------------------------------------------------------------
+        if getattr(self, "_image_workspace_layout_mode", "grid") == "manual":
+            for wid in ids:
+                self._set_workspace_card_visibility(wid, True)
+                cb = callbacks.get(wid, {})
+                relayout_cb = cb.get("relayout")
+                if callable(relayout_cb):
+                    relayout_cb(wid)
+                self._sync_workspace_card_item_states(wid)
+
+            self._update_manual_workspace_scrollregion()
+            self._update_image_workspace_status()
+            return
+
+        # --------------------------------------------------------------
+        # Automatic grid
+        # --------------------------------------------------------------
+        # Grid may resize/reposition cards after a main-window resize, opening
+        # a mapping panel, or returning from Focus. Never leave a selection
+        # marker tied to the previous geometry.
+        self._clear_image_display_selection()
+        self._image_workspace_layout_mode = "grid"
+        for wid in ids:
+            self._set_workspace_card_visibility(wid, True)
+
+        # Choose the largest useful column count for the image cards. Mapping
+        # panels are stacked below their images and therefore add no side width.
+        max_panel_w = max((self._workspace_legend_width(wid) for wid in ids), default=0)
+        preferred = 3 if canvas_w >= 960 and len(ids) >= 3 else (2 if canvas_w >= 560 and len(ids) >= 2 else 1)
+        columns = 1
+        for candidate in range(preferred, 0, -1):
+            candidate_slot = max(220, int((canvas_w - outer * 2 - gap_x * (candidate - 1)) / candidate))
+            if candidate_slot - title_pad_x - 8 - max_panel_w >= 180 or candidate == 1:
+                columns = candidate
+                break
+
+        slot_w = max(220, int((canvas_w - outer * 2 - gap_x * (columns - 1)) / columns))
+
+        # Row heights adapt to minimized cards and to mapping panels below images.
+        row_groups = [ids[i:i + columns] for i in range(0, len(ids), columns)]
+        row_heights = []
+        for group in row_groups:
+            if all(self._is_workspace_card_collapsed(wid) for wid in group):
+                row_heights.append(collapsed_h + 8)
+            else:
+                legend_extra = max(
+                    (self._workspace_legend_extra_height(wid) for wid in group),
+                    default=0,
+                )
+                row_heights.append(315 + legend_extra)
+
+        y_offsets = []
+        current_y = outer
+        for height in row_heights:
+            y_offsets.append(current_y)
+            current_y += height + gap_y
+
+        for index, wid in enumerate(ids):
+            row = index // columns
+            col = index % columns
+            x = outer + col * (slot_w + gap_x)
+            y = y_offsets[row]
+
+            cb = callbacks.get(wid, {})
+            resize_cb = cb.get("resize")
+            relayout_cb = cb.get("relayout")
+
+            if not self._is_workspace_card_collapsed(wid):
+                target_w = max(
+                    150,
+                    slot_w - title_pad_x - 8 - self._workspace_legend_width(wid)
+                )
+                target_h = 245
+                if callable(resize_cb):
+                    resize_cb(wid, target_w, target_h, reset_view=False)
+
+            state = self.floating_window_state.get(wid)
+            if state:
+                state["x"] = x
+                state["y"] = y
+
+            if callable(relayout_cb):
+                relayout_cb(wid)
+            self._sync_workspace_card_item_states(wid)
+
+        content_h = max(canvas_h, current_y + outer)
+        try:
+            self.image_canvas.configure(scrollregion=(0, 0, canvas_w, content_h))
+        except Exception:
+            pass
+
+        self._update_image_workspace_status()
+
+
     def open_image(self):
-        """Allows the user to select an image file and display it in a floating window."""
+        """Allow the user to open an image in the automatic Image Display workspace."""
         if self._has_any_active_job():
             self.custom_warning(
                 "Process Running",
@@ -4645,18 +5651,19 @@ class PyFCSApp:
         initial_directory = os.path.join(BASE_PATH, 'image_test')
 
         filetypes = [
-            ("Image Files", "*.jpg *.jpeg *.png *.bmp *.gif *.tiff"),
+            ("Image Files", "*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp *.JPG *.JPEG *.PNG *.BMP *.GIF *.TIFF *.TIF *.WEBP"),
             ("All Files", "*.*")
         ]
 
         filename = filedialog.askopenfilename(
             title="Select an Image",
             initialdir=initial_directory,
-            filetypes=filetypes
+            filetypes=filetypes,
+            parent=self.root,
         )
 
         if filename:
-            self.create_floating_window(50, 50, filename)
+            self.create_floating_window(14, 14, filename)
 
 
 
@@ -4683,6 +5690,127 @@ class PyFCSApp:
         state["dragging"] = False
         state["drag_start"] = None
 
+
+    def _clear_image_display_selection(self, window_id=None, clear_info=True):
+        """
+        Clear transient pixel/ROI selection state from Image Display.
+
+        Layout changes (Grid, Focus, move, resize) change the canvas geometry,
+        therefore a marker drawn before the change must never be kept.
+        """
+        if window_id is None:
+            ids = list(getattr(self, "_original_sampling_state", {}).keys())
+        else:
+            ids = [window_id]
+
+        for wid in ids:
+            try:
+                self._clear_original_selection_rectangle(wid)
+            except Exception:
+                pass
+
+        if not clear_info:
+            return
+
+        info = getattr(self, "_last_pixel_info", None)
+        if info is not None:
+            info_id = info.get("image_id") if isinstance(info, dict) else None
+            if window_id is None or info_id == window_id:
+                self._last_pixel_info = None
+                frame = getattr(self, "lab_value_frame", None)
+                if frame is not None:
+                    try:
+                        if frame.winfo_exists():
+                            frame.destroy()
+                    except Exception:
+                        pass
+                for attr in (
+                    "lab_value_frame", "coord_value",
+                    "lab_value_print", "proto_value_text",
+                ):
+                    try:
+                        delattr(self, attr)
+                    except Exception:
+                        pass
+
+
+    def _get_image_view_crop_box(self, window_id):
+        """Return the visible crop in current view-source coordinates."""
+        source = getattr(self, "image_view_source", {}).get(window_id)
+        if source is None:
+            source = getattr(self, "pil_images_original", {}).get(window_id)
+        if source is None:
+            return None
+
+        source_w, source_h = source.size
+        state = getattr(self, "image_view_state", {}).get(window_id)
+        if not state:
+            state = {"zoom": 1.0, "cx": source_w / 2.0, "cy": source_h / 2.0}
+            self.image_view_state[window_id] = state
+
+        zoom = max(1.0, float(state.get("zoom", 1.0)))
+        crop_w = max(1.0, source_w / zoom)
+        crop_h = max(1.0, source_h / zoom)
+        cx = float(state.get("cx", source_w / 2.0))
+        cy = float(state.get("cy", source_h / 2.0))
+        left = max(0.0, min(source_w - crop_w, cx - crop_w / 2.0))
+        top = max(0.0, min(source_h - crop_h, cy - crop_h / 2.0))
+        return left, top, left + crop_w, top + crop_h
+
+
+    def _canvas_xy_to_view_source(self, window_id, canvas_x, canvas_y):
+        """Map canvas coordinates to the currently displayed view source."""
+        st = getattr(self, "floating_window_state", {}).get(window_id)
+        crop = self._get_image_view_crop_box(window_id)
+        if not st or crop is None:
+            return None
+
+        img_left = float(st["x"]) + 12.0
+        img_top = float(st["y"]) + 44.0
+        draw_w = max(1.0, float(st["w"]))
+        draw_h = max(1.0, float(st["h"]))
+        rel_x = float(canvas_x) - img_left
+        rel_y = float(canvas_y) - img_top
+        if not (0.0 <= rel_x < draw_w and 0.0 <= rel_y < draw_h):
+            return None
+
+        left, top, right, bottom = crop
+        source_x = left + (rel_x / draw_w) * (right - left)
+        source_y = top + (rel_y / draw_h) * (bottom - top)
+        return source_x, source_y, rel_x, rel_y
+
+
+    def _view_source_xy_to_original(self, window_id, source_x, source_y):
+        """Convert coordinates from a mapped/original view source to original pixels."""
+        source = getattr(self, "image_view_source", {}).get(window_id)
+        original = getattr(self, "pil_images_original", {}).get(window_id)
+        if source is None or original is None:
+            return None
+
+        sw, sh = source.size
+        ow, oh = original.size
+        if sw <= 0 or sh <= 0 or ow <= 0 or oh <= 0:
+            return None
+
+        # Use normalized position because mapping views may be computed at a
+        # display/processing resolution different from the original image.
+        ox = (float(source_x) / float(sw)) * float(ow)
+        oy = (float(source_y) / float(sh)) * float(oh)
+        ox = int(max(0, min(ow - 1, ox)))
+        oy = int(max(0, min(oh - 1, oy)))
+        return ox, oy
+
+
+    def _canvas_xy_to_original_image(self, window_id, canvas_x, canvas_y):
+        """Map a visible canvas point to the corresponding original-image pixel."""
+        point = self._canvas_xy_to_view_source(window_id, canvas_x, canvas_y)
+        if point is None:
+            return None
+        sx, sy, rel_x, rel_y = point
+        original = self._view_source_xy_to_original(window_id, sx, sy)
+        if original is None:
+            return None
+        return original[0], original[1], rel_x, rel_y
 
 
     def _set_image_zoom_source(self, window_id, pil_source, reset_zoom=True):
@@ -4725,10 +5853,9 @@ class PyFCSApp:
         Bind mouse wheel zoom once directly to the image canvas.
 
         Important:
-        - Do NOT use root.bind_all() here.
-        - Other widgets may call unbind_all("<MouseWheel>") for scrolling,
-        which would remove a global zoom binding.
-        - Binding directly to self.image_canvas keeps image zoom working.
+        - Image zoom is bound directly to image_canvas.
+        - Scrollable panels use independent pointer-aware dispatchers, so
+          their wheel handling cannot replace or remove this binding.
         """
         if getattr(self, "_image_zoom_mousewheel_bound", False):
             return
@@ -4777,8 +5904,8 @@ class PyFCSApp:
 
                 st = self.floating_window_state[window_id]
 
-                IMG_LEFT_PAD = 15
-                IMG_TOP_PAD = 40
+                IMG_LEFT_PAD = 12
+                IMG_TOP_PAD = 44
 
                 img_left = st["x"] + IMG_LEFT_PAD
                 img_top = st["y"] + IMG_TOP_PAD
@@ -4792,6 +5919,31 @@ class PyFCSApp:
 
             except Exception:
                 return False
+
+        def _get_legend_target_window():
+            """
+            Return the image id whose canvas-native mapping legend is currently
+            under the mouse pointer. Mapping legends are drawn with normal Canvas
+            primitives, so wheel events must be dispatched from the Canvas itself:
+            Canvas.tag_bind() does not accept <MouseWheel>.
+            """
+            try:
+                current_items = self.image_canvas.find_withtag("current")
+                if not current_items:
+                    return None
+
+                tags = self.image_canvas.gettags(current_items[0])
+                if "legend" not in tags:
+                    return None
+
+                panels = getattr(self, "proto_options", {}) or {}
+                for tag in tags:
+                    if tag in panels:
+                        return tag
+            except Exception:
+                pass
+
+            return None
 
         def _get_zoom_target_window(event):
             """
@@ -4812,6 +5964,14 @@ class PyFCSApp:
             return window_id
 
         def _dispatch_mousewheel(event):
+            # Mapping legend scrolling has priority over image zoom whenever the
+            # pointer is physically over the legend. This keeps both behaviors on
+            # one legal Canvas-level <MouseWheel> binding.
+            legend_window = _get_legend_target_window()
+            if legend_window:
+                delta = -1 if getattr(event, "delta", 0) > 0 else 1
+                return self._scroll_proto_options(legend_window, delta)
+
             window_id = _get_zoom_target_window(event)
             if not window_id:
                 return None
@@ -4827,6 +5987,10 @@ class PyFCSApp:
             return None
 
         def _dispatch_linux_wheel_up(event):
+            legend_window = _get_legend_target_window()
+            if legend_window:
+                return self._scroll_proto_options(legend_window, -1)
+
             window_id = _get_zoom_target_window(event)
             if not window_id:
                 return None
@@ -4842,6 +6006,10 @@ class PyFCSApp:
             return None
 
         def _dispatch_linux_wheel_down(event):
+            legend_window = _get_legend_target_window()
+            if legend_window:
+                return self._scroll_proto_options(legend_window, 1)
+
             window_id = _get_zoom_target_window(event)
             if not window_id:
                 return None
@@ -4856,8 +6024,8 @@ class PyFCSApp:
 
             return None
 
-        # Bind directly to the image canvas, not globally.
-        # This survives other widgets doing root.unbind_all("<MouseWheel>").
+        # Bind directly to the image canvas, not globally. Scrollable panels
+        # use their own pointer-aware Toplevel dispatcher.
         self.image_canvas.bind("<MouseWheel>", _dispatch_mousewheel, add="+")
         self.image_canvas.bind("<Button-4>", _dispatch_linux_wheel_up, add="+")
         self.image_canvas.bind("<Button-5>", _dispatch_linux_wheel_down, add="+")
@@ -4867,9 +6035,12 @@ class PyFCSApp:
 
     def create_floating_window(self, x, y, filename):
         """
-        Creates a floating window with the selected image, a title bar, and a dropdown menu.
-        The window is movable (from title bar only), resizable (bottom-right handle),
-        and includes options for displaying the original image and color mapping.
+        Create an image card inside the automatic Image Display workspace.
+
+        The existing canvas implementation is intentionally preserved so mapping,
+        ROI inspection, saving and viewport zoom continue using the same window ids
+        and callbacks. Placement and display size are managed automatically to avoid
+        overlapping images.
 
         Cache design:
         - Window UI state is keyed by window_id.
@@ -4994,53 +6165,75 @@ class PyFCSApp:
         self.original_images[window_id] = img_tk
 
         # Window paddings
-        PAD_X = 30
+        PAD_X = 24
         PAD_Y = 50
-        TITLE_H = 30
-        IMG_TOP_PAD = 40
-        IMG_LEFT_PAD = 15
-        HANDLE_SIZE = 12
+        TITLE_H = 34
+        IMG_TOP_PAD = 44
+        IMG_LEFT_PAD = 12
+        HANDLE_SIZE = 10
 
         # Save initial window state
-        self.floating_window_state[window_id] = {"x": x, "y": y, "w": new_width, "h": new_height}
+        self.floating_window_state[window_id] = {
+            "x": x,
+            "y": y,
+            "w": new_width,
+            "h": new_height,
+            "collapsed": False,
+        }
 
         # ---------------------------
         # Create canvas items
         # ---------------------------
         self.image_canvas.create_rectangle(
             x, y, x + new_width + PAD_X, y + new_height + PAD_Y,
-            outline="black", fill="white", width=2,
+            outline="#cfd5dd", fill="#ffffff", width=1,
             tags=(window_id, "floating", f"{window_id}_bg")
         )
 
         self.image_canvas.create_rectangle(
             x, y, x + new_width + PAD_X, y + TITLE_H,
-            outline="black", fill="gray",
+            outline="#cfd5dd", fill="#f1f3f6",
             tags=(window_id, "floating", f"{window_id}_title")
         )
 
         self.image_canvas.create_text(
-            x + 50, y + 15, anchor="w",
+            x + 34, y + TITLE_H / 2, anchor="w",
             text=os.path.basename(filename),
-            fill="white", font=("Sans", 10),
+            fill="#1f2937", font=("Segoe UI", 9, "bold"),
             tags=(window_id, "floating", f"{window_id}_title_text")
         )
 
         self.image_canvas.create_rectangle(
-            x + new_width + PAD_X - 5, y + 5,
-            x + new_width + PAD_X - 25, y + 25,
-            outline="black", fill="red",
+            x + new_width + PAD_X - 7, y + 7,
+            x + new_width + PAD_X - 27, y + 27,
+            outline="#d9dde3", fill="#ffffff",
             tags=(window_id, "floating", f"{window_id}_close_button", f"{window_id}_close_rect")
         )
         self.image_canvas.create_text(
-            x + new_width + PAD_X - 15, y + 15,
-            text="X", fill="white", font=("Sans", 10, "bold"),
+            x + new_width + PAD_X - 17, y + 17,
+            text="×", fill="#8a1f1f", font=("Segoe UI", 11, "bold"),
             tags=(window_id, "floating", f"{window_id}_close_button", f"{window_id}_close_text")
         )
 
+        # Keep only the compact minimize control in each card header.
+        # Focus remains available from the workspace toolbar / context menu,
+        # while manual enlargement is handled by the bottom-right resize grip.
+
+        self.image_canvas.create_rectangle(
+            x + new_width + PAD_X - 53, y + 7,
+            x + new_width + PAD_X - 33, y + 27,
+            outline="#d9dde3", fill="#ffffff",
+            tags=(window_id, "floating", f"{window_id}_minimize_button", f"{window_id}_minimize_rect")
+        )
         self.image_canvas.create_text(
-            x + 15, y + 15, text="▼",
-            fill="white", font=("Sans", 12),
+            x + new_width + PAD_X - 43, y + 17,
+            text="−", fill="#1f4e8c", font=("Segoe UI", 11, "bold"),
+            tags=(window_id, "floating", f"{window_id}_minimize_button", f"{window_id}_minimize_text")
+        )
+
+        self.image_canvas.create_text(
+            x + 15, y + TITLE_H / 2, text="⋮",
+            fill="#1f4e8c", font=("Segoe UI", 13, "bold"),
             tags=(window_id, "floating", f"{window_id}_arrow_button", f"{window_id}_arrow_text")
         )
 
@@ -5052,12 +6245,12 @@ class PyFCSApp:
         )
 
         self.image_canvas.create_text(
-            x + IMG_LEFT_PAD,
-            y + IMG_TOP_PAD + new_height + 10,
-            anchor="nw",
+            x + IMG_LEFT_PAD + new_width / 2,
+            y + IMG_TOP_PAD + new_height + 8,
+            anchor="n",
             text="",
-            fill="black",
-            font=("Sans", 10),
+            fill="#374151",
+            font=("Sans", 8),
             tags=(window_id, "floating", f"{window_id}_pct_text")
         )
 
@@ -5079,18 +6272,50 @@ class PyFCSApp:
             st = self.floating_window_state[window_id]
             wx, wy, ww, wh = st["x"], st["y"], st["w"], st["h"]
 
-            self.image_canvas.coords(f"{window_id}_bg", wx, wy, wx + ww + PAD_X, wy + wh + PAD_Y)
-            self.image_canvas.coords(f"{window_id}_title", wx, wy, wx + ww + PAD_X, wy + TITLE_H)
+            collapsed = bool(st.get("collapsed", False))
+            legend_h = 0 if collapsed else self._workspace_legend_height(window_id)
+            legend_info = getattr(self, "proto_options", {}).get(window_id, {})
+            legend_w = 0 if collapsed or not isinstance(legend_info, dict) else max(180, int(ww))
 
-            self.image_canvas.coords(f"{window_id}_title_text", wx + 50, wy + 15)
-            self.image_canvas.coords(f"{window_id}_arrow_text", wx + 15, wy + 15)
+            # The mapping panel now sits below the image. Card width therefore
+            # remains compact, only growing when a very narrow manually resized
+            # image needs the selector's 210 px minimum width.
+            base_right = wx + ww + PAD_X
+            legend_right = wx + IMG_LEFT_PAD + legend_w + 12 if legend_h else base_right
+            card_right = max(base_right, legend_right)
+
+            if collapsed:
+                card_bottom = wy + TITLE_H
+            elif legend_h:
+                # The mapping panel is the final visual element of the card.
+                # Use the same dynamic gap as _reposition_proto_options and end
+                # the card exactly at the panel border: no white strip below.
+                legend_info = getattr(self, "proto_options", {}).get(window_id, {})
+                panel_gap = int(legend_info.get("gap", 7)) if isinstance(legend_info, dict) else 7
+                panel_y = wy + IMG_TOP_PAD + wh + panel_gap
+                card_bottom = panel_y + legend_h
+            else:
+                card_bottom = wy + wh + PAD_Y
+
+            self.image_canvas.coords(f"{window_id}_bg", wx, wy, card_right, card_bottom)
+            self.image_canvas.coords(f"{window_id}_title", wx, wy, card_right, wy + TITLE_H)
+
+            self.image_canvas.coords(f"{window_id}_title_text", wx + 34, wy + TITLE_H / 2)
+            self.image_canvas.coords(f"{window_id}_arrow_text", wx + 15, wy + TITLE_H / 2)
 
             self.image_canvas.coords(
                 f"{window_id}_close_rect",
-                wx + ww + PAD_X - 5, wy + 5,
-                wx + ww + PAD_X - 25, wy + 25
+                card_right - 7, wy + 7,
+                card_right - 27, wy + 27
             )
-            self.image_canvas.coords(f"{window_id}_close_text", wx + ww + PAD_X - 15, wy + 15)
+            self.image_canvas.coords(f"{window_id}_close_text", card_right - 17, wy + 17)
+
+            self.image_canvas.coords(
+                f"{window_id}_minimize_rect",
+                card_right - 53, wy + 7,
+                card_right - 33, wy + 27
+            )
+            self.image_canvas.coords(f"{window_id}_minimize_text", card_right - 43, wy + 17)
 
             self.image_canvas.coords(f"{window_id}_img_item", wx + IMG_LEFT_PAD, wy + IMG_TOP_PAD)
 
@@ -5102,10 +6327,20 @@ class PyFCSApp:
 
             self._reposition_proto_options(window_id)
 
+            # Keep mapping coverage centered under the displayed image.
+            # Its position therefore remains correct after Grid/Focus/manual
+            # resizing instead of being visually attached to the left edge.
+            pct_y = wy + IMG_TOP_PAD + wh + 4
+            legend_info = getattr(self, "proto_options", {}).get(window_id, {})
+            if isinstance(legend_info, dict) and legend_info:
+                gap_now = int(legend_info.get("gap", 7))
+                if gap_now >= 18:
+                    pct_y = wy + IMG_TOP_PAD + wh + 3
+
             self.image_canvas.coords(
                 f"{window_id}_pct_text",
-                wx + IMG_LEFT_PAD,
-                wy + IMG_TOP_PAD + wh + 10
+                wx + IMG_LEFT_PAD + ww / 2,
+                pct_y,
             )
 
             self._reposition_window_loading(window_id)
@@ -5117,6 +6352,7 @@ class PyFCSApp:
                 state["draw_w"] = ww
                 state["draw_h"] = wh
 
+            self._sync_workspace_card_item_states(window_id)
             self._focus_floating_window(window_id)
 
         def _update_image_to_size(window_id, target_w, target_h, reset_view=True):
@@ -5163,44 +6399,14 @@ class PyFCSApp:
 
 
         def _get_view_crop_box(window_id):
-            """
-            Return the current visible crop box in source-image coordinates.
-
-            The floating window size does not change. Only this crop box changes.
-            """
-            source_pil = self.image_view_source.get(
-                window_id,
-                self.pil_images_original[window_id]
-            )
-
-            source_w, source_h = source_pil.size
-
-            state = self.image_view_state.get(window_id)
-            if not state:
-                state = {
-                    "zoom": 1.0,
-                    "cx": source_w / 2,
-                    "cy": source_h / 2,
-                }
-                self.image_view_state[window_id] = state
-
-            zoom = max(1.0, float(state.get("zoom", 1.0)))
-            cx = float(state.get("cx", source_w / 2))
-            cy = float(state.get("cy", source_h / 2))
-
-            crop_w = max(1.0, source_w / zoom)
-            crop_h = max(1.0, source_h / zoom)
-
-            left = cx - crop_w / 2
-            top = cy - crop_h / 2
-
-            left = _clamp(left, 0, max(0, source_w - crop_w))
-            top = _clamp(top, 0, max(0, source_h - crop_h))
-
-            right = left + crop_w
-            bottom = top + crop_h
-
-            return left, top, right, bottom
+            """Return the visible crop in current view-source coordinates."""
+            crop = self._get_image_view_crop_box(window_id)
+            if crop is None:
+                source_pil = self.image_view_source.get(
+                    window_id, self.pil_images_original[window_id]
+                )
+                return 0.0, 0.0, float(source_pil.size[0]), float(source_pil.size[1])
+            return crop
 
 
         def _render_image_view(window_id):
@@ -5247,49 +6453,18 @@ class PyFCSApp:
             )
 
 
-        def _canvas_point_to_original_image(event, window_id):
-            """
-            Convert a canvas mouse event into original image coordinates,
-            taking the current zoom viewport into account.
-            """
-            if window_id not in self.floating_window_state:
-                return None
-
-            st = self.floating_window_state[window_id]
-
-            img_left = st["x"] + IMG_LEFT_PAD
-            img_top = st["y"] + IMG_TOP_PAD
-            draw_w = max(1, int(st["w"]))
-            draw_h = max(1, int(st["h"]))
-
+        def _canvas_point_to_view_source(event, window_id):
+            """Map a mouse event to the current view-source coordinates."""
             abs_x = self.image_canvas.canvasx(event.x)
             abs_y = self.image_canvas.canvasy(event.y)
+            return self._canvas_xy_to_view_source(window_id, abs_x, abs_y)
 
-            rel_x = abs_x - img_left
-            rel_y = abs_y - img_top
 
-            if not (0 <= rel_x < draw_w and 0 <= rel_y < draw_h):
-                return None
-
-            left, top, right, bottom = _get_view_crop_box(window_id)
-
-            crop_w = right - left
-            crop_h = bottom - top
-
-            source_x = left + (rel_x / draw_w) * crop_w
-            source_y = top + (rel_y / draw_h) * crop_h
-
-            source_pil = self.image_view_source.get(
-                window_id,
-                self.pil_images_original[window_id]
-            )
-
-            source_w, source_h = source_pil.size
-
-            source_x = int(_clamp(source_x, 0, source_w - 1))
-            source_y = int(_clamp(source_y, 0, source_h - 1))
-
-            return source_x, source_y, rel_x, rel_y
+        def _canvas_point_to_original_image(event, window_id):
+            """Map a mouse event to the real full-resolution original pixel."""
+            abs_x = self.image_canvas.canvasx(event.x)
+            abs_y = self.image_canvas.canvasy(event.y)
+            return self._canvas_xy_to_original_image(window_id, abs_x, abs_y)
 
 
         def _apply_zoom(window_id, factor=None, reset=False, event=None):
@@ -5344,7 +6519,7 @@ class PyFCSApp:
 
             point_info = None
             if event is not None:
-                point_info = _canvas_point_to_original_image(event, window_id)
+                point_info = _canvas_point_to_view_source(event, window_id)
 
             old_zoom = float(state.get("zoom", 1.0))
             new_zoom = _clamp(old_zoom * factor, 1.0, 12.0)
@@ -5420,30 +6595,118 @@ class PyFCSApp:
             if getattr(self, "_image_zoom_hover_window", None) == window_id:
                 self._image_zoom_hover_window = None
             return None
+
+        # ---------------------------
+        # Right-drag viewport move
+        # ---------------------------
+        def _start_view_pan(event):
+            """Start moving the zoomed viewport with the right mouse button."""
+            if self._has_active_job(window_id):
+                return "break"
+
+            state = self.image_view_state.get(window_id)
+            if not state or float(state.get("zoom", 1.0)) <= 1.000001:
+                # At Fit there is no hidden image area to move.
+                return "break"
+
+            self._set_image_workspace_active(window_id)
+            self._clear_image_display_selection(window_id)
+
+            source_pil = self.image_view_source.get(
+                window_id,
+                self.pil_images_original.get(window_id)
+            )
+            if source_pil is None:
+                return "break"
+
+            source_w, source_h = source_pil.size
+            zoom = max(1.0, float(state.get("zoom", 1.0)))
+            crop_w = max(1.0, source_w / zoom)
+            crop_h = max(1.0, source_h / zoom)
+
+            self._image_view_pan_state = {
+                "window_id": window_id,
+                "start_x": self.image_canvas.canvasx(event.x),
+                "start_y": self.image_canvas.canvasy(event.y),
+                "start_cx": float(state.get("cx", source_w / 2.0)),
+                "start_cy": float(state.get("cy", source_h / 2.0)),
+                "crop_w": crop_w,
+                "crop_h": crop_h,
+                "source_w": float(source_w),
+                "source_h": float(source_h),
+            }
+
+            try:
+                self.image_canvas.configure(cursor="fleur")
+            except Exception:
+                pass
+
+            return "break"
+
+        def _drag_view_pan(event):
+            """Move the current zoom crop while right-dragging."""
+            pan = getattr(self, "_image_view_pan_state", None)
+            if not isinstance(pan, dict) or pan.get("window_id") != window_id:
+                return "break"
+
+            state = self.image_view_state.get(window_id)
+            st = self.floating_window_state.get(window_id)
+            if not state or not st:
+                return "break"
+
+            draw_w = max(1.0, float(st.get("w", 1)))
+            draw_h = max(1.0, float(st.get("h", 1)))
+
+            current_x = self.image_canvas.canvasx(event.x)
+            current_y = self.image_canvas.canvasy(event.y)
+            dx = current_x - pan["start_x"]
+            dy = current_y - pan["start_y"]
+
+            # Convert displayed-pixel movement to source-image movement.
+            # Dragging the image right/down moves the viewport center left/up.
+            source_dx = dx * (pan["crop_w"] / draw_w)
+            source_dy = dy * (pan["crop_h"] / draw_h)
+
+            half_w = pan["crop_w"] / 2.0
+            half_h = pan["crop_h"] / 2.0
+            min_cx = half_w
+            max_cx = max(half_w, pan["source_w"] - half_w)
+            min_cy = half_h
+            max_cy = max(half_h, pan["source_h"] - half_h)
+
+            state["cx"] = _clamp(pan["start_cx"] - source_dx, min_cx, max_cx)
+            state["cy"] = _clamp(pan["start_cy"] - source_dy, min_cy, max_cy)
+
+            _render_image_view(window_id)
+            return "break"
+
+        def _end_view_pan(_event=None):
+            """Finish a right-drag viewport move."""
+            pan = getattr(self, "_image_view_pan_state", None)
+            if isinstance(pan, dict) and pan.get("window_id") == window_id:
+                self._image_view_pan_state = None
+
+            try:
+                self.image_canvas.configure(cursor="")
+            except Exception:
+                pass
+
+            return "break"
         
 
         # ---------------------------
         # Menu action wrappers
         # ---------------------------
         def _show_original_image_action():
-            try:
-                self._clear_original_selection_rectangle(window_id)
-            except Exception:
-                pass
+            self._clear_image_display_selection(window_id)
             self.show_original_image(window_id)
 
         def _color_mapping_action():
-            try:
-                self._clear_original_selection_rectangle(window_id)
-            except Exception:
-                pass
+            self._clear_image_display_selection(window_id)
             self.color_mapping(window_id)
 
         def _color_mapping_all_action():
-            try:
-                self._clear_original_selection_rectangle(window_id)
-            except Exception:
-                pass
+            self._clear_image_display_selection(window_id)
             self.color_mapping_all(window_id)
 
         # ---------------------------
@@ -5488,6 +6751,10 @@ class PyFCSApp:
                 "image_view_source",
                 "image_view_state",
                 "_image_zoom_callbacks",
+                "CAN_APPLY_MAPPING",
+                "SHOW_ORIGINAL",
+                "modified_image",
+                "mapping_locked_until_original",
             ):
                 if hasattr(self, attr_name):
                     d = getattr(self, attr_name)
@@ -5496,6 +6763,9 @@ class PyFCSApp:
 
             if getattr(self, "_image_zoom_hover_window", None) == window_id:
                 self._image_zoom_hover_window = None
+            pan_state = getattr(self, "_image_view_pan_state", None)
+            if isinstance(pan_state, dict) and pan_state.get("window_id") == window_id:
+                self._image_view_pan_state = None
 
             if hasattr(self, "proto_options") and window_id in self.proto_options:
                 info = self.proto_options.get(window_id)
@@ -5517,40 +6787,96 @@ class PyFCSApp:
 
                     del self.proto_options[window_id]
 
+            if getattr(self, "_image_workspace_focus_id", None) == window_id:
+                self._image_workspace_focus_id = None
+                self._image_workspace_focus_saved_state = None
+                self._image_workspace_focus_saved_collapsed = None
+            try:
+                getattr(self, "_mapping_all_palette_by_window", {}).pop(window_id, None)
+            except Exception:
+                pass
+
+            if getattr(self, "_image_workspace_active_id", None) == window_id:
+                remaining = self._image_workspace_window_ids()
+                self._image_workspace_active_id = remaining[0] if remaining else None
+
+            try:
+                self._image_workspace_callbacks.pop(window_id, None)
+            except Exception:
+                pass
+
+            self._schedule_image_workspace_reflow()
+
         # ---------------------------
         # Dropdown menu
         # ---------------------------
         def show_menu_image(event):
-            """Display the context menu with options for the floating window."""
+            """Display per-image view, mapping, zoom and save actions."""
             if self._has_active_job(window_id):
                 return "break"
 
-            locked_until_original = getattr(self, "mapping_locked_until_original", {}).get(window_id, False)
-            mapping_enabled = self.CAN_APPLY_MAPPING[window_id] and not locked_until_original
-
             menu = Menu(self.root, tearoff=0)
+            is_focus = getattr(self, "_image_workspace_focus_id", None) == window_id
+            current_mode = getattr(self, "window_mapping_mode", {}).get(window_id)
+            mapping_enabled = bool(getattr(self, "COLOR_SPACE", False))
+
+            # Focus is enter-only. While Focus View is active, Grid is the
+            # single, predictable way back to the multi-image workspace.
+            menu.add_command(
+                label="Focus Image",
+                state=DISABLED if is_focus else NORMAL,
+                command=lambda: self._set_image_workspace_focus(window_id)
+            )
+
+            menu.add_separator()
+
+            # These three are direct view modes. Mapping computations always
+            # use pil_images_original, so changing mode never needs an explicit
+            # intermediate return to Original Image.
             menu.add_command(
                 label="Original Image",
-                state=NORMAL if self.SHOW_ORIGINAL[window_id] else DISABLED,
+                state=DISABLED if current_mode is None else NORMAL,
                 command=_show_original_image_action
             )
-            menu.add_separator()
             menu.add_command(
                 label="Color Mapping",
-                state=NORMAL if mapping_enabled else DISABLED,
+                state=DISABLED if (not mapping_enabled or current_mode == "single") else NORMAL,
                 command=_color_mapping_action
             )
-            menu.add_separator()
+            old_mapping_locked = bool(
+                getattr(self, "mapping_locked_until_original", {}).get(window_id, False)
+            )
             menu.add_command(
                 label="Color Mapping All",
-                state=NORMAL if mapping_enabled else DISABLED,
+                state=DISABLED if (
+                    not mapping_enabled or (current_mode == "all" and not old_mapping_locked)
+                ) else NORMAL,
                 command=_color_mapping_all_action
             )
+
             menu.add_separator()
-            menu.add_command(
-                label="Reset Zoom",
+
+            zoom_menu = Menu(menu, tearoff=0)
+            zoom_menu.add_command(
+                label="Zoom In",
+                command=lambda: _apply_zoom(window_id, factor=1.15)
+            )
+            zoom_menu.add_command(
+                label="Zoom Out",
+                command=lambda: _apply_zoom(window_id, factor=1 / 1.15)
+            )
+            zoom_menu.add_command(
+                label="Fit",
                 command=lambda: _apply_zoom(window_id, reset=True)
             )
+            menu.add_cascade(label="Zoom", menu=zoom_menu)
+
+            menu.add_separator()
+            menu.add_command(
+                label="Save Image",
+                command=lambda: self.save_image(window_id=window_id)
+            )
+
             menu.post(event.x_root, event.y_root)
             return "break"
 
@@ -5560,30 +6886,65 @@ class PyFCSApp:
         def start_move(event):
             if self._has_active_job(window_id):
                 return "break"
+            if getattr(self, "_image_workspace_focus_id", None) is not None:
+                return "break"
 
-            self._focus_floating_window(window_id)
+            self._set_image_workspace_active(window_id)
 
-            try:
-                self._clear_original_selection_rectangle(window_id)
-            except Exception:
-                pass
+            self._clear_image_display_selection(window_id)
 
-            self.last_x, self.last_y = event.x, event.y
+            mx = self.image_canvas.canvasx(event.x)
+            my = self.image_canvas.canvasy(event.y)
+            self._image_workspace_move_state = {
+                "window_id": window_id,
+                "x": mx,
+                "y": my,
+                "start_x": mx,
+                "start_y": my,
+                "moved": False,
+            }
+            return "break"
 
         def move_window(event):
             if self._has_active_job(window_id):
                 return "break"
 
-            self._focus_floating_window(window_id)
+            move_state = getattr(self, "_image_workspace_move_state", None)
+            if not isinstance(move_state, dict) or move_state.get("window_id") != window_id:
+                return "break"
 
-            dx, dy = event.x - self.last_x, event.y - self.last_y
+            mx = self.image_canvas.canvasx(event.x)
+            my = self.image_canvas.canvasy(event.y)
+
+            # A simple click/double-click must not turn Grid into Manual. Only
+            # an actual drag changes the workspace layout mode.
+            if not move_state.get("moved", False):
+                total_dx = mx - move_state["start_x"]
+                total_dy = my - move_state["start_y"]
+                if abs(total_dx) < 3 and abs(total_dy) < 3:
+                    return "break"
+                self._set_image_workspace_manual()
+                move_state["moved"] = True
+
+            dx = mx - move_state["x"]
+            dy = my - move_state["y"]
+
             st = self.floating_window_state[window_id]
-            st["x"] += dx
-            st["y"] += dy
+            st["x"] = max(6, st["x"] + dx)
+            st["y"] = max(6, st["y"] + dy)
 
             _relayout(window_id)
+            self._update_manual_workspace_scrollregion()
 
-            self.last_x, self.last_y = event.x, event.y
+            move_state["x"] = mx
+            move_state["y"] = my
+            return "break"
+
+        def end_move(_event):
+            move_state = getattr(self, "_image_workspace_move_state", None)
+            if isinstance(move_state, dict) and move_state.get("window_id") == window_id:
+                self._image_workspace_move_state = None
+            self._update_manual_workspace_scrollregion()
             return "break"
 
         # ---------------------------
@@ -5592,11 +6953,13 @@ class PyFCSApp:
         def start_resize(event):
             if self._has_active_job(window_id):
                 return "break"
+            if getattr(self, "_image_workspace_focus_id", None) is not None:
+                return "break"
 
-            try:
-                self._clear_original_selection_rectangle(window_id)
-            except Exception:
-                pass
+            self._set_image_workspace_active(window_id)
+            self._set_image_workspace_manual()
+
+            self._clear_image_display_selection(window_id)
 
             st = self.floating_window_state[window_id]
             self._resize_start = {
@@ -5645,6 +7008,7 @@ class PyFCSApp:
 
             self._cancel_window_job(window_id)
             self._resize_start = None
+            self._update_manual_workspace_scrollregion()
 
             try:
                 self._clear_original_selection_rectangle(window_id)
@@ -5668,6 +7032,8 @@ class PyFCSApp:
         def get_pixel_value(event, window_id=window_id):
             if self._has_active_job(window_id):
                 return "break"
+
+            self._set_image_workspace_active(window_id)
 
             point_info = _canvas_point_to_original_image(event, window_id)
             if point_info is None:
@@ -5714,18 +7080,44 @@ class PyFCSApp:
         # ---------------------------
         # Bindings
         # ---------------------------
-        self.image_canvas.tag_bind(f"{window_id}_title", "<Button-1>", start_move)
-        self.image_canvas.tag_bind(f"{window_id}_title", "<B1-Motion>", move_window)
-        self.image_canvas.tag_bind(f"{window_id}_title_text", "<Button-1>", start_move)
-        self.image_canvas.tag_bind(f"{window_id}_title_text", "<B1-Motion>", move_window)
+        # Title drag restores the original ability to move cards. The first drag
+        # switches the workspace from automatic Grid to Manual layout. Grid can
+        # be pressed at any time to arrange everything again.
+        for title_tag in (f"{window_id}_title", f"{window_id}_title_text"):
+            self.image_canvas.tag_bind(title_tag, "<Button-1>", start_move)
+            self.image_canvas.tag_bind(title_tag, "<B1-Motion>", move_window)
+            self.image_canvas.tag_bind(title_tag, "<ButtonRelease-1>", end_move)
+            self.image_canvas.tag_bind(
+                title_tag,
+                "<Double-Button-1>",
+                lambda _e, wid=window_id: self._toggle_image_workspace_focus(wid),
+            )
 
         self.image_canvas.tag_bind(f"{window_id}_close_button", "<Button-1>", close_window)
+        self.image_canvas.tag_bind(
+            f"{window_id}_minimize_button",
+            "<Button-1>",
+            lambda _e, wid=window_id: self._toggle_image_card_minimize(wid),
+        )
         self.image_canvas.tag_bind(f"{window_id}_click_image", "<Button-1>", get_pixel_value)
         self.image_canvas.tag_bind(f"{window_id}_arrow_button", "<Button-1>", show_menu_image)
 
+        # Right-drag moves only the internal zoom viewport. It never moves the
+        # image card itself; card movement remains a left-drag on the title bar.
+        for button_num in (2, 3):
+            self.image_canvas.tag_bind(
+                f"{window_id}_click_image", f"<ButtonPress-{button_num}>", _start_view_pan
+            )
+            self.image_canvas.tag_bind(
+                f"{window_id}_click_image", f"<B{button_num}-Motion>", _drag_view_pan
+            )
+            self.image_canvas.tag_bind(
+                f"{window_id}_click_image", f"<ButtonRelease-{button_num}>", _end_view_pan
+            )
+
         # Mouse hover target for wheel zoom.
-        # Important: Canvas.tag_bind() does not support <MouseWheel>,
-        # so the real wheel event is handled by root.bind_all().
+        # Canvas.tag_bind() does not support <MouseWheel>, so wheel dispatch is
+        # bound directly to image_canvas and routed to the hovered image tag.
         self.image_canvas.tag_bind(
             f"{window_id}_click_image",
             "<Enter>",
@@ -5748,6 +7140,11 @@ class PyFCSApp:
         self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<B1-Motion>", do_resize)
         self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<ButtonRelease-1>", end_resize)
 
+        self._image_workspace_callbacks[window_id] = {
+            "relayout": _relayout,
+            "resize": _update_image_to_size,
+        }
+
         _relayout(window_id)
 
         try:
@@ -5759,7 +7156,8 @@ class PyFCSApp:
         except Exception as e:
             print(f"Warning enabling original rectangle sampling for {window_id}: {e}")
 
-        self._focus_floating_window(window_id)
+        self._set_image_workspace_active(window_id)
+        self._schedule_image_workspace_reflow(delay=0)
 
 
 
@@ -5931,8 +7329,8 @@ class PyFCSApp:
         wx, wy, ww, wh = st["x"], st["y"], st["w"], st["h"]
 
         # Place the loading panel on top of the image area
-        IMG_LEFT_PAD = 15
-        IMG_TOP_PAD = 40
+        IMG_LEFT_PAD = 12
+        IMG_TOP_PAD = 44
 
         panel_w = min(170, max(140, ww - 20))
         panel_h = 95
@@ -5940,7 +7338,7 @@ class PyFCSApp:
         panel_x = wx + IMG_LEFT_PAD + max(0, (ww - panel_w) // 2)
         panel_y = wy + IMG_TOP_PAD + max(0, (wh - panel_h) // 2)
 
-        tags = (f"{window_id}_loading", "loading")
+        tags = (window_id, f"{window_id}_loading", "loading")
 
         # Background panel
         bg = self.image_canvas.create_rectangle(
@@ -5966,7 +7364,7 @@ class PyFCSApp:
             text="0.0%",
             fill="black",
             font=("Sans", 10),
-            tags=(f"{window_id}_loading", "loading", f"{window_id}_loading_progress")
+            tags=(window_id, f"{window_id}_loading", "loading", f"{window_id}_loading_progress")
         )
 
         # Cancel button background
@@ -5980,7 +7378,7 @@ class PyFCSApp:
         cancel_bg = self.image_canvas.create_rectangle(
             btn_x1, btn_y1, btn_x2, btn_y2,
             fill="#e6e6e6", outline="gray",
-            tags=(f"{window_id}_loading", "loading", f"{window_id}_loading_cancel")
+            tags=(window_id, f"{window_id}_loading", "loading", f"{window_id}_loading_cancel")
         )
 
         cancel_txt = self.image_canvas.create_text(
@@ -5989,7 +7387,7 @@ class PyFCSApp:
             text="Cancel",
             fill="black",
             font=("Sans", 10),
-            tags=(f"{window_id}_loading", "loading", f"{window_id}_loading_cancel")
+            tags=(window_id, f"{window_id}_loading", "loading", f"{window_id}_loading_cancel")
         )
 
         # Bind cancel click
@@ -6073,8 +7471,8 @@ class PyFCSApp:
         st = self.floating_window_state[window_id]
         wx, wy, ww, wh = st["x"], st["y"], st["w"], st["h"]
 
-        IMG_LEFT_PAD = 15
-        IMG_TOP_PAD = 40
+        IMG_LEFT_PAD = 12
+        IMG_TOP_PAD = 44
 
         panel_w = min(170, max(140, ww - 20))
         panel_h = 95
@@ -6132,332 +7530,472 @@ class PyFCSApp:
 
 
     def _reposition_proto_options(self, window_id):
-        """Repositions the legend/prototype options panel associated with a floating window."""
-        if not hasattr(self, "proto_options") or window_id not in self.proto_options:
-            return
+        """
+        Keep the mapping selector/legend directly BELOW its image.
 
-        info = self.proto_options[window_id]
+        The panel is drawn with native Canvas primitives and shares the same
+        ``window_id`` tag as the image card, so it moves, minimizes, focuses
+        and participates in z-order as part of the same visual object.
+        """
+        info = getattr(self, "proto_options", {}).get(window_id)
         if not isinstance(info, dict):
             return
 
-        frame = info.get("frame")
-        canvas_item = info.get("canvas_item")
-
-        if not frame or not canvas_item:
+        st = getattr(self, "floating_window_state", {}).get(window_id)
+        if not st:
             return
 
-        if not frame.winfo_exists():
-            return
-
-        if not hasattr(self, "floating_window_state") or window_id not in self.floating_window_state:
-            return
-
-        st = self.floating_window_state[window_id]
         wx, wy, ww, wh = st["x"], st["y"], st["w"], st["h"]
+        img_left_pad = 12
+        img_top_pad = 44
 
-        PAD_X = 30
-
-        frame_x = wx + ww + PAD_X + 10
-        frame_y = wy
-
-        canvas_width = self.image_canvas.winfo_width()
-        canvas_height = self.image_canvas.winfo_height()
-
-        desired_w = frame.winfo_width() if frame.winfo_width() > 1 else 150
-        desired_h = frame.winfo_height() if frame.winfo_height() > 1 else min(300, wh)
-
-        if frame_x + desired_w > canvas_width:
-            frame_x = max(0, canvas_width - desired_w)
-        if frame_y + desired_h > canvas_height:
-            frame_y = max(0, canvas_height - desired_h)
-
+        # Reserve room for the percentage/status line only when it actually
+        # contains text. In the neutral Color Mapping state this keeps the
+        # selector much closer to the image instead of leaving a blank band.
+        pct_text = ""
         try:
-            self.image_canvas.coords(canvas_item, frame_x, frame_y)
-            self.image_canvas.itemconfigure(canvas_item, width=desired_w, height=desired_h)
+            pct_items = self.image_canvas.find_withtag(f"{window_id}_pct_text")
+            if pct_items:
+                pct_text = str(self.image_canvas.itemcget(pct_items[0], "text") or "").strip()
         except Exception:
-            pass
+            pct_text = ""
+
+        # Keep the percentage as a compact caption between image and panel.
+        # The gap is deliberately small so resizing the image does not create
+        # a large white band inside the card.
+        panel_gap = 21 if pct_text else 7
+        info["gap"] = panel_gap
+        panel_y = wy + img_top_pad + wh + panel_gap
+
+        # Keep the selector slightly narrower than the image and centered.
+        # The minimum still leaves enough room for normal prototype names.
+        available_w = max(150, int(ww) - 24)
+        preferred_w = max(145, int(round(float(ww) * 0.74)))
+        panel_w = min(285, available_w, preferred_w)
+        panel_x = wx + img_left_pad + max(0, (int(ww) - panel_w) // 2)
+        panel_h = self._workspace_legend_height(window_id)
+
+        old_x = info.get("x")
+        old_y = info.get("y")
+        old_w = info.get("width")
+        old_h = info.get("height")
+
+        # Width/height changes alter text space and the number of visible rows,
+        # therefore redraw instead of only translating existing Canvas items.
+        if (
+            old_x is None
+            or old_y is None
+            or old_w != panel_w
+            or old_h != panel_h
+        ):
+            info["x"] = panel_x
+            info["y"] = panel_y
+            info["width"] = panel_w
+            info["height"] = panel_h
+            self._render_proto_options(window_id)
+            return
+
+        dx = panel_x - old_x
+        dy = panel_y - old_y
+        if dx or dy:
+            try:
+                self.image_canvas.move(f"{window_id}_legend", dx, dy)
+            except Exception:
+                pass
+            info["x"] = panel_x
+            info["y"] = panel_y
 
 
     def _focus_floating_window(self, window_id):
-        """
-        Bring one floating image window to the front while keeping auxiliary
-        legend/prototype panels behind the active image.
-
-        Loading panels are always kept above all floating windows so a running
-        process remains visible even if other windows are moved or focused.
-        """
+        """Bring one complete image card, including its mapping panel, to the front."""
         try:
-            # First, send all legend panels behind floating windows
-            if hasattr(self, "proto_options"):
-                for other_window_id, info in self.proto_options.items():
-                    if not isinstance(info, dict):
-                        continue
-
-                    canvas_item = info.get("canvas_item")
-                    if canvas_item:
-                        try:
-                            self.image_canvas.tag_lower(canvas_item)
-                        except Exception:
-                            pass
-
-                    try:
-                        self.image_canvas.tag_lower(f"{other_window_id}_legend")
-                    except Exception:
-                        pass
-
-            # Raise the whole floating window group
-            try:
-                self.image_canvas.tag_raise(window_id)
-            except Exception:
-                pass
-
-            # Raise specific items explicitly to guarantee order inside the window
-            for tag in (
-                f"{window_id}_bg",
-                f"{window_id}_title",
-                f"{window_id}_title_text",
-                f"{window_id}_img_item",
-                f"{window_id}_click_image",
-                f"{window_id}_pct_text",
-                f"{window_id}_close_button",
-                f"{window_id}_close_rect",
-                f"{window_id}_close_text",
-                f"{window_id}_arrow_button",
-                f"{window_id}_arrow_text",
-                f"{window_id}_resize_handle",
-                f"{window_id}_selection_rect",
-            ):
-                try:
-                    self.image_canvas.tag_raise(tag)
-                except Exception:
-                    pass
-
-            # Finally, keep ALL loading panels above everything else
+            # All pieces, including the legend, are native Canvas items carrying
+            # the same window_id tag, so they really move through one z-order.
+            self.image_canvas.tag_raise(window_id)
             self._raise_all_loading_panels()
-
         except Exception:
             pass
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     # ============================================================================================================================================================
-    #  FUNCTIONS IMAGE UTILS 
+    #  FUNCTIONS IMAGE UTILS
     # ============================================================================================================================================================
+    def _get_mapping_source_image(self, window_id, target_size=None):
+        """
+        Return an original-image-derived PIL image for mapping computation.
+
+        ``self.images[window_id]`` is the current DISPLAY image and may already
+        contain a grayscale Color Mapping, a Color Mapping All result, or a
+        zoomed/resized representation. It must therefore never be used as the
+        source for a new membership calculation.
+
+        Mapping caches remain keyed by the stable image file identity, current
+        color space and processing size; closing/reopening a file can reuse
+        valid cached results, while a prototype that was never calculated is
+        still computed from the original image.
+        """
+        originals = getattr(self, "pil_images_original", {}) or {}
+        original = originals.get(window_id)
+        if original is None:
+            raise ValueError("Original image is not available for mapping.")
+
+        if target_size is None:
+            target_size = getattr(self, "image_dimensions", {}).get(window_id)
+
+        if target_size is None:
+            return original.copy()
+
+        try:
+            width = max(1, int(target_size[0]))
+            height = max(1, int(target_size[1]))
+        except Exception:
+            return original.copy()
+
+        if original.size == (width, height):
+            return original.copy()
+
+        return original.resize((width, height), Image.Resampling.LANCZOS)
+
+
     def _destroy_proto_options(self, window_id):
-        """Destroy and unregister the legend/prototype options panel for one floating image."""
+        """Destroy and unregister the canvas-native mapping panel for one image."""
         self.proto_options = getattr(self, "proto_options", {})
-        info = self.proto_options.pop(window_id, None)
+        self.proto_options.pop(window_id, None)
+        try:
+            self.image_canvas.delete(f"{window_id}_legend")
+        except Exception:
+            pass
 
+
+    @staticmethod
+    def _legend_display_name(name, max_chars=22):
+        text = str(name)
+        if len(text) <= max_chars:
+            return text
+        return text[:max(1, max_chars - 1)] + "…"
+
+
+    def _scroll_proto_options(self, window_id, delta):
+        info = getattr(self, "proto_options", {}).get(window_id)
+        if not isinstance(info, dict):
+            return "break"
+
+        total = len(info.get("rows", []))
+        visible = max(1, int(info.get("visible_rows", 1)))
+        max_offset = max(0, total - visible)
+        current = int(info.get("scroll_index", 0))
+        info["scroll_index"] = max(0, min(max_offset, current + int(delta)))
+        self._render_proto_options(window_id)
+        return "break"
+
+
+    def _select_proto_from_legend(self, window_id, color_name):
+        if self._has_active_job(window_id):
+            return "break"
+        current = getattr(self, "current_protos", {}).get(window_id)
+        if current is None:
+            return "break"
+        try:
+            current.set(color_name)
+        except Exception:
+            return "break"
+        self._render_proto_options(window_id)
+        self.get_proto_percentage(window_id)
+        return "break"
+
+
+    def _jump_proto_options_scroll(self, window_id, event, track_top, track_height):
+        info = getattr(self, "proto_options", {}).get(window_id)
+        if not isinstance(info, dict):
+            return "break"
+        total = len(info.get("rows", []))
+        visible = max(1, int(info.get("visible_rows", 1)))
+        max_offset = max(0, total - visible)
+        if max_offset <= 0:
+            return "break"
+
+        y = float(self.image_canvas.canvasy(event.y))
+        ratio = (y - float(track_top)) / max(1.0, float(track_height))
+        ratio = max(0.0, min(1.0, ratio))
+        info["scroll_index"] = int(round(ratio * max_offset))
+        self._render_proto_options(window_id)
+        return "break"
+
+
+    def _render_proto_options(self, window_id):
+        """Render the prototype selector/legend entirely with Canvas primitives."""
+        info = getattr(self, "proto_options", {}).get(window_id)
         if not isinstance(info, dict):
             return
 
-        canvas_item = info.get("canvas_item")
-        frame = info.get("frame")
+        st = getattr(self, "floating_window_state", {}).get(window_id)
+        if not st:
+            return
 
+        # Preserve the panel registry while replacing only its Canvas drawings.
         try:
-            if canvas_item:
-                self.image_canvas.delete(canvas_item)
+            self.image_canvas.delete(f"{window_id}_legend")
         except Exception:
             pass
 
+        x = float(info.get("x", st["x"] + 12))
+        y = float(info.get("y", st["y"] + 44 + st["h"] + info.get("gap", 30)))
+        w = int(info.get("width", max(180, int(st.get("w", 250)))))
+        h = int(info.get("height", self._workspace_legend_height(window_id)))
+        kind = info.get("kind", "single")
+        rows = list(info.get("rows", []))
+        scroll_index = max(0, int(info.get("scroll_index", 0)))
+
+        tag = f"{window_id}_legend"
+        common_tags = (window_id, "floating", tag, "legend")
+
+        # Panel background. Because this is a Canvas rectangle, it shares the
+        # same z-order as every image/card item instead of floating above them.
+        self.image_canvas.create_rectangle(
+            x, y, x + w, y + h,
+            fill="#ffffff", outline="#2f2f2f", width=1,
+            tags=common_tags,
+        )
+
+        pad = 5
+        scrollbar_space = 12
+        footer_h = 40 if kind == "all" else 4
+        content_top = y + pad
+        content_bottom = y + h - footer_h - 4
+        row_h = 24
+        visible_rows = max(1, int((content_bottom - content_top) // row_h))
+        info["visible_rows"] = visible_rows
+
+        max_offset = max(0, len(rows) - visible_rows)
+        scroll_index = max(0, min(max_offset, scroll_index))
+        info["scroll_index"] = scroll_index
+        visible = rows[scroll_index:scroll_index + visible_rows]
+
+        row_right = x + w - scrollbar_space - 3
+
+        for local_index, row_data in enumerate(visible):
+            absolute_index = scroll_index + local_index
+            y1 = content_top + local_index * row_h
+            y2 = y1 + row_h - 3
+            row_tag = f"{tag}_row_{absolute_index}"
+
+            if kind == "single":
+                color_name = str(row_data)
+                current = getattr(self, "current_protos", {}).get(window_id)
+                selected = bool(current is not None and current.get() == color_name)
+
+                # Row hover/click target (white, no visible border).
+                self.image_canvas.create_rectangle(
+                    x + 3, y1, row_right, y2,
+                    fill="#ffffff", outline="",
+                    tags=common_tags + (row_tag,),
+                )
+                cx = x + 12
+                cy = (y1 + y2) / 2
+                self.image_canvas.create_oval(
+                    cx - 5, cy - 5, cx + 5, cy + 5,
+                    fill="#ffffff", outline="#2f2f2f", width=1,
+                    tags=common_tags + (row_tag,),
+                )
+                if selected:
+                    self.image_canvas.create_oval(
+                        cx - 2.5, cy - 2.5, cx + 2.5, cy + 2.5,
+                        fill="#111111", outline="#111111",
+                        tags=common_tags + (row_tag,),
+                    )
+                self.image_canvas.create_text(
+                    x + 23, cy,
+                    text=self._legend_display_name(color_name),
+                    anchor="w", fill="#111111", font=("Sans", 9),
+                    tags=common_tags + (row_tag,),
+                )
+                self.image_canvas.tag_bind(
+                    row_tag,
+                    "<Button-1>",
+                    lambda _e, wid=window_id, name=color_name: self._select_proto_from_legend(wid, name),
+                )
+
+            else:
+                prototype, rgb = row_data
+                try:
+                    rgb_arr = np.asarray(rgb, dtype=int).reshape(-1)[:3]
+                    color_hex = "#{:02x}{:02x}{:02x}".format(
+                        int(rgb_arr[0]), int(rgb_arr[1]), int(rgb_arr[2])
+                    )
+                    luminance = 0.299 * rgb_arr[0] + 0.587 * rgb_arr[1] + 0.114 * rgb_arr[2]
+                    text_color = "white" if luminance < 80 else "black"
+                except Exception:
+                    color_hex, text_color = "#dddddd", "black"
+
+                self.image_canvas.create_rectangle(
+                    x + 7, y1 + 1, row_right, y2 - 1,
+                    fill=color_hex, outline="#ffffff", width=1,
+                    tags=common_tags + (row_tag,),
+                )
+                self.image_canvas.create_text(
+                    (x + 7 + row_right) / 2, (y1 + y2) / 2,
+                    text=self._legend_display_name(getattr(prototype, "label", prototype)),
+                    anchor="center", fill=text_color, font=("Sans", 9),
+                    tags=common_tags + (row_tag,),
+                )
+
+        # Canvas-native scrollbar. Wheel and track clicking are enough here and
+        # keep the panel visually very close to the old vertical list.
+        if len(rows) > visible_rows:
+            track_x1 = x + w - 11
+            track_x2 = x + w - 6
+            track_y1 = content_top + 3
+            track_y2 = max(track_y1 + 18, content_bottom - 3)
+            track_h = max(1.0, track_y2 - track_y1)
+
+            self.image_canvas.create_rectangle(
+                track_x1, track_y1, track_x2, track_y2,
+                fill="#e7e7e7", outline="#b8b8b8",
+                tags=common_tags + (f"{tag}_scroll_track",),
+            )
+
+            fraction = min(1.0, visible_rows / max(1, len(rows)))
+            thumb_h = max(20.0, track_h * fraction)
+            travel = max(0.0, track_h - thumb_h)
+            ratio = 0.0 if max_offset <= 0 else scroll_index / max_offset
+            thumb_y1 = track_y1 + travel * ratio
+            thumb_y2 = thumb_y1 + thumb_h
+            self.image_canvas.create_rectangle(
+                track_x1 - 1, thumb_y1, track_x2 + 1, thumb_y2,
+                fill="#888888", outline="#777777",
+                tags=common_tags + (f"{tag}_scroll_thumb",),
+            )
+            self.image_canvas.tag_bind(
+                f"{tag}_scroll_track",
+                "<Button-1>",
+                lambda e, wid=window_id, top=track_y1, th=track_h: self._jump_proto_options_scroll(wid, e, top, th),
+            )
+
+        if kind == "all":
+            button_y1 = y + h - 34
+            button_y2 = y + h - 6
+            button_tag = f"{tag}_alt_button"
+            self.image_canvas.create_rectangle(
+                x + 7, button_y1, x + w - 7, button_y2,
+                fill="#f1f1f1", outline="#7f7f7f", width=1,
+                tags=common_tags + (button_tag,),
+            )
+            self.image_canvas.create_text(
+                x + w / 2, (button_y1 + button_y2) / 2,
+                text="Alt. Colors", fill="#111111", font=("Sans", 9),
+                tags=common_tags + (button_tag,),
+            )
+            self.image_canvas.tag_bind(
+                button_tag,
+                "<Button-1>",
+                lambda _e, wid=window_id: self._toggle_mapping_all_palette(wid),
+            )
+
+        # Wheel scrolling is intentionally handled by the single Canvas-level
+        # dispatcher installed in _ensure_image_zoom_mousewheel_binding().
+        # Tk Canvas.tag_bind() accepts button/key/motion events, but not
+        # <MouseWheel>, which would raise TclError on Windows.
+
+        self._sync_workspace_card_item_states(window_id)
+        self._focus_floating_window(window_id)
+
+
+    def _create_single_mapping_panel(self, window_id):
+        """Create a vertical, canvas-native prototype selector below the image."""
+        self._destroy_proto_options(window_id)
+
+        values = list(getattr(self, "color_matrix", []) or [])
+        if not hasattr(self, "current_protos"):
+            self.current_protos = {}
+
+        # Opening Color Mapping is now a neutral state: no prototype is selected
+        # and no radio point is marked until the user explicitly chooses one.
+        current = self.current_protos.get(window_id)
+        if current is None:
+            current = tk.StringVar(value="")
+            self.current_protos[window_id] = current
+        else:
+            current.set("")
+
+        # Clear any percentage left from a previous single mapping while the
+        # user is choosing a new prototype. The displayed image itself is not
+        # altered here.
         try:
-            if frame and frame.winfo_exists():
-                frame.destroy()
+            self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
         except Exception:
             pass
 
+        self.proto_options = getattr(self, "proto_options", {})
+        self.proto_options[window_id] = {
+            "kind": "single",
+            "rows": values,
+            "gap": 12,
+            "scroll_index": 0,
+        }
+        self._reposition_proto_options(window_id)
+        self._sync_workspace_card_item_states(window_id)
+        self._schedule_image_workspace_reflow(delay=0)
+
+
+    def _create_mapping_all_panel(self, window_id, palette_uint8):
+        """Create a vertical, canvas-native Mapping-All legend below the image."""
+        self._destroy_proto_options(window_id)
+
+        prototypes = list(getattr(self, "prototypes", []) or [])
+        palette = np.asarray(palette_uint8)
+        rows = []
+        for i, prototype in enumerate(prototypes):
+            try:
+                rgb = tuple(int(v) for v in np.asarray(palette[i], dtype=int).reshape(-1)[:3])
+            except Exception:
+                rgb = (221, 221, 221)
+            rows.append((prototype, rgb))
+
+        self.proto_options = getattr(self, "proto_options", {})
+        self.proto_options[window_id] = {
+            "kind": "all",
+            "rows": rows,
+            "gap": 12,
+            "scroll_index": 0,
+        }
+        self._reposition_proto_options(window_id)
+        self._sync_workspace_card_item_states(window_id)
+        self._schedule_image_workspace_reflow(delay=0)
 
 
     def color_mapping(self, window_id):
-        """Displays the prototype coverage mapping for a selected prototype."""
-        # Check if the floating window exists
-        items = self.image_canvas.find_withtag(window_id)
-        if not items:
+        """Open Color Mapping directly from Original or Mapping All."""
+        if not self.image_canvas.find_withtag(window_id):
             self.custom_warning("No Window", f"No floating window found with id {window_id}")
             return
-
-        if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
-            self.custom_warning(
-                "Restore Original Image",
-                "This image belongs to a previous Color Space. Press Original before applying Color Mapping."
-            )
+        if not getattr(self, "COLOR_SPACE", False):
+            self.custom_warning("No Color Space", "Load a Fuzzy Color Space before applying Color Mapping.")
             return
+
+        previous_mode = getattr(self, "window_mapping_mode", {}).get(window_id)
+        locked = getattr(self, "mapping_locked_until_original", {}).get(window_id, False)
+
+        # Color Mapping starts in a neutral state with no prototype selected.
+        # If another mapping is currently displayed (including one belonging to
+        # an older FCS), restore the original pixels internally first. This is
+        # not a user-visible prerequisite; it simply gives the selector a clean
+        # starting image while every later calculation still uses the original.
+        if previous_mode == "all" or locked:
+            self.show_original_image(window_id)
 
         if not hasattr(self, "window_mapping_mode"):
             self.window_mapping_mode = {}
-
         self.window_mapping_mode[window_id] = "single"
 
-        # Disable original-image rectangle sampling because the view is no longer the original image
         try:
             self._disable_original_rectangle_sampling(window_id)
         except Exception:
             pass
 
-        # Disable resizing by removing the resize handle and its bindings
-        try:
-            self.image_canvas.delete(f"{window_id}_resize_handle")
-            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<Button-1>")
-            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<B1-Motion>")
-            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<ButtonRelease-1>")
-        except Exception:
-            pass
-
         self.CAN_APPLY_MAPPING[window_id] = False
         self.SHOW_ORIGINAL[window_id] = True
-
-        if not hasattr(self, "proto_options"):
-            self.proto_options = {}
-
-        # Safely delete any previous legend/options frame for this window
-        if window_id in self.proto_options:
-            info = self.proto_options.get(window_id)
-            if isinstance(info, dict):
-                frame = info.get("frame")
-                canvas_item = info.get("canvas_item")
-
-                try:
-                    if canvas_item:
-                        self.image_canvas.delete(canvas_item)
-                except Exception:
-                    pass
-
-                try:
-                    if frame and frame.winfo_exists():
-                        frame.destroy()
-                except Exception:
-                    pass
-
-            del self.proto_options[window_id]
-
-        # -----------------------------
-        # Create legend frame
-        # -----------------------------
-        proto_options = tk.Frame(self.image_canvas, bg="white", relief="solid", bd=1)
-
-        canvas = tk.Canvas(proto_options, bg="white", highlightthickness=0)
-        v_scroll = tk.Scrollbar(proto_options, orient=tk.VERTICAL, command=canvas.yview)
-        h_scroll = tk.Scrollbar(proto_options, orient=tk.HORIZONTAL, command=canvas.xview)
-
-        canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-
-        canvas.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
-
-        inner_frame = tk.Frame(canvas, bg="white")
-        canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
-
-        if not hasattr(self, "current_protos"):
-            self.current_protos = {}
-        default_proto = self.color_matrix[0] if self.color_matrix else ""
-        self.current_protos[window_id] = tk.StringVar(value=default_proto)
-
-        for color in self.color_matrix:
-            rb = tk.Radiobutton(
-                inner_frame,
-                text=color,
-                variable=self.current_protos[window_id],
-                value=color,
-                bg="white",
-                anchor="w",
-                font=("Sans", 10),
-                relief="flat",
-                command=lambda: self.get_proto_percentage(window_id)
-            )
-            rb.pack(fill="x", padx=5, pady=2)
-
-        def resize_inner(event):
-            """Keep the inner frame width synchronized with the outer canvas width."""
-            canvas.itemconfig("inner", width=event.width)
-
-        canvas.bind("<Configure>", resize_inner)
-
-        def on_frame_configure(event):
-            """Update the scroll region after the inner frame changes size."""
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        inner_frame.bind("<Configure>", lambda e: canvas.after_idle(on_frame_configure, e))
-
-        # Mouse wheel scrolling
-        def bind_scroll_events(canvas):
-            def _on_mousewheel(event):
-                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-            def _bind_mousewheel(event):
-                canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-            def _unbind_mousewheel(event):
-                canvas.unbind_all("<MouseWheel>")
-
-            canvas.bind("<Enter>", _bind_mousewheel)
-            canvas.bind("<Leave>", _unbind_mousewheel)
-
-        bind_scroll_events(canvas)
-
-        inner_frame.update_idletasks()
-        canvas.configure(scrollregion=canvas.bbox("all"))
-
-        proto_options.grid_rowconfigure(0, weight=1)
-        proto_options.grid_columnconfigure(0, weight=1)
-
-        # -----------------------------
-        # Position legend using create_window
-        # -----------------------------
-        x1, y1, x2, y2 = self.image_canvas.bbox(items[0])
-        frame_x = x2 + 10
-        frame_y = y1
-        img_h = (y2 - y1)
-
-        desired_w = 150
-        desired_h = min(300, img_h)
-
-        legend_item = self.image_canvas.create_window(
-            frame_x, frame_y,
-            window=proto_options,
-            anchor="nw",
-            width=desired_w,
-            height=desired_h,
-            tags=(f"{window_id}_legend", "legend")
-        )
-
-        # Store structured legend info
-        self.proto_options[window_id] = {
-            "frame": proto_options,
-            "canvas_item": legend_item
-        }
-
+        self._set_image_workspace_active(window_id)
+        self._create_single_mapping_panel(window_id)
 
 
     def get_proto_percentage(self, window_id):
@@ -6509,7 +8047,7 @@ class PyFCSApp:
                     )
                     return
 
-                source_img = self.images[window_id]
+                source_img = self._get_mapping_source_image(window_id)
                 w, h = source_img.size
 
                 valid_mask = UtilsTools._get_alpha_mask_from_pil(source_img)
@@ -6570,6 +8108,16 @@ class PyFCSApp:
                         f"{window_id}_pct_text",
                         text=f"{selected_proto}: {pct:.2f}%"
                     )
+
+                    # Percentage text changes the compact spacing between image
+                    # and selector. Reposition and relayout immediately so the
+                    # caption remains centered after Grid/Focus/manual resize.
+                    self._reposition_proto_options(window_id)
+                    callbacks = getattr(self, "_image_workspace_callbacks", {}).get(window_id, {})
+                    relayout_cb = callbacks.get("relayout") if isinstance(callbacks, dict) else None
+                    if callable(relayout_cb):
+                        relayout_cb(window_id)
+
                     self.image_canvas.tag_raise(f"{window_id}_pct_text")
 
                 self.image_canvas.after(0, _ui)
@@ -6610,11 +8158,16 @@ class PyFCSApp:
 
             self.modified_image[window_id] = grayscale_image_array
 
-            # Get alpha mask from the current source image
-            source_img = self.images.get(window_id)
-            if source_img is not None:
+            # Alpha must come from the original image at the exact mapping
+            # resolution, never from a previously mapped display image.
+            try:
+                map_h, map_w = grayscale_image_array.shape[:2]
+                source_img = self._get_mapping_source_image(
+                    window_id,
+                    target_size=(map_w, map_h),
+                )
                 valid_mask = UtilsTools._get_alpha_mask_from_pil(source_img)
-            else:
+            except Exception:
                 valid_mask = np.ones(grayscale_image_array.shape[:2], dtype=bool)
 
             # Convert numpy array to PIL image with transparency
@@ -6664,6 +8217,10 @@ class PyFCSApp:
 
             if hasattr(self, "window_mapping_mode"):
                 self.window_mapping_mode.pop(window_id, None)
+            try:
+                getattr(self, "_mapping_all_palette_by_window", {}).pop(window_id, None)
+            except Exception:
+                pass
 
             if hasattr(self, "mapping_locked_until_original"):
                 self.mapping_locked_until_original.pop(window_id, None)
@@ -6674,30 +8231,12 @@ class PyFCSApp:
             except Exception:
                 pass
 
-            # Destroy proto_options if it exists to keep the UI consistent
-            if hasattr(self, "proto_options") and window_id in self.proto_options:
-                try:
-                    info = self.proto_options.get(window_id)
-                    if info:
-                        frame = info.get("frame")
-                        canvas_item = info.get("canvas_item")
-
-                        try:
-                            if canvas_item:
-                                self.image_canvas.delete(canvas_item)
-                        except Exception:
-                            pass
-
-                        try:
-                            if frame and frame.winfo_exists():
-                                frame.destroy()
-                        except Exception:
-                            pass
-
-                        del self.proto_options[window_id]
-                except Exception as e:
-                    self.custom_warning("Window Error", f"Error trying to destroy the proto_options window: {e}")
-                    return
+            # Remove the mapping selector/legend from this card.
+            try:
+                self._destroy_proto_options(window_id)
+            except Exception as e:
+                self.custom_warning("Window Error", f"Error trying to destroy the proto_options panel: {e}")
+                return
 
             # Ensure we have the original PIL image stored
             if not hasattr(self, "pil_images_original") or window_id not in self.pil_images_original:
@@ -6770,46 +8309,13 @@ class PyFCSApp:
             except Exception as e:
                 print(f"Warning enabling original rectangle sampling for {window_id}: {e}")
 
-            # Re-enable resize handle
+            # Resynchronize the card without destroying manual move/resize controls.
             try:
-                if not hasattr(self, "floating_window_state") or window_id not in self.floating_window_state:
-                    return
-
-                st = self.floating_window_state[window_id]
-                wx, wy = st["x"], st["y"]
-
-                # Synchronize stored size with the actual displayed size
-                st["w"], st["h"] = target_w, target_h
-                ww, wh = st["w"], st["h"]
-
-                PAD_X = 30
-                PAD_Y = 50
-                HANDLE_SIZE = 12
-
-                existing = self.image_canvas.find_withtag(f"{window_id}_resize_handle")
-
-                hx1 = wx + ww + PAD_X - HANDLE_SIZE - 2
-                hy1 = wy + wh + PAD_Y - HANDLE_SIZE - 2
-                hx2 = wx + ww + PAD_X - 2
-                hy2 = wy + wh + PAD_Y - 2
-
-                if existing:
-                    self.image_canvas.coords(f"{window_id}_resize_handle", hx1, hy1, hx2, hy2)
-                else:
-                    self.image_canvas.create_rectangle(
-                        hx1, hy1, hx2, hy2,
-                        outline="black", fill="lightgray",
-                        tags=(window_id, "floating", f"{window_id}_resize_handle")
-                    )
-
-                # Re-bind resize callbacks stored in create_floating_window
-                if hasattr(self, "_resize_callbacks") and window_id in self._resize_callbacks:
-                    start_resize, do_resize, end_resize = self._resize_callbacks[window_id]
-                    self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<Button-1>", start_resize)
-                    self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<B1-Motion>", do_resize)
-                    self.image_canvas.tag_bind(f"{window_id}_resize_handle", "<ButtonRelease-1>", end_resize)
-                    self.image_canvas.tag_raise(f"{window_id}_resize_handle")
-
+                if hasattr(self, "floating_window_state") and window_id in self.floating_window_state:
+                    self.floating_window_state[window_id]["w"] = target_w
+                    self.floating_window_state[window_id]["h"] = target_h
+                self._sync_workspace_card_item_states(window_id)
+                self._schedule_image_workspace_reflow()
             except Exception:
                 pass
 
@@ -6819,397 +8325,141 @@ class PyFCSApp:
 
 
 
-    def color_mapping_all(self, window_id):
-        """
-        Fast Tkinter Color Mapping All operation.
+    def _display_mapping_all_result(self, window_id, recolored_image, palette_uint8):
+        """Display Mapping-All and keep its vertical legend inside the same card."""
+        try:
+            self.modified_image[window_id] = recolored_image
+            if recolored_image.ndim == 3 and recolored_image.shape[-1] == 4:
+                pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGBA")
+            else:
+                pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGB")
 
-        UI/job/cache orchestration stays here.
-        Label-map computation, palette generation and recoloring live in ImageManager.
-        """
-        items = self.image_canvas.find_withtag(window_id)
-        if not items:
+            self._set_image_zoom_source(window_id, pil_to_show, reset_zoom=True)
+            target_size = getattr(self, "image_dimensions", {}).get(window_id)
+            if target_size:
+                pil_display = pil_to_show.resize(
+                    (max(1, int(target_size[0])), max(1, int(target_size[1]))),
+                    Image.Resampling.LANCZOS,
+                )
+            else:
+                pil_display = pil_to_show
+
+            self.images[window_id] = pil_display
+            self.display_pil[window_id] = pil_display
+            img_tk = ImageTk.PhotoImage(pil_display)
+            self.floating_images[window_id] = img_tk
+
+            image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
+            if not image_items:
+                self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
+                return
+            self.image_canvas.itemconfig(image_items[0], image=img_tk)
+
+            if not hasattr(self, "_mapping_all_palette_by_window"):
+                self._mapping_all_palette_by_window = {}
+            self._mapping_all_palette_by_window[window_id] = np.asarray(palette_uint8).copy()
+
+            self._create_mapping_all_panel(window_id, palette_uint8)
+            self._focus_floating_window(window_id)
+
+        except Exception as exc:
+            self.custom_warning("Display Error", f"Error displaying the image: {exc}")
+
+
+    def color_mapping_all(self, window_id):
+        """Compute Mapping All directly from any current image view."""
+        if not self.image_canvas.find_withtag(window_id):
             self.custom_warning("No Window", f"No floating window found with id {window_id}")
             return
-
-        if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
-            self.custom_warning(
-                "Restore Original Image",
-                "This image belongs to a previous Color Space. Press Original before applying Color Mapping All."
-            )
+        if not getattr(self, "COLOR_SPACE", False):
+            self.custom_warning("No Color Space", "Load a Fuzzy Color Space before applying Color Mapping All.")
             return
 
-        if not hasattr(self, "window_mapping_mode"):
-            self.window_mapping_mode = {}
+        # The calculation below always starts from pil_images_original, so an
+        # old or different mapping view can be replaced directly. Clear only
+        # the old-space display lock; no intermediate Original action is needed.
+        try:
+            getattr(self, "mapping_locked_until_original", {}).pop(window_id, None)
+        except Exception:
+            pass
 
         if not hasattr(self, "window_image_key") or window_id not in self.window_image_key:
             self.custom_warning("Error", "Image cache key not found for this window.")
             return
-
+        if not hasattr(self, "window_mapping_mode"):
+            self.window_mapping_mode = {}
         self.window_mapping_mode[window_id] = "all"
 
-        image_key = self.window_image_key[window_id]
-        color_space_key = getattr(self, "file_path", None)
-        cache_scope = (image_key, color_space_key)
-
+        cache_scope = (self.window_image_key[window_id], getattr(self, "file_path", None))
         try:
             self._disable_original_rectangle_sampling(window_id)
         except Exception:
             pass
-
-        try:
-            self.image_canvas.delete(f"{window_id}_resize_handle")
-            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<Button-1>")
-            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<B1-Motion>")
-            self.image_canvas.tag_unbind(f"{window_id}_resize_handle", "<ButtonRelease-1>")
-        except Exception:
-            pass
-
+        self._sync_workspace_card_item_states(window_id)
         try:
             self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
         except Exception:
             pass
-
         self.CAN_APPLY_MAPPING[window_id] = False
         self.SHOW_ORIGINAL[window_id] = True
-
-        if hasattr(self, "_destroy_proto_options"):
-            self._destroy_proto_options(window_id)
-        else:
-            self.proto_options = getattr(self, "proto_options", {})
-            info = self.proto_options.pop(window_id, None)
-            if isinstance(info, dict):
-                try:
-                    if info.get("canvas_item"):
-                        self.image_canvas.delete(info.get("canvas_item"))
-                except Exception:
-                    pass
-                try:
-                    frame = info.get("frame")
-                    if frame and frame.winfo_exists():
-                        frame.destroy()
-                except Exception:
-                    pass
+        self._destroy_proto_options(window_id)
+        self._set_image_workspace_active(window_id)
 
         def update_progress(job_id, current_step, total_steps):
-            if total_steps <= 0:
-                return
-            self._update_window_progress(window_id, job_id, current_step, total_steps)
-
-        def build_legend_frame(prototypes, parent_canvas, palette_uint8):
-            """Create and return the legend frame for the current palette."""
-            legend_frame = tk.Frame(parent_canvas, bg="white", relief="solid", bd=1)
-            legend_frame.grid_rowconfigure(0, weight=1)
-            legend_frame.grid_columnconfigure(0, weight=1)
-
-            canvas = tk.Canvas(legend_frame, bg="white", highlightthickness=0)
-            v_scroll = tk.Scrollbar(legend_frame, orient=tk.VERTICAL, command=canvas.yview)
-            h_scroll = tk.Scrollbar(legend_frame, orient=tk.HORIZONTAL, command=canvas.xview)
-
-            canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-            canvas.grid(row=0, column=0, sticky="nsew")
-            v_scroll.grid(row=0, column=1, sticky="ns")
-            h_scroll.grid(row=1, column=0, sticky="ew")
-
-            inner_frame = tk.Frame(canvas, bg="white")
-            canvas.create_window((0, 0), window=inner_frame, anchor="nw", tags="inner")
-
-            def resize_inner(event):
-                canvas.itemconfig("inner", width=event.width)
-
-            canvas.bind("<Configure>", resize_inner)
-
-            def on_frame_configure(_event=None):
-                canvas.configure(scrollregion=canvas.bbox("all"))
-
-            inner_frame.bind("<Configure>", lambda e: canvas.after_idle(on_frame_configure))
-
-            def bind_scroll_events(c):
-                def _on_mousewheel(event):
-                    c.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-                def _bind_mousewheel(_event):
-                    c.bind_all("<MouseWheel>", _on_mousewheel)
-
-                def _unbind_mousewheel(_event):
-                    c.unbind_all("<MouseWheel>")
-
-                c.bind("<Enter>", _bind_mousewheel)
-                c.bind("<Leave>", _unbind_mousewheel)
-
-            bind_scroll_events(canvas)
-
-            for i, prototype in enumerate(prototypes):
-                rgb = palette_uint8[i].astype(int)
-                color_hex = "#{:02x}{:02x}{:02x}".format(rgb[0], rgb[1], rgb[2])
-
-                luminance = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
-                text_color = "white" if luminance < 80 else "black"
-
-                label = tk.Label(
-                    inner_frame,
-                    text=prototype.label,
-                    bg=color_hex,
-                    fg=text_color,
-                    padx=5,
-                    pady=2
-                )
-                label.pack(fill="x", padx=5, pady=2)
-
-            inner_frame.update_idletasks()
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-            return legend_frame
-
-        def update_ui(recolored_image, new_legend_frame):
-            """Update the UI safely from the main thread."""
-            try:
-                self.modified_image[window_id] = recolored_image
-
-                if recolored_image.ndim == 3 and recolored_image.shape[-1] == 4:
-                    pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGBA")
-                else:
-                    pil_to_show = Image.fromarray(recolored_image.astype(np.uint8), mode="RGB")
-
-                # Make zoom work over the current Color Mapping All image.
-                self._set_image_zoom_source(window_id, pil_to_show, reset_zoom=True)
-
-                self.images[window_id] = pil_to_show
-                self.display_pil[window_id] = pil_to_show
-
-                img_tk = ImageTk.PhotoImage(pil_to_show)
-                self.floating_images[window_id] = img_tk
-
-                image_items = self.image_canvas.find_withtag(f"{window_id}_click_image")
-                if image_items:
-                    self.image_canvas.itemconfig(image_items[0], image=img_tk)
-                else:
-                    self.custom_warning("Image Error", f"No image found for window_id: {window_id}")
-
-                # Remove previous legend canvas item before adding the new one.
-                if hasattr(self, "_destroy_proto_options"):
-                    self._destroy_proto_options(window_id)
-                else:
-                    self.proto_options = getattr(self, "proto_options", {})
-                    old_info = self.proto_options.pop(window_id, None)
-                    if isinstance(old_info, dict):
-                        try:
-                            if old_info.get("canvas_item"):
-                                self.image_canvas.delete(old_info.get("canvas_item"))
-                        except Exception:
-                            pass
-                        try:
-                            old_frame = old_info.get("frame")
-                            if old_frame and old_frame is not new_legend_frame and old_frame.winfo_exists():
-                                old_frame.destroy()
-                        except Exception:
-                            pass
-
-                bbox = self.image_canvas.bbox(items[0])
-                if not bbox:
-                    return
-
-                x1, y1, x2, y2 = bbox
-                frame_x = x2 + 10
-                frame_y = y1
-                img_h = (y2 - y1)
-                desired_w = 150
-                desired_h = min(300, img_h)
-
-                legend_item = self.image_canvas.create_window(
-                    frame_x,
-                    frame_y,
-                    window=new_legend_frame,
-                    anchor="nw",
-                    width=desired_w,
-                    height=desired_h,
-                    tags=(f"{window_id}_legend", "legend")
-                )
-
-                btn = tk.Button(
-                    new_legend_frame,
-                    text="Alt. Colors",
-                    command=lambda: recolor(window_id)
-                )
-                btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
-
-                self.proto_options[window_id] = {
-                    "frame": new_legend_frame,
-                    "canvas_item": legend_item
-                }
-
-            except Exception as e:
-                self.custom_warning("Display Error", f"Error displaying the image: {e}")
-
-        def recolor(window_id):
-            """Switch displayed palette without recomputing memberships."""
-            if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
-                self.custom_warning(
-                    "Old Color Space",
-                    "This Color Mapping All result belongs to a previous Color Space. Press Original to use the new one."
-                )
-                return
-
-            if not self._window_exists(window_id):
-                return
-
-            scope_cache = getattr(self, "cm_cache_by_image", {}).get(cache_scope)
-            if not scope_cache:
-                return
-
-            cache_pack = scope_cache.get("last_pack")
-            if not cache_pack:
-                return
-
-            label_map = cache_pack["label_map"]
-            palettes = cache_pack["palettes"]
-            current = cache_pack["scheme"]
-
-            new = "original" if current == "alt" else "alt"
-            cache_pack["scheme"] = new
-
-            palette = palettes[new]
-            recolored_image = self.image_manager.recolor_label_map(label_map, palette)
-
-            new_legend_frame = build_legend_frame(self.prototypes, self.image_canvas, palette)
-            cache_pack["legend_frame"] = new_legend_frame
-
-            self.image_canvas.after(0, lambda: update_ui(recolored_image, new_legend_frame))
+            if total_steps > 0:
+                self._update_window_progress(window_id, job_id, current_step, total_steps)
 
         def run_process(cancel_event, job_id):
             try:
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
-
-                if not hasattr(self, "images") or window_id not in self.images:
-                    self.image_canvas.after(
-                        0,
-                        lambda: self.custom_warning("Processing Error", "Current image not found for this window.")
-                    )
-                    return
-
-                source_img = self.images[window_id]
+                source_img = self._get_mapping_source_image(window_id)
                 w, h = source_img.size
-
                 valid_mask = UtilsTools._get_alpha_mask_from_pil(source_img)
                 processing_img = UtilsTools._pil_rgb_for_processing(source_img)
-
                 if not hasattr(self, "cm_cache_by_image"):
                     self.cm_cache_by_image = {}
                 scope_cache = self.cm_cache_by_image.setdefault(cache_scope, {})
-
-                proto_labels = tuple([p.label for p in self.prototypes])
+                proto_labels = tuple(p.label for p in self.prototypes)
                 cache_key = (w, h, proto_labels)
                 label_map = scope_cache.get(cache_key)
-
                 if label_map is None:
                     label_map = self.image_manager.get_best_prototype_label_map(
-                        image=processing_img,
-                        fuzzy_color_space=self.fuzzy_color_space,
-                        valid_mask=valid_mask,
+                        image=processing_img, fuzzy_color_space=self.fuzzy_color_space, valid_mask=valid_mask,
                         progress_callback=lambda current, total: update_progress(job_id, current, total),
-                        cancel_callback=lambda: self._is_job_cancelled(window_id, cancel_event, job_id)
-                    )
-
+                        cancel_callback=lambda: self._is_job_cancelled(window_id, cancel_event, job_id))
                     if label_map is None:
                         return
-
                     scope_cache[cache_key] = label_map
-
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
-
                 original_palette = self.image_manager.build_original_palette_uint8(self.prototypes)
                 alt_palette = self.image_manager.build_alt_palette_uint8(self.prototypes, self.hex_color)
-
-                # Show representative color-space colors first.
-                scheme = "alt"
                 palette = alt_palette
                 recolored_image = self.image_manager.recolor_label_map(label_map, palette)
-                new_legend_frame = build_legend_frame(self.prototypes, self.image_canvas, palette)
-
                 scope_cache["last_pack"] = {
                     "label_map": label_map,
                     "palettes": {"original": original_palette, "alt": alt_palette},
-                    "scheme": scheme,
-                    "legend_frame": new_legend_frame,
+                    "scheme": "alt",
                     "cache_key": cache_key,
                 }
-
                 def _ui():
-                    if not self._is_current_job(window_id, job_id):
-                        return
-                    if not self._window_exists(window_id):
-                        return
-                    update_ui(recolored_image, new_legend_frame)
-
+                    if self._is_current_job(window_id, job_id) and self._window_exists(window_id):
+                        self._display_mapping_all_result(window_id, recolored_image, palette)
                 self.image_canvas.after(0, _ui)
-
-            except RuntimeError as e:
-                if str(e) != "__JOB_CANCELLED__":
-                    error_msg = str(e)
-                    self.image_canvas.after(
-                        0,
-                        lambda msg=error_msg: self.custom_warning(
-                            "Processing Error",
-                            f"Error in color mapping: {msg}"
-                        )
-                    )
-            except Exception as e:
-                error_msg = str(e)
-                self.image_canvas.after(
-                    0,
-                    lambda msg=error_msg: self.custom_warning(
-                        "Processing Error",
-                        f"Error in color mapping: {msg}"
-                    )
-                )
+            except RuntimeError as exc:
+                if str(exc) != "__JOB_CANCELLED__":
+                    msg = str(exc)
+                    self.image_canvas.after(0, lambda m=msg: self.custom_warning("Processing Error", f"Error in color mapping: {m}"))
+            except Exception as exc:
+                msg = str(exc)
+                self.image_canvas.after(0, lambda m=msg: self.custom_warning("Processing Error", f"Error in color mapping: {m}"))
 
         job_id = self._start_window_job(window_id, "color_mapping_all", run_process)
         if job_id is not None:
             self._show_window_loading(window_id, "Color Mapping All...")
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # ============================================================================================================================================================
-    #  FUNCTIONS AT and PT
-    # ============================================================================================================================================================
     def get_umbral_points(self, threshold, mode=None):
         """
         Filter points inside the selected fuzzy volumes using the given threshold
@@ -7282,7 +8532,7 @@ class PyFCSApp:
 
                 # Save the computed ranges as CSV.
                 csv_path = self.color_manager.create_csv(self.file_base_name, volume_limits, mode)
-                print(f"CSV saved in test_results/: {csv_path}")
+                print(f"Threshold CSV saved: {csv_path}")
 
                 # Step 2: prepare the plot refresh.
                 update_progress(2, 3)
@@ -8224,8 +9474,8 @@ class PyFCSApp:
         wx, wy = st["x"], st["y"]
 
         # These values must match create_floating_window()
-        IMG_LEFT_PAD = 15
-        IMG_TOP_PAD = 40
+        IMG_LEFT_PAD = 12
+        IMG_TOP_PAD = 44
 
         # Top-left corner of the displayed image inside the main canvas
         img_x = wx + IMG_LEFT_PAD
@@ -8334,7 +9584,9 @@ class PyFCSApp:
 
         state = self._original_sampling_state[window_id]
 
-        start_x, start_y = self._clip_original_canvas_point_to_image(event.x, event.y, window_id)
+        canvas_x = self.image_canvas.canvasx(event.x)
+        canvas_y = self.image_canvas.canvasy(event.y)
+        start_x, start_y = self._clip_original_canvas_point_to_image(canvas_x, canvas_y, window_id)
 
         state["dragging"] = True
         state["drag_start"] = (start_x, start_y)
@@ -8366,7 +9618,9 @@ class PyFCSApp:
             return
 
         x0, y0 = state["drag_start"]
-        x1, y1 = self._clip_original_canvas_point_to_image(event.x, event.y, window_id)
+        canvas_x = self.image_canvas.canvasx(event.x)
+        canvas_y = self.image_canvas.canvasy(event.y)
+        x1, y1 = self._clip_original_canvas_point_to_image(canvas_x, canvas_y, window_id)
 
         self.image_canvas.coords(state["rect_id"], x0, y0, x1, y1)
 
@@ -8403,27 +9657,23 @@ class PyFCSApp:
         full_h = state["full_h"]
 
         x0, y0 = state["drag_start"]
-        x1, y1 = self._clip_original_canvas_point_to_image(event.x, event.y, window_id)
+        canvas_x = self.image_canvas.canvasx(event.x)
+        canvas_y = self.image_canvas.canvasy(event.y)
+        x1, y1 = self._clip_original_canvas_point_to_image(canvas_x, canvas_y, window_id)
 
         left = min(x0, x1)
         right = max(x0, x1)
         top = min(y0, y1)
         bottom = max(y0, y1)
 
-        # Treat a tiny drag as a normal click
+        # Treat a tiny drag as a normal click. Use the same viewport-aware
+        # conversion used by simple pixel picking, so zoom and Canvas scroll
+        # cannot change which original pixel is selected.
         if (right - left) < 3 and (bottom - top) < 3:
-            local_x = event.x - img_x
-            local_y = event.y - img_y
-
-            # Ignore clicks outside the displayed image
-            if local_x < 0 or local_y < 0 or local_x >= draw_w or local_y >= draw_h:
+            point = self._canvas_xy_to_original_image(window_id, canvas_x, canvas_y)
+            if point is None:
                 return "break"
-
-            full_x = int(local_x * full_w / draw_w)
-            full_y = int(local_y * full_h / draw_h)
-
-            full_x = max(0, min(full_w - 1, full_x))
-            full_y = max(0, min(full_h - 1, full_y))
+            full_x, full_y, _rel_x, _rel_y = point
 
             r, g, b = pil.getpixel((full_x, full_y))
             pixel_lab = UtilsTools.rgb_to_lab((r, g, b))
@@ -8448,11 +9698,30 @@ class PyFCSApp:
         if right_i <= left_i or bottom_i <= top_i:
             return "break"
 
-        # Map displayed-image coordinates back to original-image coordinates
-        full_left = int(left_i * full_w / draw_w)
-        full_right = int(right_i * full_w / draw_w)
-        full_top = int(top_i * full_h / draw_h)
-        full_bottom = int(bottom_i * full_h / draw_h)
+        # Map the displayed rectangle through the CURRENT zoom viewport and
+        # then into full-resolution original coordinates. This is the critical
+        # step that keeps ROI sampling correct after Grid/Focus/zoom/scroll.
+        crop = self._get_image_view_crop_box(window_id)
+        source = getattr(self, "image_view_source", {}).get(window_id)
+        original = getattr(self, "pil_images_original", {}).get(window_id)
+        if crop is None or source is None or original is None:
+            return "break"
+
+        crop_left, crop_top, crop_right, crop_bottom = crop
+        crop_w = crop_right - crop_left
+        crop_h = crop_bottom - crop_top
+        sw, sh = source.size
+        ow, oh = original.size
+
+        src_left = crop_left + (left_i / draw_w) * crop_w
+        src_right = crop_left + (right_i / draw_w) * crop_w
+        src_top = crop_top + (top_i / draw_h) * crop_h
+        src_bottom = crop_top + (bottom_i / draw_h) * crop_h
+
+        full_left = int((src_left / max(1, sw)) * ow)
+        full_right = int(np.ceil((src_right / max(1, sw)) * ow))
+        full_top = int((src_top / max(1, sh)) * oh)
+        full_bottom = int(np.ceil((src_bottom / max(1, sh)) * oh))
 
         full_left = max(0, min(full_w - 1, full_left))
         full_right = max(0, min(full_w, full_right))
@@ -9365,20 +10634,7 @@ class PyFCSApp:
         analysis_body.bind("<Configure>", _update_analysis_scroll_region)
         analysis_canvas.bind("<Configure>", _update_analysis_body_width)
 
-        def _on_analysis_mousewheel(event):
-            try:
-                analysis_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            except Exception:
-                pass
-
-        analysis_canvas.bind(
-            "<Enter>",
-            lambda e: analysis_canvas.bind_all("<MouseWheel>", _on_analysis_mousewheel)
-        )
-        analysis_canvas.bind(
-            "<Leave>",
-            lambda e: analysis_canvas.unbind_all("<MouseWheel>")
-        )
+        self._register_vertical_mousewheel_canvas(analysis_canvas)
 
         # ------------------------------------------------------------------
         # Selected/comparison color preview
@@ -9599,24 +10855,7 @@ class PyFCSApp:
             pady=(0, 10)
         )
 
-        def _on_membership_mousewheel(event):
-            try:
-                membership_list_canvas.yview_scroll(
-                    int(-1 * (event.delta / 120)),
-                    "units"
-                )
-            except Exception:
-                pass
-
-        membership_list_canvas.bind(
-            "<Enter>",
-            lambda e: membership_list_canvas.bind_all("<MouseWheel>", _on_membership_mousewheel)
-        )
-
-        membership_list_canvas.bind(
-            "<Leave>",
-            lambda e: membership_list_canvas.unbind_all("<MouseWheel>")
-        )
+        self._register_vertical_mousewheel_canvas(membership_list_canvas)
 
         # Graph buttons shown in the right column when Membership is visible.
         graph_buttons_card = self._create_color_evaluation_graph_buttons_card(

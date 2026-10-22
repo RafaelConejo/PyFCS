@@ -46,11 +46,12 @@ class PaletteBasedCreationManager:
         self.root = app.root
 
         self.default_source_name = "ISCC-NBS Basic"
-        self.default_source_path = os.path.join(
-            UtilsTools.get_base_path(),
-            "fuzzy_color_spaces",
-            "cns",
-            "ISCC_NBS_BASIC.cns",
+        self.default_source_path = UtilsTools.get_resource_path(
+            os.path.join(
+                "fuzzy_color_spaces",
+                "cns",
+                "ISCC_NBS_BASIC.cns",
+            )
         )
 
         self.current_source_path = self.default_source_path
@@ -149,17 +150,19 @@ class PaletteBasedCreationManager:
         """Load the bundled ISCC-NBS Basic palette as the first source."""
         try:
             loaded = UtilsTools.load_color_data(self.default_source_path)
-            self._add_source_colors(
-                loaded,
-                source_name=self.default_source_name,
-                source_path=self.default_source_path,
-            )
         except Exception as exc:
             self.app.custom_warning(
                 "Palette Error",
                 f"The predefined palette could not be loaded:\n{exc}",
                 parent=self.win,
             )
+            loaded = {}
+
+        self._add_source_colors(
+            loaded,
+            source_name=self.default_source_name,
+            source_path=self.default_source_path,
+        )
 
     @staticmethod
     def _source_key(path):
@@ -183,12 +186,27 @@ class PaletteBasedCreationManager:
         return re.sub(r"[\s_\-]+", "", stem).casefold()
 
     def _make_unique_color_name(self, requested_name, ignore_name=None):
-        """Return a unique color name using the shared PyFCS naming policy."""
-        return UtilsTools.make_unique_color_name(
-            requested_name,
-            self.colors.keys(),
-            ignore_name=ignore_name,
-        )
+        """
+        Return a color name that is unique inside this creation workspace.
+
+        Imported collisions are differentiated automatically:
+            Red -> Red (2) -> Red (3) ...
+
+        ``ignore_name`` is used when editing an existing row so keeping its
+        current name does not count as a collision.
+        """
+        base = str(requested_name or "Color").strip() or "Color"
+        existing = set(self.colors.keys())
+        if ignore_name is not None:
+            existing.discard(ignore_name)
+
+        if base not in existing:
+            return base
+
+        index = 2
+        while f"{base} ({index})" in existing:
+            index += 1
+        return f"{base} ({index})"
 
     def _update_source_summary(self):
         """Show a compact count of source loads; per-color origins stay hidden."""
@@ -258,7 +276,7 @@ class PaletteBasedCreationManager:
         if old_name not in self.colors:
             return old_name
 
-        requested = str(requested_name or "").strip()[:UtilsTools.MAX_COLOR_NAME_CHARS]
+        requested = str(requested_name or "").strip()[:40]
         if not requested:
             return old_name
 
@@ -368,9 +386,9 @@ class PaletteBasedCreationManager:
             initialdir=initial_dir,
             parent=self.win,
             filetypes=[
-                ("PyFCS Color Sources", "*.cns *.fcs"),
-                ("Color Name System", "*.cns"),
-                ("Fuzzy Color Space", "*.fcs"),
+                ("PyFCS Color Sources", "*.cns *.fcs *.CNS *.FCS"),
+                ("Color Name System", "*.cns *.CNS"),
+                ("Fuzzy Color Space", "*.fcs *.FCS"),
                 ("All Files", "*.*"),
             ],
         )
@@ -659,10 +677,9 @@ class PaletteBasedCreationManager:
             ),
         )
 
-        self.colors_canvas.bind("<Enter>", self._bind_mousewheel)
-        self.colors_canvas.bind("<Leave>", self._unbind_mousewheel)
-        self.colors_inner.bind("<Enter>", self._bind_mousewheel)
-        self.colors_inner.bind("<Leave>", self._unbind_mousewheel)
+        self.win.bind("<MouseWheel>", self._dispatch_colors_mousewheel, add="+")
+        self.win.bind("<Button-4>", self._dispatch_colors_mousewheel, add="+")
+        self.win.bind("<Button-5>", self._dispatch_colors_mousewheel, add="+")
 
     def _build_footer(self, parent):
         footer = tk.Frame(parent, bg=self.BG)
@@ -982,7 +999,7 @@ class PaletteBasedCreationManager:
         default_name = self._next_unique_name("Custom Color")
 
         def on_submit(color_name, sample_lab, sample_rgb, sample_hex, dialog, input_vars):
-            clean_name = str(color_name).strip()[:UtilsTools.MAX_COLOR_NAME_CHARS]
+            clean_name = str(color_name).strip()[:24]
 
             if not clean_name:
                 input_vars["status_var"].set("Enter a color name.")
@@ -1103,21 +1120,25 @@ class PaletteBasedCreationManager:
     # ======================================================================
     # MOUSE WHEEL
     # ======================================================================
-    def _bind_mousewheel(self, _event=None):
-        system_name = platform.system()
-        if system_name in ("Windows", "Darwin"):
-            self.colors_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-        else:
-            self.colors_canvas.bind_all("<Button-4>", self._on_linux_scroll_up)
-            self.colors_canvas.bind_all("<Button-5>", self._on_linux_scroll_down)
+    def _dispatch_colors_mousewheel(self, event):
+        """Scroll the colors list only when the pointer is over that canvas."""
+        try:
+            px = self.win.winfo_pointerx()
+            py = self.win.winfo_pointery()
+            x0 = self.colors_canvas.winfo_rootx()
+            y0 = self.colors_canvas.winfo_rooty()
+            x1 = x0 + self.colors_canvas.winfo_width()
+            y1 = y0 + self.colors_canvas.winfo_height()
+            if not (x0 <= px < x1 and y0 <= py < y1):
+                return None
+        except Exception:
+            return None
 
-    def _unbind_mousewheel(self, _event=None):
-        system_name = platform.system()
-        if system_name in ("Windows", "Darwin"):
-            self.colors_canvas.unbind_all("<MouseWheel>")
-        else:
-            self.colors_canvas.unbind_all("<Button-4>")
-            self.colors_canvas.unbind_all("<Button-5>")
+        if getattr(event, "num", None) == 4:
+            return self._on_linux_scroll_up(event)
+        if getattr(event, "num", None) == 5:
+            return self._on_linux_scroll_down(event)
+        return self._on_mousewheel(event)
 
     def _on_mousewheel(self, event):
         try:

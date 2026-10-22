@@ -1,2 +1,27 @@
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# PyInstaller
+build/
+dist/
+*.manifest
+
+# Runtime / test output
+test_results/
+
+# IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PyFCS runtime temporary files
+Source/external/temp/
