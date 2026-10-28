@@ -225,10 +225,34 @@ class PaletteBasedCreationManager:
         name as an existing one, it receives a safe unique name such as
         ``Red (2)``. Repeated source names are handled by the caller, which
         asks the user whether the source should be loaded again.
+
+        Returns
+        -------
+        list[str]
+            Names of the colors actually added, in insertion order.
         """
         source_key = self._source_key(source_path)
-
         additions = []
+
+        # Reuse one set for the complete import. The previous implementation
+        # rebuilt set(self.colors.keys()) for every imported color.
+        existing_names = set(self.colors.keys())
+
+        def reserve_unique_name(requested_name):
+            base = str(requested_name or "Color").strip() or "Color"
+
+            if base not in existing_names:
+                existing_names.add(base)
+                return base
+
+            index = 2
+            candidate = f"{base} ({index})"
+            while candidate in existing_names:
+                index += 1
+                candidate = f"{base} ({index})"
+
+            existing_names.add(candidate)
+            return candidate
 
         for raw_name, data in (loaded_colors or {}).items():
             normalized = self._normalize_color_data(data)
@@ -236,11 +260,9 @@ class PaletteBasedCreationManager:
                 continue
 
             normalized["custom"] = False
-            unique_name = self._make_unique_color_name(str(raw_name))
+            unique_name = reserve_unique_name(raw_name)
             additions.append((unique_name, normalized))
 
-            # Reserve the generated name immediately so two equal names inside
-            # the same incoming source are also differentiated correctly.
             self.colors[unique_name] = normalized
             self.color_checks[unique_name] = {
                 "var": tk.BooleanVar(value=False),
@@ -260,11 +282,7 @@ class PaletteBasedCreationManager:
         self.current_source_path = source_path
         self._update_source_summary()
 
-        # Clear a previous search so newly imported colors are immediately visible.
-        if hasattr(self, "search_var"):
-            self.search_var.set("")
-
-        return len(additions)
+        return [name for name, _data in additions]
 
     def _rename_color(self, old_name, requested_name):
         """
@@ -416,15 +434,25 @@ class PaletteBasedCreationManager:
             loaded = self.app.fuzzy_manager.load_color_file(path)
             raw_colors = loaded.get("color_data", {})
 
-            added_count = self._add_source_colors(
+            added_names = self._add_source_colors(
                 raw_colors,
                 source_name=os.path.basename(path),
                 source_path=path,
             )
+            added_count = len(added_names)
 
-            self._refresh_color_list()
-            self._update_counts()
-            self.win.after_idle(self._scroll_to_bottom)
+            # When no filter is active there is no reason to rebuild hundreds
+            # of existing Tk rows. Append only the newly imported rows.
+            #
+            # If a search is active, clear it so the imported source is visible.
+            # The existing search trace performs the single full refresh that is
+            # genuinely required in that case.
+            if self.search_var.get().strip():
+                self.search_var.set("")
+                self.win.after(60, self._scroll_to_bottom)
+            else:
+                self._append_color_rows(added_names)
+                self.win.after_idle(self._scroll_to_bottom)
 
             # Brief in-context confirmation without adding a permanent Source column.
             self.visible_count_var.set(f"{added_count} colors added")
@@ -808,7 +836,170 @@ class PaletteBasedCreationManager:
         # useful without requiring exact punctuation or spacing.
         return all(token in searchable for token in query_tokens)
 
+    def _create_color_row(self, name, index):
+        """Create one visible color row and register its editable-name state."""
+        if name not in self.colors or name not in self.color_checks:
+            return None
+
+        data = self.colors[name]
+        check_data = self.color_checks[name]
+
+        row_bg = self.CARD if index % 2 == 0 else "#fbfcfd"
+        row = tk.Frame(self.colors_inner, bg=row_bg, bd=0)
+        row.pack(fill="x", padx=3, pady=1)
+        self._configure_table_columns(row)
+
+        # --------------------------------------------------------------
+        # Color column: checkbox + swatch + name
+        # --------------------------------------------------------------
+        color_cell = tk.Frame(row, bg=row_bg)
+        color_cell.grid(row=0, column=0, sticky="nsew", padx=(4, 8))
+
+        check = tk.Checkbutton(
+            color_cell,
+            variable=check_data["var"],
+            bg=row_bg,
+            activebackground=row_bg,
+            selectcolor=row_bg,
+            command=self._update_counts,
+            cursor="hand2",
+            bd=0,
+            highlightthickness=0,
+        )
+        check.pack(side="left", padx=(0, 5), pady=5)
+
+        swatch = tk.Canvas(
+            color_cell,
+            width=28,
+            height=28,
+            bg=row_bg,
+            highlightthickness=0,
+            bd=0,
+        )
+        swatch.pack(side="left", padx=(0, 9), pady=4)
+        swatch.create_rectangle(
+            2,
+            2,
+            26,
+            26,
+            fill=data["hex"],
+            outline="#707070",
+        )
+
+        name_frame = tk.Frame(color_cell, bg=row_bg)
+        name_frame.pack(side="left", fill="x", expand=True)
+
+        name_var = tk.StringVar(value=name)
+        name_entry = tk.Entry(
+            name_frame,
+            textvariable=name_var,
+            font=self.FONT_BOLD,
+            bg="#ffffff",
+            fg=self.TEXT,
+            relief="solid",
+            bd=1,
+            highlightthickness=0,
+        )
+        name_entry.pack(fill="x")
+
+        name_entry.bind(
+            "<Return>",
+            lambda _e, old=name, var=name_var: self._commit_color_name(old, var),
+        )
+        name_entry.bind(
+            "<FocusOut>",
+            lambda _e, old=name, var=name_var: self._commit_color_name(old, var),
+        )
+        self._name_editors.append((name, name_var))
+
+        if data.get("custom"):
+            tk.Label(
+                name_frame,
+                text="Custom color",
+                font=self.FONT_SMALL,
+                bg=row_bg,
+                fg=self.BLUE,
+                anchor="w",
+            ).pack(fill="x", pady=(1, 0))
+
+        # --------------------------------------------------------------
+        # RGB / HEX / LAB columns
+        # --------------------------------------------------------------
+        rgb = data["rgb"]
+        tk.Label(
+            row,
+            text=f"{rgb[0]}, {rgb[1]}, {rgb[2]}",
+            font=self.FONT,
+            bg=row_bg,
+            fg=self.MUTED,
+            anchor="center",
+        ).grid(row=0, column=1, sticky="nsew", padx=6)
+
+        tk.Label(
+            row,
+            text=data["hex"],
+            font=self.FONT,
+            bg=row_bg,
+            fg=self.MUTED,
+            anchor="center",
+        ).grid(row=0, column=2, sticky="nsew", padx=6)
+
+        lab = data["lab"]
+        tk.Label(
+            row,
+            text=f"{lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
+            font=self.FONT,
+            bg=row_bg,
+            fg=self.MUTED,
+            anchor="e",
+        ).grid(row=0, column=3, sticky="nsew", padx=(6, 12))
+
+        self._row_widgets[name] = row
+        return row
+
+    def _append_color_rows(self, names):
+        """
+        Append only newly added visible colors.
+
+        This avoids destroying and rebuilding the complete Tk table after
+        adding a custom color or importing another palette/FCS source.
+        """
+        if not hasattr(self, "colors_inner"):
+            return
+
+        names = [
+            name
+            for name in names
+            if name in self.colors
+            and name not in self._row_widgets
+            and self._matches_search(name)
+        ]
+
+        if not names:
+            self._update_counts(visible=len(self._row_widgets))
+            return
+
+        # If the table currently contains only the "no matches" placeholder,
+        # remove it before adding the first real row.
+        if not self._row_widgets:
+            for child in self.colors_inner.winfo_children():
+                child.destroy()
+            self._name_editors = []
+
+        start_index = len(self._row_widgets)
+        for offset, name in enumerate(names):
+            self._create_color_row(name, start_index + offset)
+
+        self._update_counts(visible=len(self._row_widgets))
+
     def _refresh_color_list(self):
+        """
+        Fully rebuild the visible list.
+
+        Full rebuilds are kept for operations that genuinely change the whole
+        view, such as search filtering or renaming. Normal additions use
+        _append_color_rows() instead.
+        """
         if not hasattr(self, "colors_inner"):
             return
 
@@ -832,122 +1023,7 @@ class PaletteBasedCreationManager:
             return
 
         for index, name in enumerate(visible_names):
-            data = self.colors[name]
-            check_data = self.color_checks[name]
-
-            row_bg = self.CARD if index % 2 == 0 else "#fbfcfd"
-            row = tk.Frame(self.colors_inner, bg=row_bg, bd=0)
-            row.pack(fill="x", padx=3, pady=1)
-            self._configure_table_columns(row)
-
-            # --------------------------------------------------------------
-            # Color column: checkbox + swatch + name
-            # --------------------------------------------------------------
-            color_cell = tk.Frame(row, bg=row_bg)
-            color_cell.grid(row=0, column=0, sticky="nsew", padx=(4, 8))
-
-            check = tk.Checkbutton(
-                color_cell,
-                variable=check_data["var"],
-                bg=row_bg,
-                activebackground=row_bg,
-                selectcolor=row_bg,
-                command=self._update_counts,
-                cursor="hand2",
-                bd=0,
-                highlightthickness=0,
-            )
-            check.pack(side="left", padx=(0, 5), pady=5)
-
-            swatch = tk.Canvas(
-                color_cell,
-                width=28,
-                height=28,
-                bg=row_bg,
-                highlightthickness=0,
-                bd=0,
-            )
-            swatch.pack(side="left", padx=(0, 9), pady=4)
-            swatch.create_rectangle(
-                2,
-                2,
-                26,
-                26,
-                fill=data["hex"],
-                outline="#707070",
-            )
-
-            name_frame = tk.Frame(color_cell, bg=row_bg)
-            name_frame.pack(side="left", fill="x", expand=True)
-
-            name_var = tk.StringVar(value=name)
-            name_entry = tk.Entry(
-                name_frame,
-                textvariable=name_var,
-                font=self.FONT_BOLD,
-                bg="#ffffff",
-                fg=self.TEXT,
-                relief="solid",
-                bd=1,
-                highlightthickness=0,
-            )
-            name_entry.pack(fill="x")
-
-            # Commit immediately on Enter or when focus leaves the editor.
-            # The callback captures the dictionary key represented by this row.
-            name_entry.bind(
-                "<Return>",
-                lambda _e, old=name, var=name_var: self._commit_color_name(old, var),
-            )
-            name_entry.bind(
-                "<FocusOut>",
-                lambda _e, old=name, var=name_var: self._commit_color_name(old, var),
-            )
-            self._name_editors.append((name, name_var))
-
-            if data.get("custom"):
-                tk.Label(
-                    name_frame,
-                    text="Custom color",
-                    font=self.FONT_SMALL,
-                    bg=row_bg,
-                    fg=self.BLUE,
-                    anchor="w",
-                ).pack(fill="x", pady=(1, 0))
-
-            # --------------------------------------------------------------
-            # RGB / HEX / LAB columns
-            # --------------------------------------------------------------
-            rgb = data["rgb"]
-            tk.Label(
-                row,
-                text=f"{rgb[0]}, {rgb[1]}, {rgb[2]}",
-                font=self.FONT,
-                bg=row_bg,
-                fg=self.MUTED,
-                anchor="center",
-            ).grid(row=0, column=1, sticky="nsew", padx=6)
-
-            tk.Label(
-                row,
-                text=data["hex"],
-                font=self.FONT,
-                bg=row_bg,
-                fg=self.MUTED,
-                anchor="center",
-            ).grid(row=0, column=2, sticky="nsew", padx=6)
-
-            lab = data["lab"]
-            tk.Label(
-                row,
-                text=f"{lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
-                font=self.FONT,
-                bg=row_bg,
-                fg=self.MUTED,
-                anchor="e",
-            ).grid(row=0, column=3, sticky="nsew", padx=(6, 12))
-
-            self._row_widgets[name] = row
+            self._create_color_row(name, index)
 
         self._update_counts(visible=len(visible_names))
 
@@ -999,7 +1075,7 @@ class PaletteBasedCreationManager:
         default_name = self._next_unique_name("Custom Color")
 
         def on_submit(color_name, sample_lab, sample_rgb, sample_hex, dialog, input_vars):
-            clean_name = str(color_name).strip()[:24]
+            clean_name = str(color_name).strip()[:UtilsTools.MAX_COLOR_NAME_CHARS]
 
             if not clean_name:
                 input_vars["status_var"].set("Enter a color name.")
@@ -1026,13 +1102,15 @@ class PaletteBasedCreationManager:
 
             dialog.destroy()
 
-            # Clear search if the new custom color would otherwise be hidden.
-            if not self._matches_search(clean_name):
+            # If the current filter would hide the new custom color, clear it.
+            # The search trace then performs the one full refresh that is needed.
+            # Otherwise append just this row instead of rebuilding the table.
+            if self.search_var.get().strip() and not self._matches_search(clean_name):
                 self.search_var.set("")
+                self.win.after(60, self._scroll_to_bottom)
             else:
-                self._refresh_color_list()
-
-            self.win.after_idle(self._scroll_to_bottom)
+                self._append_color_rows([clean_name])
+                self.win.after_idle(self._scroll_to_bottom)
 
         self.app._open_custom_color_dialog(
             parent=self.win,

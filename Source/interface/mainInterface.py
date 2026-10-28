@@ -26,7 +26,7 @@ import numpy as np
 import tkinter as tk
 from pathlib import Path
 from matplotlib.figure import Figure
-from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageEnhance
+from PIL import Image, ImageTk, ImageOps, ImageDraw, ImageFont, ImageEnhance
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORMAL
 
@@ -712,6 +712,7 @@ class PyFCSApp:
         self.image_mapping_dock = None
         self.image_mapping_dock_visible = False
         self._mapping_all_palette_by_window = {}
+        self._mapping_all_pack_by_window = {}
 
         self._image_workspace_focus_id = None
         self._image_workspace_active_id = None
@@ -2388,6 +2389,8 @@ class PyFCSApp:
             self.cm_cache_by_image.clear()
         if hasattr(self, "proto_percentage_cache_by_image"):
             self.proto_percentage_cache_by_image.clear()
+        if hasattr(self, "_mapping_all_pack_by_window"):
+            self._mapping_all_pack_by_window.clear()
 
 
     def load_color_space(self, filename=None):
@@ -3020,8 +3023,9 @@ class PyFCSApp:
                         return img.convert("RGB") if rgb else img
 
             if isinstance(obj, str) and os.path.exists(obj):
-                img = Image.open(obj)
-                return img.convert("RGB") if rgb else img
+                with Image.open(obj) as image_file:
+                    img = ImageOps.exif_transpose(image_file)
+                    return img.convert("RGB") if rgb else img.copy()
 
             raise ValueError("Unsupported image format.")
 
@@ -4639,8 +4643,7 @@ class PyFCSApp:
 
             image_key = self.window_image_key.get(target_window_id)
             color_space_key = getattr(self, "file_path", None)
-            scope_cache = getattr(self, "cm_cache_by_image", {}).get((image_key, color_space_key))
-            cache_pack = scope_cache.get("last_pack") if scope_cache else None
+            cache_pack = getattr(self, "_mapping_all_pack_by_window", {}).get(target_window_id)
             if not cache_pack:
                 return None, None
 
@@ -5097,6 +5100,7 @@ class PyFCSApp:
         self._image_view_pan_state = None
         try:
             self._mapping_all_palette_by_window.clear()
+            self._mapping_all_pack_by_window.clear()
         except Exception:
             pass
         self._schedule_image_workspace_reflow(delay=0)
@@ -5182,15 +5186,15 @@ class PyFCSApp:
             return
         if not hasattr(self, "window_image_key") or window_id not in self.window_image_key:
             return
-        cache_scope = (self.window_image_key[window_id], getattr(self, "file_path", None))
-        scope_cache = getattr(self, "cm_cache_by_image", {}).get(cache_scope)
-        pack = scope_cache.get("last_pack") if scope_cache else None
+        pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id)
         if not pack:
             return
         new_scheme = "original" if pack.get("scheme") == "alt" else "alt"
         pack["scheme"] = new_scheme
         palette = pack["palettes"][new_scheme]
-        recolored = self.image_manager.recolor_label_map(pack["label_map"], palette)
+        recolored = self.image_manager.recolor_label_map(
+            pack["label_map"], palette, pack.get("alpha_values")
+        )
         self._display_mapping_all_result(window_id, recolored, palette)
 
 
@@ -6130,7 +6134,8 @@ class PyFCSApp:
         # ---------------------------
         # Load images
         # ---------------------------
-        pil_original = Image.open(filename).convert("RGBA")
+        with Image.open(filename) as image_file:
+            pil_original = ImageOps.exif_transpose(image_file).convert("RGBA")
         original_width, original_height = pil_original.size
         self.pil_images_original[window_id] = pil_original
         self.original_image_dimensions[window_id] = (original_width, original_height)
@@ -6793,6 +6798,7 @@ class PyFCSApp:
                 self._image_workspace_focus_saved_collapsed = None
             try:
                 getattr(self, "_mapping_all_palette_by_window", {}).pop(window_id, None)
+                getattr(self, "_mapping_all_pack_by_window", {}).pop(window_id, None)
             except Exception:
                 pass
 
@@ -7520,6 +7526,9 @@ class PyFCSApp:
         """Returns True if there is any running job in any image/window."""
         self._ensure_image_jobs()
 
+        if getattr(self, "_threshold_job_running", False):
+            return True
+
         for info in self.image_jobs.values():
             th = info.get("thread")
             cancel_event = info.get("cancel_event")
@@ -8166,17 +8175,17 @@ class PyFCSApp:
                     window_id,
                     target_size=(map_w, map_h),
                 )
-                valid_mask = UtilsTools._get_alpha_mask_from_pil(source_img)
+                alpha_values = UtilsTools._get_alpha_values_from_pil(source_img)
             except Exception:
-                valid_mask = np.ones(grayscale_image_array.shape[:2], dtype=bool)
+                alpha_values = np.full(grayscale_image_array.shape[:2], 255, dtype=np.uint8)
 
-            # Convert numpy array to PIL image with transparency
+            # Convert numpy array to PIL image with the original opacity.
             if grayscale_image_array.ndim == 2:
-                rgba_array = UtilsTools._apply_alpha_to_gray_array(grayscale_image_array, valid_mask)
+                rgba_array = UtilsTools._apply_alpha_to_gray_array(grayscale_image_array, alpha_values)
                 grayscale_image = Image.fromarray(rgba_array.astype(np.uint8), mode="RGBA")
             else:
                 # If the returned image is RGB, preserve transparency too
-                rgba_array = UtilsTools._apply_alpha_to_rgb_array(grayscale_image_array, valid_mask)
+                rgba_array = UtilsTools._apply_alpha_to_rgb_array(grayscale_image_array, alpha_values)
                 grayscale_image = Image.fromarray(rgba_array.astype(np.uint8), mode="RGBA")
 
             # Make zoom work over the generated Color Mapping image, not over the original.
@@ -8219,6 +8228,7 @@ class PyFCSApp:
                 self.window_mapping_mode.pop(window_id, None)
             try:
                 getattr(self, "_mapping_all_palette_by_window", {}).pop(window_id, None)
+                getattr(self, "_mapping_all_pack_by_window", {}).pop(window_id, None)
             except Exception:
                 pass
 
@@ -8415,7 +8425,8 @@ class PyFCSApp:
                     return
                 source_img = self._get_mapping_source_image(window_id)
                 w, h = source_img.size
-                valid_mask = UtilsTools._get_alpha_mask_from_pil(source_img)
+                alpha_values = UtilsTools._get_alpha_values_from_pil(source_img)
+                valid_mask = alpha_values > 0
                 processing_img = UtilsTools._pil_rgb_for_processing(source_img)
                 if not hasattr(self, "cm_cache_by_image"):
                     self.cm_cache_by_image = {}
@@ -8436,15 +8447,19 @@ class PyFCSApp:
                 original_palette = self.image_manager.build_original_palette_uint8(self.prototypes)
                 alt_palette = self.image_manager.build_alt_palette_uint8(self.prototypes, self.hex_color)
                 palette = alt_palette
-                recolored_image = self.image_manager.recolor_label_map(label_map, palette)
-                scope_cache["last_pack"] = {
+                recolored_image = self.image_manager.recolor_label_map(label_map, palette, alpha_values)
+                # Global cache contains only immutable computations; a window's
+                # palette selection must never affect another instance of an image.
+                window_pack = {
                     "label_map": label_map,
+                    "alpha_values": alpha_values,
                     "palettes": {"original": original_palette, "alt": alt_palette},
                     "scheme": "alt",
                     "cache_key": cache_key,
                 }
                 def _ui():
                     if self._is_current_job(window_id, job_id) and self._window_exists(window_id):
+                        self._mapping_all_pack_by_window[window_id] = window_pack
                         self._display_mapping_all_result(window_id, recolored_image, palette)
                 self.image_canvas.after(0, _ui)
             except RuntimeError as exc:
@@ -8470,11 +8485,19 @@ class PyFCSApp:
             self.custom_warning("No Color Space", "Please load a fuzzy color space before deploying AT or PT.")
             return
 
-        selected_options = [key for key, var in self.model_3d_options.items() if var.get()]
-        if selected_options == ["Representative"]:
+        if self._has_any_active_job():
+            self.custom_warning("Process Running", "A processing task is already running.")
             return
-        else:
+
+        selected_options = [key for key, var in self.model_3d_options.items() if var.get()]
+        if not any(opt in selected_options for opt in ("Support", "0.5-cut", "Core")):
+            return
+        self._threshold_job_running = True
+        try:
             self.show_loading()
+        except Exception:
+            self._threshold_job_running = False
+            raise
 
         def update_progress(current_step, total_steps):
             """Queue the AT/PT progress update on Tk's main thread."""
@@ -8524,7 +8547,7 @@ class PyFCSApp:
 
                 # Step 1: filter the LAB points inside the selected volume.
                 update_progress(1, 3)
-                self.filtered_points, volume_limits = self.color_manager.filter_points_with_threshold(
+                filtered_points, volume_limits = self.color_manager.filter_points_with_threshold(
                     selected_volume,
                     threshold,
                     step=0.25,
@@ -8541,6 +8564,7 @@ class PyFCSApp:
                     """
                     Refresh the existing embedded 3D figure with the filtered points.
                     """
+                    self.filtered_points = filtered_points
                     self._init_3d_canvas()
 
                     VisualManager.plot_combined_3D(
@@ -8575,7 +8599,13 @@ class PyFCSApp:
                     )
                 )
             finally:
-                self.root.after(0, self.hide_loading)
+                def _finish_threshold_job():
+                    self._threshold_job_running = False
+                    self.hide_loading()
+                try:
+                    self.root.after(0, _finish_threshold_job)
+                except (RuntimeError, tk.TclError):
+                    self._threshold_job_running = False
 
         # Run the expensive filtering process in a background thread.
         threading.Thread(target=run_threshold_process, daemon=True).start()
@@ -8980,20 +9010,25 @@ class PyFCSApp:
             section_output.grid_rowconfigure(1, weight=1)
 
         else:
-            selection_w = 310
-            config_w = 300
+            # In Color Evaluation the first column contains full metric descriptions.
+            # Allow it to grow on wide screens while keeping workable minimum widths
+            # for the configuration and summary when the window is narrower.
+            selection_w = 350
+            config_w = 410
 
-            threshold_body.grid_columnconfigure(0, minsize=selection_w, weight=0)
+            threshold_body.grid_columnconfigure(0, minsize=selection_w, weight=2)
             threshold_body.grid_columnconfigure(1, minsize=1, weight=0)
-            threshold_body.grid_columnconfigure(2, minsize=config_w, weight=1)
+            threshold_body.grid_columnconfigure(2, minsize=config_w, weight=3)
             threshold_body.grid_columnconfigure(3, minsize=1, weight=0)
-            threshold_body.grid_columnconfigure(4, weight=1)
+            threshold_body.grid_columnconfigure(4, minsize=225, weight=1)
 
             section_selection = tk.Frame(threshold_body, bg="white", width=selection_w)
-            section_selection.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+            section_selection.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
             section_selection.grid_propagate(False)
 
-            tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=140).grid(
+            # A fixed 140px divider prevented any vertical-space saving when
+            # the metric description no longer needed two lines.
+            tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=1).grid(
                 row=0, column=1, sticky="ns", padx=(0, 12), pady=2
             )
 
@@ -9001,7 +9036,7 @@ class PyFCSApp:
             section_config.grid(row=0, column=2, sticky="nsew", padx=(0, 12))
             section_config.grid_propagate(False)
 
-            tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=140).grid(
+            tk.Frame(threshold_body, bg="#d8d8d8", width=1, height=1).grid(
                 row=0, column=3, sticky="ns", padx=(0, 12), pady=2
             )
 
@@ -9056,10 +9091,31 @@ class PyFCSApp:
             fg="#666666",
             anchor="w",
             justify="left",
-            wraplength=255 if variant == "result" else 285,
+            wraplength=255 if variant == "result" else 0,
             font=("Sans", 8, "italic")
         )
         metric_help_label.pack(anchor="w", fill="x", pady=(0, 4))
+
+        if variant == "summary":
+            # At full width show the entire description on one line.
+            # On smaller screens, wrap instead of clipping the information.
+            def _resize_metric_help(event=None):
+                try:
+                    available = max(1, section_selection.winfo_width() - 8)
+                    needed = int(metric_help_label.tk.call(
+                        "font", "measure", metric_help_label.cget("font"),
+                        vars_dict["threshold_metric_help_var"].get()
+                    )) + 12
+                    target_wrap = 0 if needed <= available else available
+                    if int(metric_help_label.cget("wraplength")) != target_wrap:
+                        metric_help_label.configure(wraplength=target_wrap)
+                except tk.TclError:
+                    pass
+
+            section_selection.bind("<Configure>", _resize_metric_help)
+            vars_dict["threshold_metric_help_var"].trace_add(
+                "write", lambda *_: section_selection.after_idle(_resize_metric_help)
+            )
 
         # -------------------------
         # Center: configuration
@@ -10305,66 +10361,91 @@ class PyFCSApp:
         table_panel = tk.Frame(main, bg="white", bd=1, relief="solid")
         table_panel.pack(fill="both", expand=True)
 
-        # Header row
-        header_container = tk.Frame(table_panel, bg="white", height=42)
-        header_container.pack(fill="x", padx=12, pady=(4, 2))
-        header_container.pack_propagate(False)
+        # Compact header: the active FCS is immediately readable on the left;
+        # file-loading actions stay together on the right. Only visual layout
+        # changes here: both commands and their data flow are unchanged.
+        header_container = tk.Frame(table_panel, bg="#f8fafc")
+        header_container.pack(fill="x", padx=10, pady=(8, 6))
+
+        space_identity = tk.Frame(header_container, bg="#f8fafc")
+        space_identity.pack(side="left", fill="x", expand=True, padx=(8, 12))
 
         tk.Label(
-            header_container,
+            space_identity,
             text="Color Space Data",
-            font=("Sans", 11, "bold"),
+            font=("Segoe UI", 12, "bold"),
             anchor="w",
-            bg="white"
-        ).pack(side="left")
+            bg="#f8fafc",
+            fg="#1f2937"
+        ).pack(anchor="w")
 
-        buttons_row = tk.Frame(header_container, bg="white")
-        buttons_row.place(relx=0.5, rely=0.0, anchor="n")
-
-        tk.Button(
-            buttons_row,
-            text="Use loaded color space",
-            width=22,
-            command=lambda: self._load_current_color_space_for_evaluation(vars_dict)
-        ).pack(side="left", padx=(0, 6))
-
-        tk.Button(
-            buttons_row,
-            text="Load new color space",
-            width=22,
-            command=lambda: self._load_external_color_space_for_evaluation(vars_dict)
-        ).pack(side="left")
-
-        summary_row = tk.Frame(table_panel, bg="white")
-        summary_row.pack(anchor="center", pady=(0, 0))
+        summary_row = tk.Frame(space_identity, bg="#f8fafc")
+        summary_row.pack(anchor="w", pady=(3, 0))
 
         tk.Label(
             summary_row,
             text="Color space:",
-            font=("Sans", 10, "bold"),
-            bg="white"
-        ).pack(side="left", padx=(0, 4))
+            font=("Segoe UI", 9, "bold"),
+            bg="#f8fafc",
+            fg="#6b7280"
+        ).pack(side="left", padx=(0, 5))
 
         tk.Label(
             summary_row,
             textvariable=vars_dict["space_name_var"],
-            font=("Sans", 10),
-            bg="white"
-        ).pack(side="left", padx=(0, 20))
+            font=("Segoe UI", 9, "bold"),
+            bg="#f8fafc",
+            fg="#1f4e8c"
+        ).pack(side="left", padx=(0, 16))
 
         tk.Label(
             summary_row,
             text="Prototypes:",
-            font=("Sans", 10, "bold"),
-            bg="white"
-        ).pack(side="left", padx=(0, 4))
+            font=("Segoe UI", 9, "bold"),
+            bg="#f8fafc",
+            fg="#6b7280"
+        ).pack(side="left", padx=(0, 5))
 
         tk.Label(
             summary_row,
             textvariable=vars_dict["space_count_var"],
-            font=("Sans", 10),
-            bg="white"
+            font=("Segoe UI", 9, "bold"),
+            bg="#f8fafc",
+            fg="#1f2937"
         ).pack(side="left")
+
+        buttons_row = tk.Frame(header_container, bg="#f8fafc")
+        buttons_row.pack(side="right", anchor="center", padx=(4, 8), pady=3)
+
+        tk.Button(
+            buttons_row,
+            text="Use loaded color space",
+            command=lambda: self._load_current_color_space_for_evaluation(vars_dict),
+            font=("Segoe UI", 9, "bold"),
+            bg="#ffffff",
+            fg="#1f2937",
+            activebackground="#e8f0fe",
+            activeforeground="#1f4e8c",
+            relief="solid", bd=1, padx=11, pady=6,
+            cursor="hand2",
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            buttons_row,
+            text="Load new color space",
+            command=lambda: self._load_external_color_space_for_evaluation(vars_dict),
+            font=("Segoe UI", 9, "bold"),
+            bg="#e8f0fe",
+            fg="#1f4e8c",
+            activebackground="#d7e5fb",
+            activeforeground="#153e70",
+            relief="solid", bd=1, padx=11, pady=6,
+            cursor="hand2",
+        ).pack(side="left")
+
+        tk.Frame(table_panel, bg="#e5e7eb", height=1).pack(
+            fill="x", padx=12, pady=(0, 7)
+        )
 
         # =========================
         # PanedWindow real
@@ -10390,33 +10471,33 @@ class PyFCSApp:
         # -------------------------
         # Left panel
         # -------------------------
-        list_header = tk.Frame(left_panel, bg="#f4f4f4")
+        list_header = tk.Frame(left_panel, bg="#f6f8fb")
         list_header.pack(fill="x", padx=1, pady=(1, 0))
 
         list_header.grid_columnconfigure(0, minsize=110)
-        list_header.grid_columnconfigure(1, minsize=210)
-        list_header.grid_columnconfigure(2, minsize=260)
+        list_header.grid_columnconfigure(1, minsize=180)
+        list_header.grid_columnconfigure(2, minsize=245)
         list_header.grid_columnconfigure(3, weight=1)
 
-        header_font = ("Sans", 10, "bold")
+        header_font = ("Segoe UI", 9, "bold")
 
         tk.Label(
             list_header,
             text="",
-            bg="#f4f4f4",
+            bg="#f6f8fb",
             font=header_font
         ).grid(
             row=0,
             column=0,
             sticky="w",
             padx=(8, 4),
-            pady=8
+            pady=5
         )
 
         tk.Label(
             list_header,
             text="Label",
-            bg="#f4f4f4",
+            bg="#f6f8fb",
             font=header_font,
             anchor="w"
         ).grid(
@@ -10424,22 +10505,22 @@ class PyFCSApp:
             column=1,
             sticky="w",
             padx=(2, 2),
-            pady=8
+            pady=5
         )
 
-        value_header = tk.Frame(list_header, bg="#f4f4f4")
+        value_header = tk.Frame(list_header, bg="#f6f8fb")
         value_header.grid(
             row=0,
             column=2,
             sticky="w",
             padx=(2, 8),
-            pady=5
+            pady=3
         )
 
         tk.Label(
             value_header,
             text="Value:",
-            bg="#f4f4f4",
+            bg="#f6f8fb",
             font=header_font,
             anchor="w"
         ).pack(side="left", padx=(0, 6))
@@ -10457,6 +10538,12 @@ class PyFCSApp:
             value_header,
             text="Next",
             width=6,
+            font=("Segoe UI", 9),
+            bg="#ffffff",
+            fg="#1f2937",
+            activebackground="#e8f0fe",
+            relief="solid", bd=1, padx=3, pady=3,
+            cursor="hand2",
             command=lambda: self._rotate_color_evaluation_table_display_mode(vars_dict)
         ).pack(side="left")
 
@@ -10499,23 +10586,30 @@ class PyFCSApp:
         tk.Label(
             right_panel,
             text="Threshold Analysis",
-            font=("Sans", 11, "bold"),
+            font=("Segoe UI", 11, "bold"),
             anchor="w",
             bg="white",
+            fg="#1f2937",
             padx=12,
-            pady=10
+            pady=9
         ).pack(fill="x")
 
         analysis_actions = tk.Frame(right_panel, bg="white")
         analysis_actions.pack(fill="x", padx=12, pady=(0, 6))
 
         def _run_analysis_action(action_key, callback):
-            self._set_color_evaluation_active_action(vars_dict, action_key)
+            # Clear is a one-shot action, not a persistent analysis mode.
+            self._set_color_evaluation_active_action(
+                vars_dict, None if action_key == "clear" else action_key
+            )
             callback()
 
         btn_compare = tk.Button(
             analysis_actions,
             text="Compare with another color",
+            font=("Segoe UI", 9, "bold"),
+            relief="solid", bd=1, padx=8, pady=7,
+            cursor="hand2",
             command=lambda: _run_analysis_action(
                 "compare",
                 lambda: self._enable_color_evaluation_comparison_mode(vars_dict)
@@ -10526,6 +10620,9 @@ class PyFCSApp:
         btn_custom = tk.Button(
             analysis_actions,
             text="Evaluate custom color",
+            font=("Segoe UI", 9, "bold"),
+            relief="solid", bd=1, padx=8, pady=7,
+            cursor="hand2",
             command=lambda: _run_analysis_action(
                 "custom",
                 lambda: self._open_custom_color_input_dialog(vars_dict)
@@ -10536,6 +10633,9 @@ class PyFCSApp:
         btn_sample = tk.Button(
             analysis_actions,
             text="Sample from image",
+            font=("Segoe UI", 9, "bold"),
+            relief="solid", bd=1, padx=8, pady=7,
+            cursor="hand2",
             command=lambda: _run_analysis_action(
                 "sample",
                 lambda: self._open_color_evaluation_image_sampler(vars_dict)
@@ -10549,6 +10649,9 @@ class PyFCSApp:
         btn_closest = tk.Button(
             analysis_extra_actions,
             text="Find closest prototype",
+            font=("Segoe UI", 9, "bold"),
+            relief="solid", bd=1, padx=8, pady=7,
+            cursor="hand2",
             command=lambda: _run_analysis_action(
                 "closest",
                 lambda: self._show_color_evaluation_closest_prototypes(vars_dict)
@@ -10559,6 +10662,9 @@ class PyFCSApp:
         btn_clear = tk.Button(
             analysis_extra_actions,
             text="Clear comparison",
+            font=("Segoe UI", 9, "bold"),
+            relief="solid", bd=1, padx=8, pady=7,
+            cursor="hand2",
             command=lambda: _run_analysis_action(
                 "clear",
                 lambda: self._clear_color_evaluation_comparison(vars_dict)
@@ -10580,11 +10686,12 @@ class PyFCSApp:
             right_panel,
             textvariable=vars_dict["analysis_mode_var"],
             anchor="w",
-            bg="white",
+            bg="#f5f5f5",
             fg="#555555",
-            font=("Sans", 9, "italic"),
-            padx=12
-        ).pack(fill="x", pady=(0, 8))
+            font=("Segoe UI", 9, "italic"),
+            padx=10,
+            pady=5
+        ).pack(fill="x", padx=12, pady=(0, 8))
 
         # ------------------------------------------------------------------
         # Scrollable analysis body
@@ -10637,82 +10744,108 @@ class PyFCSApp:
         self._register_vertical_mousewheel_canvas(analysis_canvas)
 
         # ------------------------------------------------------------------
-        # Selected/comparison color preview
+        # Selected/comparison color preview -- compact, neutral background.
+        # Keep the swatch backdrop strictly neutral in order not to bias
+        # the perceived sample color.  Existing StringVars/Canvas ids remain.
         # ------------------------------------------------------------------
+        preview_bg = "#f1f1f1"
+        preview_border = "#cfcfcf"
+        preview_text = "#262626"
+
         colors_row = tk.Frame(analysis_body, bg="white")
-        colors_row.pack(fill="x", pady=(0, 8))
+        colors_row.pack(fill="x", pady=(0, 4))
 
-        selected_block = tk.Frame(colors_row, bg="white")
-        selected_block.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        selected_block = tk.Frame(
+            colors_row, bg=preview_bg, highlightthickness=1,
+            highlightbackground=preview_border, padx=9, pady=5
+        )
+        selected_block.pack(side="left", fill="both", expand=True, padx=(0, 4))
 
-        comparison_block = tk.Frame(colors_row, bg="white")
-        comparison_block.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        comparison_block = tk.Frame(
+            colors_row, bg=preview_bg, highlightthickness=1,
+            highlightbackground=preview_border, padx=9, pady=5
+        )
+        comparison_block.pack(side="left", fill="both", expand=True, padx=(4, 0))
 
+        # Title above; swatch and name alongside each other to save vertical
+        # space while retaining a reasonably large, easily compared sample.
         tk.Label(
             selected_block,
             text="Selected color",
-            font=("Sans", 10, "bold"),
-            anchor="center",
-            bg="white"
-        ).pack(fill="x", pady=(0, 6))
+            font=("Segoe UI", 9, "bold"),
+            fg=preview_text,
+            anchor="w",
+            bg=preview_bg
+        ).pack(fill="x", pady=(0, 2))
+
+        primary_body = tk.Frame(selected_block, bg=preview_bg)
+        primary_body.pack(fill="x")
 
         primary_swatch = tk.Canvas(
-            selected_block,
-            width=120,
-            height=80,
-            bg="white",
-            highlightthickness=0
+            primary_body,
+            width=94,
+            height=52,
+            bg=preview_bg,
+            highlightthickness=0,
+            bd=0
         )
-        primary_swatch.pack(anchor="center", pady=(0, 8))
+        primary_swatch.pack(side="left", padx=(0, 11))
 
         primary_rect = primary_swatch.create_rectangle(
-            10, 10, 110, 70,
+            3, 3, 91, 49,
             fill="#cccccc",
-            outline="#606060",
+            outline="#666666",
             width=1
         )
 
         tk.Label(
-            selected_block,
+            primary_body,
             textvariable=vars_dict["primary_name_var"],
-            font=("Sans", 10, "bold"),
-            anchor="center",
-            bg="white"
-        ).pack(fill="x", pady=(0, 6))
+            font=("Segoe UI", 10, "bold"),
+            fg=preview_text,
+            anchor="w",
+            bg=preview_bg
+        ).pack(side="left", fill="x", expand=True)
 
         tk.Label(
             comparison_block,
             text="Comparison color",
-            font=("Sans", 10, "bold"),
-            anchor="center",
-            bg="white"
-        ).pack(fill="x", pady=(0, 6))
+            font=("Segoe UI", 9, "bold"),
+            fg=preview_text,
+            anchor="w",
+            bg=preview_bg
+        ).pack(fill="x", pady=(0, 2))
+
+        secondary_body = tk.Frame(comparison_block, bg=preview_bg)
+        secondary_body.pack(fill="x")
 
         secondary_swatch = tk.Canvas(
-            comparison_block,
-            width=120,
-            height=80,
-            bg="white",
-            highlightthickness=0
+            secondary_body,
+            width=94,
+            height=52,
+            bg=preview_bg,
+            highlightthickness=0,
+            bd=0
         )
-        secondary_swatch.pack(anchor="center", pady=(0, 8))
+        secondary_swatch.pack(side="left", padx=(0, 11))
 
         secondary_rect = secondary_swatch.create_rectangle(
-            10, 10, 110, 70,
+            3, 3, 91, 49,
             fill="#f0f0f0",
-            outline="#606060",
+            outline="#666666",
             width=1
         )
 
         tk.Label(
-            comparison_block,
+            secondary_body,
             textvariable=vars_dict["secondary_name_var"],
-            font=("Sans", 10, "bold"),
-            anchor="center",
-            bg="white"
-        ).pack(fill="x", pady=(0, 6))
+            font=("Segoe UI", 10, "bold"),
+            fg=preview_text,
+            anchor="w",
+            bg=preview_bg
+        ).pack(side="left", fill="x", expand=True)
 
-        tk.Frame(analysis_body, bg="#d8d8d8", height=1).pack(fill="x", pady=(6, 6))
+        tk.Frame(analysis_body, bg="#d8d8d8", height=1).pack(fill="x", pady=(3, 5))
 
         # ------------------------------------------------------------------
         # Results + Membership column
@@ -11632,41 +11765,22 @@ class PyFCSApp:
 
         buttons = vars_dict.get("analysis_action_buttons", {})
 
-        active_bg = "#dfeeff"
-        active_fg = "#003366"
-        active_border = "#4a78b8"
-
-        normal_bg = "#f0f0f0"
-        normal_fg = "#000000"
-        normal_border = "#d9d9d9"
-
+        # All five action buttons share the same neutral style. Only the
+        # active mode is highlighted; Clear remains a one-shot action.
         for key, button in buttons.items():
             try:
-                if key == action_key:
-                    button.configure(
-                        bg=active_bg,
-                        fg=active_fg,
-                        activebackground=active_bg,
-                        activeforeground=active_fg,
-                        relief="sunken",
-                        bd=2,
-                        highlightbackground=active_border,
-                        highlightcolor=active_border
-                    )
-                else:
-                    button.configure(
-                        bg=normal_bg,
-                        fg=normal_fg,
-                        activebackground=normal_bg,
-                        activeforeground=normal_fg,
-                        relief="raised",
-                        bd=1,
-                        highlightbackground=normal_border,
-                        highlightcolor=normal_border
-                    )
+                is_active = key == action_key and key != "clear"
+                button.configure(
+                    bg="#d7e5fb" if is_active else "#f8fafc",
+                    fg="#153e70" if is_active else "#1f2937",
+                    activebackground="#c5daf8" if is_active else "#e8f0fe",
+                    activeforeground="#153e70" if is_active else "#1f4e8c",
+                    relief="solid",
+                    bd=2 if is_active else 1,
+                    highlightthickness=0,
+                )
             except Exception:
                 pass
-
 
 
     def _refresh_color_evaluation_threshold_ui(self, vars_dict, refs):
@@ -11854,6 +11968,8 @@ class PyFCSApp:
             refs["content"].configure(bg=bg)
 
             for widget in refs["widgets"]:
+                if widget is refs.get("swatch"):
+                    continue  # Keep the sample surround neutral for color assessment.
                 try:
                     widget.configure(bg=bg)
                 except Exception:
@@ -11929,6 +12045,11 @@ class PyFCSApp:
         vars_dict["secondary_custom_hex"] = None
         vars_dict["secondary_custom_name"] = "Custom Color"
 
+        # A different color space starts a new analysis context: discard the
+        # highlight of the action previously used with the old color space.
+        # Called only after a new source has been accepted (not on file-dialog cancel).
+        self._set_color_evaluation_active_action(vars_dict, None)
+
         vars_dict["analysis_mode_var"].set("Select a color from the list.")
 
         rows = self._extract_color_space_rows(data_source)
@@ -11957,11 +12078,11 @@ class PyFCSApp:
 
             for label, refs in vars_dict["color_row_refs"].items():
                 if label == primary and label == secondary:
-                    bg = "#dfeeff"
+                    bg = "#e9e1ff"
                 elif label == primary:
                     bg = "#e8f0ff"
                 elif label == secondary:
-                    bg = "#fff4dd"
+                    bg = "#f1e8ff"
                 else:
                     bg = "white"
 
@@ -11969,6 +12090,8 @@ class PyFCSApp:
                 refs["content"].configure(bg=bg)
 
                 for widget in refs["widgets"]:
+                    if widget is refs.get("swatch"):
+                        continue  # Keep the sample surround neutral for color assessment.
                     try:
                         widget.configure(bg=bg)
                     except Exception:
@@ -12047,29 +12170,32 @@ class PyFCSApp:
                 relief="solid",
                 cursor="hand2"
             )
-            row.pack(fill="x", padx=8, pady=3)
+            row.pack(fill="x", padx=7, pady=2)
 
             content = tk.Frame(row, bg="white")
-            content.pack(fill="x", padx=8, pady=7)
+            content.pack(fill="x", padx=7, pady=4)
 
             content.grid_columnconfigure(0, minsize=110)
-            content.grid_columnconfigure(1, minsize=210)
-            content.grid_columnconfigure(2, minsize=260)
+            content.grid_columnconfigure(1, minsize=180)
+            content.grid_columnconfigure(2, minsize=245)
             content.grid_columnconfigure(3, weight=1)
 
+            # Larger representative sample, closer to the original table.
+            # Its immediate surround stays neutral even when a row is selected,
+            # so the blue/lilac row highlighting cannot tint the swatch.
             swatch = tk.Canvas(
                 content,
-                width=90,
-                height=42,
-                bg="white",
+                width=94,
+                height=44,
+                bg="#f1f1f1",
                 highlightthickness=0
             )
-            swatch.grid(row=0, column=0, sticky="w", padx=(8, 4), pady=6)
+            swatch.grid(row=0, column=0, sticky="w", padx=(5, 4), pady=2)
 
             swatch.create_rectangle(
-                6, 6, 84, 36,
+                4, 4, 90, 40,
                 fill=hex_color,
-                outline="#404040",
+                outline="#505050",
                 width=1
             )
 
@@ -12079,7 +12205,7 @@ class PyFCSApp:
                 anchor="w",
                 justify="left",
                 bg="white",
-                font=("Sans", 10, "bold")
+                font=("Segoe UI", 9, "bold")
             )
             lbl_name.grid(row=0, column=1, sticky="w", padx=(2, 2))
 
@@ -12106,6 +12232,7 @@ class PyFCSApp:
                 "lab": lab,
                 "rgb": rgb,
                 "hex": hex_color,
+                "swatch": swatch,
                 "value_label": lbl_value,
             }
 
@@ -12207,6 +12334,8 @@ class PyFCSApp:
             refs["content"].configure(bg=bg)
 
             for widget in refs["widgets"]:
+                if widget is refs.get("swatch"):
+                    continue  # Keep the sample surround neutral for color assessment.
                 try:
                     widget.configure(bg=bg)
                 except Exception:
@@ -12684,7 +12813,8 @@ class PyFCSApp:
                     return Image.fromarray(arr[:, :, :3], "RGB").convert("RGB")
 
             if isinstance(img_obj, str) and os.path.exists(img_obj):
-                return Image.open(img_obj).convert("RGB")
+                with Image.open(img_obj) as image_file:
+                    return ImageOps.exif_transpose(image_file).convert("RGB")
 
             raise ValueError("Unsupported image format.")
 
@@ -13009,7 +13139,8 @@ class PyFCSApp:
                 and self.load_images_names[window_id]
                 and os.path.exists(self.load_images_names[window_id])
             ):
-                return Image.open(self.load_images_names[window_id]).convert("RGB")
+                with Image.open(self.load_images_names[window_id]) as image_file:
+                    return ImageOps.exif_transpose(image_file).convert("RGB")
 
             # Last fallback only, in case old sessions do not have pil_images_original.
             if (

@@ -267,7 +267,7 @@ class ImageManager:
         return np.stack(alt, axis=0).astype(np.uint8)
 
     @staticmethod
-    def recolor_label_map(label_map, palette_uint8):
+    def recolor_label_map(label_map, palette_uint8, source_alpha=None):
         """
         Convert a label map to an RGBA image using a palette.
         label_map == -1 remains transparent/background.
@@ -280,7 +280,12 @@ class ImageManager:
             idx = label_map[valid_label_mask].astype(np.int32)
             recolored_rgb[valid_label_mask] = palette_uint8[idx]
 
-        return UtilsTools._apply_alpha_to_rgb_array(recolored_rgb, valid_label_mask)
+        if source_alpha is not None:
+            source_alpha = UtilsTools._alpha_u8(source_alpha, (h, w))
+            final_alpha = np.where(valid_label_mask, source_alpha, 0).astype(np.uint8)
+        else:
+            final_alpha = valid_label_mask
+        return UtilsTools._apply_alpha_to_rgb_array(recolored_rgb, final_alpha)
 
 
 
@@ -328,7 +333,7 @@ class ImageManager:
         # ------------------------------------------------------------
         try:
             if isinstance(image, Image.Image):
-                pil_img = image.convert("RGB")
+                pil_img = image.convert("RGBA") if "A" in image.getbands() else image.convert("RGB")
             else:
                 img_np = np.asarray(image)
 
@@ -339,7 +344,7 @@ class ImageManager:
                     pil_img = Image.fromarray(img_np, mode="L").convert("RGB")
                 elif img_np.ndim == 3:
                     if img_np.shape[-1] == 4:
-                        pil_img = Image.fromarray(img_np, mode="RGBA").convert("RGB")
+                        pil_img = Image.fromarray(img_np, mode="RGBA")
                     else:
                         pil_img = Image.fromarray(img_np[..., :3], mode="RGB")
                 else:
@@ -368,9 +373,9 @@ class ImageManager:
             new_h = max(1, int(round(original_h * scale)))
 
             try:
-                resample_filter = Image.Resampling.BILINEAR
+                resample_filter = Image.Resampling.BOX
             except AttributeError:
-                resample_filter = Image.BILINEAR
+                resample_filter = Image.BOX
 
             pil_img = pil_img.resize((new_w, new_h), resample_filter)
 
@@ -381,9 +386,16 @@ class ImageManager:
 
         if img_np.ndim == 2:
             img_np = np.stack([img_np, img_np, img_np], axis=-1)
+        elif img_np.ndim == 3 and img_np.shape[-1] == 4:
+            # Fully invisible RGB values are not visible colors. For resized
+            # RGBA images BOX/PIL handles the alpha-weighted color averaging.
+            visible = img_np[..., 3] > 0
+            img_np = img_np[..., :3][visible]
         elif img_np.ndim == 3 and img_np.shape[-1] > 3:
             img_np = img_np[..., :3]
 
+        if img_np.size == 0:
+            return []
         img01 = img_np.astype(np.float32) / 255.0
         lab_img = color.rgb2lab(img01).astype(np.float32, copy=False)
 

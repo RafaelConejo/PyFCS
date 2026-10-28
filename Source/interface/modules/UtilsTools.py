@@ -13,6 +13,12 @@ from Source.geometry.Prototype import Prototype
 from Source.geometry.Voronoi import Voronoi
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 
+# ============================================================================================================================================================
+#  SHARED CONSTANTS
+# ============================================================================================================================================================
+
+MAX_COLOR_NAME_CHARS = 24
+
 """
 Utility functions for PyFCS
 
@@ -259,6 +265,33 @@ def safe_float(text):
 
 
 # ============================================================================================================================================================
+#  COLOR NAME HELPERS
+# ============================================================================================================================================================
+
+def make_unique_color_name(base, existing_names):
+    """
+    Return a unique color name using the PyFCS naming convention.
+
+    Examples
+    --------
+    Custom Color
+    Custom Color 2
+    Custom Color 3
+    """
+    base = str(base or "Color").strip() or "Color"
+    existing = set(existing_names or [])
+
+    if base not in existing:
+        return base
+
+    index = 2
+    while f"{base} {index}" in existing:
+        index += 1
+
+    return f"{base} {index}"
+
+
+# ============================================================================================================================================================
 #  VALIDATION HELPERS
 # ============================================================================================================================================================
 
@@ -371,6 +404,60 @@ def find_duplicate_lab_name(color_data, lab, atol=Voronoi.DEFAULT_MERGE_EPS):
             return name
 
     return None
+
+
+
+def find_duplicate_lab_pairs(color_data, atol=Voronoi.DEFAULT_MERGE_EPS):
+    """
+    Return every pair of LAB prototypes that collide within the Voronoi
+    merge tolerance.
+
+    Parameters
+    ----------
+    color_data : dict
+        Mapping from color name to any LAB-like 3-component value.
+    atol : float, optional
+        Absolute Euclidean tolerance used to consider two Voronoi sites
+        coincident. By default this is exactly Voronoi.DEFAULT_MERGE_EPS.
+
+    Returns
+    -------
+    list
+        Tuples ``(name_a, name_b, lab)`` for each colliding pair. ``lab`` is
+        a copy of the first prototype position as a NumPy array.
+    """
+    items = []
+
+    for name, lab in (color_data or {}).items():
+        try:
+            values = np.asarray(lab, dtype=np.float64).reshape(-1)
+        except Exception:
+            continue
+
+        if values.size < 3:
+            continue
+
+        values = values[:3]
+        if not np.all(np.isfinite(values)):
+            continue
+
+        items.append((name, values))
+
+    duplicates = []
+
+    for i in range(len(items)):
+        name_a, lab_a = items[i]
+
+        for j in range(i + 1, len(items)):
+            name_b, lab_b = items[j]
+
+            if np.linalg.norm(lab_a - lab_b) <= float(atol):
+                duplicates.append(
+                    (name_a, name_b, lab_a.copy())
+                )
+
+    return duplicates
+
 
 
 def is_valid_hex(hex_value):
@@ -570,6 +657,539 @@ def lab_to_hex(lab):
     return rgb_to_hex(rgb)
 
 
+
+
+
+
+# ============================================================================================================================================================
+#  LAB FILTER HELPERS
+# ============================================================================================================================================================
+
+_LAB_FILTER_LABELS = {
+    "L_min": "L* minimum",
+    "L_max": "L* maximum",
+    "a_min": "a* minimum",
+    "a_max": "a* maximum",
+    "b_min": "b* minimum",
+    "b_max": "b* maximum",
+}
+
+
+def read_lab_filter_bindings(filter_bindings, strict=False):
+    """
+    Read the enabled LAB limits stored in Tk variable bindings.
+
+    Parameters
+    ----------
+    filter_bindings : dict
+        Mapping such as:
+            {
+                "L_min": (enabled_var, value_var),
+                "L_max": (enabled_var, value_var),
+                ...
+            }
+    strict : bool, optional
+        When True, an invalid enabled value or an inverted min/max range raises
+        ValueError. When False, invalid entries are ignored.
+
+    Returns
+    -------
+    dict
+        Active numeric limits keyed by L_min, L_max, a_min, a_max, b_min,
+        and b_max.
+    """
+    values = {}
+
+    for key, pair in (filter_bindings or {}).items():
+        try:
+            enabled_var, value_var = pair
+            enabled = bool(enabled_var.get())
+        except Exception:
+            if strict:
+                raise ValueError(f"Invalid filter binding for {key}.")
+            continue
+
+        if not enabled:
+            continue
+
+        try:
+            raw = str(value_var.get()).strip().replace(",", ".")
+            value = float(raw)
+            if not np.isfinite(value):
+                raise ValueError
+        except Exception:
+            if strict:
+                label = _LAB_FILTER_LABELS.get(key, str(key))
+                raise ValueError(f"Enter a valid numeric value for {label}.")
+            continue
+
+        values[key] = float(value)
+
+    if strict:
+        for component, low_key, high_key in (
+            ("L*", "L_min", "L_max"),
+            ("a*", "a_min", "a_max"),
+            ("b*", "b_min", "b_max"),
+        ):
+            low = values.get(low_key)
+            high = values.get(high_key)
+
+            if low is not None and high is not None and low > high:
+                raise ValueError(
+                    f"{component} minimum cannot be greater than its maximum."
+                )
+
+    return values
+
+
+def format_lab_filters(filters, prefix=False):
+    """
+    Format active LAB limits for compact GUI display.
+    """
+    filters = dict(filters or {})
+    parts = []
+
+    if "L_min" in filters:
+        parts.append(f"L* ≥ {float(filters['L_min']):.2f}")
+    if "L_max" in filters:
+        parts.append(f"L* ≤ {float(filters['L_max']):.2f}")
+    if "a_min" in filters:
+        parts.append(f"a* ≥ {float(filters['a_min']):.2f}")
+    if "a_max" in filters:
+        parts.append(f"a* ≤ {float(filters['a_max']):.2f}")
+    if "b_min" in filters:
+        parts.append(f"b* ≥ {float(filters['b_min']):.2f}")
+    if "b_max" in filters:
+        parts.append(f"b* ≤ {float(filters['b_max']):.2f}")
+
+    if not parts:
+        return "No filters applied"
+
+    body = " · ".join(parts)
+    return f"Filters: {body}" if prefix else body
+
+
+def lab_passes_filters(lab, filters):
+    """
+    Return True when one LAB color satisfies every active limit.
+    """
+    filters = dict(filters or {})
+
+    if not filters:
+        return True
+
+    try:
+        L, a, b = safe_lab_tuple(lab)
+    except Exception:
+        return False
+
+    if "L_min" in filters and L < float(filters["L_min"]):
+        return False
+    if "L_max" in filters and L > float(filters["L_max"]):
+        return False
+    if "a_min" in filters and a < float(filters["a_min"]):
+        return False
+    if "a_max" in filters and a > float(filters["a_max"]):
+        return False
+    if "b_min" in filters and b < float(filters["b_min"]):
+        return False
+    if "b_max" in filters and b > float(filters["b_max"]):
+        return False
+
+    return True
+
+
+def mean_rgb_with_lab_filters(rgb_pixels, filters, chunk_size=250000):
+    """
+    Return the RGB mean of pixels that satisfy the active LAB filters.
+
+    The RGB-to-LAB conversion is vectorized and processed in chunks, avoiding
+    one very large temporary LAB array for large ROIs.
+
+    Returns
+    -------
+    (numpy.ndarray or None, int)
+        Mean RGB vector and number of accepted pixels. If no pixel survives
+        the active filters, returns ``(None, 0)``.
+    """
+    try:
+        pixels = np.asarray(rgb_pixels, dtype=np.float32).reshape(-1, 3)
+    except Exception:
+        return None, 0
+
+    total = int(pixels.shape[0])
+    if total == 0:
+        return None, 0
+
+    finite_mask = np.all(np.isfinite(pixels), axis=1)
+    if not np.all(finite_mask):
+        pixels = pixels[finite_mask]
+        total = int(pixels.shape[0])
+
+        if total == 0:
+            return None, 0
+
+    filters = dict(filters or {})
+
+    # Preserve the original fast path when no filtering is enabled.
+    if not filters:
+        return np.mean(pixels, axis=0), total
+
+    chunk_size = max(1, int(chunk_size))
+    rgb_sum = np.zeros(3, dtype=np.float64)
+    used_count = 0
+
+    for start in range(0, total, chunk_size):
+        chunk = pixels[start:start + chunk_size]
+
+        # skimage expects sRGB values normalized to [0, 1].
+        normalized = np.clip(chunk / 255.0, 0.0, 1.0)
+        lab_chunk = color.rgb2lab(
+            normalized.reshape(-1, 1, 3)
+        ).reshape(-1, 3)
+
+        mask = np.ones(lab_chunk.shape[0], dtype=bool)
+        L = lab_chunk[:, 0]
+        a = lab_chunk[:, 1]
+        b = lab_chunk[:, 2]
+
+        if "L_min" in filters:
+            mask &= L >= float(filters["L_min"])
+        if "L_max" in filters:
+            mask &= L <= float(filters["L_max"])
+        if "a_min" in filters:
+            mask &= a >= float(filters["a_min"])
+        if "a_max" in filters:
+            mask &= a <= float(filters["a_max"])
+        if "b_min" in filters:
+            mask &= b >= float(filters["b_min"])
+        if "b_max" in filters:
+            mask &= b <= float(filters["b_max"])
+
+        if np.any(mask):
+            accepted = chunk[mask]
+            rgb_sum += np.sum(accepted, axis=0, dtype=np.float64)
+            used_count += int(accepted.shape[0])
+
+    if used_count == 0:
+        return None, 0
+
+    return rgb_sum / float(used_count), used_count
+
+
+def open_lab_filters_dialog(
+    parent,
+    filter_bindings,
+    on_apply=None,
+    on_close=None,
+    warning_callback=None,
+    description=None,
+    theme=None,
+):
+    """
+    Open the reusable LAB min/max filter dialog.
+
+    The dialog edits temporary values. Active filter bindings are changed only
+    when Apply is pressed, so Cancel leaves the current configuration intact.
+    """
+    theme = dict(theme or {})
+
+    bg = theme.get("bg", "#f5f6f8")
+    card_bg = theme.get("card", "#ffffff")
+    text_color = theme.get("text", "#1f2937")
+    muted = theme.get("muted", "#6b7280")
+    blue = theme.get("blue", "#1f4e8c")
+    blue_soft = theme.get("blue_soft", "#e8f0fe")
+
+    font = theme.get("font", ("Segoe UI", 9))
+    font_bold = theme.get("font_bold", ("Segoe UI", 9, "bold"))
+    font_small = theme.get("font_small", ("Segoe UI", 8))
+    font_small_bold = theme.get("font_small_bold", ("Segoe UI", 8, "bold"))
+    font_section = theme.get("font_section", ("Segoe UI", 10, "bold"))
+
+    required_keys = (
+        "L_min", "L_max",
+        "a_min", "a_max",
+        "b_min", "b_max",
+    )
+
+    missing_keys = [key for key in required_keys if key not in (filter_bindings or {})]
+    if missing_keys:
+        raise ValueError(
+            "Missing LAB filter binding(s): " + ", ".join(missing_keys)
+        )
+
+    win = tk.Toplevel(parent)
+    win.title("LAB Filters")
+    win.configure(bg=bg)
+    win.resizable(False, False)
+
+    try:
+        win.transient(parent)
+    except Exception:
+        pass
+
+    defaults = {
+        "L_min": "0.0",
+        "L_max": "100.0",
+        "a_min": "-128.0",
+        "a_max": "128.0",
+        "b_min": "-128.0",
+        "b_max": "128.0",
+    }
+
+    temp_bindings = {}
+
+    for key in required_keys:
+        enabled_var, value_var = filter_bindings[key]
+        temp_bindings[key] = (
+            tk.BooleanVar(value=bool(enabled_var.get())),
+            tk.StringVar(value=str(value_var.get())),
+        )
+
+    outer = tk.Frame(win, bg=bg)
+    outer.pack(fill="both", expand=True, padx=12, pady=12)
+
+    card = tk.LabelFrame(
+        outer,
+        text=" LAB Filters ",
+        font=font_section,
+        bg=card_bg,
+        fg=text_color,
+        bd=1,
+        relief="solid",
+        padx=10,
+        pady=8,
+        labelanchor="nw",
+    )
+    card.pack(fill="both", expand=True)
+
+    tk.Label(
+        card,
+        text=description or "Enabled limits apply to LAB-based filtering.",
+        font=font_small,
+        bg=card_bg,
+        fg=muted,
+        anchor="w",
+        justify="left",
+    ).grid(row=0, column=0, columnspan=5, sticky="ew", pady=(0, 7))
+
+    tk.Label(
+        card,
+        text="Component",
+        font=font_small_bold,
+        bg=card_bg,
+        fg=text_color,
+    ).grid(row=1, column=0, sticky="w", padx=(0, 12))
+
+    tk.Label(
+        card,
+        text="Minimum",
+        font=font_small_bold,
+        bg=card_bg,
+        fg=text_color,
+    ).grid(row=1, column=1, columnspan=2, sticky="w")
+
+    tk.Label(
+        card,
+        text="Maximum",
+        font=font_small_bold,
+        bg=card_bg,
+        fg=text_color,
+    ).grid(row=1, column=3, columnspan=2, sticky="w", padx=(12, 0))
+
+    rows = (
+        ("L*", "L_min", "L_max"),
+        ("a*", "a_min", "a_max"),
+        ("b*", "b_min", "b_max"),
+    )
+
+    for row_index, (label, min_key, max_key) in enumerate(rows, start=2):
+        min_enabled, min_var = temp_bindings[min_key]
+        max_enabled, max_var = temp_bindings[max_key]
+
+        tk.Label(
+            card,
+            text=label,
+            font=font_bold,
+            bg=card_bg,
+            fg=text_color,
+            width=5,
+            anchor="w",
+        ).grid(row=row_index, column=0, sticky="w", pady=3)
+
+        tk.Checkbutton(
+            card,
+            variable=min_enabled,
+            bg=card_bg,
+            activebackground=card_bg,
+            selectcolor=card_bg,
+        ).grid(row=row_index, column=1, sticky="w")
+
+        tk.Entry(
+            card,
+            textvariable=min_var,
+            width=9,
+            font=font,
+        ).grid(row=row_index, column=2, sticky="w")
+
+        tk.Checkbutton(
+            card,
+            variable=max_enabled,
+            bg=card_bg,
+            activebackground=card_bg,
+            selectcolor=card_bg,
+        ).grid(row=row_index, column=3, sticky="w", padx=(12, 0))
+
+        tk.Entry(
+            card,
+            textvariable=max_var,
+            width=9,
+            font=font,
+        ).grid(row=row_index, column=4, sticky="w")
+
+    buttons = tk.Frame(card, bg=card_bg)
+    buttons.grid(row=5, column=0, columnspan=5, sticky="ew", pady=(10, 0))
+
+    closed = {"value": False}
+
+    def notify_close():
+        if closed["value"]:
+            return
+
+        closed["value"] = True
+
+        if callable(on_close):
+            try:
+                on_close()
+            except Exception:
+                pass
+
+    def close_dialog():
+        try:
+            win.grab_release()
+        except Exception:
+            pass
+
+        try:
+            if win.winfo_exists():
+                win.destroy()
+        finally:
+            notify_close()
+
+    def show_warning(message):
+        if callable(warning_callback):
+            try:
+                warning_callback("Invalid Filter", message, parent=win)
+                return
+            except TypeError:
+                try:
+                    warning_callback("Invalid Filter", message)
+                    return
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def reset_filters():
+        for key, (enabled_var, value_var) in temp_bindings.items():
+            enabled_var.set(False)
+            value_var.set(defaults[key])
+
+    def apply_filters():
+        try:
+            active = read_lab_filter_bindings(
+                temp_bindings,
+                strict=True,
+            )
+        except ValueError as exc:
+            show_warning(str(exc))
+            return
+
+        for key, (real_enabled, real_value) in filter_bindings.items():
+            temp_enabled, temp_value = temp_bindings[key]
+            real_enabled.set(bool(temp_enabled.get()))
+            real_value.set(str(temp_value.get()))
+
+        if callable(on_apply):
+            try:
+                on_apply(active)
+            except TypeError:
+                on_apply()
+
+        close_dialog()
+
+    tk.Button(
+        buttons,
+        text="Reset",
+        command=reset_filters,
+        font=font,
+        relief="solid",
+        bd=1,
+        padx=12,
+        pady=4,
+    ).pack(side="left")
+
+    tk.Button(
+        buttons,
+        text="Cancel",
+        command=close_dialog,
+        font=font,
+        relief="solid",
+        bd=1,
+        padx=12,
+        pady=4,
+    ).pack(side="right", padx=(8, 0))
+
+    tk.Button(
+        buttons,
+        text="Apply",
+        command=apply_filters,
+        font=font_bold,
+        bg=blue_soft,
+        fg=blue,
+        activebackground="#d7e5fb",
+        activeforeground=blue,
+        relief="solid",
+        bd=1,
+        padx=14,
+        pady=4,
+    ).pack(side="right")
+
+    win.protocol("WM_DELETE_WINDOW", close_dialog)
+    win.bind("<Escape>", lambda _e: close_dialog())
+
+    win.update_idletasks()
+    dialog_w = max(390, win.winfo_reqwidth() + 8)
+    dialog_h = max(220, win.winfo_reqheight() + 8)
+
+    try:
+        parent.update_idletasks()
+
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        pw = parent.winfo_width()
+        ph = parent.winfo_height()
+
+        x = max(0, px + (pw - dialog_w) // 2)
+        y = max(0, py + (ph - dialog_h) // 2)
+
+        win.geometry(f"{dialog_w}x{dialog_h}+{x}+{y}")
+
+    except Exception:
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        x = max(0, (sw - dialog_w) // 2)
+        y = max(0, (sh - dialog_h) // 2)
+        win.geometry(f"{dialog_w}x{dialog_h}+{x}+{y}")
+
+    try:
+        win.grab_set()
+        win.focus_set()
+    except Exception:
+        pass
+
+    return win
 
 
 
@@ -1042,16 +1662,16 @@ def handle_image_selection(event, listbox, popup, images_names, callback):
 #  ALPHA / PIL IMAGE HELPERS
 # ============================================================================================================================================================
 
-def _get_alpha_mask_from_pil(pil_img):
-    """
-    Returns a boolean mask where True means valid visible pixel.
-    If the image has no alpha channel, all pixels are valid.
-    """
-    if pil_img.mode == "RGBA":
-        alpha = np.array(pil_img.getchannel("A"))
-        return alpha > 0
+def _get_alpha_values_from_pil(pil_img):
+    """Return the original per-pixel alpha (uint8), including soft edges."""
+    if "A" in pil_img.getbands():
+        return np.asarray(pil_img.getchannel("A"), dtype=np.uint8).copy()
+    return np.full((pil_img.height, pil_img.width), 255, dtype=np.uint8)
 
-    return np.ones((pil_img.height, pil_img.width), dtype=bool)
+
+def _get_alpha_mask_from_pil(pil_img):
+    """Boolean mask of pixels with nonzero alpha (for LAB processing)."""
+    return _get_alpha_values_from_pil(pil_img) > 0
 
 
 def _pil_rgb_for_processing(pil_img):
@@ -1062,31 +1682,29 @@ def _pil_rgb_for_processing(pil_img):
     return pil_img.convert("RGB")
 
 
-def _apply_alpha_to_gray_array(gray_array, valid_mask):
-    """
-    Converts a grayscale array into RGBA, using valid_mask as alpha.
-    Transparent pixels get alpha 0.
-    """
-    gray = gray_array.astype(np.uint8)
+def _alpha_u8(alpha_or_mask, shape):
+    """Convert an alpha map or boolean validity mask into a uint8 alpha map."""
+    alpha = np.asarray(alpha_or_mask)
+    if alpha.shape != tuple(shape):
+        raise ValueError("Alpha mask does not match image dimensions.")
+    if alpha.dtype == np.bool_:
+        return alpha.astype(np.uint8) * 255
+    return np.clip(alpha, 0, 255).astype(np.uint8)
 
+
+def _apply_alpha_to_gray_array(gray_array, alpha_or_mask):
+    """Build an RGBA grayscale image without destroying fractional opacity."""
+    gray = np.asarray(gray_array, dtype=np.uint8)
     rgba = np.zeros((gray.shape[0], gray.shape[1], 4), dtype=np.uint8)
-    rgba[..., 0] = gray
-    rgba[..., 1] = gray
-    rgba[..., 2] = gray
-    rgba[..., 3] = np.where(valid_mask, 255, 0).astype(np.uint8)
-
+    rgba[..., :3] = gray[..., None]
+    rgba[..., 3] = _alpha_u8(alpha_or_mask, gray.shape[:2])
     return rgba
 
 
-def _apply_alpha_to_rgb_array(rgb_array, valid_mask):
-    """
-    Converts an RGB array into RGBA, using valid_mask as alpha.
-    Transparent pixels get alpha 0.
-    """
-    rgb = rgb_array.astype(np.uint8)
-
+def _apply_alpha_to_rgb_array(rgb_array, alpha_or_mask):
+    """Build an RGBA RGB image without destroying fractional opacity."""
+    rgb = np.asarray(rgb_array, dtype=np.uint8)
     rgba = np.zeros((rgb.shape[0], rgb.shape[1], 4), dtype=np.uint8)
-    rgba[..., :3] = rgb
-    rgba[..., 3] = np.where(valid_mask, 255, 0).astype(np.uint8)
-
+    rgba[..., :3] = rgb[..., :3]
+    rgba[..., 3] = _alpha_u8(alpha_or_mask, rgb.shape[:2])
     return rgba

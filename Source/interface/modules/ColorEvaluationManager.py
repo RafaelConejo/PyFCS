@@ -301,6 +301,8 @@ class ColorEvaluationManager:
         mode = settings.get("mode", "default")
 
         if mode == "default":
+            if settings["metric"] != "CIEDE2000":
+                return (title, "Preset not calibrated for this metric", "Select Custom thresholds")
             preset = settings.get("preset", "pt_at")
             if preset == "pt":
                 return title, "Preset: Perceptibility Threshold", "PT = 0.800"
@@ -498,34 +500,31 @@ class ColorEvaluationManager:
         L1, a1, b1 = ColorEvaluationManager._safe_lab_array(sample_lab)
         L2, a2, b2 = ColorEvaluationManager._safe_lab_array(prototype_lab)
         dL, da, db = float(L1 - L2), float(a1 - a2), float(b1 - b2)
-        # CIEDE2000-adjusted chroma and hue components
-        # These replace the raw LCh components so that ΔC*, Δh° and ΔH*
-        # follow the same a', C' and h' correction used in CIEDE2000.
-
-        C1_raw = float(np.sqrt(a1 ** 2 + b1 ** 2))
-        C2_raw = float(np.sqrt(a2 ** 2 + b2 ** 2))
-
-        C_avg = (C1_raw + C2_raw) / 2.0
-        G = 0.5 * (1.0 - np.sqrt((C_avg ** 7) / (C_avg ** 7 + 25.0 ** 7)))
-
-        a1p = (1.0 + G) * a1
-        a2p = (1.0 + G) * a2
-
-        C1 = float(np.sqrt(a1p ** 2 + b1 ** 2))
-        C2 = float(np.sqrt(a2p ** 2 + b2 ** 2))
-
-        dC = float(C1 - C2)
-
-        h1 = float(np.degrees(np.arctan2(b1, a1p)) % 360.0)
-        h2 = float(np.degrees(np.arctan2(b2, a2p)) % 360.0)
-
+        # Conventional CIELCh(ab) components (these are the quantities
+        # denoted by C*, h° and H*; CIEDE2000 uses separate primed values).
+        C1 = float(np.hypot(a1, b1))
+        C2 = float(np.hypot(a2, b2))
+        dC = C1 - C2
+        h1 = float(np.degrees(np.arctan2(b1, a1)) % 360.0)
+        h2 = float(np.degrees(np.arctan2(b2, a2)) % 360.0)
         dh = ColorEvaluationManager.signed_hue_angle_difference(h1, h2)
+        if C1 < 1e-12 or C2 < 1e-12:
+            # Hue of a neutral sample is undefined: report zero contribution.
+            dh = 0.0
+        dH = float(2.0 * np.sqrt(C1 * C2) * np.sin(np.radians(dh / 2.0)))
 
-        dH = float(
-            2.0
-            * np.sqrt(max(C1 * C2, 0.0))
-            * np.sin(np.radians(dh / 2.0))
-        )
+        # The primed values are retained for comparisons that specifically
+        # need CIEDE2000's chroma correction, but not substituted for CIELCh.
+        C_avg = (C1 + C2) / 2.0
+        G = 0.5 * (1.0 - np.sqrt(C_avg**7 / (C_avg**7 + 25.0**7)))
+        a1p, a2p = (1.0 + G) * a1, (1.0 + G) * a2
+        C1p, C2p = float(np.hypot(a1p, b1)), float(np.hypot(a2p, b2))
+        h1p = float(np.degrees(np.arctan2(b1, a1p)) % 360.0)
+        h2p = float(np.degrees(np.arctan2(b2, a2p)) % 360.0)
+        dhp = ColorEvaluationManager.signed_hue_angle_difference(h1p, h2p)
+        if C1p < 1e-12 or C2p < 1e-12:
+            dhp = 0.0
+        dHp = float(2.0 * np.sqrt(C1p * C2p) * np.sin(np.radians(dhp / 2.0)))
         delta_e_ab = float(np.sqrt(dL ** 2 + da ** 2 + db ** 2))
         delta_ab_plane = float(np.sqrt(da ** 2 + db ** 2))
         rgb1 = ColorEvaluationManager.lab_to_rgb_approx((L1, a1, b1))
@@ -539,6 +538,8 @@ class ColorEvaluationManager:
             "C1": C1, "C2": C2, "ΔC*": dC, "|ΔC*|": abs(dC),
             "h1°": h1, "h2°": h2, "Δh°": dh, "|Δh°|": abs(dh),
             "ΔH*": dH, "|ΔH*|": abs(dH),
+            "C1'": C1p, "C2'": C2p, "ΔC'": C1p - C2p,
+            "h1'°": h1p, "h2'°": h2p, "Δh'°": dhp, "ΔH'": dHp,
             "ΔEab": delta_e_ab, "Δab plane": delta_ab_plane,
 
             "RGB1": rgb1, "RGB2": rgb2,
@@ -629,11 +630,11 @@ class ColorEvaluationManager:
         if metric == "CIE76":
             return float(cls.delta_e_cie76(sample_lab, prototype_lab))
         if metric == "CIE94 Graphic Arts":
-            return float(cls.delta_e_cie94(sample_lab, prototype_lab, application="graphic arts"))
+            return float(cls.delta_e_cie94(prototype_lab, sample_lab, application="graphic arts"))
         if metric == "CIE94 Textiles":
-            return float(cls.delta_e_cie94(sample_lab, prototype_lab, application="textiles"))
+            return float(cls.delta_e_cie94(prototype_lab, sample_lab, application="textiles"))
         if metric in ("CMC 2:1", "CMC l:c"):
-            return float(cls.delta_e_cmc(sample_lab, prototype_lab, lightness=2.0, chroma=1.0))
+            return float(cls.delta_e_cmc(prototype_lab, sample_lab, lightness=2.0, chroma=1.0))
         components = cls.calculate_component_differences(sample_lab, prototype_lab)
         if metric in components:
             return float(components[metric])
@@ -687,7 +688,7 @@ class ColorEvaluationManager:
             lines.append(rgb_line)
 
             lines.append(
-                "\nΔE00% contribution L*/C*/H* = "
+                "\nApprox. ΔE00 L/C/H contribution (%) = "
                 f"{de00_contribution['L_percent']:.1f} / "
                 f"{de00_contribution['C_percent']:.1f} / "
                 f"{de00_contribution['H_percent']:.1f}"
@@ -741,6 +742,11 @@ class ColorEvaluationManager:
         mode = settings.get("mode", "default")
 
         if mode == "default":
+            # The PyFCS PT/AT presets are defined for CIEDE2000 only.
+            # In particular, degrees, RGB channel distances and ΔE94/CMC do
+            # not share the numerical scale of those perceptual thresholds.
+            if settings["metric"] != "CIEDE2000":
+                return {"status": "unavailable", "label": "Custom threshold required", "order": 9}
             preset = settings.get("preset", "pt_at")
             pt, at = 0.8, 1.8
             if preset == "pt":
@@ -777,6 +783,7 @@ class ColorEvaluationManager:
         try:
             settings = cls.normalize_threshold_settings(threshold_settings)
             metric = cls.normalize_metric_name(metric or settings.get("metric", "CIEDE2000"))
+            settings["metric"] = metric  # Classification must use the metric actually evaluated.
             value = cls.calculate_metric_value(sample_lab, prototype_lab, metric)
             classification = cls._classify_metric_value(value, settings)
             detail = cls.format_metric_value(value, metric)

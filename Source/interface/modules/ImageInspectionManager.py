@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageOps
 
 import Source.interface.modules.UtilsTools as UtilsTools
 
@@ -80,6 +80,7 @@ class ImageInspectionManager:
         self._current_sample = None
         self._selected_proto_label = None
         self._membership_rows = {}
+        self._membership_controls = {}
         self._pinned_samples = []
 
         self._canvas_photo = None
@@ -154,11 +155,12 @@ class ImageInspectionManager:
         self.inspection_mode_var = tk.StringVar(value="inspect")
         self.inspection_mode_display_var = tk.StringVar(value="Inspect")
         self.inspection_help_var = tk.StringVar(
-            value="Click: pixel · Drag: mean area · Right-drag: move · Wheel: zoom"
+            value="Click: pixel · Drag: ROI · Right-drag: pan · Wheel: zoom"
         )
         self.zoom_var = tk.StringVar(value="Fit")
 
         self.sample_title_var = tk.StringVar(value="No sample selected")
+        self.sample_kind_var = tk.StringVar(value="")
         self.sample_coord_var = tk.StringVar(value="Click a pixel in the image")
         self.sample_filters_var = tk.StringVar(value="")
         self.sample_lab_var = tk.StringVar(value="LAB: —")
@@ -482,7 +484,7 @@ class ImageInspectionManager:
             anchor="w",
         ).pack(side="left", padx=(4, 0))
 
-        # Center: contextual help gets all remaining horizontal space.
+        # Compact contextual help in the free space between Pin Sample and Fit.
         tk.Label(
             controls,
             textvariable=self.inspection_help_var,
@@ -491,7 +493,7 @@ class ImageInspectionManager:
             fg=self.MUTED,
             anchor="center",
             justify="center",
-        ).pack(side="left", fill="x", expand=True, padx=8)
+        ).pack(side="left", fill="x", expand=True, padx=6)
 
         self._build_pinned_samples_panel(image_card)
 
@@ -564,48 +566,106 @@ class ImageInspectionManager:
 
         row = tk.Frame(card, bg=self.CARD)
         row.pack(fill="x")
+
+        # Keep the card narrow: the central block uses vertical space for ROI
+        # metadata, while LAB/RGB/HEX remain aligned on the right.
         row.columnconfigure(1, weight=1)
-        row.columnconfigure(2, weight=1)
+        row.columnconfigure(2, weight=0, minsize=150)
 
         self.sample_swatch = tk.Canvas(
-            row, width=52, height=52, bg=self.CARD, highlightthickness=0
+            row,
+            width=58,
+            height=58,
+            bg=self.CARD,
+            highlightthickness=0,
         )
         self.sample_swatch.grid(row=0, column=0, sticky="nw", padx=(0, 10))
         self.sample_swatch_rect = self.sample_swatch.create_rectangle(
-            3, 3, 49, 49, fill="#d9dde3", outline="#707070", width=1
+            4,
+            4,
+            54,
+            54,
+            fill="#d9dde3",
+            outline="#707070",
+            width=1,
         )
 
         sample_info = tk.Frame(row, bg=self.CARD)
-        sample_info.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
+        sample_info.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
+
+        tk.Label(
+            sample_info,
+            textvariable=self.sample_title_var,
+            font=self.FONT_BOLD,
+            bg=self.CARD,
+            fg=self.TEXT,
+            anchor="w",
+        ).pack(fill="x")
+
+        tk.Label(
+            sample_info,
+            textvariable=self.sample_kind_var,
+            font=self.FONT_SMALL,
+            bg=self.CARD,
+            fg=self.MUTED,
+            anchor="w",
+        ).pack(fill="x", pady=(2, 0))
+
+        self.sample_coord_label = tk.Label(
+            sample_info,
+            textvariable=self.sample_coord_var,
+            font=self.FONT_SMALL,
+            bg=self.CARD,
+            fg=self.MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=185,
+        )
+        self.sample_coord_label.pack(fill="x", pady=(3, 0))
+
+        self.sample_filters_label = tk.Label(
+            sample_info,
+            textvariable=self.sample_filters_var,
+            font=self.FONT_SMALL,
+            bg=self.CARD,
+            fg=self.MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=185,
+        )
 
         values = tk.Frame(row, bg=self.CARD)
         values.grid(row=0, column=2, sticky="ne")
 
         tk.Label(
-            sample_info, textvariable=self.sample_title_var, font=self.FONT_BOLD,
-            bg=self.CARD, fg=self.TEXT, anchor="w"
-        ).pack(fill="x")
-        tk.Label(
-            sample_info, textvariable=self.sample_coord_var, font=self.FONT_SMALL,
-            bg=self.CARD, fg=self.MUTED, anchor="w", justify="left", wraplength=250
-        ).pack(fill="x", pady=(2, 0))
-        self.sample_filters_label = tk.Label(
-            sample_info, textvariable=self.sample_filters_var, font=self.FONT_SMALL,
-            bg=self.CARD, fg=self.BLUE, anchor="w", justify="left", wraplength=280
-        )
+            values,
+            textvariable=self.sample_lab_var,
+            font=self.FONT_SMALL,
+            bg=self.CARD,
+            fg=self.TEXT,
+            anchor="e",
+            justify="right",
+        ).pack(anchor="e")
 
         tk.Label(
-            values, textvariable=self.sample_lab_var, font=self.FONT,
-            bg=self.CARD, fg=self.TEXT, anchor="e", justify="right"
-        ).pack(anchor="e")
+            values,
+            textvariable=self.sample_rgb_var,
+            font=self.FONT_SMALL,
+            bg=self.CARD,
+            fg=self.TEXT,
+            anchor="e",
+            justify="right",
+        ).pack(anchor="e", pady=(2, 0))
+
         tk.Label(
-            values, textvariable=self.sample_rgb_var, font=self.FONT,
-            bg=self.CARD, fg=self.TEXT, anchor="e", justify="right"
-        ).pack(anchor="e")
-        tk.Label(
-            values, textvariable=self.sample_hex_var, font=self.FONT,
-            bg=self.CARD, fg=self.TEXT, anchor="e", justify="right"
-        ).pack(anchor="e")
+            values,
+            textvariable=self.sample_hex_var,
+            font=self.FONT_SMALL,
+            bg=self.CARD,
+            fg=self.TEXT,
+            anchor="e",
+            justify="right",
+        ).pack(anchor="e", pady=(2, 0))
 
     def _build_comparison_settings_card(self, parent):
         card = self._card(parent, "Comparison Settings")
@@ -870,6 +930,10 @@ class ImageInspectionManager:
             self._source_order.append(key)
 
         self._rebuild_source_combo()
+        if stale_keys:
+            # Keep the pinned measurement as a record, but make its missing
+            # image explicit and prohibit restoring it onto a different image.
+            self._refresh_pin_tree()
 
         if self.current_source_key not in self._sources:
             self.current_source_key = None
@@ -1008,7 +1072,7 @@ class ImageInspectionManager:
 
         try:
             with Image.open(path) as img:
-                pil = img.convert("RGBA")
+                pil = ImageOps.exif_transpose(img).convert("RGBA")
         except Exception as exc:
             self.app.custom_warning(
                 "Open Image",
@@ -1266,11 +1330,13 @@ class ImageInspectionManager:
 
     def _update_inspection_help(self):
         mode = self.inspection_mode_var.get().strip().lower()
+
         if mode == "live":
-            text = "Move over image to inspect · Right-drag: move · Wheel: zoom"
+            text = "Move: inspect · Right-drag: pan · Wheel: zoom"
         else:
-            drag_text = "filtered mean" if self._active_lab_filters() else "mean area"
-            text = f"Click: pixel · Drag: {drag_text} · Right-drag: move · Wheel: zoom"
+            drag_text = "filtered ROI" if self._active_lab_filters() else "ROI"
+            text = f"Click: pixel · Drag: {drag_text} · Right-drag: pan · Wheel: zoom"
+
         self.inspection_help_var.set(text)
 
     def _update_filter_ui(self):
@@ -1587,13 +1653,17 @@ class ImageInspectionManager:
         self._update_prototype_ui()
         self._render_image()
 
-    def _set_sample_filter_summary(self, text):
+    def _set_sample_filter_info(self, text):
         text = str(text or "").strip()
         self.sample_filters_var.set(text)
+
         try:
             if text:
                 if not self.sample_filters_label.winfo_manager():
-                    self.sample_filters_label.pack(fill="x", pady=(2, 0))
+                    self.sample_filters_label.pack(
+                        fill="x",
+                        pady=(2, 0),
+                    )
             else:
                 self.sample_filters_label.pack_forget()
         except Exception:
@@ -1601,8 +1671,9 @@ class ImageInspectionManager:
 
     def _clear_sample_ui(self):
         self.sample_title_var.set("No sample selected")
+        self.sample_kind_var.set("")
         self.sample_coord_var.set("Click a pixel in the image")
-        self._set_sample_filter_summary("")
+        self._set_sample_filter_info("")
         self.sample_lab_var.set("LAB: —")
         self.sample_rgb_var.set("RGB: —")
         self.sample_hex_var.set("HEX: —")
@@ -1632,33 +1703,34 @@ class ImageInspectionManager:
         selection = s.get("selection_info")
         if s.get("is_average") and selection and selection.get("type") == "roi":
             self.sample_title_var.set("Mean Color")
-
-            if selection.get("filters_applied"):
-                pixel_text = (
-                    f"{selection.get('pixels', 0)} / "
-                    f"{selection.get('total_pixels', selection.get('pixels', 0))} pixels used"
-                )
-                filter_summary = str(selection.get("filter_summary", "")).strip()
-                if not filter_summary:
-                    filter_summary = UtilsTools.format_lab_filters(
-                        selection.get("filters", {}),
-                        prefix=True,
-                    )
-                self._set_sample_filter_summary(
-                    "" if filter_summary == "No filters applied" else filter_summary
-                )
-            else:
-                pixel_text = f"{selection.get('pixels', 0)} pixels"
-                self._set_sample_filter_summary("")
+            self.sample_kind_var.set("ROI average")
 
             self.sample_coord_var.set(
-                f"ROI ({selection['x1']}, {selection['y1']}) → ({selection['x2']}, {selection['y2']})\n"
-                f"{selection['width']} × {selection['height']} px · {pixel_text}"
+                f"({selection['x1']}, {selection['y1']}) → "
+                f"({selection['x2']}, {selection['y2']})"
             )
+
+            used = int(selection.get("pixels", 0))
+            total = int(selection.get("total_pixels", used))
+
+            if selection.get("filters_applied"):
+                self._set_sample_filter_info(
+                    f"{selection['width']} × {selection['height']} px · "
+                    f"{used:,}/{total:,} used"
+                )
+            else:
+                self._set_sample_filter_info(
+                    f"{selection['width']} × {selection['height']} px · "
+                    f"{used:,} pixels"
+                )
+
         else:
             self.sample_title_var.set("Selected Color")
-            self.sample_coord_var.set(f"Pixel ({s['x']}, {s['y']})")
-            self._set_sample_filter_summary("")
+            self.sample_kind_var.set("Single pixel")
+            self.sample_coord_var.set(
+                f"({s['x']}, {s['y']})"
+            )
+            self._set_sample_filter_info("")
 
         lab = s["lab"]
         rgb = s["rgb"]
@@ -1754,13 +1826,14 @@ class ImageInspectionManager:
         for child in self.membership_inner.winfo_children():
             child.destroy()
         self._membership_rows.clear()
+        self._membership_controls.clear()
 
     def _populate_memberships(self):
-        self._clear_membership_rows()
         s = self._current_sample
         memberships = s.get("memberships", []) if s else []
 
         if not memberships:
+            self._clear_membership_rows()
             tk.Label(
                 self.membership_inner,
                 text="No memberships available.",
@@ -1771,6 +1844,20 @@ class ImageInspectionManager:
             ).pack(fill="x", padx=5, pady=8)
             return
 
+        # Live mode updates many times a second. Reuse the Tk widgets when
+        # the prototype set has not changed; only μ and row order change.
+        labels = [label for label, _mu in memberships]
+        if len(set(labels)) == len(labels) and set(labels) == set(self._membership_rows):
+            for label, mu in memberships:
+                row, bar, value = self._membership_controls[label]
+                bar.configure(value=max(0.0, min(1.0, float(mu))) * 100.0)
+                value.configure(text=f"μ = {float(mu):.4f}")
+                row.pack_forget()
+                row.pack(fill="x", pady=1, padx=2)
+            self._highlight_membership_selection()
+            return
+
+        self._clear_membership_rows()
         for label, mu in memberships:
             row = tk.Frame(self.membership_inner, bg=self.CARD, cursor="hand2")
             row.pack(fill="x", pady=1, padx=2)
@@ -1789,6 +1876,7 @@ class ImageInspectionManager:
 
             value = tk.Label(row, text=f"μ = {float(mu):.4f}", bg=self.CARD, fg=self.TEXT, font=self.FONT_SMALL, width=10, anchor="e")
             value.pack(side="right", padx=(0, 5))
+            self._membership_controls[label] = (row, bar, value)
 
             for widget in (row, sw, name, bar, value):
                 widget.bind("<Button-1>", lambda _e, lbl=label: self._select_prototype(lbl))
@@ -2074,7 +2162,7 @@ class ImageInspectionManager:
 
         for i, sample in enumerate(self._pinned_samples):
             src = self._sources.get(sample.get("source_key"), {})
-            name = src.get("name", "Image")
+            name = src.get("name", "[Image unavailable]")
             selection = sample.get("selection_info")
             if sample.get("is_average") and selection and selection.get("type") == "roi":
                 pos = f"ROI {selection['width']}×{selection['height']}"
@@ -2095,6 +2183,15 @@ class ImageInspectionManager:
             idx = int(selected[0])
             sample = copy.deepcopy(self._pinned_samples[idx])
         except Exception:
+            return
+        source_key = sample.get("source_key")
+        if source_key not in self._sources:
+            self.app.custom_warning(
+                "Image Unavailable",
+                "The original image window for this pinned sample has been closed. "
+                "Select its image again and create a new pin.",
+                parent=self.win,
+            )
             return
         self._set_current_sample(sample, remember=True, show_tooltip=False)
 

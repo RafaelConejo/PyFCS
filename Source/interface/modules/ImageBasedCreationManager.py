@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageOps
 
 import Source.interface.modules.UtilsTools as UtilsTools
 
@@ -860,7 +860,7 @@ class ImageBasedCreationManager:
 
         try:
             with Image.open(path) as img:
-                pil = img.convert("RGBA")
+                pil = ImageOps.exif_transpose(img).convert("RGBA")
         except Exception as exc:
             self.app.custom_warning(
                 "Open Image",
@@ -1142,18 +1142,29 @@ class ImageBasedCreationManager:
     # ======================================================================
     def _on_mode_changed(self, _event=None):
         mode = self.mode_var.get().strip().lower()
+
         if mode == "automatic":
-            self.help_var.set("Detection uses original image · Right-drag: move · Wheel: zoom")
+            # Manual samples do not belong to the automatic workflow.
+            # Clear the current pixel/ROI selection when switching modes.
+            self._clear_current_sample()
+
+            self.help_var.set(
+                "Detection uses original image · Right-drag: move · Wheel: zoom"
+            )
             self.manual_card.pack_forget()
             self.auto_card.pack(fill="x", pady=(8, 0))
+
         else:
-            self.help_var.set("Click: pixel · Drag: filtered mean · Right-drag: move · Wheel: zoom")
+            self.help_var.set(
+                "Click: pixel · Drag: filtered mean · Right-drag: move · Wheel: zoom"
+            )
             self.auto_card.pack_forget()
             self.manual_card.pack(fill="x", pady=(8, 0))
 
         self._drag_start_source = None
         self._drag_current_source = None
         self._drag_start_canvas = None
+
         self._render_image()
 
     def _on_left_press(self, event):
@@ -1690,7 +1701,8 @@ class ImageBasedCreationManager:
         if not self._validate_detection_filters(parent=self.win):
             return
 
-        detection_img = pil.convert("RGB")
+        # Retain transparency: fully invisible RGB pixels must not be detected.
+        detection_img = pil.copy()
         threshold = float(self.threshold_var.get())
         min_samples = int(self.min_samples_var.get())
         source_name = self._sources.get(self.current_source_key, {}).get("name", "Image")
@@ -1717,6 +1729,8 @@ class ImageBasedCreationManager:
     def _finish_detection(self, detected_colors, source_name):
         added = 0
         filtered = 0
+        added_names = []
+
         try:
             for item in detected_colors or []:
                 rgb = item.get("rgb")
@@ -1746,11 +1760,21 @@ class ImageBasedCreationManager:
                     continue
 
                 requested_name = item.get("name") or "Detected Color"
-                name = self._next_unique_name(str(requested_name).strip() or "Detected Color")
-                self._add_color(name, rgb, lab, source=source_name, refresh=False)
+                added_name = self._add_color(
+                    str(requested_name).strip() or "Detected Color",
+                    rgb,
+                    lab,
+                    source=source_name,
+                    refresh=False,
+                )
+                added_names.append(added_name)
                 added += 1
 
-            self._refresh_color_list()
+            if added_names:
+                self._append_color_rows(added_names)
+                self._update_selected_count()
+                self.win.after_idle(self._scroll_colors_to_bottom)
+
         finally:
             status = f"✓ {added} color{'s' if added != 1 else ''} added"
             if filtered:
@@ -1779,6 +1803,13 @@ class ImageBasedCreationManager:
         return UtilsTools.make_unique_color_name(base, self.colors.keys())
 
     def _add_color(self, name, rgb, lab, source=None, selected=True, refresh=True):
+        """
+        Add one color to the local creation state.
+
+        Normal additions update the visible list incrementally. ``refresh=False``
+        is used by batch operations such as automatic detection so all new rows
+        can be appended together once the batch has finished.
+        """
         name = self._next_unique_name(name)
         rgb = tuple(int(v) for v in rgb[:3])
         lab = tuple(float(v) for v in np.asarray(lab, dtype=float).reshape(-1)[:3])
@@ -1796,11 +1827,126 @@ class ImageBasedCreationManager:
         }
 
         if refresh:
-            self._refresh_color_list()
+            self._append_color_rows([name])
+            self._update_selected_count()
+            self.win.after_idle(self._scroll_colors_to_bottom)
+
         return name
 
+    def _create_color_row(self, name):
+        """Create only the Tk widgets required for one color row."""
+        if name not in self.colors or name not in self.color_checks:
+            return
+
+        data = self.colors[name]
+        check_data = self.color_checks[name]
+        var = check_data["var"]
+
+        row = tk.Frame(self.colors_inner, bg=self.CARD, bd=0)
+        row.pack(fill="x", padx=6, pady=4)
+
+        check = tk.Checkbutton(
+            row,
+            variable=var,
+            bg=self.CARD,
+            activebackground=self.CARD,
+            selectcolor=self.CARD,
+            command=self._update_selected_count,
+        )
+        check.pack(side="left", padx=(0, 4))
+
+        swatch = tk.Canvas(
+            row,
+            width=26,
+            height=26,
+            bg=self.CARD,
+            highlightthickness=0,
+        )
+        swatch.pack(side="left", padx=(0, 8))
+        swatch.create_rectangle(
+            2,
+            2,
+            24,
+            24,
+            fill=data["hex"],
+            outline="#707070",
+        )
+
+        text_area = tk.Frame(row, bg=self.CARD)
+        text_area.pack(side="left", fill="x", expand=True)
+
+        name_var = tk.StringVar(value=name)
+        entry = tk.Entry(
+            text_area,
+            textvariable=name_var,
+            font=self.FONT_BOLD,
+            relief="flat",
+            bg="#f8fafc",
+            fg=self.TEXT,
+            highlightthickness=1,
+            highlightbackground=self.BORDER,
+            highlightcolor=self.BLUE,
+        )
+        entry.pack(fill="x")
+
+        lab = data["lab"]
+        source_text = f" · {data['source']}" if data.get("source") else ""
+        tk.Label(
+            text_area,
+            text=f"LAB {lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}{source_text}",
+            bg=self.CARD,
+            fg=self.MUTED,
+            font=self.FONT_SMALL,
+            anchor="w",
+        ).pack(fill="x", pady=(2, 0))
+
+        entry.bind(
+            "<Return>",
+            lambda _e, old=name, nv=name_var: self._commit_color_name(old, nv),
+        )
+        entry.bind(
+            "<FocusOut>",
+            lambda _e, old=name, nv=name_var: self._commit_color_name(old, nv),
+        )
+        self._name_editors.append((name, name_var))
+
+    def _append_color_rows(self, names):
+        """
+        Append only newly added colors to the visible list.
+
+        If the list still contains the initial empty-state message, remove it
+        once before creating the first real row.
+        """
+        if not hasattr(self, "colors_inner"):
+            return
+
+        valid_names = [
+            name
+            for name in names
+            if name in self.colors and name in self.color_checks
+        ]
+        if not valid_names:
+            return
+
+        # When the first color is added, the only child is the empty-state label.
+        if len(self.colors) == len(valid_names):
+            for child in self.colors_inner.winfo_children():
+                child.destroy()
+            self._name_editors = []
+
+        for name in valid_names:
+            self._create_color_row(name)
+
     def _refresh_color_list(self):
-        self._name_editors = []
+        """
+        Rebuild the complete list only when existing rows structurally change.
+
+        This path is intentionally kept for rename/remove operations. Normal
+        additions use ``_append_color_rows`` and do not recreate existing rows.
+        """
+        if not hasattr(self, "colors_inner"):
+            return
+
         selected_state = {}
         for name, item in self.color_checks.items():
             try:
@@ -1811,10 +1957,12 @@ class ImageBasedCreationManager:
         for child in self.colors_inner.winfo_children():
             child.destroy()
 
+        self._name_editors = []
+
         if not self.colors:
             tk.Label(
                 self.colors_inner,
-                text="No colors added yet.\nSample manually, run automatic detection, or add a custom color.",
+                text="No colors added yet.\nSample manually, run automatic detection, \nor add a custom color.",
                 bg=self.CARD,
                 fg=self.MUTED,
                 font=self.FONT,
@@ -1825,73 +1973,40 @@ class ImageBasedCreationManager:
             self._update_selected_count()
             return
 
-        new_checks = {}
-
+        rebuilt_checks = {}
         for name, data in self.colors.items():
-            var = tk.BooleanVar(value=selected_state.get(name, True))
-            new_checks[name] = {
+            old_check = self.color_checks.get(name, {})
+            try:
+                var = old_check.get("var")
+                if var is None:
+                    raise ValueError
+                var.set(selected_state.get(name, True))
+            except Exception:
+                var = tk.BooleanVar(value=selected_state.get(name, True))
+
+            rebuilt_checks[name] = {
                 "var": var,
                 "lab": data["lab"],
                 "rgb": data["rgb"],
             }
 
-            row = tk.Frame(self.colors_inner, bg=self.CARD, bd=0)
-            row.pack(fill="x", padx=6, pady=4)
+        self.color_checks = rebuilt_checks
 
-            check = tk.Checkbutton(
-                row,
-                variable=var,
-                bg=self.CARD,
-                activebackground=self.CARD,
-                selectcolor=self.CARD,
-                command=self._update_selected_count,
-            )
-            check.pack(side="left", padx=(0, 4))
+        for name in self.colors:
+            self._create_color_row(name)
 
-            swatch = tk.Canvas(row, width=26, height=26, bg=self.CARD, highlightthickness=0)
-            swatch.pack(side="left", padx=(0, 8))
-            swatch.create_rectangle(2, 2, 24, 24, fill=data["hex"], outline="#707070")
-
-            text_area = tk.Frame(row, bg=self.CARD)
-            text_area.pack(side="left", fill="x", expand=True)
-
-            name_var = tk.StringVar(value=name)
-            entry = tk.Entry(
-                text_area,
-                textvariable=name_var,
-                font=self.FONT_BOLD,
-                relief="flat",
-                bg="#f8fafc",
-                fg=self.TEXT,
-                highlightthickness=1,
-                highlightbackground=self.BORDER,
-                highlightcolor=self.BLUE,
-            )
-            entry.pack(fill="x")
-
-            lab = data["lab"]
-            source_text = f" · {data['source']}" if data.get("source") else ""
-            tk.Label(
-                text_area,
-                text=f"LAB {lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}{source_text}",
-                bg=self.CARD,
-                fg=self.MUTED,
-                font=self.FONT_SMALL,
-                anchor="w",
-            ).pack(fill="x", pady=(2, 0))
-
-            entry.bind(
-                "<Return>",
-                lambda _e, old=name, nv=name_var: self._commit_color_name(old, nv),
-            )
-            entry.bind(
-                "<FocusOut>",
-                lambda _e, old=name, nv=name_var: self._commit_color_name(old, nv),
-            )
-            self._name_editors.append((name, name_var))
-
-        self.color_checks = new_checks
         self._update_selected_count()
+
+    def _scroll_colors_to_bottom(self):
+        """Move the Selected Colors viewport to the most recently added rows."""
+        try:
+            self.colors_canvas.update_idletasks()
+            self.colors_canvas.configure(
+                scrollregion=self.colors_canvas.bbox("all")
+            )
+            self.colors_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
 
     def _commit_color_name(self, old_name, name_var):
         if old_name not in self.colors:
