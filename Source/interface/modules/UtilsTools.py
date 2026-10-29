@@ -7,15 +7,13 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 import colorsys
 
-### my libraries ###
+# Project modules
 from Source.input_output.Input import Input
 from Source.geometry.Prototype import Prototype
 from Source.geometry.Voronoi import Voronoi
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 
-# ============================================================================================================================================================
-#  SHARED CONSTANTS
-# ============================================================================================================================================================
+# Shared Constants
 
 MAX_COLOR_NAME_CHARS = 24
 
@@ -34,9 +32,7 @@ and data preparation.
 """
 
 
-# ============================================================================================================================================================
-#  PATH HELPERS
-# ============================================================================================================================================================
+# Path Helpers
 
 def get_base_path():
     """
@@ -77,6 +73,7 @@ def get_resource_path(relative_path):
     explicit ``Source/external`` folder if desired, while a normal release can
     remain a true single-file application.
     """
+    # Packaged resources may be read-only and must not be used for output.
     relative_path = os.path.normpath(str(relative_path))
 
     if os.path.isabs(relative_path):
@@ -87,7 +84,7 @@ def get_resource_path(relative_path):
     if not getattr(sys, "frozen", False):
         return app_candidate
 
-    # Optional resource override beside the frozen executable.
+    # External resources beside the executable take precedence over bundled files.
     if os.path.exists(app_candidate):
         return app_candidate
 
@@ -96,8 +93,7 @@ def get_resource_path(relative_path):
         bundled_candidate = os.path.join(bundle_root, relative_path)
         if os.path.exists(bundled_candidate):
             return bundled_candidate
-        # Return the expected bundled location so any later FileNotFoundError
-        # clearly points to the missing packaged resource.
+        # Retain the expected path for a useful missing-resource error.
         return bundled_candidate
 
     return app_candidate
@@ -130,9 +126,7 @@ def get_runtime_temp_dir(*parts, create=True):
     return path
 
 
-# ============================================================================================================================================================
-#  SAFE TEXT / NUMBER HELPERS
-# ============================================================================================================================================================
+# Safe Text / Number Helpers
 
 def safe_text(value):
     """
@@ -264,9 +258,7 @@ def safe_float(text):
     return value
 
 
-# ============================================================================================================================================================
-#  COLOR NAME HELPERS
-# ============================================================================================================================================================
+# Color Name Helpers
 
 def make_unique_color_name(base, existing_names):
     """
@@ -291,9 +283,7 @@ def make_unique_color_name(base, existing_names):
     return f"{base} {index}"
 
 
-# ============================================================================================================================================================
-#  VALIDATION HELPERS
-# ============================================================================================================================================================
+# Validation Helpers
 
 def safe_rgb_tuple(rgb):
     """
@@ -406,7 +396,6 @@ def find_duplicate_lab_name(color_data, lab, atol=Voronoi.DEFAULT_MERGE_EPS):
     return None
 
 
-
 def find_duplicate_lab_pairs(color_data, atol=Voronoi.DEFAULT_MERGE_EPS):
     """
     Return every pair of LAB prototypes that collide within the Voronoi
@@ -459,7 +448,6 @@ def find_duplicate_lab_pairs(color_data, atol=Voronoi.DEFAULT_MERGE_EPS):
     return duplicates
 
 
-
 def is_valid_hex(hex_value):
     """
     Return True if hex_value is #RRGGBB or RRGGBB.
@@ -481,9 +469,7 @@ def is_valid_hex(hex_value):
         return False
 
 
-# ============================================================================================================================================================
-#  COLOR CONVERSIONS
-# ============================================================================================================================================================
+# Color Conversions
 
 def rgb_to_hex(rgb):
     """
@@ -657,13 +643,7 @@ def lab_to_hex(lab):
     return rgb_to_hex(rgb)
 
 
-
-
-
-
-# ============================================================================================================================================================
-#  LAB FILTER HELPERS
-# ============================================================================================================================================================
+# LAB Filter Helpers
 
 _LAB_FILTER_LABELS = {
     "L_min": "L* minimum",
@@ -1192,10 +1172,7 @@ def open_lab_filters_dialog(
     return win
 
 
-
-# ============================================================================================================================================================
-#  EXTENDED COLOR SPACE DISPLAY HELPERS
-# ============================================================================================================================================================
+# Extended Color Space Display Helpers
 
 SUPPORTED_COLOR_VALUE_SPACES = [
     "CIELAB",
@@ -1409,10 +1386,7 @@ def format_lab_color_value(lab, color_space="CIELAB"):
         return "-"
 
 
-
-# ============================================================================================================================================================
-#  FILE SELECTION
-# ============================================================================================================================================================
+# File Selection
 
 def prompt_file_selection(initial_subdir, parent=None):
     """
@@ -1434,10 +1408,7 @@ def prompt_file_selection(initial_subdir, parent=None):
     base_path = get_base_path()
     initial_directory = os.path.join(base_path, initial_subdir)
 
-    # A one-file release does not need to ship a writable
-    # ``fuzzy_color_spaces`` directory beside the executable.  If the suggested
-    # folder does not exist, simply start the dialog from the application
-    # directory (or the current working directory as a final fallback).
+    # The file dialog falls back to the application directory in frozen builds.
     if not os.path.isdir(initial_directory):
         initial_directory = base_path if os.path.isdir(base_path) else os.getcwd()
 
@@ -1456,9 +1427,7 @@ def prompt_file_selection(initial_subdir, parent=None):
     )
 
 
-# ============================================================================================================================================================
-#  COLOR DATA HELPERS
-# ============================================================================================================================================================
+# Color Data Helpers
 
 def process_prototypes(color_data):
     """
@@ -1527,9 +1496,7 @@ def load_color_data(file_path):
     return colors
 
 
-# ============================================================================================================================================================
-#  POPUP HELPERS
-# ============================================================================================================================================================
+# Popup Helpers
 
 def create_popup_window(parent, title, width, height, header_text):
     """
@@ -1658,9 +1625,7 @@ def handle_image_selection(event, listbox, popup, images_names, callback):
     callback(selected_img_id)
 
 
-# ============================================================================================================================================================
-#  ALPHA / PIL IMAGE HELPERS
-# ============================================================================================================================================================
+# Alpha / PIL Image Helpers
 
 def _get_alpha_values_from_pil(pil_img):
     """Return the original per-pixel alpha (uint8), including soft edges."""

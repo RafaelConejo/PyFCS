@@ -3,7 +3,7 @@ import tkinter as tk
 import os
 import numpy as np
 
-### my libraries ###
+# Project modules
 from Source.input_output.Input import Input
 import Source.interface.modules.UtilsTools as UtilsTools
 
@@ -21,11 +21,11 @@ and
 """
 
 class FuzzyColorSpaceManager:
-    # Supported file extensions for fuzzy color spaces / color datasets
+    # Input handlers accept only CNS and FCS files.
     SUPPORTED_EXTENSIONS = {'.cns', '.fcs'}
 
     def __init__(self, root):
-        # Reference to the main Tk root (or parent window/controller)
+        # Tk parent for dialogs and selectable color rows.
         self.root = root
 
     @staticmethod
@@ -51,17 +51,15 @@ class FuzzyColorSpaceManager:
         ValueError
             If the file extension is not supported.
         """
-        # Extract and normalize the file extension (e.g., ".CNS" -> ".cns")
+        # File extension matching is case-insensitive.
         extension = os.path.splitext(filename)[1].lower()
 
-        # Validate extension
         if extension not in FuzzyColorSpaceManager.SUPPORTED_EXTENSIONS:
             raise ValueError(f"Unsupported file format: {extension}")
 
-        # Get the proper input handler for this extension (factory/singleton pattern)
+        # File parsing is delegated to the corresponding Input handler.
         input_class = Input.instance(extension)
 
-        # CNS files return only color_data
         if extension == '.cns':
             color_data = input_class.read_file(filename)
 
@@ -82,7 +80,6 @@ class FuzzyColorSpaceManager:
                 'color_data': color_data
             }
 
-        # FCS files return color_data + fuzzy_color_space
         elif extension == '.fcs':
             color_data, fuzzy_color_space = input_class.read_file(filename)
             return {
@@ -120,9 +117,7 @@ class FuzzyColorSpaceManager:
         """
         MAX_NAME_CHARS = UtilsTools.MAX_COLOR_NAME_CHARS
 
-        # ------------------------------------------------------------------
         # Normalize LAB
-        # ------------------------------------------------------------------
         try:
             if isinstance(lab, dict):
                 lab_display = (
@@ -140,9 +135,7 @@ class FuzzyColorSpaceManager:
         except Exception:
             lab_display = (0.0, 0.0, 0.0)
 
-        # ------------------------------------------------------------------
         # Normalize RGB / HEX
-        # ------------------------------------------------------------------
         try:
             if hasattr(rgb, "tolist"):
                 rgb = rgb.tolist()
@@ -156,9 +149,7 @@ class FuzzyColorSpaceManager:
             rgb = (217, 217, 217)
             hex_color = "#d9d9d9"
 
-        # ------------------------------------------------------------------
         # Outer row/card
-        # ------------------------------------------------------------------
         row_card = tk.Frame(
             parent,
             bg="#f4f4f4",
@@ -170,9 +161,7 @@ class FuzzyColorSpaceManager:
         inner = tk.Frame(row_card, bg="#f4f4f4")
         inner.pack(fill="x", padx=10, pady=8)
 
-        # ------------------------------------------------------------------
         # Swatch
-        # ------------------------------------------------------------------
         swatch_container = tk.Frame(inner, bg="#f4f4f4", width=54)
         swatch_container.pack(side="left", fill="y")
         swatch_container.pack_propagate(False)
@@ -187,9 +176,7 @@ class FuzzyColorSpaceManager:
         )
         color_box.pack(anchor="center", pady=2)
 
-        # ------------------------------------------------------------------
         # Name + LAB block
-        # ------------------------------------------------------------------
         content = tk.Frame(inner, bg="#f4f4f4")
         content.pack(side="left", fill="x", expand=True, padx=(10, 10))
 
@@ -198,7 +185,7 @@ class FuzzyColorSpaceManager:
 
         current_name = {"value": str(color_name)}
 
-        # ----- Editable name -----
+        # Editable name
         if editable_name:
             def _validate_name_length(proposed_text):
                 try:
@@ -250,7 +237,7 @@ class FuzzyColorSpaceManager:
             name_entry.bind("<Return>", _commit_name)
             name_entry.bind("<FocusOut>", _commit_name)
 
-        # ----- Fixed name -----
+        # Fixed name
         else:
             shown_name = str(color_name)
             if len(shown_name) > MAX_NAME_CHARS:
@@ -266,7 +253,7 @@ class FuzzyColorSpaceManager:
                 width=24
             ).pack(side="left", padx=(0, 14))
 
-        # ----- LAB values -----
+        # LAB values
         lab_text = f"L: {lab_display[0]:.1f}, A: {lab_display[1]:.1f}, B: {lab_display[2]:.1f}"
 
         tk.Label(
@@ -278,9 +265,7 @@ class FuzzyColorSpaceManager:
             anchor="w"
         ).pack(side="left", fill="x", expand=True)
 
-        # ------------------------------------------------------------------
         # Checkbox block
-        # ------------------------------------------------------------------
         var = tk.BooleanVar(value=selected)
         color_checks[color_name] = {"var": var, "lab": lab}
 

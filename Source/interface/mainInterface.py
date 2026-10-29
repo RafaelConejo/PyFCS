@@ -1,7 +1,7 @@
 import os
 import sys
 
-# --- bootstrap paths (before ANY non-stdlib / project imports) ---
+# Resolve project imports before loading third-party modules.
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
 if getattr(sys, "frozen", False):
@@ -30,7 +30,7 @@ from PIL import Image, ImageTk, ImageOps, ImageDraw, ImageFont, ImageEnhance
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from tkinter import ttk, Menu, filedialog, messagebox, Scrollbar, DISABLED, NORMAL
 
-# --- project imports ---
+# Project modules
 from Source.input_output.Input import Input
 from Source.interface.modules.VisualManager import VisualManager
 from Source.colorspace.ReferenceDomain import ReferenceDomain
@@ -45,13 +45,9 @@ from Source.interface.modules.PaletteBasedCreationManager import PaletteBasedCre
 import Source.interface.modules.UtilsTools as UtilsTools
 
 
-
-
 class PyFCSApp:
     def __init__(self, root):
-        # ---------------------------------------------------------------------
         # Core references / managers
-        # ---------------------------------------------------------------------
         self.root = root
 
         logo_path = UtilsTools.get_resource_path(
@@ -66,10 +62,7 @@ class PyFCSApp:
             center_popup=self.center_popup if hasattr(self, "center_popup") else None,
         )
         self.fuzzy_manager = FuzzyColorSpaceManager(root=self.root)
-        # Threshold CSV files are runtime-generated artifacts, just like the
-        # temporary Plotly HTML files.  Source execution keeps them under
-        # Source/external/temp/threshold_results, while frozen builds use the
-        # operating-system temp directory (e.g. %TEMP%/PyFCS on Windows).
+        # Keep generated CSV files in the runtime directory, not the installation folder.
         self.color_manager = ColorEvaluationManager(
             output_dir=UtilsTools.get_runtime_temp_dir("threshold_results", create=False)
         )
@@ -81,21 +74,19 @@ class PyFCSApp:
         self._palette_based_creation_window = None
 
         # Image Display workspace state.
-        # ``grid`` keeps cards automatically arranged; dragging/resizing a card
-        # switches to ``manual`` until the user presses Grid again.
+        # A card move or resize switches the workspace from grid to manual layout.
         self._image_workspace_layout_mode = "grid"
         self._image_workspace_focus_id = None
         self._image_workspace_active_id = None
         self._image_workspace_focus_return_mode = "grid"
         self._image_workspace_focus_saved_state = None
         self._image_workspace_focus_saved_collapsed = None
+        # Geometry callbacks are registered per card, not globally.
         self._image_workspace_callbacks = {}
 
         self.volume_limits = ReferenceDomain.default_voronoi_reference_domain()
 
-        # ---------------------------------------------------------------------
         # Shared runtime state
-        # ---------------------------------------------------------------------
         self.COLOR_SPACE = False
         self.FIRST_DBSCAN = True
         self.SHOW_ORIGINAL = {}
@@ -104,6 +95,7 @@ class PyFCSApp:
         self.images = {}
         self.color_entry_detect = {}
         self.display_pil = {}
+        # Each image card owns its cancellation and progress state.
         self.image_jobs = {}
 
         # Floating image viewport zoom state
@@ -117,18 +109,15 @@ class PyFCSApp:
         self.rgb_data = []
         self.graph_widget = None
 
-        # Centralized image/icon references to avoid garbage collection
+        # Retain Tk image references for the lifetime of their widgets.
         self.ui_icons = {}
 
-        # Temporary external Plotly output.  Source runs keep using
-        # Source/external/temp; frozen builds use the OS temp directory.
+        # Temporary Plotly output is stored outside the packaged application.
         self.TEMP_PLOT_MAX_FILES = 30
         self.TEMP_PLOT_CLEANUP_EVERY = 5
         self._temp_plot_creation_count = 0
 
-        # ---------------------------------------------------------------------
         # Visual constants
-        # ---------------------------------------------------------------------
         APP_BG = "#f5f6f8"
         CARD_BG = "#ffffff"
         PANEL_BG = "#fbfbfc"
@@ -152,9 +141,7 @@ class PyFCSApp:
         FONT_SMALL = ("Segoe UI", 8)
         FONT_SMALL_BOLD = ("Segoe UI", 8, "bold")
 
-        # ---------------------------------------------------------------------
         # Main window configuration
-        # ---------------------------------------------------------------------
         self.root.title("PyFCS Interface")
         self.root.geometry("1200x720")
         self.root.minsize(1050, 620)
@@ -176,9 +163,7 @@ class PyFCSApp:
         self.root.bind("<Escape>", self.toggle_fullscreen)
         self.root.bind("<F11>", self.toggle_fullscreen)
 
-        # ---------------------------------------------------------------------
         # ttk style
-        # ---------------------------------------------------------------------
         try:
             style = ttk.Style(self.root)
             try:
@@ -211,9 +196,7 @@ class PyFCSApp:
         except Exception:
             pass
 
-        # ---------------------------------------------------------------------
         # Local UI helpers
-        # ---------------------------------------------------------------------
         def create_card(parent, title=None, padx=10, pady=10):
             """
             Create a clean card-like container without heavy black borders.
@@ -326,15 +309,11 @@ class PyFCSApp:
             """Register a scrollable canvas without using bind_all()/unbind_all()."""
             self._register_vertical_mousewheel_canvas(canvas)
 
-                # ---------------------------------------------------------------------
         # Menu bar
-        # ---------------------------------------------------------------------
         self.menubar = Menu(self.root)
         self.root.config(menu=self.menubar)
 
-        # =============================================================
         # File
-        # =============================================================
         file_menu = Menu(self.menubar, tearoff=0)
 
         file_menu.add_command(
@@ -348,9 +327,7 @@ class PyFCSApp:
             underline=0,  # F
         )
 
-        # =============================================================
         # Image Manager
-        # =============================================================
         img_menu = Menu(self.menubar, tearoff=0)
 
         img_menu.add_command(
@@ -384,9 +361,7 @@ class PyFCSApp:
             underline=0,  # I
         )
 
-        # =============================================================
         # Fuzzy Color Space Manager
-        # =============================================================
         fuzzy_menu = Menu(self.menubar, tearoff=0)
 
         # Native submenu in the application menu.
@@ -429,9 +404,7 @@ class PyFCSApp:
             command=self.image_based_creation
         )
 
-        # =============================================================
         # Color Analysis
-        # =============================================================
         analysis_menu = Menu(self.menubar, tearoff=0)
 
         analysis_menu.add_command(
@@ -445,9 +418,7 @@ class PyFCSApp:
             underline=6,  # A
         )
 
-        # =============================================================
         # Help
-        # =============================================================
         help_menu = Menu(self.menubar, tearoff=0)
 
         help_menu.add_command(
@@ -461,17 +432,9 @@ class PyFCSApp:
             underline=0,  # H
         )
 
-        # ---------------------------------------------------------------------
         # Menu mnemonics
-        # ---------------------------------------------------------------------
         # Tk uses the underline metadata natively where supported.
-        #
-        # On Windows and Linux we also bind Alt+key explicitly so the
-        # mnemonics remain reliable across Tk themes/window managers.
-        #
-        # On macOS we deliberately do NOT bind Option+key: Option is commonly
-        # used for text input and Tk/Aqua integrates the application menu with
-        # the native macOS menubar differently.
+        # Bind Alt mnemonics outside macOS, where Option is used for text input.
         if platform.system() != "Darwin":
             def _open_top_menu(index):
                 try:
@@ -500,9 +463,7 @@ class PyFCSApp:
                     add="+",
                 )
 
-        # ---------------------------------------------------------------------
         # Toolbar area
-        # ---------------------------------------------------------------------
         main_frame = tk.Frame(self.root, bg=APP_BG)
         main_frame.pack(fill="x", padx=12, pady=(8, 6))
 
@@ -519,7 +480,6 @@ class PyFCSApp:
         toolbar_inner = tk.Frame(toolbar_card, bg=CARD_BG)
         toolbar_inner.pack(fill="x", padx=10, pady=7)
 
-        # Load icons once
         icon_size = (30, 30)
         load_image_icon = self.load_toolbar_icon("LoadImage.png", icon_size)
         save_image_icon = self.load_toolbar_icon("SaveImage.png", icon_size)
@@ -614,9 +574,7 @@ class PyFCSApp:
             command=self.color_evaluation
         )
 
-        # ---------------------------------------------------------------------
         # Main working area
-        # ---------------------------------------------------------------------
         main_content_frame = tk.Frame(self.root, bg=APP_BG)
         main_content_frame.pack(fill="both", expand=True, padx=14, pady=(0, 10))
 
@@ -712,6 +670,7 @@ class PyFCSApp:
         self.image_mapping_dock = None
         self.image_mapping_dock_visible = False
         self._mapping_all_palette_by_window = {}
+        # Palette/display state cannot be shared between duplicate image windows.
         self._mapping_all_pack_by_window = {}
 
         self._image_workspace_focus_id = None
@@ -755,9 +714,7 @@ class PyFCSApp:
 
         self.root.after(140, set_initial_main_sash)
 
-        # ---------------------------------------------------------------------
         # Tab: Model 3D
-        # ---------------------------------------------------------------------
         model_3d_tab = tk.Frame(self.notebook, bg=CARD_BG)
         self.notebook.add(model_3d_tab, text="Model 3D")
 
@@ -921,9 +878,7 @@ class PyFCSApp:
         if self.COLOR_SPACE:
             self.deselect_all_button.pack(fill="x", pady=(0, 4))
 
-        # ---------------------------------------------------------------------
         # Tab: Data
-        # ---------------------------------------------------------------------
         data_tab = tk.Frame(self.notebook, bg=CARD_BG)
         self.notebook.add(data_tab, text="Data")
 
@@ -940,9 +895,7 @@ class PyFCSApp:
         )
         data_panel.pack(fill="both", expand=True)
 
-        # ---------------------------------------------------------------------
         # Header: title + file name
-        # ---------------------------------------------------------------------
         data_header = tk.Frame(data_panel, bg=SOFT_BG, height=66)
         data_header.pack(fill="x")
         data_header.pack_propagate(False)
@@ -996,9 +949,7 @@ class PyFCSApp:
         self.file_name_entry.pack(side="left")
         self.file_name_entry.insert(0, "")
 
-        # ---------------------------------------------------------------------
         # Canvas area directly inside the main panel
-        # ---------------------------------------------------------------------
         canvas_area = tk.Frame(data_panel, bg=CARD_BG)
         canvas_area.pack(fill="both", expand=True, padx=16, pady=(16, 8))
 
@@ -1039,7 +990,7 @@ class PyFCSApp:
             xscrollcommand=self.data_scrollbar_h.set
         )
 
-        # ------------------- SCROLL FIX (cross-platform) -------------------
+        # SCROLL FIX (cross-platform)
         self.data_window.bind(
             "<MouseWheel>",
             lambda event: self.on_mouse_wheel(event, self.data_window)
@@ -1052,7 +1003,6 @@ class PyFCSApp:
             "<Button-5>",
             lambda event: self.on_mouse_wheel(event, self.data_window)
         )
-        # ------------------------------------------------------------------
 
         self.inner_frame_data = tk.Frame(self.data_window, bg=CARD_BG)
         self.data_window.create_window((0, 0), window=self.inner_frame_data, anchor="nw")
@@ -1064,7 +1014,7 @@ class PyFCSApp:
             )
         )
 
-        # ------------------- SCROLL FIX (inside content) -------------------
+        # SCROLL FIX (inside content)
         self.inner_frame_data.bind(
             "<MouseWheel>",
             lambda event: self.on_mouse_wheel(event, self.data_window)
@@ -1077,11 +1027,8 @@ class PyFCSApp:
             "<Button-5>",
             lambda event: self.on_mouse_wheel(event, self.data_window)
         )
-        # ------------------------------------------------------------------
 
-        # ---------------------------------------------------------------------
         # Footer buttons
-        # ---------------------------------------------------------------------
         bottom_bar = tk.Frame(data_panel, bg=CARD_BG)
         bottom_bar.pack(fill="x", padx=16, pady=(0, 14))
 
@@ -1124,14 +1071,8 @@ class PyFCSApp:
             padx=(0, 0)
         )
 
-        # ---------------------------------------------------------------------
         # Internal status variable
-        # ---------------------------------------------------------------------
         self.status_var = tk.StringVar(value="Ready")
-
-
-
-
 
 
     ########################################################################################### Utils APP ###########################################################################################
@@ -1143,7 +1084,6 @@ class PyFCSApp:
         confirm_exit = messagebox.askyesno("Exit", "Are you sure you want to exit?")
         if confirm_exit:
             self.root.destroy()
-
 
 
     def _get_valid_dialog_parent(self, parent=None):
@@ -1163,7 +1103,6 @@ class PyFCSApp:
         return getattr(self, "root", None)
 
 
-
     def toggle_fullscreen(self, event=None):
         """
         Toggle between fullscreen and windowed mode.
@@ -1177,7 +1116,6 @@ class PyFCSApp:
             screen_width = self.root.winfo_screenwidth()
             screen_height = self.root.winfo_screenheight()
             self.root.geometry(f"{screen_width}x{screen_height}+0+0")
-
 
 
     def switch_tab(self, notebook, forward=True):
@@ -1194,13 +1132,9 @@ class PyFCSApp:
             # Move to the next tab (wrap around to the first tab if needed)
             new_index = (current_index + 1) % total_tabs
         else:
-            # Move to the previous tab (wrap around to the last tab if needed)
             new_index = (current_index - 1) % total_tabs
 
-        # Select the new tab
         notebook.select(new_index)
-
-
 
 
     def _register_vertical_mousewheel_canvas(self, canvas):
@@ -1316,7 +1250,6 @@ class PyFCSApp:
         return tk_img
 
 
-
     def custom_warning(self, title="Warning", message="Warning", parent=None):
         """
         Creates a custom warning window whose size adapts automatically
@@ -1332,9 +1265,7 @@ class PyFCSApp:
 
         message_text = str(message)
 
-        # ------------------------------------------------------------
         # Main panel
-        # ------------------------------------------------------------
         outer = tk.Frame(warning_win, bg="#eeeeee")
         outer.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -1346,9 +1277,7 @@ class PyFCSApp:
         )
         panel.pack(fill="both", expand=True)
 
-        # ------------------------------------------------------------
         # Content row
-        # ------------------------------------------------------------
         body = tk.Frame(panel, bg="white")
         body.pack(fill="both", expand=True, padx=14, pady=(12, 8))
 
@@ -1406,9 +1335,7 @@ class PyFCSApp:
             expand=True
         )
 
-        # ------------------------------------------------------------
         # Button row
-        # ------------------------------------------------------------
         footer = tk.Frame(panel, bg="white")
         footer.pack(
             fill="x",
@@ -1444,9 +1371,7 @@ class PyFCSApp:
 
         btn_ok.focus_set()
 
-        # ------------------------------------------------------------
         # Calculate REAL required size
-        # ------------------------------------------------------------
         warning_win.update_idletasks()
 
         required_width = warning_win.winfo_reqwidth()
@@ -1473,7 +1398,6 @@ class PyFCSApp:
         warning_win.wait_window()
 
 
-    
     def show_loading_color_space(self):
         """
         Display a simple loading window with the message 'Loading Color Space...'.
@@ -1495,12 +1419,10 @@ class PyFCSApp:
         self.load_window.update()  
 
 
-
     def show_loading(self):
         """
         Display a visually appealing loading window with a progress bar.
         """
-        # Create a new top-level window for the loading message
         self.load_window = tk.Toplevel(self.root)
         self.load_window.title("Loading")
         self.load_window.resizable(False, False)  # Disable resizing
@@ -1521,7 +1443,6 @@ class PyFCSApp:
 
         # Ensure the loading window updates and displays properly
         self.root.update_idletasks()
-
 
 
     def hide_loading(self):
@@ -1551,7 +1472,6 @@ class PyFCSApp:
                 del self.progress
             except Exception:
                 pass
-
 
 
     def about_info(self):
@@ -1587,9 +1507,7 @@ class PyFCSApp:
 
         about_window.protocol("WM_DELETE_WINDOW", close_about)
 
-        # ------------------------------------------------------------
         # Main outer container
-        # ------------------------------------------------------------
         outer = tk.Frame(
             about_window,
             bg="#f5f6f8"
@@ -1604,9 +1522,7 @@ class PyFCSApp:
         )
         card.pack(fill="both", expand=True)
 
-        # ------------------------------------------------------------
         # Header with logo
-        # ------------------------------------------------------------
         header = tk.Frame(card, bg="white")
         header.pack(fill="x", padx=22, pady=(18, 6))
 
@@ -1641,9 +1557,7 @@ class PyFCSApp:
             fg="#6b7280"
         ).pack(anchor="center", pady=(2, 0))
 
-        # ------------------------------------------------------------
         # Body text
-        # ------------------------------------------------------------
         body = tk.Frame(card, bg="white")
         body.pack(fill="x", padx=28, pady=(10, 8))
 
@@ -1692,9 +1606,7 @@ class PyFCSApp:
         website_label.pack(anchor="center", pady=(0, 10))
         website_label.bind("<Button-1>", open_website)
 
-        # ------------------------------------------------------------
         # Footer
-        # ------------------------------------------------------------
         footer = tk.Frame(card, bg="white")
         footer.pack(fill="x", padx=22, pady=(12, 18))
 
@@ -1716,15 +1628,11 @@ class PyFCSApp:
         )
         close_button.pack(anchor="center")
 
-        # ------------------------------------------------------------
         # Keyboard shortcuts
-        # ------------------------------------------------------------
         about_window.bind("<Escape>", lambda _event: close_about())
         about_window.bind("<Return>", lambda _event: close_about())
 
-        # ------------------------------------------------------------
         # Center after layout
-        # ------------------------------------------------------------
         about_window.update_idletasks()
         self.center_popup(about_window, WIN_W, WIN_H)
 
@@ -1736,7 +1644,6 @@ class PyFCSApp:
             close_button.focus_set()
         except Exception:
             pass
-
 
 
     def show_menu_create_fcs(self):
@@ -1848,7 +1755,6 @@ class PyFCSApp:
         return "break"
 
 
-
     def center_popup(self, popup, width, height):
         """
         Center a popup window relative to the main window when possible.
@@ -1895,7 +1801,6 @@ class PyFCSApp:
         popup.geometry(f"{width}x{height}+{popup_x}+{popup_y}")
 
 
-
     def center_popup_to_parent(self, popup, width, height, parent=None):
         """
         Center a popup relative to the given parent window when possible.
@@ -1938,7 +1843,6 @@ class PyFCSApp:
                 popup_y = (screen_height - height) // 2
 
         popup.geometry(f"{width}x{height}+{popup_x}+{popup_y}")
-
 
 
     def _ensure_creation_state(self):
@@ -2067,7 +1971,6 @@ class PyFCSApp:
         return True
 
 
-
     def _open_plotly_figure_in_browser(self, fig, filename_prefix="plot"):
         """
         Save a Plotly figure as a temporary HTML file and open it in the default browser.
@@ -2117,7 +2020,6 @@ class PyFCSApp:
                 pass
 
             return None
-
 
 
     def _get_temp_plot_dir(self):
@@ -2262,24 +2164,6 @@ class PyFCSApp:
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     # ============================================================================================================================================================
     #  MAIN FUNCTIONS
     # ============================================================================================================================================================
@@ -2318,9 +2202,7 @@ class PyFCSApp:
         self.cores = self.fuzzy_color_space.get_cores()
         self.supports = self.fuzzy_color_space.get_supports()
 
-        # Update application state and UI with the new prototype information
         self.update_prototypes_info()
-
 
 
     def update_prototypes_info(self):
@@ -2348,7 +2230,6 @@ class PyFCSApp:
 
         # Trigger update based on the selected options
         self.on_option_select()
-
 
 
     def _prepare_open_images_for_color_space_change(self):
@@ -2421,9 +2302,7 @@ class PyFCSApp:
         self.show_loading_color_space()
 
         try:
-            # ----------------------------------------------------------
             # PREPARE: do all file/geometry work against temporary state.
-            # ----------------------------------------------------------
             data = self.fuzzy_manager.load_color_file(filename)
             if not isinstance(data, dict) or "color_data" not in data or "type" not in data:
                 raise ValueError("The selected file did not return valid color-space data.")
@@ -2453,9 +2332,7 @@ class PyFCSApp:
             else:
                 raise ValueError(f"Unsupported color-space type: {data['type']}")
 
-            # ----------------------------------------------------------
             # COMMIT: preparation succeeded, so the active FCS may change.
-            # ----------------------------------------------------------
             self._reset_image_inspection_state()
 
             self._prepare_open_images_for_color_space_change()
@@ -2482,7 +2359,6 @@ class PyFCSApp:
 
         finally:
             self.hide_loading()
-
 
 
     def create_color_space(self, parent=None):
@@ -2574,9 +2450,7 @@ class PyFCSApp:
             "saving": False
         }
 
-        # ------------------------------------------------------------------
         # Main shell
-        # ------------------------------------------------------------------
         outer = tk.Frame(popup, bg="#eeeeee")
         outer.pack(fill="both", expand=True, padx=12, pady=12)
 
@@ -2616,11 +2490,9 @@ class PyFCSApp:
                 return
 
             try:
-                # ----------------------------------------------------------
                 # Lock input while starting the Color Space creation.
                 # The loading window is handled inside save_cs()
                 # through _save_color_space_file().
-                # ----------------------------------------------------------
                 result["saving"] = True
 
                 popup.config(cursor="watch")
@@ -2697,9 +2569,7 @@ class PyFCSApp:
         popup.bind("<Escape>", lambda event: on_cancel())
         popup.protocol("WM_DELETE_WINDOW", on_cancel)
 
-        # ------------------------------------------------------------------
         # Use your existing centering function
-        # ------------------------------------------------------------------
         popup.update_idletasks()
         self.center_popup(popup, 340, 135)
 
@@ -2717,7 +2587,6 @@ class PyFCSApp:
         popup.wait_window()
 
         return result["created"]
-
 
 
     def _on_color_space_saved_success(self, name, file_path=None):
@@ -2754,9 +2623,7 @@ class PyFCSApp:
         self.file_path = file_path
         self.file_base_name = name
 
-        # Reuse the exact geometry that InputFCS.write_file() has just built.
-        # This avoids a second Voronoi + core/support reconstruction after
-        # Apply Changes.
+        # The writer already built the Voronoi geometry; reuse it after saving.
         self.fuzzy_color_space = fuzzy_color_space
         self.prototypes = fuzzy_color_space.get_prototypes()
         self.fuzzy_color_space.precompute_pack()
@@ -2982,9 +2849,6 @@ class PyFCSApp:
         self._image_based_creation_window = controller.win
 
 
-
-
-
     def _get_best_image_source_pil(self, window_id, prefer_current_view=True, rgb=True):
         """
         Return the best available PIL image source for image tools.
@@ -3055,46 +2919,6 @@ class PyFCSApp:
                 continue
 
         raise ValueError(f"No valid image source found for window_id: {window_id}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -3476,6 +3300,25 @@ class PyFCSApp:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     # ============================================================================================================================================================
     #  FUNCTIONS DATA
     # ============================================================================================================================================================
@@ -3518,9 +3361,7 @@ class PyFCSApp:
         if hasattr(self, "data_header_title"):
             self.data_header_title.config(text=f"Color Space Data ({len(data_source)})")
 
-        # -------------------------
         # Tooltip management
-        # -------------------------
         if hasattr(self, "_data_info_tooltip") and self._data_info_tooltip is not None:
             try:
                 self._data_info_tooltip.destroy()
@@ -3581,9 +3422,7 @@ class PyFCSApp:
         if canvas_width <= 1:
             canvas_width = 760
 
-        # =========================
         # Layout configuration
-        # =========================
         col_widths = {
             "L": 70,
             "a": 70,
@@ -3605,9 +3444,7 @@ class PyFCSApp:
         border_color = "#d0d0d0"
         header_bg = "#f2f2f2"
 
-        # =========================
         # Header row
-        # =========================
         self.data_window.create_rectangle(
             x_start,
             y,
@@ -3646,9 +3483,7 @@ class PyFCSApp:
 
         y += header_height + row_gap
 
-        # =========================
         # Editable label helpers
-        # =========================
         MAX_LABEL_CHARS = 24
 
         def _rename_color_label(old_name, requested_name, entry_var=None):
@@ -3719,9 +3554,7 @@ class PyFCSApp:
             self.display_data_window()
             return True
 
-        # =========================
         # Data rows
-        # =========================
         for i, (color_name, color_value) in enumerate(data_source.items()):
 
             if "positive_prototype" in color_value:
@@ -3753,9 +3586,7 @@ class PyFCSApp:
 
             current_x = x_start
 
-            # =========================
             # LAB cells
-            # =========================
             for value, header in zip([L, A, B], ["L", "a", "b"]):
                 width = col_widths[header]
 
@@ -3778,9 +3609,7 @@ class PyFCSApp:
 
                 current_x += width
 
-            # =========================
             # Editable Label cell
-            # =========================
             label_width = col_widths["Label"]
 
             label_var = tk.StringVar(value=str(color_name)[:MAX_LABEL_CHARS])
@@ -3862,9 +3691,7 @@ class PyFCSApp:
 
             current_x += label_width
 
-            # =========================
             # Color preview cell
-            # =========================
             color_width = col_widths["Color"]
 
             try:
@@ -3910,9 +3737,7 @@ class PyFCSApp:
 
             current_x += color_width
 
-            # =========================
             # Action cell
-            # =========================
             action_width = col_widths["Action"]
 
             info_tag = f"info_{i}"
@@ -3926,9 +3751,7 @@ class PyFCSApp:
             start_btn_x = current_x + (action_width - total_btns_width) / 2
             btn_y = row_top + (row_height - btn_h) / 2
 
-            # -------------------------
             # Info button, left
-            # -------------------------
             info_x = start_btn_x
 
             self.data_window.create_rectangle(
@@ -3972,9 +3795,7 @@ class PyFCSApp:
                 _hide_info_tooltip
             )
 
-            # -------------------------
             # Delete button, right
-            # -------------------------
             del_x = info_x + btn_w + btn_gap
 
             self.data_window.create_rectangle(
@@ -4050,7 +3871,6 @@ class PyFCSApp:
         self.data_window.after_idle(self._center_data_horizontal_scroll)
 
 
-
     def remove_color(self, index):
         """Remove a color from the editable dataset and refresh the display."""
         if len(self.edit_color_data) <= 2:
@@ -4070,7 +3890,6 @@ class PyFCSApp:
             del self.edit_color_data[color_name]
 
         self.display_data_window()
-
 
 
     def addColor_data_window(self):
@@ -4174,7 +3993,6 @@ class PyFCSApp:
         )
 
 
-
     def clear_data_window(self):
         """Clear the data display area and reset related UI/state."""
         if hasattr(self, "_data_info_tooltip") and self._data_info_tooltip is not None:
@@ -4206,7 +4024,6 @@ class PyFCSApp:
         self._data_scroll_width = 0
         self._data_table_center_x = 0
         self._data_label_editors = []
-
 
 
     def _commit_pending_data_label_changes(self):
@@ -4300,7 +4117,6 @@ class PyFCSApp:
                 editor["old_name"] = rename_map[old_name]
 
         return True
-
 
 
     def apply_changes(self):
@@ -4518,20 +4334,6 @@ class PyFCSApp:
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     # ============================================================================================================================================================
     #  FUNCTIONS IMAGE DISPLAY
     # ============================================================================================================================================================
@@ -4601,10 +4403,7 @@ class PyFCSApp:
             if getattr(self, "window_mapping_mode", {}).get(target_window_id) != "all":
                 return None, None
 
-            # Most reliable source: the rows currently rendered in the card's
-            # Mapping-All legend. These rows are rebuilt every time Alt. Colors
-            # changes, so exporting them guarantees that _legend.png matches
-            # exactly what the user is seeing.
+            # Export the displayed legend palette, including any alternate-color selection.
             panel_info = getattr(self, "proto_options", {}).get(target_window_id)
             if isinstance(panel_info, dict) and panel_info.get("kind") == "all":
                 rows = list(panel_info.get("rows", []) or [])
@@ -4626,8 +4425,7 @@ class PyFCSApp:
             if not labels:
                 return None, None
 
-            # Secondary source: palette stored when the current Mapping All
-            # view was drawn. This also reflects an Alt. Colors toggle.
+            # Fall back to the last palette stored for this window.
             palette = getattr(self, "_mapping_all_palette_by_window", {}).get(target_window_id)
             if palette is not None:
                 try:
@@ -4637,7 +4435,7 @@ class PyFCSApp:
                 except Exception:
                     pass
 
-            # Fallback for older/cached views.
+            # Handle views created before the per-window palette was stored.
             if not hasattr(self, "window_image_key") or target_window_id not in self.window_image_key:
                 return None, None
 
@@ -4675,10 +4473,7 @@ class PyFCSApp:
                 return
 
             try:
-                # Export the complete current image mode, independent of zoom/pan.
-                # image_view_source is Original / Color Mapping / Mapping All at
-                # its full processing resolution; display_pil is only the current
-                # viewport/card rendering and must never define exported content.
+                # Export the full image mode, not the zoomed viewport shown on the canvas.
                 img_to_save = getattr(self, "image_view_source", {}).get(target_window_id)
                 if img_to_save is None:
                     img_to_save = getattr(self, "display_pil", {}).get(target_window_id)
@@ -4990,7 +4785,6 @@ class PyFCSApp:
             _set_selected(initial)
 
 
-
     def close_all_image(self):
         """
         Closes all floating windows and cleans up associated UI/window resources.
@@ -5106,7 +4900,6 @@ class PyFCSApp:
         self._schedule_image_workspace_reflow(delay=0)
 
 
-    
     def _image_workspace_window_ids(self):
         """Return live image-window ids in stable opening order."""
         ids = []
@@ -5200,9 +4993,7 @@ class PyFCSApp:
 
     def _arrange_image_workspace_grid(self):
         """Return to automatic non-overlapping card layout."""
-        # A selection rectangle is expressed in the previous card geometry.
-        # Grid can resize/reposition every card, so never carry that selection
-        # into the new layout.
+        # A layout change invalidates selection coordinates from the previous card geometry.
         self._clear_image_display_selection()
 
         self._image_workspace_focus_id = None
@@ -5276,7 +5067,6 @@ class PyFCSApp:
         self._image_workspace_focus_id = window_id
         self._image_workspace_active_id = window_id
         self._reflow_image_workspace()
-
 
 
     def _toggle_image_workspace_focus(self, window_id):
@@ -5490,9 +5280,7 @@ class PyFCSApp:
 
         callbacks = getattr(self, "_image_workspace_callbacks", {})
 
-        # --------------------------------------------------------------
         # Focus / maximize view
-        # --------------------------------------------------------------
         if focus_id is not None:
             # The main window itself may have been resized while Focus is active.
             # Clear transient selection before recomputing focused geometry.
@@ -5547,9 +5335,7 @@ class PyFCSApp:
             self._update_image_workspace_status()
             return
 
-        # --------------------------------------------------------------
         # Manual layout: preserve exact user geometry.
-        # --------------------------------------------------------------
         if getattr(self, "_image_workspace_layout_mode", "grid") == "manual":
             for wid in ids:
                 self._set_workspace_card_visibility(wid, True)
@@ -5563,9 +5349,7 @@ class PyFCSApp:
             self._update_image_workspace_status()
             return
 
-        # --------------------------------------------------------------
         # Automatic grid
-        # --------------------------------------------------------------
         # Grid may resize/reposition cards after a main-window resize, opening
         # a mapping panel, or returning from Focus. Never leave a selection
         # marker tied to the previous geometry.
@@ -5668,7 +5452,6 @@ class PyFCSApp:
 
         if filename:
             self.create_floating_window(14, 14, filename)
-
 
 
     def _clear_original_selection_rectangle(self, window_id):
@@ -6059,9 +5842,7 @@ class PyFCSApp:
             )
             return
 
-        # ---------------------------
         # Lazy-init dictionaries
-        # ---------------------------
         if not hasattr(self, "load_images_names"):
             self.load_images_names = {}
         if not hasattr(self, "images"):
@@ -6107,6 +5888,7 @@ class PyFCSApp:
         if not hasattr(self, "window_image_key"):
             self.window_image_key = {}
         if not hasattr(self, "cm_cache_by_image"):
+            # Cache reusable mapping calculations independently from card presentation.
             self.cm_cache_by_image = {}
         if not hasattr(self, "proto_percentage_cache_by_image"):
             self.proto_percentage_cache_by_image = {}
@@ -6131,9 +5913,7 @@ class PyFCSApp:
         self.CAN_APPLY_MAPPING[window_id] = bool(self.COLOR_SPACE)
         self.SHOW_ORIGINAL[window_id] = False
 
-        # ---------------------------
         # Load images
-        # ---------------------------
         with Image.open(filename) as image_file:
             pil_original = ImageOps.exif_transpose(image_file).convert("RGBA")
         original_width, original_height = pil_original.size
@@ -6156,7 +5936,7 @@ class PyFCSApp:
         self.display_pil[window_id] = pil_resized
 
         # Viewport zoom source and state.
-        # The source is the full original image; the displayed image is only a viewport.
+        # Viewport crops never replace the original source image.
         self.image_view_source[window_id] = pil_original
         self.image_view_state[window_id] = {
             "zoom": 1.0,
@@ -6186,9 +5966,7 @@ class PyFCSApp:
             "collapsed": False,
         }
 
-        # ---------------------------
         # Create canvas items
-        # ---------------------------
         self.image_canvas.create_rectangle(
             x, y, x + new_width + PAD_X, y + new_height + PAD_Y,
             outline="#cfd5dd", fill="#ffffff", width=1,
@@ -6269,9 +6047,7 @@ class PyFCSApp:
             tags=(window_id, "floating", f"{window_id}_resize_handle")
         )
 
-        # ---------------------------
         # Helpers to relayout + resize
-        # ---------------------------
         def _relayout(window_id):
             """Update all canvas item positions based on stored floating window state."""
             st = self.floating_window_state[window_id]
@@ -6395,9 +6171,7 @@ class PyFCSApp:
             _relayout(window_id)
 
 
-        # ---------------------------
         # Viewport zoom helpers
-        # ---------------------------
         def _clamp(value, min_value, max_value):
             """Clamp value between min_value and max_value."""
             return max(min_value, min(max_value, value))
@@ -6601,9 +6375,7 @@ class PyFCSApp:
                 self._image_zoom_hover_window = None
             return None
 
-        # ---------------------------
         # Right-drag viewport move
-        # ---------------------------
         def _start_view_pan(event):
             """Start moving the zoomed viewport with the right mouse button."""
             if self._has_active_job(window_id):
@@ -6699,9 +6471,7 @@ class PyFCSApp:
             return "break"
         
 
-        # ---------------------------
         # Menu action wrappers
-        # ---------------------------
         def _show_original_image_action():
             self._clear_image_display_selection(window_id)
             self.show_original_image(window_id)
@@ -6714,9 +6484,7 @@ class PyFCSApp:
             self._clear_image_display_selection(window_id)
             self.color_mapping_all(window_id)
 
-        # ---------------------------
         # Close window
-        # ---------------------------
         def close_window(event):
             """Close the floating window and remove all associated data and canvas items."""
 
@@ -6813,9 +6581,7 @@ class PyFCSApp:
 
             self._schedule_image_workspace_reflow()
 
-        # ---------------------------
         # Dropdown menu
-        # ---------------------------
         def show_menu_image(event):
             """Display per-image view, mapping, zoom and save actions."""
             if self._has_active_job(window_id):
@@ -6886,9 +6652,7 @@ class PyFCSApp:
             menu.post(event.x_root, event.y_root)
             return "break"
 
-        # ---------------------------
         # Move window
-        # ---------------------------
         def start_move(event):
             if self._has_active_job(window_id):
                 return "break"
@@ -6953,9 +6717,7 @@ class PyFCSApp:
             self._update_manual_workspace_scrollregion()
             return "break"
 
-        # ---------------------------
         # Resize window
-        # ---------------------------
         def start_resize(event):
             if self._has_active_job(window_id):
                 return "break"
@@ -7032,9 +6794,7 @@ class PyFCSApp:
             self._resize_callbacks = {}
         self._resize_callbacks[window_id] = (start_resize, do_resize, end_resize)
 
-        # ---------------------------
         # Pixel picking
-        # ---------------------------
         def get_pixel_value(event, window_id=window_id):
             if self._has_active_job(window_id):
                 return "break"
@@ -7083,9 +6843,7 @@ class PyFCSApp:
             self._pixel_click_callbacks = {}
         self._pixel_click_callbacks[window_id] = get_pixel_value
 
-        # ---------------------------
         # Bindings
-        # ---------------------------
         # Title drag restores the original ability to move cards. The first drag
         # switches the workspace from automatic Grid to Manual layout. Grid can
         # be pressed at any time to arrange everything again.
@@ -7166,16 +6924,12 @@ class PyFCSApp:
         self._schedule_image_workspace_reflow(delay=0)
 
 
-
-
-
     def _ensure_image_jobs(self):
         """Lazy-init job registry used to bind one running process per image/window."""
         if not hasattr(self, "image_jobs"):
             self.image_jobs = {}
         if not hasattr(self, "_image_job_counter"):
             self._image_job_counter = itertools.count(1)
-
 
 
     def _window_exists(self, window_id):
@@ -7185,7 +6939,6 @@ class PyFCSApp:
             return bool(items)
         except Exception:
             return False
-
 
 
     def _has_active_job(self, window_id):
@@ -7200,13 +6953,11 @@ class PyFCSApp:
         return th is not None and th.is_alive() and cancel_event is not None and not cancel_event.is_set()
 
 
-
     def _is_current_job(self, window_id, job_id):
         """Checks whether job_id is still the active job for window_id."""
         self._ensure_image_jobs()
         info = self.image_jobs.get(window_id)
         return bool(info and info.get("job_id") == job_id)
-
 
 
     def _cancel_window_job(self, window_id, cleanup_ui=True):
@@ -7232,7 +6983,6 @@ class PyFCSApp:
             self._hide_window_loading(window_id)
 
 
-
     def _is_job_cancelled(self, window_id, cancel_event, job_id):
         """Returns True if the window/job is no longer valid."""
         if cancel_event.is_set():
@@ -7242,7 +6992,6 @@ class PyFCSApp:
         if not self._is_current_job(window_id, job_id):
             return True
         return False
-
 
 
     def _start_window_job(self, window_id, kind, target):
@@ -7396,11 +7145,18 @@ class PyFCSApp:
             tags=(window_id, f"{window_id}_loading", "loading", f"{window_id}_loading_cancel")
         )
 
-        # Bind cancel click
+        # A cancelled Mapping All must not leave the image in an unfinished view mode.
+        def _cancel_loading_job(_event=None):
+            info = self.image_jobs.get(window_id, {})
+            if info.get("kind") == "color_mapping_all":
+                self.show_original_image(window_id)
+            else:
+                self._cancel_window_job(window_id)
+
         self.image_canvas.tag_bind(
             f"{window_id}_loading_cancel",
             "<Button-1>",
-            lambda event: self._cancel_window_job(window_id)
+            _cancel_loading_job
         )
 
         if window_id in self.image_jobs:
@@ -7418,7 +7174,6 @@ class PyFCSApp:
         self._raise_all_loading_panels()
 
 
-
     def _hide_window_loading(self, window_id):
         """Destroys the loading panel associated with one floating image/window."""
         self._ensure_image_jobs()
@@ -7433,7 +7188,6 @@ class PyFCSApp:
             pass
 
         info["loading_widgets"] = {}
-
 
 
     def _update_window_progress(self, window_id, job_id, current_step, total_steps):
@@ -7456,7 +7210,6 @@ class PyFCSApp:
             self.image_canvas.after(0, _ui)
         except Exception:
             pass
-
 
 
     def _reposition_window_loading(self, window_id):
@@ -7535,7 +7288,6 @@ class PyFCSApp:
             if th is not None and th.is_alive() and cancel_event is not None and not cancel_event.is_set():
                 return True
         return False
-
 
 
     def _reposition_proto_options(self, window_id):
@@ -7624,6 +7376,25 @@ class PyFCSApp:
             self._raise_all_loading_panels()
         except Exception:
             pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     # ============================================================================================================================================================
@@ -8107,9 +7878,7 @@ class PyFCSApp:
                     }
 
                 def _ui():
-                    if not self._is_current_job(window_id, job_id):
-                        return
-                    if not self._window_exists(window_id):
+                    if self._is_job_cancelled(window_id, cancel_event, job_id):
                         return
 
                     self.display_color_mapping(grayscale_image_array, window_id)
@@ -8156,7 +7925,6 @@ class PyFCSApp:
             self._show_window_loading(window_id, "Color Mapping...")
 
 
-
     def display_color_mapping(self, grayscale_image_array, window_id):
         """Displays the generated grayscale image in the graphical interface, preserving transparency."""
         try:
@@ -8167,8 +7935,7 @@ class PyFCSApp:
 
             self.modified_image[window_id] = grayscale_image_array
 
-            # Alpha must come from the original image at the exact mapping
-            # resolution, never from a previously mapped display image.
+            # Apply the original alpha channel at the mapping resolution.
             try:
                 map_h, map_w = grayscale_image_array.shape[:2]
                 source_img = self._get_mapping_source_image(
@@ -8215,7 +7982,6 @@ class PyFCSApp:
 
         except Exception as e:
             self.custom_warning("Display Error", f"Error displaying the image: {e}")
-
 
 
     def show_original_image(self, window_id):
@@ -8334,7 +8100,6 @@ class PyFCSApp:
             return
 
 
-
     def _display_mapping_all_result(self, window_id, recolored_image, palette_uint8):
         """Display Mapping-All and keep its vertical legend inside the same card."""
         try:
@@ -8448,8 +8213,7 @@ class PyFCSApp:
                 alt_palette = self.image_manager.build_alt_palette_uint8(self.prototypes, self.hex_color)
                 palette = alt_palette
                 recolored_image = self.image_manager.recolor_label_map(label_map, palette, alpha_values)
-                # Global cache contains only immutable computations; a window's
-                # palette selection must never affect another instance of an image.
+                # Share label-map computations, but keep palette choices local to each window.
                 window_pack = {
                     "label_map": label_map,
                     "alpha_values": alpha_values,
@@ -8458,9 +8222,10 @@ class PyFCSApp:
                     "cache_key": cache_key,
                 }
                 def _ui():
-                    if self._is_current_job(window_id, job_id) and self._window_exists(window_id):
-                        self._mapping_all_pack_by_window[window_id] = window_pack
-                        self._display_mapping_all_result(window_id, recolored_image, palette)
+                    if self._is_job_cancelled(window_id, cancel_event, job_id):
+                        return
+                    self._mapping_all_pack_by_window[window_id] = window_pack
+                    self._display_mapping_all_result(window_id, recolored_image, palette)
                 self.image_canvas.after(0, _ui)
             except RuntimeError as exc:
                 if str(exc) != "__JOB_CANCELLED__":
@@ -8611,7 +8376,6 @@ class PyFCSApp:
         threading.Thread(target=run_threshold_process, daemon=True).start()
 
 
-
     def deploy_at(self):
         if self._has_any_active_job():
             self.custom_warning(
@@ -8629,11 +8393,6 @@ class PyFCSApp:
             )
             return
         self.get_umbral_points(0.8, mode="PT")
-
-
-
-
-
 
 
 
@@ -8791,7 +8550,6 @@ class PyFCSApp:
         )
 
 
-    
     def _refresh_threshold_metric_controls(self, vars_dict, refs):
         """
         Refresh metric combo values and metric help text from selected metric family.
@@ -8815,7 +8573,6 @@ class PyFCSApp:
         vars_dict["threshold_metric_help_var"].set(
             manager.get_metric_description(current_metric)
         )
-
 
 
     def _hide_threshold_config_controls(self, refs):
@@ -9043,9 +8800,7 @@ class PyFCSApp:
             section_output = tk.Frame(threshold_body, bg="white")
             section_output.grid(row=0, column=4, sticky="nsew")
 
-        # -------------------------
         # Left: metric selection
-        # -------------------------
         manager = self._get_color_evaluation_manager()
 
         tk.Label(
@@ -9117,9 +8872,7 @@ class PyFCSApp:
                 "write", lambda *_: section_selection.after_idle(_resize_metric_help)
             )
 
-        # -------------------------
         # Center: configuration
-        # -------------------------
         tk.Label(
             section_config,
             text="Configuration",
@@ -9218,9 +8971,7 @@ class PyFCSApp:
             "variant": variant,
         }
 
-        # -------------------------
         # Right: output
-        # -------------------------
         if variant == "result":
             results_title = tk.Label(
                 section_output,
@@ -9384,11 +9135,6 @@ class PyFCSApp:
         return refs
 
 
-
-
-
-
-
     def _refresh_shared_threshold_ui(self, vars_dict, refs, proto_lab=None, sample_lab=None):
         """
         Shared refresh for threshold controls.
@@ -9501,7 +9247,6 @@ class PyFCSApp:
         )
 
         self._apply_threshold_result_style(refs, status)
-
 
 
     def _enable_original_rectangle_sampling(self, window_id, target_w, target_h):
@@ -9829,16 +9574,13 @@ class PyFCSApp:
         return "break"
 
 
-
     def display_pixel_value(self, x_original, y_original, pixel_lab, is_average=False, selection_info=None, image_id=None):
         """
         Display selected pixel/ROI LAB information in a compact floating info bar.
         Shows coordinates, LAB value, selected prototype and a Image Inspection action.
         Stores pixel/ROI info for Image Inspection.
         """
-        # ---------------------------------------------------------------------
         # Create compact floating info bar only once
-        # ---------------------------------------------------------------------
         if not hasattr(self, "lab_value_frame"):
             BAR_BG = "#ffffff"
             TEXT = "#1f2937"
@@ -9932,9 +9674,7 @@ class PyFCSApp:
             inspection_button.bind("<Leave>", _search_leave)
             inspection_button.pack(side="right", padx=(2, 8), pady=4)
 
-        # ---------------------------------------------------------------------
         # Membership computation
-        # ---------------------------------------------------------------------
         membership_degrees = self.fuzzy_color_space.calculate_membership(pixel_lab)
 
         if membership_degrees:
@@ -9946,9 +9686,7 @@ class PyFCSApp:
             winner_mu = 0.0
             top_memberships = []
 
-        # ---------------------------------------------------------------------
         # Store data for Image Inspection
-        # ---------------------------------------------------------------------
         self._last_pixel_info = {
             "x": x_original,
             "y": y_original,
@@ -9966,9 +9704,7 @@ class PyFCSApp:
             ),
         }
 
-        # ---------------------------------------------------------------------
         # Prepare compact display text
-        # ---------------------------------------------------------------------
         if selection_info and selection_info.get("type") == "roi":
             coord_text = (
                 f"ROI ({selection_info['x1']},{selection_info['y1']})"
@@ -9991,13 +9727,10 @@ class PyFCSApp:
             if len(proto_text) > max_proto_len:
                 proto_text = proto_text[:max_proto_len - 1] + "…"
 
-        # ---------------------------------------------------------------------
         # Update UI
-        # ---------------------------------------------------------------------
         self.coord_value.config(text=coord_text)
         self.lab_value_print.config(text=lab_text)
         self.proto_value_text.config(text=proto_text, fg="#1f2937")
-
 
 
     def _close_image_inspection_window(self):
@@ -10060,14 +9793,6 @@ class PyFCSApp:
         self.open_image_inspection(initial_info=info)
 
 
-
-
-
-
-
-
-
-
     def _safe_hex_from_rgb(self, rgb, default="#cccccc"):
         """Convert an RGB tuple into a safe HEX string."""
         try:
@@ -10105,24 +9830,6 @@ class PyFCSApp:
     def _get_proto_hex(self, label):
         """Return the HEX color for a given prototype label."""
         return self._safe_hex_from_rgb(self._get_proto_rgb(label))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
     def _parse_positive_threshold(self, value):
@@ -10181,21 +9888,6 @@ class PyFCSApp:
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     # ============================================================================================================================================================
     #  COLOR EVALUATION FUNCTIONS
     # ============================================================================================================================================================
@@ -10223,9 +9915,7 @@ class PyFCSApp:
         win.configure(bg="#f2f2f2")
         win.protocol("WM_DELETE_WINDOW", self._on_close_color_evaluation_window)
 
-        # ------------------------------------------------------------------
         # Fullscreen toggle for this specific Toplevel window
-        # ------------------------------------------------------------------
         def toggle_color_evaluation_fullscreen(event=None):
             try:
                 current_state = bool(win.attributes("-fullscreen"))
@@ -10280,7 +9970,6 @@ class PyFCSApp:
         win.after_idle(self._set_color_evaluation_initial_sash)
 
 
-
     def _get_active_dialog_parent(self, fallback=None):
         """
         Return the best parent window for dialogs so they appear above the
@@ -10304,7 +9993,6 @@ class PyFCSApp:
         return self.root
 
 
-
     def _on_close_color_evaluation_window(self):
         """Handle manual closing of the Color Evaluation window."""
         try:
@@ -10316,7 +10004,6 @@ class PyFCSApp:
         finally:
             self._color_evaluation_window = None
             self._color_evaluation_paned = None
-
 
 
     def _set_color_evaluation_initial_sash(self):
@@ -10345,9 +10032,7 @@ class PyFCSApp:
         main = tk.Frame(win, bg="#f2f2f2")
         main.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # =========================
         # Top: Threshold settings
-        # =========================
         refs = self._build_shared_threshold_panel(
             parent=main,
             vars_dict=vars_dict,
@@ -10355,9 +10040,7 @@ class PyFCSApp:
             variant="summary"
         )
 
-        # =========================
         # Color Space Data block
-        # =========================
         table_panel = tk.Frame(main, bg="white", bd=1, relief="solid")
         table_panel.pack(fill="both", expand=True)
 
@@ -10447,9 +10130,7 @@ class PyFCSApp:
             fill="x", padx=12, pady=(0, 7)
         )
 
-        # =========================
         # PanedWindow real
-        # =========================
         paned = tk.PanedWindow(
             table_panel,
             orient="horizontal",
@@ -10468,9 +10149,7 @@ class PyFCSApp:
 
         self._color_evaluation_paned = paned
 
-        # -------------------------
         # Left panel
-        # -------------------------
         list_header = tk.Frame(left_panel, bg="#f6f8fb")
         list_header.pack(fill="x", padx=1, pady=(1, 0))
 
@@ -10580,9 +10259,7 @@ class PyFCSApp:
         rows_canvas.pack(side="left", fill="both", expand=True)
         rows_scroll.pack(side="right", fill="y")
 
-        # -------------------------
         # Right panel
-        # -------------------------
         tk.Label(
             right_panel,
             text="Threshold Analysis",
@@ -10693,9 +10370,7 @@ class PyFCSApp:
             pady=5
         ).pack(fill="x", padx=12, pady=(0, 8))
 
-        # ------------------------------------------------------------------
         # Scrollable analysis body
-        # ------------------------------------------------------------------
         analysis_scroll_container = tk.Frame(right_panel, bg="white")
         analysis_scroll_container.pack(fill="both", expand=True, padx=12, pady=(0, 10))
 
@@ -10743,11 +10418,7 @@ class PyFCSApp:
 
         self._register_vertical_mousewheel_canvas(analysis_canvas)
 
-        # ------------------------------------------------------------------
-        # Selected/comparison color preview -- compact, neutral background.
-        # Keep the swatch backdrop strictly neutral in order not to bias
-        # the perceived sample color.  Existing StringVars/Canvas ids remain.
-        # ------------------------------------------------------------------
+        # Both color previews use the same neutral surround.
         preview_bg = "#f1f1f1"
         preview_border = "#cfcfcf"
         preview_text = "#262626"
@@ -10847,9 +10518,7 @@ class PyFCSApp:
 
         tk.Frame(analysis_body, bg="#d8d8d8", height=1).pack(fill="x", pady=(3, 5))
 
-        # ------------------------------------------------------------------
         # Results + Membership column
-        # ------------------------------------------------------------------
         results_block = tk.Frame(analysis_body, bg="white")
         results_block.pack(fill="both", expand=True)
 
@@ -10870,11 +10539,9 @@ class PyFCSApp:
             padx=(0, 8)
         )
 
-        # --------------------------------------------------
         # Right side column: Membership panel + Graph buttons
         # Hidden by default; shown only when a custom/sample color exists.
         # Membership height will be synchronized with the Results card.
-        # --------------------------------------------------
         right_side_column = tk.Frame(
             results_columns,
             bg="white"
@@ -11001,9 +10668,7 @@ class PyFCSApp:
             pady=(8, 0)
         )
 
-        # ------------------------------------------------------------------
         # Results card
-        # ------------------------------------------------------------------
         tk.Label(
             result_left,
             text="Results",
@@ -11124,9 +10789,7 @@ class PyFCSApp:
         result_card.bind("<Configure>", _sync_membership_height_with_result)
         result_card.after_idle(_sync_membership_height_with_result)
 
-        # ------------------------------------------------------------------
         # Color inspector
-        # ------------------------------------------------------------------
         def _create_color_evaluation_inspector_card(parent):
             """
             Create one Color Inspector card.
@@ -11252,9 +10915,7 @@ class PyFCSApp:
             (full_inspector_preview, full_inspector_preview_rect),
         ]
 
-        # ------------------------------------------------------------------
         # Store references
-        # ------------------------------------------------------------------
         vars_dict["analysis_result_refs"] = {
             "results_columns": results_columns,
             "result_left": result_left,
@@ -11458,10 +11119,8 @@ class PyFCSApp:
             and vars_dict.get("secondary_mode") == "custom"
         )
 
-        # --------------------------------------------------
         # No custom/sample color:
         # hide Membership Degree, keep Graphs on the right.
-        # --------------------------------------------------
         if not has_custom_membership:
             try:
                 # Keep spacer so Graphs starts aligned with the Results card,
@@ -11496,10 +11155,8 @@ class PyFCSApp:
 
             return
 
-        # --------------------------------------------------
         # Custom/sample color active:
         # show Membership Degree above Graphs.
-        # --------------------------------------------------
         try:
             if (
                 membership_title_spacer is not None
@@ -11698,7 +11355,6 @@ class PyFCSApp:
         }
 
 
-
     def _create_color_evaluation_vars(self):
         """Create and return all Tk variables used by the Color Evaluation window."""
         vars_dict = {
@@ -11756,7 +11412,6 @@ class PyFCSApp:
         return self._merge_threshold_vars(vars_dict)
     
 
-
     def _set_color_evaluation_active_action(self, vars_dict, action_key):
         """
         Visually mark the last pressed button in the Threshold Analysis action area.
@@ -11765,8 +11420,7 @@ class PyFCSApp:
 
         buttons = vars_dict.get("analysis_action_buttons", {})
 
-        # All five action buttons share the same neutral style. Only the
-        # active mode is highlighted; Clear remains a one-shot action.
+        # Clear is a one-shot action; only persistent analysis modes are highlighted.
         for key, button in buttons.items():
             try:
                 is_active = key == action_key and key != "clear"
@@ -11806,7 +11460,6 @@ class PyFCSApp:
             self._refresh_color_evaluation_comparison(vars_dict)
 
 
-
     def _get_color_evaluation_threshold_description(self):
         """
         Return a compact textual description of the active threshold settings.
@@ -11818,7 +11471,6 @@ class PyFCSApp:
             threshold_settings=self.threshold_settings,
             include_metric_description=True
         )
-
 
 
     def _load_current_color_space_for_evaluation(self, vars_dict):
@@ -11852,7 +11504,6 @@ class PyFCSApp:
 
         self._update_color_evaluation_space_summary(vars_dict)
         self._render_color_evaluation_cards(vars_dict, loaded["color_data"])
-
 
 
     def _load_external_color_space_for_evaluation(self, vars_dict):
@@ -11905,7 +11556,6 @@ class PyFCSApp:
         self._render_color_evaluation_cards(vars_dict, loaded["color_data"])
 
 
-
     def _calculate_evaluation_memberships(self, vars_dict, sample_lab):
         """
         Compatibility wrapper. Logic lives in ColorEvaluationManager.
@@ -11931,7 +11581,6 @@ class PyFCSApp:
         """
         manager = self._get_color_evaluation_manager()
         return manager.extract_color_space_rows(data_source)
-
 
 
     def _set_custom_color_as_evaluation_comparison(self, vars_dict, sample_lab, sample_rgb, sample_hex):
@@ -11969,7 +11618,7 @@ class PyFCSApp:
 
             for widget in refs["widgets"]:
                 if widget is refs.get("swatch"):
-                    continue  # Keep the sample surround neutral for color assessment.
+                    continue  # Use a neutral surround so the preview does not bias color comparison.
                 try:
                     widget.configure(bg=bg)
                 except Exception:
@@ -12045,9 +11694,7 @@ class PyFCSApp:
         vars_dict["secondary_custom_hex"] = None
         vars_dict["secondary_custom_name"] = "Custom Color"
 
-        # A different color space starts a new analysis context: discard the
-        # highlight of the action previously used with the old color space.
-        # Called only after a new source has been accepted (not on file-dialog cancel).
+        # Reset the active analysis action when a different color space is accepted.
         self._set_color_evaluation_active_action(vars_dict, None)
 
         vars_dict["analysis_mode_var"].set("Select a color from the list.")
@@ -12091,7 +11738,7 @@ class PyFCSApp:
 
                 for widget in refs["widgets"]:
                     if widget is refs.get("swatch"):
-                        continue  # Keep the sample surround neutral for color assessment.
+                        continue  # Use a neutral surround so the preview does not bias color comparison.
                     try:
                         widget.configure(bg=bg)
                     except Exception:
@@ -12180,7 +11827,7 @@ class PyFCSApp:
             content.grid_columnconfigure(2, minsize=245)
             content.grid_columnconfigure(3, weight=1)
 
-            # Larger representative sample, closer to the original table.
+            # Keep color swatches large enough for visual comparison.
             # Its immediate surround stays neutral even when a row is selected,
             # so the blue/lilac row highlighting cannot tint the swatch.
             swatch = tk.Canvas(
@@ -12290,7 +11937,6 @@ class PyFCSApp:
         self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
 
 
-
     def _enable_color_evaluation_comparison_mode(self, vars_dict):
         """Enable comparison mode so clicked colors become comparison colors."""
         primary = vars_dict.get("primary_label")
@@ -12335,7 +11981,7 @@ class PyFCSApp:
 
             for widget in refs["widgets"]:
                 if widget is refs.get("swatch"):
-                    continue  # Keep the sample surround neutral for color assessment.
+                    continue  # Use a neutral surround so the preview does not bias color comparison.
                 try:
                     widget.configure(bg=bg)
                 except Exception:
@@ -12507,10 +12153,6 @@ class PyFCSApp:
         self._update_color_evaluation_graph_buttons(vars_dict)
 
 
-
-
-
-
     def _open_color_evaluation_image_sampler(self, vars_dict):
         """
         Open a compact image sampler for the Color Evaluation window.
@@ -12585,9 +12227,7 @@ class PyFCSApp:
             "sample_hex": None,
         }
 
-        # =====================================================================
         # Main shell
-        # =====================================================================
         outer = tk.Frame(popup, bg="#eeeeee")
         outer.pack(fill="both", expand=True, padx=12, pady=12)
 
@@ -12620,9 +12260,7 @@ class PyFCSApp:
         body = tk.Frame(panel, bg="white")
         body.pack(fill="both", expand=True, padx=14, pady=10)
 
-        # =====================================================================
         # Image selector
-        # =====================================================================
         selector_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
         selector_card.pack(fill="x", pady=(0, 8))
 
@@ -12654,9 +12292,7 @@ class PyFCSApp:
         )
         image_combo.pack(side="left", fill="x", expand=True)
 
-        # =====================================================================
         # Image preview
-        # =====================================================================
         image_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
         image_card.pack(fill="both", expand=True, pady=(0, 8))
 
@@ -12696,9 +12332,7 @@ class PyFCSApp:
             pady=0
         ).pack(fill="x", pady=(0, 8))
 
-        # =====================================================================
         # Sampled color panel
-        # =====================================================================
         sample_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
         sample_card.pack(fill="x", pady=(0, 0))
 
@@ -12769,9 +12403,7 @@ class PyFCSApp:
         )
         use_button.pack(side="right")
 
-        # =====================================================================
         # Bottom buttons
-        # =====================================================================
         footer = tk.Frame(panel, bg="white")
         footer.pack(fill="x", padx=14, pady=(0, 12))
 
@@ -12782,9 +12414,7 @@ class PyFCSApp:
             command=popup.destroy
         ).pack(side="right")
 
-        # =====================================================================
         # Helpers
-        # =====================================================================
         def _get_selected_window_id():
             current_name = selected_image_var.get()
 
@@ -13132,7 +12762,7 @@ class PyFCSApp:
             ):
                 return _image_object_to_pil(self.pil_images_original[window_id])
 
-            # Fallback: reload from original file path if available.
+            # Reload the original file if the in-memory source is unavailable.
             if (
                 hasattr(self, "load_images_names")
                 and window_id in self.load_images_names
@@ -13142,7 +12772,7 @@ class PyFCSApp:
                 with Image.open(self.load_images_names[window_id]) as image_file:
                     return ImageOps.exif_transpose(image_file).convert("RGB")
 
-            # Last fallback only, in case old sessions do not have pil_images_original.
+            # Retain compatibility with image windows lacking an original PIL reference.
             if (
                 hasattr(self, "images")
                 and window_id in self.images
@@ -13338,18 +12968,12 @@ class PyFCSApp:
         _load_selected_image()
 
 
-
-
-
-
     def _get_custom_color_input_mode_help(self, mode):
         """
         Compatibility wrapper. Logic lives in ColorEvaluationManager.
         """
         manager = self._get_color_evaluation_manager()
         return manager.get_custom_color_input_mode_help(mode)
-
-
 
 
     def _open_custom_color_input_dialog(self, vars_dict):
@@ -13387,7 +13011,6 @@ class PyFCSApp:
         )
 
 
-    
     def _open_custom_color_dialog(
         self,
         parent=None,
@@ -13458,9 +13081,7 @@ class PyFCSApp:
 
         state = {"suspend_validation": False}
 
-        # ------------------------------------------------------------------
         # Local styling
-        # ------------------------------------------------------------------
         style = ttk.Style(dialog)
 
         try:
@@ -13481,9 +13102,7 @@ class PyFCSApp:
         except Exception:
             pass
 
-        # ------------------------------------------------------------------
         # Main shell
-        # ------------------------------------------------------------------
         outer = tk.Frame(dialog, bg="#eeeeee")
         outer.pack(fill="both", expand=True, padx=14, pady=14)
 
@@ -13520,9 +13139,7 @@ class PyFCSApp:
         body.grid_columnconfigure(1, weight=0, minsize=16)
         body.grid_columnconfigure(2, weight=1, minsize=235)
 
-        # ------------------------------------------------------------------
         # Left panel
-        # ------------------------------------------------------------------
         left_panel = tk.Frame(body, bg="white")
         left_panel.grid(row=0, column=0, sticky="nsew")
 
@@ -13597,15 +13214,11 @@ class PyFCSApp:
         hex_label = tk.Label(left_panel, text="HEX:", bg="white", anchor="w", font=("Sans", 10))
         hex_entry = tk.Entry(left_panel, textvariable=input_vars["hex_var"], width=23, font=("Sans", 10))
 
-        # ------------------------------------------------------------------
         # Separator
-        # ------------------------------------------------------------------
         separator = tk.Frame(body, bg="#dddddd", width=1)
         separator.grid(row=0, column=1, sticky="ns", padx=10)
 
-        # ------------------------------------------------------------------
         # Right panel
-        # ------------------------------------------------------------------
         right_panel = tk.Frame(body, bg="white", width=270, height=220)
         right_panel.grid(row=0, column=2, sticky="nsew")
         right_panel.grid_propagate(False)
@@ -13707,9 +13320,7 @@ class PyFCSApp:
             width=1
         )
 
-        # ------------------------------------------------------------------
         # Status + buttons
-        # ------------------------------------------------------------------
         footer = tk.Frame(panel, bg="white")
         footer.pack(fill="x", padx=16, pady=(0, 14))
 
@@ -13744,9 +13355,7 @@ class PyFCSApp:
         )
         btn_submit.pack(side="left")
 
-        # ------------------------------------------------------------------
         # Helpers
-        # ------------------------------------------------------------------
         def _clear_numeric_fields():
             input_vars["v1_var"].set("")
             input_vars["v2_var"].set("")
@@ -13958,7 +13567,6 @@ class PyFCSApp:
         _refresh_inputs()
 
 
-
     def _submit_custom_color_input(self, vars_dict, input_vars, dialog):
         """Validate the custom color input and use it as comparison color."""
         ok, message, sample_lab, sample_rgb, sample_hex = self._normalize_custom_color_input(
@@ -13987,7 +13595,6 @@ class PyFCSApp:
             sample_rgb=sample_rgb,
             sample_hex=sample_hex
         )
-
 
 
     def _fill_custom_color_dialog_from_rgb(self, input_vars, rgb):
@@ -14051,9 +13658,7 @@ class PyFCSApp:
         except Exception:
             self.center_popup(popup, WIN_W, WIN_H)
 
-        # ------------------------------------------------------------------
         # Initial HSV from RGB
-        # ------------------------------------------------------------------
         r0, g0, b0 = initial_rgb
         h0, s0, v0 = colorsys.rgb_to_hsv(
             r0 / 255.0,
@@ -14072,9 +13677,7 @@ class PyFCSApp:
         sv_w, sv_h = 385, 215
         hue_w, hue_h = 385, 18
 
-        # ------------------------------------------------------------------
         # Layout
-        # ------------------------------------------------------------------
         main = tk.Frame(popup, bg="#1f2430")
         main.pack(fill="both", expand=True, padx=14, pady=14)
 
@@ -14123,9 +13726,7 @@ class PyFCSApp:
         )
         hue_canvas.pack(pady=(12, 0))
 
-        # ------------------------------------------------------------------
         # Info panel
-        # ------------------------------------------------------------------
         info_frame = tk.Frame(main, bg="#1f2430")
         info_frame.pack(fill="x", pady=(12, 0))
 
@@ -14190,15 +13791,11 @@ class PyFCSApp:
             font=("Consolas", 10)
         ).pack(pady=(0, 5))
 
-        # ------------------------------------------------------------------
         # Buttons
-        # ------------------------------------------------------------------
         button_row = tk.Frame(main, bg="#1f2430")
         button_row.pack(fill="x", pady=(14, 0))
 
-        # ------------------------------------------------------------------
         # Image generation helpers
-        # ------------------------------------------------------------------
         def _clamp(value, low, high):
             return max(low, min(high, value))
 
@@ -14275,9 +13872,7 @@ class PyFCSApp:
 
             return ImageTk.PhotoImage(Image.fromarray(img_array, "RGB"))
 
-        # ------------------------------------------------------------------
         # Canvas items
-        # ------------------------------------------------------------------
         state["hue_photo"] = _build_hue_image_fast()
         state["sv_photo"] = _build_sv_image_fast(state["h"])
 
@@ -14322,9 +13917,7 @@ class PyFCSApp:
             width=2
         )
 
-        # ------------------------------------------------------------------
         # Redraw helpers
-        # ------------------------------------------------------------------
         def _update_info():
             rgb = _get_current_rgb()
             hex_value = _rgb_to_hex(rgb)
@@ -14380,9 +13973,7 @@ class PyFCSApp:
             sv_canvas.itemconfig(sv_image_id, image=state["sv_photo"])
             _redraw_markers_only()
 
-        # ------------------------------------------------------------------
         # Events
-        # ------------------------------------------------------------------
         def _on_sv_event(event):
             x = _clamp(event.x, 0, sv_w - 1)
             y = _clamp(event.y, 0, sv_h - 1)
@@ -14390,7 +13981,6 @@ class PyFCSApp:
             state["s"] = x / max(sv_w - 1, 1)
             state["v"] = 1.0 - (y / max(sv_h - 1, 1))
 
-            # Fast: only move marker and update labels
             _redraw_markers_only()
 
         def _on_hue_event(event):
@@ -14398,7 +13988,6 @@ class PyFCSApp:
 
             state["h"] = x / max(hue_w - 1, 1)
 
-            # Rebuild square only when hue changes
             _redraw_sv_image_and_markers()
 
         sv_canvas.bind("<Button-1>", _on_sv_event)
@@ -14407,9 +13996,7 @@ class PyFCSApp:
         hue_canvas.bind("<Button-1>", _on_hue_event)
         hue_canvas.bind("<B1-Motion>", _on_hue_event)
 
-        # ------------------------------------------------------------------
         # Apply selected color
-        # ------------------------------------------------------------------
         def _select_color():
             rgb = _get_current_rgb()
             hex_value = _rgb_to_hex(rgb)
@@ -14434,7 +14021,6 @@ class PyFCSApp:
         ).pack(side="right")
 
         _redraw_markers_only()
-
 
 
     def _update_color_evaluation_conversion_inspector(
@@ -14559,7 +14145,6 @@ class PyFCSApp:
         return result.get("class_label", "Unavailable"), result.get("class_order", 9)
 
 
-
     def _show_color_evaluation_closest_prototypes(self, vars_dict):
         """
         Rank the 7 closest loaded prototypes using the active metric against the active custom color.
@@ -14661,7 +14246,6 @@ class PyFCSApp:
         )
 
 
-
     def _normalize_custom_color_input(self, input_mode, value_1="", value_2="", value_3="", hex_value=""):
         """
         Compatibility wrapper. Logic lives in ColorEvaluationManager.
@@ -14678,8 +14262,6 @@ class PyFCSApp:
         )
 
 
-
-
     def _get_color_evaluation_volume_limits(self, vars_dict):
         """
         Compatibility wrapper. Logic lives in ColorEvaluationManager.
@@ -14691,7 +14273,6 @@ class PyFCSApp:
             fuzzy_color_space=vars_dict.get("loaded_fuzzy_color_space"),
         )
     
-
 
     def _get_color_evaluation_plot_context(
         self,
@@ -14821,7 +14402,6 @@ class PyFCSApp:
             "ranking": vars_dict.get("closest_ranking") or [],
             "metric_name": metric_name,
         }
-
 
 
     def _open_color_evaluation_3d_plot(self, vars_dict):
@@ -15282,9 +14862,7 @@ class PyFCSApp:
             and vars_dict.get("secondary_custom_hex") is not None
         )
 
-        # --------------------------------------------------
         # Dynamic right-column width
-        # --------------------------------------------------
         if has_custom:
             # Width of the whole right column in custom/sample mode
             right_width = 185
@@ -15330,9 +14908,7 @@ class PyFCSApp:
         except Exception:
             pass
 
-        # --------------------------------------------------
         # Rebuild visible buttons
-        # --------------------------------------------------
         for child in body.winfo_children():
             child.destroy()
 
@@ -15371,17 +14947,6 @@ class PyFCSApp:
                     expand=True,
                     padx=(0, 4) if button_index < len(row_keys) - 1 else (0, 0)
                 )
-
-
-
-
-
-
-
-
-
-
-
 
 
 

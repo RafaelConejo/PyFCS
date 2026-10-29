@@ -4,7 +4,7 @@ import math, numpy as np
 from sklearn.cluster import DBSCAN
 from PIL import Image
 
-### my libraries ###
+# Project modules
 from Source.interface.modules import UtilsTools  
 
 
@@ -31,13 +31,9 @@ class ImageManager:
         self.custom_warning = custom_warning
         self.center_popup = center_popup
 
-    # ------------------------------------------------------------------
     # Simple utilities
-    # ------------------------------------------------------------------
 
-    # Legacy manual color-entry popup removed. Custom color input is now
-    # centralized in PyFCSApp._open_custom_color_dialog().
-
+    
     @staticmethod
     def _pil_to_rgb_uint8(image):
         """Return a uint8 RGB NumPy array from a PIL image, safely handling grayscale/RGBA images."""
@@ -86,6 +82,7 @@ class ImageManager:
         height, width = lab_image.shape[:2]
 
         lab_int = np.round(lab_image.reshape(-1, 3) * 100.0).astype(np.int32)
+        # Evaluate each quantized LAB value once and map results back to pixels.
         uniq, inv = np.unique(lab_int, axis=0, return_inverse=True)
 
         values_for_uniq = np.empty((uniq.shape[0],), dtype=np.float32)
@@ -288,9 +285,6 @@ class ImageManager:
         return UtilsTools._apply_alpha_to_rgb_array(recolored_rgb, final_alpha)
 
 
-
-
-
     def get_fcs_image(
         self,
         image,
@@ -328,9 +322,6 @@ class ImageManager:
         if image is None:
             return []
 
-        # ------------------------------------------------------------
-        # Convert input to RGB PIL image
-        # ------------------------------------------------------------
         try:
             if isinstance(image, Image.Image):
                 pil_img = image.convert("RGBA") if "A" in image.getbands() else image.convert("RGB")
@@ -355,9 +346,6 @@ class ImageManager:
         original_w, original_h = pil_img.size
         original_pixels = max(1, original_w * original_h)
 
-        # ------------------------------------------------------------
-        # Resize only for detection
-        # ------------------------------------------------------------
         scale_by_side = 1.0
         if max_side is not None and max_side > 0:
             scale_by_side = min(1.0, float(max_side) / float(max(original_w, original_h)))
@@ -379,16 +367,12 @@ class ImageManager:
 
             pil_img = pil_img.resize((new_w, new_h), resample_filter)
 
-        # ------------------------------------------------------------
-        # RGB -> LAB
-        # ------------------------------------------------------------
         img_np = np.asarray(pil_img, dtype=np.uint8)
 
         if img_np.ndim == 2:
             img_np = np.stack([img_np, img_np, img_np], axis=-1)
         elif img_np.ndim == 3 and img_np.shape[-1] == 4:
-            # Fully invisible RGB values are not visible colors. For resized
-            # RGBA images BOX/PIL handles the alpha-weighted color averaging.
+            # Only visible pixels contribute to the detected color clusters.
             visible = img_np[..., 3] > 0
             img_np = img_np[..., :3][visible]
         elif img_np.ndim == 3 and img_np.shape[-1] > 3:
@@ -405,22 +389,19 @@ class ImageManager:
         if total_pixels == 0:
             return []
 
-        # ------------------------------------------------------------
         # Safety pixel cap after resize
-        # ------------------------------------------------------------
         if max_pixels is not None and max_pixels > 0 and total_pixels > max_pixels:
-            # Deterministic sampling to avoid random UI behavior
+            # Sample uniformly and deterministically for repeatable detection.
             idx = np.linspace(0, total_pixels - 1, int(max_pixels), dtype=np.int64)
             pixels = pixels[idx]
             total_pixels = pixels.shape[0]
 
-        # ------------------------------------------------------------
         # Quantize LAB and group repeated/similar values
-        # ------------------------------------------------------------
         q = max(0.05, float(lab_quantization))
 
         lab_q = np.round(pixels / q).astype(np.int32)
 
+        # Cluster weighted LAB bins rather than every image pixel.
         unique_lab_q, counts = np.unique(
             lab_q,
             axis=0,
@@ -432,14 +413,12 @@ class ImageManager:
         if unique_pixels.shape[0] == 0:
             return []
 
-        # ------------------------------------------------------------
         # DBSCAN on unique LAB values using sample weights
-        # ------------------------------------------------------------
         eps = max(0.05, 1.5 - float(threshold))
 
         effective_min_samples = max(5, int(min_samples))
 
-        # Avoid impossible min_samples on small sampled images
+        # Limit density requirements for small images.
         effective_min_samples = min(
             effective_min_samples,
             max(5, int(total_pixels * 0.10))
@@ -456,7 +435,7 @@ class ImageManager:
                 sample_weight=counts
             )
         except MemoryError:
-            # Last-resort fallback: coarser quantization and fewer points
+            # Retry with coarser LAB bins if clustering exceeds available memory.
             q = max(q * 2.0, 2.0)
             lab_q = np.round(pixels / q).astype(np.int32)
 
@@ -473,9 +452,6 @@ class ImageManager:
                 sample_weight=counts
             )
 
-        # ------------------------------------------------------------
-        # Extract representative colors
-        # ------------------------------------------------------------
         colors_found = []
 
         for label in set(labels):
@@ -493,14 +469,12 @@ class ImageManager:
             if cluster_pixels.shape[0] == 0:
                 continue
 
-            # Weighted centroid in LAB
             mean_color_lab = np.average(
                 cluster_pixels,
                 axis=0,
                 weights=cluster_weights
             )
 
-            # Convert LAB -> RGB
             mean_color_rgb = color.lab2rgb([[mean_color_lab]])
             mean_color_rgb = np.clip(mean_color_rgb[0, 0] * 255.0, 0, 255)
             mean_color_rgb = np.round(mean_color_rgb).astype(int)
@@ -514,7 +488,7 @@ class ImageManager:
         # Sort by cluster size, largest colors first
         colors_found.sort(key=lambda item: item.get("weight", 0), reverse=True)
 
-        # Keep previous external format clean
+        # Return the public RGB/LAB fields without internal cluster weights.
         return [
             {
                 "rgb": item["rgb"],

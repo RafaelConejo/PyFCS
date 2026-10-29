@@ -21,7 +21,7 @@ class ImageInspectionManager:
     - Navigate through workspace images and temporary external images.
     - Keep membership degrees independent from comparison metric/threshold.
     - Preserve the most-similar fuzzy prototype while allowing another
-      membership row to be selected for detailed comparison.
+        membership row to be selected for detailed comparison.
     - Maintain independent zoom/pan/sample state per image.
     """
 
@@ -59,7 +59,7 @@ class ImageInspectionManager:
         self.win.minsize(1120, 700)
         self.win.protocol("WM_DELETE_WINDOW", self.close)
 
-        # Non-modal on purpose: this is an inspection workspace.
+        # Inspection remains open while the main application is in use.
         try:
             self.win.transient(self.root)
         except Exception:
@@ -80,6 +80,7 @@ class ImageInspectionManager:
         self._current_sample = None
         self._selected_proto_label = None
         self._membership_rows = {}
+        # Reuse these row widgets as the sampled pixel changes in Live mode.
         self._membership_controls = {}
         self._pinned_samples = []
 
@@ -104,9 +105,7 @@ class ImageInspectionManager:
         self.win.after(50, self._render_image)
         self.win.focus_set()
 
-    # ======================================================================
-    # WINDOW / BASIC STATE
-    # ======================================================================
+    # Window / Basic State
     def _maximize_window(self):
         try:
             if platform.system() == "Windows":
@@ -167,8 +166,7 @@ class ImageInspectionManager:
         self.sample_rgb_var = tk.StringVar(value="RGB: —")
         self.sample_hex_var = tk.StringVar(value="HEX: —")
 
-        # Optional LAB filters used only when a dragged ROI is summarized.
-        # Single-pixel and Live inspection always preserve the exact pixel.
+        # ROI filters do not alter single-pixel or Live measurements.
         self.filter_l_min_enabled = tk.BooleanVar(value=False)
         self.filter_l_max_enabled = tk.BooleanVar(value=False)
         self.filter_a_min_enabled = tk.BooleanVar(value=False)
@@ -209,9 +207,7 @@ class ImageInspectionManager:
         self.threshold_upper_var = tk.StringVar(value="" if s.get("upper") is None else str(s.get("upper")))
         self.metric_help_var = tk.StringVar(value=self.manager.get_metric_description(self.metric_var.get()))
 
-    # ======================================================================
-    # UI BUILDING
-    # ======================================================================
+    # UI Building
     def _card(self, parent, title=None, padx=10, pady=10):
         if title:
             return tk.LabelFrame(
@@ -271,7 +267,6 @@ class ImageInspectionManager:
         inner = tk.Frame(header, bg=self.CARD)
         inner.pack(fill="x", padx=12, pady=7)
 
-        # Title
         tk.Label(
             inner,
             text="Image Inspection",
@@ -281,7 +276,6 @@ class ImageInspectionManager:
             anchor="w",
         ).pack(side="left", padx=(2, 18))
 
-        # Image navigation in the same bar.
         tk.Label(
             inner,
             text="Image:",
@@ -450,7 +444,6 @@ class ImageInspectionManager:
             cursor="hand2",
         ).pack(side="left", padx=(0, 10))
 
-        # Right group: Fit immediately to the left of Zoom.
         right_controls = tk.Frame(controls, bg=self.CARD)
         right_controls.pack(side="right")
 
@@ -484,7 +477,6 @@ class ImageInspectionManager:
             anchor="w",
         ).pack(side="left", padx=(4, 0))
 
-        # Compact contextual help in the free space between Pin Sample and Fit.
         tk.Label(
             controls,
             textvariable=self.inspection_help_var,
@@ -567,8 +559,7 @@ class ImageInspectionManager:
         row = tk.Frame(card, bg=self.CARD)
         row.pack(fill="x")
 
-        # Keep the card narrow: the central block uses vertical space for ROI
-        # metadata, while LAB/RGB/HEX remain aligned on the right.
+        # Reserve space for ROI metadata without displacing the color values.
         row.columnconfigure(1, weight=1)
         row.columnconfigure(2, weight=0, minsize=150)
 
@@ -880,17 +871,13 @@ class ImageInspectionManager:
         )
         self.details_label.pack(fill="x", padx=10, pady=9)
 
-    # ======================================================================
-    # SOURCES / NAVIGATION
-    # ======================================================================
+    # Sources / Navigation
     def _load_workspace_sources(self):
         load_names = getattr(self.app, "load_images_names", {}) or {}
         originals = getattr(self.app, "pil_images_original", {}) or {}
         active_workspace_keys = {f"workspace:{window_id}" for window_id in load_names}
 
-        # Remove main-workspace images that were closed after Image Inspection
-        # was opened. Temporary local images remain available until this window
-        # closes.
+        # Discard closed workspace sources, but keep images opened locally.
         stale_keys = [
             key for key in self._source_order
             if key.startswith("workspace:") and key not in active_workspace_keys
@@ -931,8 +918,7 @@ class ImageInspectionManager:
 
         self._rebuild_source_combo()
         if stale_keys:
-            # Keep the pinned measurement as a record, but make its missing
-            # image explicit and prohibit restoring it onto a different image.
+            # Keep pins for closed images but do not restore them onto other sources.
             self._refresh_pin_tree()
 
         if self.current_source_key not in self._sources:
@@ -1097,9 +1083,7 @@ class ImageInspectionManager:
         self._rebuild_source_combo()
         self._switch_source(key, restore_sample=True)
 
-    # ======================================================================
-    # IMAGE VIEW / COORDINATE TRANSFORM
-    # ======================================================================
+    # Image View / Coordinate Transform
     def _current_pil(self):
         src = self._sources.get(self.current_source_key)
         if not src:
@@ -1294,9 +1278,7 @@ class ImageInspectionManager:
         self.image_canvas.configure(cursor="crosshair")
         return "break"
 
-    # ======================================================================
-    # LAB FILTERS
-    # ======================================================================
+    # LAB Filters
     def _lab_filter_bindings(self):
         return {
             "L_min": (self.filter_l_min_enabled, self.filter_l_min_var),
@@ -1397,9 +1379,7 @@ class ImageInspectionManager:
             )
 
 
-    # ======================================================================
-    # SAMPLE INSPECTION
-    # ======================================================================
+    # Sample Inspection
     def _on_inspection_mode_changed(self, _event=None):
         display = self.inspection_mode_display_var.get().strip() or "Inspect"
         mode = display.lower()
@@ -1451,8 +1431,7 @@ class ImageInspectionManager:
 
         self._roi_drag_current = point
 
-        # Only start drawing a ROI once the pointer has moved enough to count
-        # as an intentional drag. This avoids showing a rectangle on a click.
+        # Require a minimum canvas movement before starting an ROI selection.
         start_canvas = self._inspect_drag_start_canvas
         if start_canvas is not None:
             dx = abs(event.x - start_canvas[0])
@@ -1478,8 +1457,7 @@ class ImageInspectionManager:
             self._render_image()
             return "break"
 
-        # Use screen/canvas movement rather than image-pixel movement so the
-        # click-vs-drag threshold behaves consistently at every zoom level.
+        # Canvas-distance thresholds remain consistent across zoom levels.
         if start_canvas is None:
             is_drag = False
         else:
@@ -1819,9 +1797,7 @@ class ImageInspectionManager:
         except Exception:
             pass
 
-    # ======================================================================
-    # MEMBERSHIP / PROTOTYPE / COMPARISON
-    # ======================================================================
+    # Membership / Prototype / Comparison
     def _clear_membership_rows(self):
         for child in self.membership_inner.winfo_children():
             child.destroy()
@@ -1844,8 +1820,7 @@ class ImageInspectionManager:
             ).pack(fill="x", padx=5, pady=8)
             return
 
-        # Live mode updates many times a second. Reuse the Tk widgets when
-        # the prototype set has not changed; only μ and row order change.
+        # Reuse membership rows during Live inspection to avoid rebuilding Tk widgets.
         labels = [label for label, _mu in memberships]
         if len(set(labels)) == len(labels) and set(labels) == set(self._membership_rows):
             for label, mu in memberships:
@@ -1988,7 +1963,7 @@ class ImageInspectionManager:
         summary = str(evaluation.get("summary_visual", evaluation.get("summary", ""))).strip()
         if summary:
             lines = summary.splitlines()
-            # The first line repeats the result label; details should contain only breakdown.
+            # Omit the repeated status line from the detailed comparison.
             detail = "\n".join(lines[1:]).strip()
         else:
             detail = ""
@@ -2033,9 +2008,7 @@ class ImageInspectionManager:
             self.details_button_var.set("Show detailed comparison ▾")
             self.details_frame.pack_forget()
 
-    # ======================================================================
-    # THRESHOLD / METRIC SETTINGS
-    # ======================================================================
+    # Threshold / Metric Settings
     def _on_metric_family_changed(self, _event=None):
         metrics = self.manager.get_metrics_for_family(self.metric_family_var.get())
         self.metric_combo.configure(values=metrics)
@@ -2146,9 +2119,7 @@ class ImageInspectionManager:
         self.metric_help_var.set(self.manager.get_metric_description(self.metric_var.get()))
         self._refresh_comparison_result()
 
-    # ======================================================================
-    # PINNED SAMPLES
-    # ======================================================================
+    # Pinned Samples
     def _pin_current_sample(self):
         if not self._current_sample:
             return

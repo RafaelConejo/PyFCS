@@ -61,6 +61,7 @@ class ImageBasedCreationManager:
         self._display_to_key = {}
         self._key_to_display = {}
         self.current_source_key = None
+        # Zoom and pan positions are stored separately for each image.
         self._view_state = {}
         self._external_counter = 0
 
@@ -87,14 +88,11 @@ class ImageBasedCreationManager:
         self._build_ui()
         self._load_workspace_sources(select_first=True)
 
-        # When Image-Based Creation was launched without an existing workspace
-        # image, open a local image picker after the window has been created.
-        # Images opened here remain private to this creation workspace and are
-        # not added to the main Image Display.
+        # Open a private image picker if the creation workspace starts empty.
         if open_image_on_start and not self._source_order:
             self.win.after(120, self._open_workspace_image)
 
-        # Let the main application track this as the active creation workflow.
+        # Register the active creation window with the main application.
         try:
             self.app._register_creation_window(self.win)
         except Exception:
@@ -104,9 +102,7 @@ class ImageBasedCreationManager:
         self.win.after(80, self._render_image)
         self.win.focus_set()
 
-    # ======================================================================
-    # WINDOW / STATE
-    # ======================================================================
+    # Window / State
     def _configure_window_size(self):
         """Open the creation workspace as a normal centered window."""
         width = 1200
@@ -163,9 +159,7 @@ class ImageBasedCreationManager:
         self.threshold_text_var = tk.StringVar(value="Threshold: 0.50")
         self.detection_status_var = tk.StringVar(value="")
 
-        # Optional LAB filters shared by automatic detection and manual ROI sampling.
-        # Disabled by default, so the original behavior remains unchanged until
-        # the user explicitly enables one or more limits.
+        # LAB limits are optional and shared by ROI sampling and detection.
         self.filter_l_min_enabled = tk.BooleanVar(value=False)
         self.filter_l_max_enabled = tk.BooleanVar(value=False)
         self.filter_a_min_enabled = tk.BooleanVar(value=False)
@@ -181,9 +175,7 @@ class ImageBasedCreationManager:
         self.filter_b_max_var = tk.StringVar(value="128.0")
         self.filter_summary_var = tk.StringVar(value="No filters applied")
 
-    # ======================================================================
-    # UI BUILDING
-    # ======================================================================
+    # UI Building
     def _card(self, parent, title=None, padx=10, pady=10):
         if title:
             return tk.LabelFrame(
@@ -381,8 +373,7 @@ class ImageBasedCreationManager:
         self.mode_combo.pack(side="left", padx=(7, 6))
         self.mode_combo.bind("<<ComboboxSelected>>", self._on_mode_changed)
 
-        # LAB filters are shared by both extraction modes. In Manual mode they
-        # are applied pixel-by-pixel before computing the mean of a dragged ROI.
+        # Filter ROI pixels before calculating their mean color.
         self.filters_button = tk.Button(
             left_controls,
             text="Filters...",
@@ -488,7 +479,6 @@ class ImageBasedCreationManager:
             anchor="w",
         ).pack(fill="x", pady=(2, 0))
 
-        # Only shown for ROI samples when one or more LAB filters are active.
         tk.Label(
             info,
             textvariable=self.sample_filters_var,
@@ -736,16 +726,13 @@ class ImageBasedCreationManager:
 
         self._refresh_color_list()
 
-    # ======================================================================
-    # IMAGE SOURCES / NAVIGATION
-    # ======================================================================
+    # Image Sources / Navigation
     def _load_workspace_sources(self, select_first=False):
         previous_keys = set(self._source_order)
         load_names = getattr(self.app, "load_images_names", {}) or {}
         active_workspace_keys = {f"workspace:{window_id}" for window_id in load_names}
 
-        # Remove workspace images that were closed in the main application.
-        # Local images opened inside this manager are intentionally preserved.
+        # Remove closed workspace images while retaining locally opened sources.
         stale_keys = [
             key for key in self._source_order
             if key.startswith("workspace:") and key not in active_workspace_keys
@@ -927,9 +914,7 @@ class ImageBasedCreationManager:
         pil = src.get("pil")
         return pil if isinstance(pil, Image.Image) else None
 
-    # ======================================================================
-    # IMAGE RENDERING / VIEWPORT
-    # ======================================================================
+    # Image Rendering / Viewport
     @staticmethod
     def _clamp(value, low, high):
         return max(low, min(high, value))
@@ -1006,8 +991,7 @@ class ImageBasedCreationManager:
         draw_h = max(1, min(ch, int(round(crop.height * display_scale))))
         resized = crop.resize((draw_w, draw_h), Image.Resampling.LANCZOS)
 
-        # While automatic detection is running, show a lightly pixelated
-        # preview to signal that the image is being processed without hiding it.
+        # A pixelated preview indicates that automatic detection is running.
         if self._detection_running:
             pixel_w = max(1, draw_w // 5)
             pixel_h = max(1, draw_h // 5)
@@ -1137,9 +1121,7 @@ class ImageBasedCreationManager:
         self.image_canvas.configure(cursor="crosshair")
         return "break"
 
-    # ======================================================================
-    # MANUAL SAMPLING
-    # ======================================================================
+    # Manual Sampling
     def _on_mode_changed(self, _event=None):
         mode = self.mode_var.get().strip().lower()
 
@@ -1284,9 +1266,7 @@ class ImageBasedCreationManager:
 
         rgb_pixels = rgba[..., :3][visible].astype(np.float32)
 
-        # Apply the same active LAB limits used by automatic detection, but here
-        # pixel-by-pixel BEFORE computing the ROI mean. This is especially useful
-        # for excluding highlights, dark areas or unwanted chromatic regions.
+        # Apply LAB limits to individual pixels before averaging the ROI.
         mean_rgb_arr, used_count = self._mean_rgb_with_active_lab_filters(rgb_pixels)
 
         if used_count <= 0 or mean_rgb_arr is None:
@@ -1295,7 +1275,7 @@ class ImageBasedCreationManager:
                 "No pixels in the selected area satisfy the active LAB filters.",
                 parent=self.win,
             )
-            # Do not leave a stale mean color visible after filters changed.
+            # Invalidate the previous ROI result when its filter settings change.
             self._clear_current_sample()
             self._render_image()
             return
@@ -1442,9 +1422,7 @@ class ImageBasedCreationManager:
             source=source.get("name", "Image"),
         )
 
-    # ======================================================================
-    # AUTOMATIC DETECTION
-    # ======================================================================
+    # Automatic Detection
     def _update_threshold_label(self):
         self.threshold_text_var.set(f"Threshold: {self.threshold_var.get():.2f}")
 
@@ -1701,7 +1679,7 @@ class ImageBasedCreationManager:
         if not self._validate_detection_filters(parent=self.win):
             return
 
-        # Retain transparency: fully invisible RGB pixels must not be detected.
+        # Ignore fully transparent pixels during color detection.
         detection_img = pil.copy()
         threshold = float(self.threshold_var.get())
         min_samples = int(self.min_samples_var.get())
@@ -1796,9 +1774,7 @@ class ImageBasedCreationManager:
             parent=self.win,
         )
 
-    # ======================================================================
-    # SELECTED COLORS
-    # ======================================================================
+    # Selected Colors
     def _next_unique_name(self, base):
         return UtilsTools.make_unique_color_name(base, self.colors.keys())
 
@@ -2181,7 +2157,7 @@ class ImageBasedCreationManager:
 
 
     def _create_color_space(self):
-        # Preserve the last typed name even if Create is pressed immediately.
+        # Commit pending name edits before constructing the FCS.
         if not self._commit_pending_color_names():
             return
 

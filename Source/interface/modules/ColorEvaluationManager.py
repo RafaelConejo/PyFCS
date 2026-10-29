@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from scipy.spatial import distance
 
-### my libraries ###
+# Project modules
 from Source.geometry.Point import Point
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 
@@ -59,10 +59,7 @@ class ColorEvaluationManager:
     }
 
     def __init__(self, output_dir=None):
-        # ``output_dir`` is normally supplied by PyFCSApp through
-        # UtilsTools.get_runtime_temp_dir("threshold_results", create=False).
-        # Keep the
-        # manager usable on its own without recreating a legacy development-output folder.
+        # Use the runtime output directory even when the manager is instantiated separately.
         if output_dir is None:
             try:
                 import Source.interface.modules.UtilsTools as UtilsTools
@@ -72,9 +69,7 @@ class ColorEvaluationManager:
 
         self.output_dir = os.path.abspath(output_dir)
 
-    # ============================================================================================================================================================
-    #  CSV / VOLUME FILTERING
-    # ============================================================================================================================================================
+    # CSV / Volume Filtering
     def create_csv(self, file_base_name, volume_limits, mode=None):
         csv_data = []
 
@@ -94,8 +89,7 @@ class ColorEvaluationManager:
         df = pd.DataFrame(csv_data)
         suffix = f"_{mode}" if mode else ""
         csv_name = f"{os.path.basename(file_base_name)}_limits{suffix}.csv"
-        # Create the folder lazily: simply launching PyFCS should not leave an
-        # empty threshold-results directory behind.
+        # Create the output directory only when a CSV is written.
         os.makedirs(self.output_dir, exist_ok=True)
         csv_path = os.path.join(self.output_dir, csv_name)
         df.to_csv(csv_path, index=False, encoding="utf-8-sig", sep=";")
@@ -114,6 +108,7 @@ class ColorEvaluationManager:
         for idx, prototype in enumerate(selected_volume):
             positive = np.array(prototype.positive, dtype=float)
             points_within_threshold = []
+            # Visit candidate LAB points in order of proximity to the representative.
             heap = [(0, tuple(np.round(positive, 2)))]
             visited = set()
             consecutive_failures = 0
@@ -165,9 +160,7 @@ class ColorEvaluationManager:
 
         return filtered_points, volume_limits
 
-    # ============================================================================================================================================================
-    #  METRIC LISTS / SETTINGS
-    # ============================================================================================================================================================
+    # Metric Lists / Settings
     @classmethod
     def get_default_threshold_settings(cls):
         return dict(cls.DEFAULT_THRESHOLD_SETTINGS)
@@ -230,6 +223,7 @@ class ColorEvaluationManager:
             metric = "CIEDE2000"
 
         settings["metric_family"] = family
+        # Keep the metric and threshold family consistent after normalization.
         settings["metric"] = metric
         return settings
 
@@ -258,9 +252,7 @@ class ColorEvaluationManager:
         }
         return descriptions.get(metric, "Color difference metric.")
 
-    # ============================================================================================================================================================
-    #  THRESHOLD VALIDATION / TEXTS
-    # ============================================================================================================================================================
+    # Threshold Validation / Texts
     @staticmethod
     def parse_positive_threshold(value):
         if value is None:
@@ -328,9 +320,7 @@ class ColorEvaluationManager:
         base = f"Metric: {title}\nThresholds -> {detail} | {extra}"
         return f"{base}\n{metric_note}" if metric_note else base
 
-    # ============================================================================================================================================================
-    #  COLOR CONVERSION / COMPONENTS
-    # ============================================================================================================================================================
+    # Color Conversion / Components
     @staticmethod
     def _safe_lab_array(lab):
         arr = np.asarray(lab, dtype=float).reshape(-1)
@@ -382,9 +372,7 @@ class ColorEvaluationManager:
             L_percent, C_percent, H_percent
         """
 
-        # MATLAB equivalent:
-        # LABREF = prototype_lab
-        # LAB    = sample_lab
+        # The prototype is the reference; the sample is the measured color.
         L, a, b = ColorEvaluationManager._safe_lab_array(prototype_lab)
         Ls, a_s, b_s = ColorEvaluationManager._safe_lab_array(sample_lab)
 
@@ -500,8 +488,7 @@ class ColorEvaluationManager:
         L1, a1, b1 = ColorEvaluationManager._safe_lab_array(sample_lab)
         L2, a2, b2 = ColorEvaluationManager._safe_lab_array(prototype_lab)
         dL, da, db = float(L1 - L2), float(a1 - a2), float(b1 - b2)
-        # Conventional CIELCh(ab) components (these are the quantities
-        # denoted by C*, h° and H*; CIEDE2000 uses separate primed values).
+        # Report conventional CIELCh components; CIEDE2000 uses separate primed values.
         C1 = float(np.hypot(a1, b1))
         C2 = float(np.hypot(a2, b2))
         dC = C1 - C2
@@ -513,8 +500,7 @@ class ColorEvaluationManager:
             dh = 0.0
         dH = float(2.0 * np.sqrt(C1 * C2) * np.sin(np.radians(dh / 2.0)))
 
-        # The primed values are retained for comparisons that specifically
-        # need CIEDE2000's chroma correction, but not substituted for CIELCh.
+        # Retain primed components separately for CIEDE2000-specific analysis.
         C_avg = (C1 + C2) / 2.0
         G = 0.5 * (1.0 - np.sqrt(C_avg**7 / (C_avg**7 + 25.0**7)))
         a1p, a2p = (1.0 + G) * a1, (1.0 + G) * a2
@@ -549,13 +535,7 @@ class ColorEvaluationManager:
         }
 
 
-
-
-
-
-    # ============================================================================================================================================================
-    #  METRIC COMPUTATION
-    # ============================================================================================================================================================
+    # Metric Computation
     @staticmethod
     def delta_e_ciede2000(lab1, lab2):
         L1, a1, b1 = lab1
@@ -629,6 +609,7 @@ class ColorEvaluationManager:
             return float(cls.delta_e_ciede2000(sample_lab, prototype_lab))
         if metric == "CIE76":
             return float(cls.delta_e_cie76(sample_lab, prototype_lab))
+        # For asymmetric metrics, the prototype must be the reference color.
         if metric == "CIE94 Graphic Arts":
             return float(cls.delta_e_cie94(prototype_lab, sample_lab, application="graphic arts"))
         if metric == "CIE94 Textiles":
@@ -731,9 +712,7 @@ class ColorEvaluationManager:
 
         return "\n".join(lines)
 
-    # ============================================================================================================================================================
-    #  EVALUATION / CLASSIFICATION
-    # ============================================================================================================================================================
+    # Evaluation / Classification
     @classmethod
     def _classify_metric_value(cls, value, threshold_settings):
         if value is None:
@@ -742,9 +721,7 @@ class ColorEvaluationManager:
         mode = settings.get("mode", "default")
 
         if mode == "default":
-            # The PyFCS PT/AT presets are defined for CIEDE2000 only.
-            # In particular, degrees, RGB channel distances and ΔE94/CMC do
-            # not share the numerical scale of those perceptual thresholds.
+            # PT/AT presets apply only to CIEDE2000; other metrics need custom limits.
             if settings["metric"] != "CIEDE2000":
                 return {"status": "unavailable", "label": "Custom threshold required", "order": 9}
             preset = settings.get("preset", "pt_at")
@@ -783,7 +760,7 @@ class ColorEvaluationManager:
         try:
             settings = cls.normalize_threshold_settings(threshold_settings)
             metric = cls.normalize_metric_name(metric or settings.get("metric", "CIEDE2000"))
-            settings["metric"] = metric  # Classification must use the metric actually evaluated.
+            settings["metric"] = metric  # Classify using the effective metric, not the stored default.
             value = cls.calculate_metric_value(sample_lab, prototype_lab, metric)
             classification = cls._classify_metric_value(value, settings)
             detail = cls.format_metric_value(value, metric)
@@ -821,9 +798,7 @@ class ColorEvaluationManager:
                 "components": {},
             }
 
-    # ============================================================================================================================================================
-    #  COLOR SPACE / MEMBERSHIP / RANKING HELPERS
-    # ============================================================================================================================================================
+    # Color Space / Membership / Ranking Helpers
     @staticmethod
     def extract_color_space_rows(data_source):
         rows = []
@@ -868,7 +843,7 @@ class ColorEvaluationManager:
                     continue
                 ranking.append({
                     "label": label,
-                    "delta_e": float(metric_value),       # kept for existing plots
+                    "delta_e": float(metric_value),       # Retained for existing ranking plots.
                     "metric_value": float(metric_value),
                     "class_label": evaluation.get("class_label", "Unavailable"),
                     "class_order": evaluation.get("class_order", 9),
@@ -880,7 +855,6 @@ class ColorEvaluationManager:
         ranking.sort(key=lambda item: item["metric_value"])
         return ranking[:top_n]
     
-
 
     @staticmethod
     def status_from_class_order(class_order):
@@ -1012,7 +986,6 @@ class ColorEvaluationManager:
                 "status": status,
             })
 
-        # Dynamic widths
         index_w = max(len("#"), len(str(len(rows))))
         prototype_w = max(
             len("Prototype"),
@@ -1085,9 +1058,7 @@ class ColorEvaluationManager:
 
         return summary
 
-    # ============================================================================================================================================================
-    #  GUI-INDEPENDENT COLOR EVALUATION HELPERS
-    # ============================================================================================================================================================
+    # Gui-Independent Color Evaluation Helpers
     @classmethod
     def get_threshold_display_maps(cls):
         """Return display maps used by threshold UIs."""

@@ -50,9 +50,9 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-# If a Windows .ico is present, PyInstaller will use it. Otherwise the EXE is
-# generated with the default executable icon; PyFCS still uses logo.png inside
-# the running Tk window.
+# If a Windows .ico is present, PyInstaller will use it. 
+# Otherwise the EXE is generated with the default executable icon; 
+# PyFCS still uses logo.png inside the running Tk window.
 exe_icon = os.path.join(icon_dir, 'logo.ico')
 if not os.path.isfile(exe_icon):
     exe_icon = None

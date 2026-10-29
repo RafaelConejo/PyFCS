@@ -3,7 +3,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import plotly.graph_objects as go
 import plotly.express as px
 
-### my libraries ###
+# Project modules
 from Source.geometry.Point import Point
 
 
@@ -38,12 +38,10 @@ It provides:
 
 
 class VisualManager:
-    # Shared flag that can be used to control legend duplication across traces.
+    # Shared legend setting for plot traces.
     SHOW_LEGENDS = True
 
-    # ============================================================================================================================================================
-    #  GEOMETRY / COLOR HELPERS
-    # ============================================================================================================================================================
+    # Geometry / Color Helpers
 
     @staticmethod
     def clip_face_to_volume(vertices, volume_limits):
@@ -72,6 +70,7 @@ class VisualManager:
             dtype=float,
         )
 
+        # Clamp vertices for display; this does not close clipped polytopes.
         return np.clip(vertices_array, lower_bounds, upper_bounds)
 
 
@@ -194,9 +193,7 @@ class VisualManager:
         return item.get("metric_value", item.get("delta_e"))
 
 
-    # ============================================================================================================================================================
-    #  EMBEDDED MATPLOTLIB 3D MODEL
-    # ============================================================================================================================================================
+    # Embedded Matplotlib 3D Model
 
     @staticmethod
     def plot_combined_3D(
@@ -241,9 +238,7 @@ class VisualManager:
                 if points:
                     filtered_points_arrays[proto_name] = np.asarray(points, dtype=float)
 
-        # ------------------------------------------------------------------
         # Representative points
-        # ------------------------------------------------------------------
         if "Representative" in selected_options and isinstance(color_data, dict):
             lab_values = [value["positive_prototype"] for value in color_data.values()]
 
@@ -267,9 +262,7 @@ class VisualManager:
                     depthshade=False,
                 )
 
-        # ------------------------------------------------------------------
         # Fuzzy volumes and filtered points
-        # ------------------------------------------------------------------
         for option in ("0.5-cut", "Core", "Support"):
             if option not in selected_options:
                 continue
@@ -353,9 +346,6 @@ class VisualManager:
                     depthshade=False,
                 )
 
-        # ------------------------------------------------------------------
-        # Axes
-        # ------------------------------------------------------------------
         ax.set_xlabel("a* (Green-Red)", fontsize=10, labelpad=10)
         ax.set_ylabel("b* (Blue-Yellow)", fontsize=10, labelpad=10)
         ax.set_zlabel("L* (Lightness)", fontsize=10, labelpad=10)
@@ -443,9 +433,7 @@ class VisualManager:
         return ax_inset
 
 
-    # ============================================================================================================================================================
-    #  GENERAL INTERACTIVE PLOTLY 3D MODEL
-    # ============================================================================================================================================================
+    # General Interactive Plotly 3D Model
 
     @staticmethod
     def plot_more_combined_3D(
@@ -485,9 +473,7 @@ class VisualManager:
 
         title_text = str(filename).split("|")[0].strip()
 
-        # ------------------------------------------------------------------
         # Normalize layer names.
-        # ------------------------------------------------------------------
         def _normalize_option(option):
             text = str(option).strip().lower()
 
@@ -513,13 +499,7 @@ class VisualManager:
         custom_lab = VisualManager._safe_lab(custom_lab)
         closest_lab = VisualManager._safe_lab(closest_lab)
 
-        # ------------------------------------------------------------------
-        # Robust closest prototype resolution.
-        #
-        # If custom_lab exists but closest_lab was not provided, infer it:
-        #   1) from closest_label, if available;
-        #   2) otherwise, from the nearest representative in LAB Euclidean distance.
-        # ------------------------------------------------------------------
+        # Resolve the comparison prototype from its label or LAB distance.
         if custom_lab is not None and closest_lab is None:
             # Try to recover closest_lab from closest_label.
             if closest_label is not None:
@@ -578,18 +558,11 @@ class VisualManager:
 
         has_distance_line = custom_lab is not None and closest_lab is not None
 
-        # ------------------------------------------------------------------
         # Dynamic figure height.
-        #
-        # Plotly cannot reliably force legend scroll-box height in older
-        # versions. Increasing the figure height is the most stable solution.
-        # ------------------------------------------------------------------
+        # Scale figure height with the number of legend entries.
         n_colors = len(color_data)
         figure_height = max(760, min(1250, 520 + n_colors * 15))
 
-        # ------------------------------------------------------------------
-        # Visual constants.
-        # ------------------------------------------------------------------
         layer_names = ("Representative", "Core", "0.5-cut", "Support")
 
         layer_opacity = {
@@ -616,9 +589,6 @@ class VisualManager:
         color_control_indices = []
         legend_labels_added = set()
 
-        # ------------------------------------------------------------------
-        # Helpers.
-        # ------------------------------------------------------------------
         def _prototype_hex_from_lab(lab):
             return VisualManager._find_hex_for_lab(
                 lab,
@@ -711,9 +681,7 @@ class VisualManager:
 
             return np.asarray(vertices, dtype=float), faces
 
-        # ------------------------------------------------------------------
         # Legend anchors first.
-        # ------------------------------------------------------------------
         for rank, (label, value) in enumerate(color_data.items()):
             try:
                 lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
@@ -723,9 +691,7 @@ class VisualManager:
             proto_hex = _prototype_hex_from_lab(lab)
             _add_legend_anchor(label, proto_hex, rank)
 
-        # ------------------------------------------------------------------
         # Representative points.
-        # ------------------------------------------------------------------
         for label, value in color_data.items():
             try:
                 lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
@@ -769,9 +735,7 @@ class VisualManager:
             layer_indices["Representative"].append(trace_idx)
             color_control_indices.append(trace_idx)
 
-        # ------------------------------------------------------------------
         # Volumes: Core / 0.5-cut / Support.
-        # ------------------------------------------------------------------
         volume_sources = {
             "Core": core,
             "0.5-cut": alpha,
@@ -829,9 +793,7 @@ class VisualManager:
                 layer_indices[layer_name].append(trace_idx)
                 color_control_indices.append(trace_idx)
 
-        # ------------------------------------------------------------------
         # Optional filtered points.
-        # ------------------------------------------------------------------
         def _plot_filtered_points(reference_prototypes):
             if not filtered_points or not reference_prototypes:
                 return
@@ -903,9 +865,6 @@ class VisualManager:
 
         _plot_filtered_points(core or alpha or support)
 
-        # ------------------------------------------------------------------
-        # Optional custom color.
-        # ------------------------------------------------------------------
         if custom_lab is not None:
             fig.add_trace(
                 go.Scatter3d(
@@ -934,9 +893,7 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
         # Optional closest prototype highlight.
-        # ------------------------------------------------------------------
         if closest_lab is not None:
             fig.add_trace(
                 go.Scatter3d(
@@ -965,12 +922,9 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
         # Optional custom-to-closest line.
-        #
         # It appears active by default.
         # The user can still click it in the legend to show/hide it.
-        # ------------------------------------------------------------------
         if has_distance_line:
             fig.add_trace(
                 go.Scatter3d(
@@ -995,12 +949,8 @@ class VisualManager:
 
             layer_indices["Distance line"].append(len(fig.data) - 1)
 
-        # ------------------------------------------------------------------
         # Displayed geometry buttons.
-        #
-        # These buttons control opacity only.
-        # Therefore Select all colors cannot reactivate hidden geometry.
-        # ------------------------------------------------------------------
+        # Layer controls change opacity; hidden layers remain hidden on Select All.
         layer_button_positions = {
             "Representative": 0.020,
             "Core": 0.150,
@@ -1035,12 +985,8 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
         # Color visibility buttons.
-        #
-        # These buttons control visible only.
-        # They respect Displayed geometry because hidden layers have opacity 0.
-        # ------------------------------------------------------------------
+        # Color visibility controls retain each layer's current opacity.
         color_buttons = [
             dict(
                 label="Select all colors",
@@ -1067,19 +1013,12 @@ class VisualManager:
             pad=dict(r=1, t=1, b=1),
         )
 
-        # ------------------------------------------------------------------
-        # Axis ranges.
-        # ------------------------------------------------------------------
         xaxis_range = volume_limits.comp2 if volume_limits else None
         yaxis_range = volume_limits.comp3 if volume_limits else None
         zaxis_range = volume_limits.comp1 if volume_limits else None
 
-        # ------------------------------------------------------------------
         # Legend.
-        #
-        # No maxheight and no itemwidth: compatible with older Plotly versions.
-        # The legend is pinned to the far right.
-        # ------------------------------------------------------------------
+        # Keep the legend at the right edge without version-specific size options.
         legend_config = dict(
             x=0.992,
             y=0.790,
@@ -1095,9 +1034,6 @@ class VisualManager:
             tracegroupgap=0,
         )
 
-        # ------------------------------------------------------------------
-        # Layout annotations.
-        # ------------------------------------------------------------------
         layout_annotations = [
             dict(
                 text="<b>Color visibility</b>",
@@ -1112,9 +1048,6 @@ class VisualManager:
             ),
         ]
 
-        # ------------------------------------------------------------------
-        # Layout.
-        # ------------------------------------------------------------------
         fig.update_layout(
             height=figure_height,
             title=dict(
@@ -1189,11 +1122,6 @@ class VisualManager:
         return fig
 
 
-
-
-
-
-
     @staticmethod
     def plot_color_evaluation_ab_projection(
         color_data,
@@ -1218,13 +1146,7 @@ class VisualManager:
         custom_lab = VisualManager._safe_lab(custom_lab)
         closest_lab = VisualManager._safe_lab(closest_lab)
 
-        # ------------------------------------------------------------------
-        # Robust closest prototype resolution.
-        #
-        # If custom_lab exists but closest_lab was not provided, infer it:
-        #   1) from closest_label, if available;
-        #   2) otherwise, from the nearest representative in LAB Euclidean distance.
-        # ------------------------------------------------------------------
+        # Resolve the comparison prototype from its label or LAB distance.
         if custom_lab is not None and closest_lab is None:
             if closest_label is not None:
                 for label, value in color_data.items():
@@ -1281,11 +1203,9 @@ class VisualManager:
 
         has_distance_line = custom_lab is not None and closest_lab is not None
 
-        # ------------------------------------------------------------------
         # Draw connection line first, so markers remain above it.
-        # ------------------------------------------------------------------
         if has_distance_line:
-            # Base suave para dar cuerpo
+            # Faint underlying stroke
             fig.add_trace(
                 go.Scatter(
                     x=[custom_lab[1], closest_lab[1]],
@@ -1300,7 +1220,7 @@ class VisualManager:
                 )
             )
 
-            # Línea principal más elegante
+            # Foreground dashed stroke
             fig.add_trace(
                 go.Scatter(
                     x=[custom_lab[1], closest_lab[1]],
@@ -1317,9 +1237,6 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Prototype points.
-        # ------------------------------------------------------------------
         for label, value in color_data.items():
             try:
                 lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
@@ -1362,9 +1279,6 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Optional custom color.
-        # ------------------------------------------------------------------
         if custom_lab is not None:
             fig.add_trace(
                 go.Scatter(
@@ -1387,12 +1301,8 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Optional closest prototype extra highlight.
-        #
         # It shares legendgroup with the closest prototype, so if the user
         # hides that color from the legend, this highlight also disappears.
-        # ------------------------------------------------------------------
         if closest_lab is not None:
             fig.add_trace(
                 go.Scatter(
@@ -1416,9 +1326,6 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Layout.
-        # ------------------------------------------------------------------
         fig.update_layout(
             title=dict(
                 text=f"{filename} | a*b* projection",
@@ -1505,9 +1412,7 @@ class VisualManager:
         custom_lab = VisualManager._safe_lab(custom_lab)
         closest_lab = VisualManager._safe_lab(closest_lab)
 
-        # ------------------------------------------------------------------
-        # Robust closest prototype resolution.
-        # ------------------------------------------------------------------
+        # Resolve the comparison prototype from its label or LAB distance.
         if custom_lab is not None and closest_lab is None:
             if closest_label is not None:
                 for label, value in color_data.items():
@@ -1563,14 +1468,12 @@ class VisualManager:
 
         has_distance_line = custom_lab is not None and closest_lab is not None
 
-        # ------------------------------------------------------------------
         # Distance line first, so markers remain above it.
-        # ------------------------------------------------------------------
         if has_distance_line:
             L1, C1, _h1 = VisualManager._lab_to_lch(custom_lab)
             L2, C2, _h2 = VisualManager._lab_to_lch(closest_lab)
 
-            # Soft base line
+            # Faint underlying stroke
             fig.add_trace(
                 go.Scatter(
                     x=[C1, C2],
@@ -1585,7 +1488,7 @@ class VisualManager:
                 )
             )
 
-            # Main elegant dashed line
+            # Foreground dashed stroke
             fig.add_trace(
                 go.Scatter(
                     x=[C1, C2],
@@ -1602,9 +1505,6 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Prototype points.
-        # ------------------------------------------------------------------
         for label, value in color_data.items():
             try:
                 lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
@@ -1648,9 +1548,6 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Optional custom color.
-        # ------------------------------------------------------------------
         if custom_lab is not None:
             L, C, _h = VisualManager._lab_to_lch(custom_lab)
 
@@ -1675,10 +1572,7 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Optional closest prototype extra highlight.
         # Same legendgroup, so it disappears when the user hides that color.
-        # ------------------------------------------------------------------
         if closest_lab is not None:
             L, C, _h = VisualManager._lab_to_lch(closest_lab)
 
@@ -1790,9 +1684,7 @@ class VisualManager:
         custom_lab = VisualManager._safe_lab(custom_lab)
         closest_lab = VisualManager._safe_lab(closest_lab)
 
-        # ------------------------------------------------------------------
-        # Robust closest prototype resolution.
-        # ------------------------------------------------------------------
+        # Resolve the comparison prototype from its label or LAB distance.
         if custom_lab is not None and closest_lab is None:
             if closest_label is not None:
                 for label, value in color_data.items():
@@ -1848,14 +1740,12 @@ class VisualManager:
 
         has_distance_line = custom_lab is not None and closest_lab is not None
 
-        # ------------------------------------------------------------------
         # Distance line first, so markers remain above it.
-        # ------------------------------------------------------------------
         if has_distance_line:
             L1, C1, h1 = VisualManager._lab_to_lch(custom_lab)
             L2, C2, h2 = VisualManager._lab_to_lch(closest_lab)
 
-            # Soft base line
+            # Faint underlying stroke
             fig.add_trace(
                 go.Scatterpolar(
                     r=[C1, C2],
@@ -1870,7 +1760,7 @@ class VisualManager:
                 )
             )
 
-            # Main elegant dashed line
+            # Foreground dashed stroke
             fig.add_trace(
                 go.Scatterpolar(
                     r=[C1, C2],
@@ -1887,9 +1777,6 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Prototype points.
-        # ------------------------------------------------------------------
         for label, value in color_data.items():
             try:
                 lab = np.asarray(value["positive_prototype"], dtype=float).reshape(-1)[:3]
@@ -1934,9 +1821,6 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Optional custom color.
-        # ------------------------------------------------------------------
         if custom_lab is not None:
             L, C, h = VisualManager._lab_to_lch(custom_lab)
 
@@ -1962,10 +1846,7 @@ class VisualManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Optional closest prototype extra highlight.
         # Same legendgroup, so it disappears when the user hides that color.
-        # ------------------------------------------------------------------
         if closest_lab is not None:
             L, C, h = VisualManager._lab_to_lch(closest_lab)
 
@@ -2043,7 +1924,6 @@ class VisualManager:
         return fig
 
 
-
     @staticmethod
     def plot_color_evaluation_top7_bar(
         ranking,
@@ -2096,9 +1976,9 @@ class VisualManager:
 
         for label in labels_plot:
             if label == labels[0]:
-                colors.append("rgba(35,54,79,0.95)")      # highlighted closest
+                colors.append("rgba(35,54,79,0.95)")      # Closest prototype
             else:
-                colors.append("rgba(135,157,184,0.72)")   # secondary bars
+                colors.append("rgba(135,157,184,0.72)")   # Other prototypes
 
         fig.add_trace(
             go.Bar(
@@ -2126,19 +2006,15 @@ class VisualManager:
             )
         )
 
-        # ------------------------------------------------------------------
         # Active threshold guide lines.
-        #
         # This is linked to threshold_settings:
         #   mode="default":
         #       preset="pt"    -> PT only
         #       preset="at"    -> AT only
         #       preset="pt_at" -> PT + AT
-        #
         #   mode="custom":
         #       custom_type="single"      -> one custom threshold
         #       custom_type="lower_upper" -> lower + upper thresholds
-        # ------------------------------------------------------------------
         def _safe_positive_float(value):
             try:
                 parsed = float(value)
@@ -2376,7 +2252,6 @@ class VisualManager:
             )
         )
 
-        # Soft reference bands.
         shapes = [
             dict(
                 type="rect",

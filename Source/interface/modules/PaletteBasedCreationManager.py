@@ -57,18 +57,14 @@ class PaletteBasedCreationManager:
         self.current_source_path = self.default_source_path
         self.current_source_name = self.default_source_name
 
-        # Normalized source name -> list of load labels. This registry is local
-        # to this creation window. It is used only to recognize when a .cns/.fcs
-        # with the same base name has already been added. Reloading is still
-        # allowed when the user explicitly confirms it.
+        # Track imported source names within this creation workspace.
         self.loaded_sources = {}
 
+        # Edits remain local until the user creates a new FCS.
         self.colors = {}
         self.color_checks = {}
         self._row_widgets = {}
-        # Visible editable-name rows. Rebuilt with the table and committed
-        # explicitly before creating the FCS so a very fast click on
-        # "Create Color Space" cannot lose the last typed name.
+        # Commit edits from visible name fields before creating the color space.
         self._name_editors = []
 
         self.win = tk.Toplevel(self.root)
@@ -96,9 +92,7 @@ class PaletteBasedCreationManager:
         self.win.bind("<Escape>", lambda _e: self.close())
         self.win.focus_set()
 
-    # ======================================================================
-    # WINDOW / STATE
-    # ======================================================================
+    # Window / State
     def _configure_window_size(self):
         """Open the palette workspace as a centered resizable window."""
         width = 920
@@ -136,16 +130,11 @@ class PaletteBasedCreationManager:
         self.visible_count_var = tk.StringVar(value="")
         self.source_name_var = tk.StringVar(value="0 sources loaded")
 
-        # Rebuilding a long editable table synchronously from a Tcl variable
-        # trace can be unreliable while Tk is processing an Entry key event.
-        # Schedule one refresh just after the event instead. This also avoids
-        # unnecessary repeated redraws when text changes quickly.
+        # Defer search refreshes until the current Tk key event has completed.
         self._search_refresh_after_id = None
         self.search_var.trace_add("write", self._schedule_search_refresh)
 
-    # ======================================================================
-    # DATA / COLOR SOURCES
-    # ======================================================================
+    # Data / Color Sources
     def _load_default_source(self):
         """Load the bundled ISCC-NBS Basic palette as the first source."""
         try:
@@ -234,8 +223,7 @@ class PaletteBasedCreationManager:
         source_key = self._source_key(source_path)
         additions = []
 
-        # Reuse one set for the complete import. The previous implementation
-        # rebuilt set(self.colors.keys()) for every imported color.
+        # Track reserved names across the entire import.
         existing_names = set(self.colors.keys())
 
         def reserve_unique_name(requested_name):
@@ -429,8 +417,7 @@ class PaletteBasedCreationManager:
                 return
 
         try:
-            # load_color_file only reads/parses the selected source here. We do
-            # not assign its result to app.color_data/app.fuzzy_color_space.
+            # Imported colors remain local; the active application FCS is unchanged.
             loaded = self.app.fuzzy_manager.load_color_file(path)
             raw_colors = loaded.get("color_data", {})
 
@@ -441,12 +428,7 @@ class PaletteBasedCreationManager:
             )
             added_count = len(added_names)
 
-            # When no filter is active there is no reason to rebuild hundreds
-            # of existing Tk rows. Append only the newly imported rows.
-            #
-            # If a search is active, clear it so the imported source is visible.
-            # The existing search trace performs the single full refresh that is
-            # genuinely required in that case.
+            # Append imported rows directly unless an active search requires a refresh.
             if self.search_var.get().strip():
                 self.search_var.set("")
                 self.win.after(60, self._scroll_to_bottom)
@@ -454,7 +436,6 @@ class PaletteBasedCreationManager:
                 self._append_color_rows(added_names)
                 self.win.after_idle(self._scroll_to_bottom)
 
-            # Brief in-context confirmation without adding a permanent Source column.
             self.visible_count_var.set(f"{added_count} colors added")
 
         except Exception as exc:
@@ -464,9 +445,7 @@ class PaletteBasedCreationManager:
                 parent=self.win,
             )
 
-    # ======================================================================
     # UI
-    # ======================================================================
     def _build_ui(self):
         outer = tk.Frame(self.win, bg=self.BG)
         outer.pack(fill="both", expand=True, padx=14, pady=12)
@@ -759,9 +738,7 @@ class PaletteBasedCreationManager:
             cursor="hand2",
         ).pack(side="right")
 
-    # ======================================================================
-    # COLOR LIST / SEARCH / SELECTION
-    # ======================================================================
+    # Color List / Search / Selection
     def _schedule_search_refresh(self, *_args):
         """Refresh the filtered table safely after the current Tk event."""
         if not hasattr(self, "win"):
@@ -849,9 +826,7 @@ class PaletteBasedCreationManager:
         row.pack(fill="x", padx=3, pady=1)
         self._configure_table_columns(row)
 
-        # --------------------------------------------------------------
         # Color column: checkbox + swatch + name
-        # --------------------------------------------------------------
         color_cell = tk.Frame(row, bg=row_bg)
         color_cell.grid(row=0, column=0, sticky="nsew", padx=(4, 8))
 
@@ -922,9 +897,7 @@ class PaletteBasedCreationManager:
                 anchor="w",
             ).pack(fill="x", pady=(1, 0))
 
-        # --------------------------------------------------------------
         # RGB / HEX / LAB columns
-        # --------------------------------------------------------------
         rgb = data["rgb"]
         tk.Label(
             row,
@@ -979,8 +952,7 @@ class PaletteBasedCreationManager:
             self._update_counts(visible=len(self._row_widgets))
             return
 
-        # If the table currently contains only the "no matches" placeholder,
-        # remove it before adding the first real row.
+        # Remove the empty-state row before appending a color.
         if not self._row_widgets:
             for child in self.colors_inner.winfo_children():
                 child.destroy()
@@ -1065,9 +1037,7 @@ class PaletteBasedCreationManager:
                 pass
         self._update_counts()
 
-    # ======================================================================
-    # CUSTOM COLOR / CREATE
-    # ======================================================================
+    # Custom Color / Create
     def _next_unique_name(self, base):
         return self._make_unique_color_name(base)
 
@@ -1102,9 +1072,7 @@ class PaletteBasedCreationManager:
 
             dialog.destroy()
 
-            # If the current filter would hide the new custom color, clear it.
-            # The search trace then performs the one full refresh that is needed.
-            # Otherwise append just this row instead of rebuilding the table.
+            # Clear the search if it would hide the new color; otherwise append its row.
             if self.search_var.get().strip() and not self._matches_search(clean_name):
                 self.search_var.set("")
                 self.win.after(60, self._scroll_to_bottom)
@@ -1144,8 +1112,7 @@ class PaletteBasedCreationManager:
             self._refresh_color_list()
 
     def _create_color_space(self):
-        # Ensure the latest text typed in any editable name field is already
-        # reflected in the local dictionaries before building the new FCS.
+        # Save pending name edits before passing colors to FCS creation.
         self._commit_pending_color_names()
 
         selected = 0
@@ -1195,9 +1162,7 @@ class PaletteBasedCreationManager:
         except Exception:
             pass
 
-    # ======================================================================
-    # MOUSE WHEEL
-    # ======================================================================
+    # Mouse Wheel
     def _dispatch_colors_mousewheel(self, event):
         """Scroll the colors list only when the pointer is over that canvas."""
         try:
