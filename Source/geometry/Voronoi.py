@@ -23,7 +23,7 @@ class Voronoi:
     """
     Optimized 3D Euclidean Voronoi-cell builder for PyFCS.
 
-    The implementation is specialized for bounded CIELAB Voronoi cells. Each
+    The implementation is specialized for bounded 3D Euclidean Voronoi cells. Each
     cell starts as the reference-domain box and is incrementally clipped by the
     perpendicular-bisector half-spaces between the selected prototype and the
     remaining prototypes.
@@ -54,7 +54,7 @@ class Voronoi:
         negatives : array-like, shape (N, 3)
             Competing prototypes.
         reference_domain : ReferenceDomain, optional
-            Bounding CIELAB domain.  The standard PyFCS domain is used when
+            Bounding LAB or RGB domain. The standard LAB domain is used when
             omitted.
         eps : float
             Half-space numerical tolerance.
@@ -73,11 +73,9 @@ class Voronoi:
         if reference_domain is None:
             reference_domain = ReferenceDomain.default_voronoi_reference_domain()
 
-        cls._validate_points_in_domain(
-            np.vstack((p.reshape(1, 3), neg)) if len(neg) else p.reshape(1, 3),
-            reference_domain,
-            eps,
-        )
+        # Auxiliary competitors may live just OUTSIDE the reference box.
+        # Only the positive site's clipped cell has to lie inside the box.
+        cls._validate_points_in_domain(p.reshape(1, 3), reference_domain, eps)
         cls._validate_no_duplicate_competitors(p, neg, merge_eps)
 
         if len(neg) == 0:
@@ -179,7 +177,7 @@ class Voronoi:
             # no-overlap invariant is preserved.
             if d2 <= duplicate_threshold2:
                 raise ValueError(
-                    "Duplicate or near-duplicate LAB prototypes are not allowed "
+                    "Duplicate or near-duplicate prototypes are not allowed "
                     "in a Voronoi color space."
                 )
 
@@ -288,7 +286,7 @@ class Voronoi:
 
         if duplicate.size:
             raise ValueError(
-                "Duplicate or near-duplicate LAB prototypes are not allowed "
+                "Duplicate or near-duplicate prototypes are not allowed "
                 "in a Voronoi color space."
             )
 

@@ -32,8 +32,8 @@ class ImageInspectionManager:
     BORDER = "#d9dde3"
     TEXT = "#1f2937"
     MUTED = "#6b7280"
-    BLUE = "#1f4e8c"
-    BLUE_SOFT = "#e8f0fe"
+    BLUE = UtilsTools.UI_ACCENT
+    BLUE_SOFT = UtilsTools.UI_ACCENT_SOFT
     GREEN = "#2d6a2d"
     GREEN_BG = "#f3faf3"
     YELLOW = "#9a6500"
@@ -54,6 +54,7 @@ class ImageInspectionManager:
         self.manager = app.color_manager
 
         self.win = tk.Toplevel(self.root)
+        self.win.withdraw()
         self.win.title("Image Inspection")
         self.win.configure(bg=self.BG)
         self.win.minsize(1120, 700)
@@ -64,8 +65,6 @@ class ImageInspectionManager:
             self.win.transient(self.root)
         except Exception:
             pass
-
-        self._maximize_window()
 
         self._sources = {}
         self._source_order = []
@@ -103,6 +102,9 @@ class ImageInspectionManager:
 
         self.win.bind("<Escape>", lambda _e: self.close())
         self.win.after(50, self._render_image)
+        self.win.update_idletasks()
+        self._maximize_window()
+        self.win.deiconify()
         self.win.focus_set()
 
     # Window / Basic State
@@ -318,7 +320,7 @@ class ImageInspectionManager:
             font=self.FONT_BOLD,
             bg=self.BLUE_SOFT,
             fg=self.BLUE,
-            activebackground="#d7e5fb",
+            activebackground=UtilsTools.UI_ACCENT_HOVER,
             activeforeground=self.BLUE,
             relief="solid",
             bd=1,

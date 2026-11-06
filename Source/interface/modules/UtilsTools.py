@@ -3,8 +3,9 @@ import sys
 import tempfile
 import numpy as np
 from skimage import color
+from skimage import color as skcolor
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
 import colorsys
 
 # Project modules
@@ -16,6 +17,35 @@ from Source.colorspace.ReferenceDomain import ReferenceDomain
 # Shared Constants
 
 MAX_COLOR_NAME_CHARS = 24
+
+
+def validate_color_space_name(value):
+    """Validate a portable, safe FCS filename, returning the clean name."""
+    import re
+    name = str(value).strip() if value is not None else ""
+    if not name:
+        raise ValueError("Please enter a name for the fuzzy color space.")
+    if len(name) > 100:
+        raise ValueError("The color space name must not exceed 100 characters.")
+    if name in (".", "..") or name.endswith((".", " ")):
+        raise ValueError("The name cannot end in a dot or space.")
+    if re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
+        raise ValueError("The name contains characters that cannot be used in a file name.")
+    if name.split(".", 1)[0].upper() in (
+        "CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    ):
+        raise ValueError("This name is reserved by Windows. Choose another name.")
+    return name
+
+# Shared interface accent. Data-driven colors, membership status and RGB
+# swatches must NOT use these values: this palette is for UI chrome only.
+UI_ACCENT = "#68428F"       # primary buttons, active labels and links
+UI_ACCENT_DARK = "#4F3170"  # hovered / prominent text
+UI_ACCENT_SOFT = "#F1ECF7"  # subtle selection / quiet button fill
+UI_ACCENT_HOVER = "#E6DCF0"
+UI_ACCENT_MUTED = "#6A597A" # secondary violet, e.g. the 3D subtitle
+
 
 """
 Utility functions for PyFCS
@@ -878,8 +908,8 @@ def open_lab_filters_dialog(
     card_bg = theme.get("card", "#ffffff")
     text_color = theme.get("text", "#1f2937")
     muted = theme.get("muted", "#6b7280")
-    blue = theme.get("blue", "#1f4e8c")
-    blue_soft = theme.get("blue_soft", "#e8f0fe")
+    blue = theme.get("blue", UI_ACCENT)
+    blue_soft = theme.get("blue_soft", UI_ACCENT_SOFT)
 
     font = theme.get("font", ("Segoe UI", 9))
     font_bold = theme.get("font_bold", ("Segoe UI", 9, "bold"))
@@ -900,6 +930,7 @@ def open_lab_filters_dialog(
         )
 
     win = tk.Toplevel(parent)
+    win.withdraw()
     win.title("LAB Filters")
     win.configure(bg=bg)
     win.resizable(False, False)
@@ -1128,7 +1159,7 @@ def open_lab_filters_dialog(
         font=font_bold,
         bg=blue_soft,
         fg=blue,
-        activebackground="#d7e5fb",
+        activebackground=UI_ACCENT_HOVER,
         activeforeground=blue,
         relief="solid",
         bd=1,
@@ -1163,6 +1194,7 @@ def open_lab_filters_dialog(
         y = max(0, (sh - dialog_h) // 2)
         win.geometry(f"{dialog_w}x{dialog_h}+{x}+{y}")
 
+    win.deiconify()
     try:
         win.grab_set()
         win.focus_set()
@@ -1498,6 +1530,23 @@ def load_color_data(file_path):
 
 # Popup Helpers
 
+def _center_auxiliary_popup(popup, parent, width, height):
+    """Set final popup geometry before its first visible frame."""
+    popup.update_idletasks()
+    try:
+        parent.update_idletasks()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        if pw <= 1 or ph <= 1:
+            raise ValueError("Parent size unavailable")
+        x = px + (pw - width) // 2
+        y = py + (ph - height) // 2
+    except (ValueError, tk.TclError, AttributeError):
+        x = (popup.winfo_screenwidth() - width) // 2
+        y = (popup.winfo_screenheight() - height) // 2
+    popup.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+
+
 def create_popup_window(parent, title, width, height, header_text):
     """
     Create a popup window with a header and a scrollable content area.
@@ -1521,6 +1570,7 @@ def create_popup_window(parent, title, width, height, header_text):
         The popup window and the scrollable frame where content can be added.
     """
     popup = tk.Toplevel(parent)
+    popup.withdraw()
     popup.title(title)
     popup.geometry(f"{width}x{height}")
     popup.configure(bg="#f5f5f5")
@@ -1554,6 +1604,8 @@ def create_popup_window(parent, title, width, height, header_text):
     canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
+    _center_auxiliary_popup(popup, parent, width, height)
+    popup.deiconify()
     return popup, scrollable_frame
 
 
@@ -1580,6 +1632,7 @@ def create_selection_popup(parent, title, width, height, items):
         The popup window and the listbox widget.
     """
     popup = tk.Toplevel(parent)
+    popup.withdraw()
     popup.title(title)
     popup.geometry(f"{width}x{height}")
     popup.resizable(False, False)
@@ -1592,6 +1645,8 @@ def create_selection_popup(parent, title, width, height, items):
     listbox.pack(pady=10)
 
     popup.transient(parent)
+    _center_auxiliary_popup(popup, parent, width, height)
+    popup.deiconify()
     popup.grab_set()
 
     return popup, listbox
@@ -1673,3 +1728,668 @@ def _apply_alpha_to_rgb_array(rgb_array, alpha_or_mask):
     rgba[..., :3] = rgb[..., :3]
     rgba[..., 3] = _alpha_u8(alpha_or_mask, rgb.shape[:2])
     return rgba
+
+
+# -----------------------------------------------------------------------------
+# Fuzzy Color Space creation dialog (kept here to avoid a separate GUI module).
+# -----------------------------------------------------------------------------
+
+# Matches the neutral PyFCS workspace with the requested subtle purple accents.
+BG = "#F4F5F9"
+CARD = "#FFFFFF"
+TEXT = "#253043"
+MUTED = "#677184"
+PURPLE = UI_ACCENT
+PURPLE_DARK = UI_ACCENT_DARK
+PURPLE_PALE = UI_ACCENT_SOFT
+PURPLE_HOVER = UI_ACCENT_HOVER
+BORDER = "#DCE0E9"
+LINE = "#EAECF2"
+ROW_SELECTED = "#EFEAF6"
+
+FONT = ("Segoe UI", 9)
+FONT_BOLD = ("Segoe UI", 9, "bold")
+FONT_TITLE = ("Segoe UI", 12, "bold")
+FONT_CAPTION = ("Segoe UI", 8)
+FONT_CAPTION_BOLD = ("Segoe UI", 8, "bold")
+
+
+class ColorSwatchList(tk.Frame):
+    """Fast scrollable list drawn on a Canvas: swatch, name and small coordinates."""
+
+    ROW_HEIGHT = 45
+
+    def __init__(self, parent, on_select=None, on_activate=None, height=165):
+        super().__init__(parent, bg=CARD, highlightbackground=BORDER,
+                         highlightthickness=1, bd=0)
+        self.items = []
+        self.selected = None
+        self.on_select = on_select
+        self.on_activate = on_activate
+
+        self.canvas = tk.Canvas(self, height=height, bg=CARD, bd=0,
+                                highlightthickness=0, takefocus=1)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda e: self._redraw())
+        self.canvas.bind("<Button-1>", self._on_click)
+        self.canvas.bind("<Double-Button-1>", self._on_double_click)
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.canvas.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
+        self.canvas.bind("<Up>", lambda e: self._move_selection(-1))
+        self.canvas.bind("<Down>", lambda e: self._move_selection(+1))
+        self.canvas.bind("<Return>", self._activate_keyboard)
+
+    def set_items(self, items, selected=None, preserve_scroll=False):
+        old_position = self.canvas.yview()[0] if preserve_scroll and self.items else 0
+        self.items = list(items)
+        labels = {item["name"] for item in self.items}
+        self.selected = selected if selected in labels else None
+        self._redraw()
+        if preserve_scroll and old_position:
+            self.canvas.yview_moveto(old_position)
+        else:
+            self.canvas.yview_moveto(0)
+
+    def set_selected(self, name, notify=False):
+        if name not in {item["name"] for item in self.items}:
+            name = None
+        self.selected = name
+        self._redraw()
+        if name is not None:
+            index = next(i for i, x in enumerate(self.items) if x["name"] == name)
+            lo, hi = self.canvas.yview()
+            total = max(1, len(self.items) * self.ROW_HEIGHT)
+            top, bottom = index * self.ROW_HEIGHT / total, (index + 1) * self.ROW_HEIGHT / total
+            visible = hi - lo
+            if top < lo:
+                self.canvas.yview_moveto(top)
+            elif bottom > hi:
+                self.canvas.yview_moveto(max(0, bottom - visible))
+        if notify and self.on_select:
+            self.on_select(self.selected)
+
+    def _redraw(self):
+        cnv = self.canvas
+        cnv.delete("all")
+        width = max(120, cnv.winfo_width())
+        height = len(self.items) * self.ROW_HEIGHT
+        cnv.configure(scrollregion=(0, 0, width, height))
+        if not self.items:
+            cnv.create_text(12, 24, text="No colors", anchor="w", fill=MUTED,
+                            font=FONT_CAPTION)
+            return
+        for i, item in enumerate(self.items):
+            y = i * self.ROW_HEIGHT
+            active = item["name"] == self.selected
+            if active:
+                cnv.create_rectangle(0, y, width, y + self.ROW_HEIGHT,
+                                     fill=ROW_SELECTED, outline="")
+                cnv.create_rectangle(0, y, 3, y + self.ROW_HEIGHT,
+                                     fill=PURPLE, outline="")
+            cnv.create_rectangle(12, y + 12, 34, y + 34,
+                                 fill=item["hex"], outline="#CCD1DA", width=1)
+            cnv.create_text(44, y + 12, text=item["name"], anchor="nw",
+                            fill=TEXT, font=FONT_BOLD if active else FONT)
+            cnv.create_text(44, y + 29, text=item["coordinates"], anchor="nw",
+                            fill=MUTED, font=("Segoe UI", 7))
+            cnv.create_line(10, y + self.ROW_HEIGHT - 1, width - 6,
+                            y + self.ROW_HEIGHT - 1, fill=LINE)
+
+    def _on_click(self, event):
+        i = int(self.canvas.canvasy(event.y) // self.ROW_HEIGHT)
+        if 0 <= i < len(self.items):
+            self.canvas.focus_set()
+            self.set_selected(self.items[i]["name"], notify=True)
+
+    def _on_double_click(self, event):
+        i = int(self.canvas.canvasy(event.y) // self.ROW_HEIGHT)
+        if 0 <= i < len(self.items):
+            self.set_selected(self.items[i]["name"], notify=True)
+            if self.on_activate:
+                self.on_activate(self.selected)
+
+    def _on_wheel(self, event):
+        if event.delta:
+            self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        return "break"
+
+    def _move_selection(self, direction):
+        if not self.items:
+            return "break"
+        names = [x["name"] for x in self.items]
+        old = names.index(self.selected) if self.selected in names else (0 if direction > 0 else len(names) - 1)
+        self.set_selected(names[max(0, min(len(names) - 1, old + direction))], notify=True)
+        return "break"
+
+    def _activate_keyboard(self, event=None):
+        if self.selected and self.on_activate:
+            self.on_activate(self.selected)
+        return "break"
+
+
+class FCSCreationDialog(tk.Toplevel):
+    """Choose name, geometry, typology, scalings, bounds and negative colors.
+
+    `on_accept(name, options)` validates model-specific conditions and initiates
+    saving. If it raises, the dialog remains open with the input preserved.
+    """
+
+    def __init__(self, parent, selected_colors_lab, on_accept, warn=None,
+                 initial_color_space="LAB"):
+        super().__init__(parent)
+        self.withdraw()
+        self.title("New Fuzzy Color Space")
+        self.configure(bg=BG)
+        self.resizable(True, True)
+        self.minsize(720, 460)
+        self.result = False
+        self._on_accept = on_accept
+        self._warn = warn
+        self._building = True
+        self._colors = {str(name): np.asarray(lab, dtype=float).reshape(3)
+                        for name, lab in selected_colors_lab.items()}
+        self.names = list(self._colors)
+        self._rgb = {}
+        self._swatches = {}
+        for name, lab in self._colors.items():
+            with np.errstate(invalid="ignore", over="ignore"):
+                rgb = np.clip(skcolor.lab2rgb(lab.reshape(1, 1, 3))[0, 0] * 255.0, 0, 255)
+            if not np.all(np.isfinite(rgb)):
+                rgb = np.array([128, 128, 128], dtype=float)
+            self._rgb[name] = rgb
+            self._swatches[name] = "#%02X%02X%02X" % tuple(np.rint(rgb).astype(int))
+
+        self.name_var = tk.StringVar()
+        # Creating a NEW fuzzy color space always starts in CIELAB.
+        # The loaded FCS model is deliberately independent from this default;
+        # RGB remains available when explicitly selected by the user.
+        self.mode_var = tk.StringVar(value="LAB")
+        self.disjoint_var = tk.BooleanVar(value=True)
+        self.covering_var = tk.BooleanVar(value=True)
+        self.lambda1_var = tk.StringVar(value="0.5")
+        self.lambda2_var = tk.StringVar(value="1.5")
+        self.samples_var = tk.StringVar(value="27")
+        self.typology_var = tk.StringVar(value="PARTITION")
+        self.bounds_vars = [tk.StringVar() for _ in range(6)]
+        self.negatives = {name: set() for name in self.names}
+        self.current_category = self.names[0] if self.names else None
+        self.available_choice = None
+        self.chosen_choice = None
+        self.search_var = tk.StringVar()
+        self.selected_search_var = tk.StringVar()
+
+        self._build()
+        self._building = False
+        self._set_default_bounds()
+        self._update_typology()
+        self._refresh_categories()
+        self._refresh_negative_lists()
+        self._fit_window()
+        self.deiconify()
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.bind("<Escape>", lambda e: self.cancel())
+        self.bind("<Return>", self._enter_key)
+        self._initial_focus_id = self.after_idle(self.name_entry.focus_set)
+
+    @staticmethod
+    def _info(parent, text=None, textvariable=None, bg=CARD, **opts):
+        opts.setdefault("font", FONT_CAPTION)
+        return tk.Label(parent, text=text, textvariable=textvariable, bg=bg,
+                        fg=MUTED, justify="left", **opts)
+
+    @staticmethod
+    def _field(parent, var, width=None):
+        return tk.Entry(parent, textvariable=var, font=FONT, bg=CARD, fg=TEXT,
+                        insertbackground=PURPLE_DARK, bd=1, relief="solid",
+                        highlightbackground=BORDER, highlightcolor=PURPLE,
+                        highlightthickness=1, width=width)
+
+    @staticmethod
+    def _card(parent, title):
+        card = tk.Frame(parent, bg=CARD, highlightbackground=BORDER,
+                        highlightthickness=1, bd=0)
+        heading = tk.Frame(card, bg=CARD)
+        heading.pack(fill="x", padx=14, pady=(10, 5))
+        tk.Label(heading, text=title, font=FONT_BOLD, bg=CARD, fg=TEXT).pack(anchor="w")
+        return card
+
+    def _build(self):
+        # Keep the required name visible, even when the configuration below is scrolled.
+        # This prevents the user from reaching Create while the name is off-screen.
+        header = tk.Frame(self, bg=CARD, height=125)
+        self.header = header
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        tk.Label(header, text="Create Fuzzy Color Space", bg=CARD,
+                 fg=TEXT, font=FONT_TITLE).pack(anchor="center", padx=21, pady=(9, 0))
+        self._info(header, "Configure the model and how its color categories interact.",
+                   bg=CARD).pack(anchor="center", padx=21, pady=(2, 5))
+        name_row = tk.Frame(header, bg=CARD)
+        name_row.pack(anchor="center", pady=(4, 0))
+        tk.Label(name_row, text="Name", bg=CARD, fg=TEXT, font=FONT_BOLD).pack(
+            side="left", padx=(0, 10))
+        self.name_entry = self._field(name_row, self.name_var, width=42)
+        self.name_entry.pack(side="left", ipady=4)
+        self.name_error = tk.Label(header, text="", bg=CARD,
+                                   fg="#B23F52", font=FONT_CAPTION)
+        self.name_error.pack(anchor="center", pady=(3, 0))
+        self.name_var.trace_add("write", self._name_changed)
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True)
+        self.scroll = tk.Canvas(outer, bg=BG, bd=0, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(outer, orient="vertical", command=self.scroll.yview)
+        self.scroll.configure(yscrollcommand=self._scroll_feedback)
+        self.scrollbar.pack(side="right", fill="y")
+        self.scroll.pack(side="left", fill="both", expand=True)
+        self.content = tk.Frame(self.scroll, bg=BG)
+        self._content_id = self.scroll.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind("<Configure>", lambda e: self.scroll.configure(scrollregion=self.scroll.bbox("all")))
+        self.scroll.bind("<Configure>", self._center_content)
+        self.scroll.bind("<MouseWheel>", self._wheel_outer)
+        self.content.bind("<MouseWheel>", self._wheel_outer)
+
+        card_type = self._card(self.content, "Space configuration")
+        card_type.pack(fill="x", padx=17, pady=(12, 10))
+        geometry_row = tk.Frame(card_type, bg=CARD)
+        geometry_row.pack(anchor="center", padx=14, pady=(0, 6))
+        tk.Label(geometry_row, text="Geometry", bg=CARD, fg=TEXT, font=FONT).pack(side="left", padx=(0, 15))
+        for label in ("LAB", "RGB"):
+            tk.Radiobutton(geometry_row, text=label, value=label, variable=self.mode_var,
+                           bg=CARD, fg=TEXT, selectcolor=CARD, activebackground=CARD,
+                           font=FONT, command=self._geometry_changed).pack(side="left", padx=(0, 18))
+        tk.Frame(card_type, bg=LINE, height=1).pack(fill="x", padx=14, pady=(2, 8))
+        type_row = tk.Frame(card_type, bg=CARD)
+        type_row.pack(anchor="center", padx=14)
+        tk.Label(type_row, text="Typology", bg=CARD, fg=TEXT, font=FONT).pack(side="left", padx=(0, 14))
+        for title, var in (("Disjoint", self.disjoint_var), ("Covering", self.covering_var)):
+            tk.Checkbutton(type_row, text=title, variable=var, bg=CARD, fg=TEXT,
+                           activebackground=CARD, selectcolor=CARD,
+                           font=FONT, command=self._update_typology).pack(side="left", padx=(0, 18))
+        summary = tk.Frame(card_type, bg=CARD)
+        summary.pack(fill="x", padx=14, pady=(6, 11))
+        tk.Label(summary, textvariable=self.typology_var, bg=CARD, fg=PURPLE_DARK,
+                 font=FONT_CAPTION_BOLD).pack(anchor="center", pady=3)
+
+        card_geometry = self._card(self.content, "Geometry parameters")
+        card_geometry.pack(fill="x", padx=17, pady=(0, 10))
+        self.advanced_visible = False
+        self.advanced_toggle = tk.Button(
+            card_geometry, text="Edit settings  ▾", command=self._toggle_advanced,
+            bg=CARD, fg=PURPLE, font=FONT_CAPTION_BOLD,
+            activebackground=CARD, activeforeground=PURPLE_DARK,
+            bd=0, relief="flat", cursor="hand2"
+        )
+        self.advanced_toggle.place(relx=1.0, x=-14, y=9, anchor="ne")
+        self.advanced_summary = self._info(card_geometry, "", anchor="w")
+        self.advanced_summary.pack(fill="x", padx=14, pady=(0, 11))
+        # Like JFCS, expose the sample density as soon as Non-Covering is selected.
+        # 27 denotes 3 per axis, not 27 stored auxiliary negatives: an expanded
+        # candidate grid is filtered before the geometry is constructed.
+        samples_area = tk.Frame(card_geometry, bg=CARD)
+        samples_area.pack(fill="x")
+        self.samples_box = tk.Frame(samples_area, bg=CARD)
+        self.samples_box.pack(anchor="center", pady=(0, 9))
+        tk.Label(self.samples_box, text="Samples", bg=CARD, fg=TEXT,
+                 font=FONT).pack(side="left", padx=(0, 8))
+        self.samples_combo = ttk.Combobox(
+            self.samples_box, textvariable=self.samples_var,
+            width=7, state="readonly", values=(8, 27, 64, 125, 216, 343, 512),
+        )
+        self.samples_combo.pack(side="left")
+        self.geometry_details = tk.Frame(card_geometry, bg=CARD)
+        params = tk.Frame(self.geometry_details, bg=CARD)
+        params.pack(anchor="center", padx=14, pady=(0, 3))
+        for title, var in (("Core (λ1)", self.lambda1_var), ("Support (λ2)", self.lambda2_var)):
+            part = tk.Frame(params, bg=CARD)
+            part.pack(side="left", padx=(0, 20))
+            tk.Label(part, text=title, bg=CARD, fg=TEXT, font=FONT).pack(side="left", padx=(0, 7))
+            field = self._field(part, var, width=7)
+            field.pack(side="left", ipady=3)
+        self._info(self.geometry_details, "Core: 0 ≤ λ1 < 1  ·  Support: 1 < λ2 ≤ 2",
+                   anchor="center").pack(fill="x", padx=14, pady=(4, 9))
+        row_bounds_heading = tk.Frame(self.geometry_details, bg=CARD)
+        row_bounds_heading.pack(fill="x", padx=14)
+        tk.Label(row_bounds_heading, text="Reference bounds", bg=CARD, fg=TEXT,
+                 font=FONT_BOLD).pack(side="left")
+        tk.Button(row_bounds_heading, text="Reset defaults", bg=CARD, fg=PURPLE,
+                  font=FONT_CAPTION, cursor="hand2", relief="flat", bd=0,
+                  activebackground=CARD, activeforeground=PURPLE_DARK,
+                  command=self._set_default_bounds).pack(side="right")
+        grid = tk.Frame(self.geometry_details, bg=CARD)
+        grid.pack(fill="x", padx=14, pady=(5, 10))
+        self.bounds_labels = []
+        for i, var in enumerate(self.bounds_vars):
+            slot = tk.Frame(grid, bg=CARD)
+            slot.grid(row=0, column=i, padx=(0, 8) if i < 5 else 0, sticky="ew")
+            grid.columnconfigure(i, weight=1, uniform="bounds")
+            label = tk.Label(slot, text="", bg=CARD, fg=MUTED, font=FONT_CAPTION)
+            label.pack(anchor="w")
+            self.bounds_labels.append(label)
+            self._field(slot, var).pack(fill="x", ipady=4)
+
+        self.neg_card = self._card(self.content, "Negative prototypes by category")
+        self._info(self.neg_card,
+                   "Select which other colors act as negatives. Unselected categories may overlap.",
+                   anchor="center", wraplength=710).pack(fill="x", padx=14, pady=(0, 9))
+        neg_layout = tk.Frame(self.neg_card, bg=CARD)
+        neg_layout.pack(fill="both", expand=True, padx=14, pady=(0, 11))
+        neg_layout.columnconfigure(0, weight=1, minsize=180)
+        neg_layout.columnconfigure(1, weight=2, minsize=390)
+        categories_frame = tk.Frame(neg_layout, bg=CARD)
+        categories_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        self._info(categories_frame, "CATEGORIES", font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(0, 5))
+        self.categories_list = ColorSwatchList(categories_frame,
+                                                on_select=self._select_category,
+                                                height=165)
+        self.categories_list.pack(fill="both", expand=True)
+        right = tk.Frame(neg_layout, bg=CARD)
+        right.grid(row=0, column=1, sticky="nsew")
+        self._info(right, "NEGATIVES FOR THE SELECTED CATEGORY").pack(anchor="w", pady=(0, 5))
+        two_lists = tk.Frame(right, bg=CARD)
+        two_lists.pack(fill="both", expand=True)
+        two_lists.columnconfigure(0, weight=1)
+        two_lists.columnconfigure(1, weight=1)
+        available_frame = tk.Frame(two_lists, bg=CARD)
+        available_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        selected_frame = tk.Frame(two_lists, bg=CARD)
+        selected_frame.grid(row=0, column=1, sticky="nsew")
+        tk.Label(available_frame, text="Available colors", bg=CARD,
+                 fg=MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(0, 3))
+        self.search_entry = self._field(available_frame, self.search_var)
+        self.search_entry.pack(fill="x", pady=(0, 5), ipady=2)
+        self.available_list = ColorSwatchList(available_frame, height=137,
+                                              on_select=self._set_available_choice,
+                                              on_activate=lambda _name: self.add_negative())
+        self.available_list.pack(fill="both", expand=True)
+        tk.Label(selected_frame, text="Selected negatives", bg=CARD,
+                 fg=MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(0, 3))
+        self.selected_search_entry = self._field(selected_frame, self.selected_search_var)
+        self.selected_search_entry.pack(fill="x", pady=(0, 5), ipady=2)
+        self.selected_list = ColorSwatchList(selected_frame, height=137,
+                                             on_select=self._set_chosen_choice,
+                                             on_activate=lambda _name: self.remove_negative())
+        self.selected_list.pack(fill="both", expand=True)
+        commands = tk.Frame(right, bg=CARD)
+        commands.pack(fill="x", pady=(8, 0))
+        centered_commands = tk.Frame(commands, bg=CARD)
+        centered_commands.pack(anchor="center")
+        for label, command in (("Add →", self.add_negative),
+                               ("← Remove", self.remove_negative),
+                               ("Add all", self.add_all_negatives),
+                               ("Clear", self.clear_negatives)):
+            tk.Button(centered_commands, text=label, command=command,
+                      bg="#F2F3F6", fg=TEXT,
+                      activebackground="#E6E8EC", activeforeground=TEXT,
+                      bd=0, relief="flat", cursor="hand2",
+                      font=FONT_CAPTION, padx=10, pady=5
+                      ).pack(side="left", padx=4)
+        self.negative_status = self._info(self.neg_card, "")
+        self.negative_status.pack(fill="x", padx=14, pady=(0, 10))
+
+        footer = tk.Frame(self, bg=CARD)
+        self.footer = footer
+        footer.pack(fill="x", side="bottom")
+        tk.Frame(footer, bg=BORDER, height=1).pack(fill="x")
+        button_row = tk.Frame(footer, bg=CARD)
+        button_row.pack(pady=12, anchor="center")
+        self.ok_button = tk.Button(button_row, text="Create Color Space", command=self.confirm,
+                                   bg=PURPLE, fg="white", font=FONT_BOLD,
+                                   activebackground=PURPLE_DARK, activeforeground="white",
+                                   relief="flat", bd=0, padx=18, pady=8, cursor="hand2")
+        self.ok_button.pack(side="left", padx=(0, 10))
+        self.cancel_button = tk.Button(button_row, text="Cancel", command=self.cancel,
+                                       bg="#EFF0F4", fg=TEXT, font=FONT,
+                                       activebackground="#E4E6EC", relief="flat", bd=0,
+                                       padx=18, pady=8, cursor="hand2")
+        self.cancel_button.pack(side="left")
+
+        self.search_var.trace_add("write", lambda *_: self._refresh_negative_lists())
+        self.selected_search_var.trace_add("write", lambda *_: self._refresh_negative_lists())
+        for change_var in (self.lambda1_var, self.lambda2_var, self.samples_var):
+            change_var.trace_add("write", lambda *_: self._update_advanced_summary())
+
+    def _center_content(self, event):
+        """Center the cards, leaving a sensible width at large DPI / screen sizes."""
+        available = max(1, int(event.width))
+        width = min(790, max(1, available - 24))
+        self.scroll.itemconfigure(self._content_id, width=width)
+        self.scroll.coords(self._content_id, max(0, (available - width) // 2), 0)
+
+    def _scroll_feedback(self, first, last):
+        self.scrollbar.set(first, last)
+        try:
+            fits = float(first) <= 0.001 and float(last) >= 0.999
+            if fits and self.scrollbar.winfo_manager():
+                self.scrollbar.pack_forget()
+            elif not fits and not self.scrollbar.winfo_manager():
+                self.scrollbar.pack(side="right", fill="y", before=self.scroll)
+        except (ValueError, tk.TclError):
+            pass
+
+    def _wheel_outer(self, event):
+        if event.delta:
+            self.scroll.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        return "break"
+
+    def _toggle_advanced(self):
+        self.advanced_visible = not self.advanced_visible
+        if self.advanced_visible:
+            self.geometry_details.pack(fill="x")
+            self.advanced_toggle.configure(text="Hide settings  ▴")
+        else:
+            self.geometry_details.pack_forget()
+            self.advanced_toggle.configure(text="Edit settings  ▾")
+        self._fit_window()
+
+    def _update_advanced_summary(self):
+        if not hasattr(self, "advanced_summary"):
+            return
+        info = f"Core λ1 = {self.lambda1_var.get()}  ·  Support λ2 = {self.lambda2_var.get()}"
+        if not self.covering_var.get():
+            info += f"  ·  Auxiliary samples = {self.samples_var.get()}"
+        self.advanced_summary.configure(text=info)
+
+    def _set_default_bounds(self):
+        values = (0, 255, 0, 255, 0, 255) if self.mode_var.get() == "RGB" else (0, 100, -128, 128, -128, 128)
+        axes = ("R", "G", "B") if self.mode_var.get() == "RGB" else ("L", "a", "b")
+        for i, (var, value) in enumerate(zip(self.bounds_vars, values)):
+            var.set(str(value))
+            self.bounds_labels[i].configure(text=f"{axes[i // 2]} {'min' if i % 2 == 0 else 'max'}")
+        self._update_advanced_summary()
+
+    def _geometry_changed(self):
+        self._set_default_bounds()
+        self._refresh_categories()
+        self._refresh_negative_lists()
+
+    def _item(self, name):
+        if self.mode_var.get() == "RGB":
+            r, g, b = self._rgb[name]
+            coordinates = f"R {r:.0f}  G {g:.0f}  B {b:.0f}"
+        else:
+            l, a, b = self._colors[name]
+            coordinates = f"L {l:.1f}  a {a:.1f}  b {b:.1f}"
+        return {"name": name, "hex": self._swatches[name], "coordinates": coordinates}
+
+    def _refresh_categories(self):
+        self.categories_list.set_items([self._item(name) for name in self.names],
+                                       selected=self.current_category, preserve_scroll=True)
+
+    def _select_category(self, name):
+        if name and name != self.current_category:
+            self.current_category = name
+            self.available_choice = None
+            self.chosen_choice = None
+            self.search_var.set("")
+            self.selected_search_var.set("")
+            self._refresh_negative_lists()
+
+    def _set_available_choice(self, name):
+        self.available_choice = name
+
+    def _set_chosen_choice(self, name):
+        self.chosen_choice = name
+
+    def _refresh_negative_lists(self):
+        if not hasattr(self, "available_list") or self.current_category is None:
+            return
+        category = self.current_category
+        chosen = self.negatives[category]
+        candidates = [x for x in self.names if x != category and x not in chosen]
+        needle = self.search_var.get().casefold().strip()
+        if needle:
+            candidates = [x for x in candidates if needle in x.casefold()]
+        existing = [x for x in self.names if x in chosen and x != category]
+        selected_needle = self.selected_search_var.get().casefold().strip()
+        if selected_needle:
+            visible_existing = [x for x in existing if selected_needle in x.casefold()]
+        else:
+            visible_existing = existing
+        self.available_list.set_items([self._item(n) for n in candidates],
+                                      selected=self.available_choice, preserve_scroll=True)
+        self.selected_list.set_items([self._item(n) for n in visible_existing],
+                                     selected=self.chosen_choice, preserve_scroll=True)
+        self.negative_status.configure(text=(
+            f"{category}: {len(existing)} selected negative(s) · "
+            "Double-click a color to add or remove it."
+        ))
+
+    def add_negative(self):
+        if self.current_category and self.available_list.selected:
+            self.negatives[self.current_category].add(self.available_list.selected)
+            self.available_choice = None
+            self._refresh_negative_lists()
+
+    def remove_negative(self):
+        if self.current_category and self.selected_list.selected:
+            self.negatives[self.current_category].discard(self.selected_list.selected)
+            self.chosen_choice = None
+            self._refresh_negative_lists()
+
+    def add_all_negatives(self):
+        if self.current_category:
+            self.negatives[self.current_category].update(
+                x for x in self.names if x != self.current_category)
+            self._refresh_negative_lists()
+
+    def clear_negatives(self):
+        if self.current_category:
+            self.negatives[self.current_category].clear()
+            self._refresh_negative_lists()
+
+    def _update_typology(self):
+        disjoint, covering = self.disjoint_var.get(), self.covering_var.get()
+        typology = ("PARTITION" if disjoint and covering else
+                    ("DISJOINT" if disjoint else "NON-DISJOINT") + " and " +
+                    ("COVERING" if covering else "NON-COVERING"))
+        self.typology_var.set(typology)
+        if covering:
+            self.samples_box.pack_forget()
+        elif not self.samples_box.winfo_manager():
+            self.samples_box.pack(anchor="center", pady=(0, 9))
+        if disjoint:
+            self.neg_card.pack_forget()
+        elif not self.neg_card.winfo_manager():
+            self.neg_card.pack(fill="x", padx=17, pady=(0, 10))
+        self._update_advanced_summary()
+        if not self._building:
+            self._fit_window()
+
+    def _fit_window(self):
+        self.update_idletasks()
+        # Keep the dialog compact for partition spaces, while reserving a
+        # taller (scrollable) layout for individual negatives.
+        w = min(850, max(730, self.winfo_screenwidth() - 90))
+        wanted = max(490, self.content.winfo_reqheight() + self.header.winfo_reqheight() + self.footer.winfo_reqheight() + 12)
+        h = min(wanted, max(420, self.winfo_screenheight() - 110))
+        x = max(0, (self.winfo_screenwidth() - w) // 2)
+        y = max(0, (self.winfo_screenheight() - h) // 2)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _name_changed(self, *_):
+        if self.name_var.get().strip():
+            self.name_error.configure(text="")
+            self.name_entry.configure(highlightbackground=BORDER,
+                                      highlightcolor=PURPLE)
+
+    def _check_name(self):
+        if self.name_var.get().strip():
+            return True
+        self.name_error.configure(text="Please enter a name for the fuzzy color space.")
+        self.name_entry.configure(highlightbackground="#B23F52",
+                                  highlightcolor="#B23F52")
+        self.name_entry.focus_set()
+        return False
+
+    def build_options(self):
+        name = validate_color_space_name(self.name_var.get())
+        domain = ReferenceDomain.from_bounds([v.get().strip() for v in self.bounds_vars])
+        lam1, lam2 = float(self.lambda1_var.get()), float(self.lambda2_var.get())
+        disjoint, covering = self.disjoint_var.get(), self.covering_var.get()
+        if not (0 <= lam1 < 1 and 1 < lam2 <= 2):
+            raise ValueError("Require 0 ≤ λ1 < 1 and 1 < λ2 ≤ 2.")
+        if disjoint and not (1 <= lam1 + lam2 <= 2):
+            raise ValueError("Disjoint spaces require 1 ≤ λ1 + λ2 ≤ 2.")
+        count = int(self.samples_var.get()) if not covering else 0
+        if not covering and count not in (8, 27, 64, 125, 216, 343, 512):
+            raise ValueError("Select one of the JFCS sampling options: 8, 27, 64, 125, 216, 343 or 512.")
+        negative = ({k: [n for n in self.names if n in vals]
+                     for k, vals in self.negatives.items()} if not disjoint else None)
+        return name, {
+            "color_space": self.mode_var.get().upper(),
+            "reference_domain": domain,
+            "lambda1": lam1, "lambda2": lam2,
+            "disjoint": disjoint, "covering": covering,
+            "samples": count, "negative_prototypes": negative,
+        }
+
+    def _enter_key(self, event):
+        # Let Enter activate a color when a swatch list has focus.
+        if isinstance(event.widget, tk.Canvas):
+            return
+        self.confirm()
+
+    def confirm(self):
+        if self.result:
+            return
+        # Normal input validation: show inline feedback instead of raising a
+        # ValueError that may interrupt execution when debugging exceptions.
+        if not self._check_name():
+            return
+        try:
+            name, options = self.build_options()
+            self.ok_button.configure(state="disabled")
+            self.update_idletasks()
+            self._on_accept(name, options)
+        except Exception as exc:
+            self.ok_button.configure(state="normal")
+            if self._warn:
+                self._warn("Error", str(exc), parent=self)
+            else:
+                messagebox.showerror("Invalid space configuration", str(exc), parent=self)
+            return
+        self.result = True
+        self.destroy()
+
+    def cancel(self):
+        if not self.result:
+            self.result = False
+            self.destroy()
+
+    def destroy(self):
+        # A very quick Cancel must not leave the initial-focus after_idle job
+        # queued against a Tk widget that no longer exists.
+        focus_id = getattr(self, "_initial_focus_id", None)
+        if focus_id is not None:
+            try:
+                self.after_cancel(focus_id)
+            except tk.TclError:
+                pass
+            self._initial_focus_id = None
+        super().destroy()

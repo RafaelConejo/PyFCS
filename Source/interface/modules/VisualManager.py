@@ -75,6 +75,50 @@ class VisualManager:
 
 
     @staticmethod
+    def display_polygons_for_volume(volume, domain):
+        """Return a CLOSED visible polyhedron without changing fuzzy geometry.
+
+        The original RGB/LAB domain is purely a display clip.  Simply
+        clamping individual vertices can leave non-planar faces and gaps,
+        especially after the JFCS-style support adjustment. Reconstruct the
+        visible polygons by intersecting the genuine fuzzy halfspaces with the
+        domain box; the membership volumes and their planes are untouched.
+        """
+        from Source.geometry.Voronoi import Voronoi
+
+        eps = Voronoi.DEFAULT_EPS
+        merge_eps = Voronoi.DEFAULT_MERGE_EPS
+        faces = Voronoi._create_domain_faces(domain)
+        rep = volume.getRepresentative()
+        for face in volume.getFaces():
+            if face.isDomainBoundary():
+                continue
+            plane = face.getPlane()
+            normal = np.array([plane.A, plane.B, plane.C], dtype=float)
+            offset = float(plane.D)
+            length = float(np.linalg.norm(normal))
+            if length <= eps:
+                continue
+            # All clip planes must point towards the representative.
+            if float(np.dot(normal, [rep.x,rep.y,rep.z]) + offset) < 0:
+                normal = -normal
+                offset = -offset
+            normal /= length
+            offset /= length
+            vertices = Voronoi._collect_vertices(faces)
+            if len(vertices) == 0:
+                return []
+            if np.min(vertices @ normal + offset) >= -eps:
+                continue
+            faces = Voronoi._clip_polyhedron(
+                faces, normal, offset, face.getSourceIndex(), eps, merge_eps)
+            if not faces:
+                return []
+        return [np.asarray(face.vertices, dtype=float)
+                for face in faces if face.vertices is not None and len(face.vertices) >= 3]
+
+
+    @staticmethod
     def _lab_key(lab):
         """
         Convert LAB into a stable rounded key.
@@ -193,6 +237,65 @@ class VisualManager:
         return item.get("metric_value", item.get("delta_e"))
 
 
+    @staticmethod
+    def valid_projection_request(points, source_space="LAB", display_space="LAB"):
+        """Return False for unsupported modes or non-finite/non-3D coordinates."""
+        if (str(source_space).strip().upper() not in ("LAB", "RGB") or
+                str(display_space).strip().upper() not in ("LAB", "RGB")):
+            return False
+        try:
+            matrix = np.asarray(points, dtype=float)
+        except (ValueError, TypeError):
+            return False
+        return (matrix.ndim >= 1 and matrix.shape[-1] == 3
+                and bool(np.all(np.isfinite(matrix))))
+
+    @staticmethod
+    def reproject_points(points, source_space="LAB", display_space="LAB"):
+        """Reproject ONLY 3D visualization coordinates, never membership geometry.
+
+        CIELAB -> sRGB is gamut-clipped, so transformed polygons approximate
+        the geometric surface (they are not new Voronoi polytopes in sRGB).
+        """
+        from skimage import color as skcolor
+
+        src = str(source_space).strip().upper()
+        dst = str(display_space).strip().upper()
+        if src not in ("LAB", "RGB") or dst not in ("LAB", "RGB"):
+            raise ValueError("Visualization supports LAB and RGB only.")
+        arr = np.asarray(points, dtype=float)
+        if arr.shape[-1] != 3 or not np.all(np.isfinite(arr)):
+            raise ValueError("Color coordinates must be finite triplets.")
+        if src == dst:
+            return arr.copy()
+        original_shape = arr.shape
+        matrix = arr.reshape(-1, 3)
+        with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+            if src == "LAB":
+                # Out-of-gamut LAB vertices occur in clipped reference domains.
+                # They are intentionally clipped for display; never change
+                # the stored model or its membership calculations.
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=UserWarning,
+                                             message="Conversion from CIE-LAB.*")
+                    out = skcolor.lab2rgb(matrix.reshape(-1, 1, 3)).reshape(-1, 3)
+                out = np.clip(out * 255.0, 0.0, 255.0)
+            else:
+                out = skcolor.rgb2lab(
+                    np.clip(matrix, 0, 255).reshape(-1, 1, 3) / 255.0
+                ).reshape(-1, 3)
+        if not np.all(np.isfinite(out)):
+            raise ValueError("Color coordinates cannot be displayed in this space.")
+        return out.reshape(original_shape)
+
+    @staticmethod
+    def display_limits(volume_limits, source_space="LAB", display_space="LAB"):
+        if str(source_space).upper() == str(display_space).upper():
+            return volume_limits
+        from Source.colorspace.ReferenceDomain import ReferenceDomain
+        return ReferenceDomain.for_color_space(display_space)
+
     # Embedded Matplotlib 3D Model
 
     @staticmethod
@@ -207,6 +310,8 @@ class VisualManager:
         hex_color,
         selected_options,
         filtered_points=None,
+        color_space="LAB",
+        display_color_space=None,
     ):
         """
         Draw the complete 3D model on an existing Axes3D instance.
@@ -215,6 +320,9 @@ class VisualManager:
         every time. That makes repeated updates much cheaper.
         """
         ax.cla()
+        display_color_space = (display_color_space or color_space).upper()
+        target_limits = VisualManager.display_limits(volume_limits, color_space, display_color_space)
+        to_display = lambda xyz: VisualManager.reproject_points(xyz, color_space, display_color_space)
 
         data_map = {
             "Representative": color_data,
@@ -243,7 +351,7 @@ class VisualManager:
             lab_values = [value["positive_prototype"] for value in color_data.values()]
 
             if lab_values:
-                lab_array = np.asarray(lab_values, dtype=float)
+                lab_array = to_display(np.asarray(lab_values, dtype=float))
 
                 colors = [
                     inverse_hex_color.get(lab_to_key(lab), "#000000")
@@ -282,22 +390,13 @@ class VisualManager:
                     "#000000",
                 )
 
-                cache_attr = f"_cached_faces_{option.replace('-', '_')}"
+                cache_attr = f"_cached_faces_{option.replace('-', '_')}_{color_space}_{display_color_space}"
 
                 if not hasattr(prototype, cache_attr):
                     valid_faces = []
-
-                    for face in prototype.voronoi_volume.faces:
-                        if face.infinity or face.vertex is None:
-                            continue
-
-                        clipped_face = VisualManager.clip_face_to_volume(
-                            face.vertex,
-                            volume_limits,
-                        )
-
-                        if len(clipped_face) >= 3:
-                            valid_faces.append(clipped_face[:, [1, 2, 0]])
+                    for polygon in VisualManager.display_polygons_for_volume(
+                            prototype.voronoi_volume, volume_limits):
+                        valid_faces.append(to_display(polygon)[:, [1, 2, 0]])
 
                     setattr(prototype, cache_attr, valid_faces)
 
@@ -333,7 +432,7 @@ class VisualManager:
                 )
 
             if all_filtered_points:
-                points_array = np.asarray(all_filtered_points, dtype=float)
+                points_array = to_display(np.asarray(all_filtered_points, dtype=float))
 
                 ax.scatter(
                     points_array[:, 1],
@@ -346,16 +445,21 @@ class VisualManager:
                     depthshade=False,
                 )
 
-        ax.set_xlabel("a* (Green-Red)", fontsize=10, labelpad=10)
-        ax.set_ylabel("b* (Blue-Yellow)", fontsize=10, labelpad=10)
-        ax.set_zlabel("L* (Lightness)", fontsize=10, labelpad=10)
+        if str(display_color_space).upper() == "RGB":
+            ax.set_xlabel("G (Green)", fontsize=10, labelpad=10)
+            ax.set_ylabel("B (Blue)", fontsize=10, labelpad=10)
+            ax.set_zlabel("R (Red)", fontsize=10, labelpad=10)
+        else:
+            ax.set_xlabel("a* (Green-Red)", fontsize=10, labelpad=10)
+            ax.set_ylabel("b* (Blue-Yellow)", fontsize=10, labelpad=10)
+            ax.set_zlabel("L* (Lightness)", fontsize=10, labelpad=10)
 
-        if volume_limits:
-            ax.set_xlim(volume_limits.comp2)
-            ax.set_ylim(volume_limits.comp3)
-            ax.set_zlim(volume_limits.comp1)
+        if target_limits:
+            ax.set_xlim(target_limits.comp2)
+            ax.set_ylim(target_limits.comp3)
+            ax.set_zlim(target_limits.comp1)
 
-        ax.set_title(filename)
+        # The embedding UI owns the title/subtitle styling and positioning.
         ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
 
         try:
@@ -364,7 +468,12 @@ class VisualManager:
             pass
 
         fig = ax.get_figure()
-        VisualManager.draw_orientation_inset(fig, ax)
+        if str(display_color_space).upper() == "LAB":
+            VisualManager.draw_orientation_inset(fig, ax)
+        else:
+            for existing_ax in list(fig.axes):
+                if hasattr(existing_ax, "_is_orientation_inset"):
+                    fig.delaxes(existing_ax)
 
 
     @staticmethod
@@ -451,9 +560,11 @@ class VisualManager:
         closest_label=None,
         closest_lab=None,
         closest_hex="#000000",
+        color_space="LAB",
+        display_color_space=None,
     ):
         """
-        Generate a unified interactive Plotly 3D LAB figure.
+        Generate a unified interactive Plotly 3D figure.
 
         Features
         --------
@@ -467,6 +578,9 @@ class VisualManager:
         """
 
         fig = go.Figure()
+        display_color_space = (display_color_space or color_space).upper()
+        target_limits = VisualManager.display_limits(volume_limits, color_space, display_color_space)
+        to_display = lambda xyz: VisualManager.reproject_points(xyz, color_space, display_color_space)
 
         color_data = color_data or {}
         selected_options = selected_options or ["Representative"]
@@ -647,33 +761,21 @@ class VisualManager:
             faces = []
 
             try:
-                voronoi_faces = prototype.voronoi_volume.faces
-            except Exception:
+                visible_polygons = VisualManager.display_polygons_for_volume(
+                    prototype.voronoi_volume, volume_limits)
+            except (ValueError, TypeError, ArithmeticError):
                 return None, None
 
-            for face in voronoi_faces:
+            for polygon in visible_polygons:
                 try:
-                    if face.infinity or face.vertex is None:
-                        continue
-
-                    clipped = VisualManager.clip_face_to_volume(
-                        face.vertex,
-                        volume_limits
-                    )
-
-                    if len(clipped) < 3:
-                        continue
-
-                    # Plotly axes: x=a*, y=b*, z=L*
-                    clipped = clipped[:, [1, 2, 0]]
+                    # Plotly axes: x=a*, y=b*, z=L* (or G,B,R).
+                    clipped = to_display(polygon)[:, [1, 2, 0]]
                     triangles = VisualManager._triangulate_face(clipped)
-
                     for triangle in triangles:
                         base_idx = len(vertices)
                         vertices.extend(triangle)
                         faces.append([base_idx, base_idx + 1, base_idx + 2])
-
-                except Exception:
+                except (ValueError, TypeError, ArithmeticError):
                     continue
 
             if not vertices or not faces:
@@ -702,12 +804,13 @@ class VisualManager:
             proto_hex = _prototype_hex_from_lab(lab)
 
             is_closest = closest_label is not None and label == str(closest_label)
+            shown = to_display(lab)
 
             fig.add_trace(
                 go.Scatter3d(
-                    x=[lab[1]],
-                    y=[lab[2]],
-                    z=[lab[0]],
+                    x=[shown[1]],
+                    y=[shown[2]],
+                    z=[shown[0]],
                     mode="markers",
                     marker=dict(
                         size=7.6 if is_closest else marker_sizes["Representative"],
@@ -724,9 +827,9 @@ class VisualManager:
                     showlegend=False,
                     hovertemplate=(
                         f"<b>{label}</b><br>"
-                        "L*: %{z:.3f}<br>"
-                        "a*: %{x:.3f}<br>"
-                        "b*: %{y:.3f}<extra></extra>"
+                        + ("R: %{z:.2f}<br>G: %{x:.2f}<br>B: %{y:.2f}<extra></extra>"
+                           if display_color_space == "RGB" else
+                           "L*: %{z:.3f}<br>a*: %{x:.3f}<br>b*: %{y:.3f}<extra></extra>")
                     ),
                 )
             )
@@ -828,7 +931,7 @@ class VisualManager:
                 if not points_inside:
                     continue
 
-                pts = np.asarray(points_inside, dtype=float)
+                pts = to_display(np.asarray(points_inside, dtype=float))
 
                 if pts.ndim != 2 or pts.shape[1] < 3:
                     continue
@@ -853,10 +956,10 @@ class VisualManager:
                         legendgroup=proto_label,
                         showlegend=False,
                         hovertemplate=(
-                            f"<b>Filtered point: {proto_label}</b><br>"
-                            "L*: %{z:.3f}<br>"
-                            "a*: %{x:.3f}<br>"
-                            "b*: %{y:.3f}<extra></extra>"
+                            f"<b>Filtered point: {proto_label}</b><br>" +
+                            ("R: %{z:.2f}<br>G: %{x:.2f}<br>B: %{y:.2f}<extra></extra>"
+                             if display_color_space == "RGB" else
+                             "L*: %{z:.3f}<br>a*: %{x:.3f}<br>b*: %{y:.3f}<extra></extra>")
                         ),
                     )
                 )
@@ -865,7 +968,10 @@ class VisualManager:
 
         _plot_filtered_points(core or alpha or support)
 
+        if closest_lab is not None:
+            closest_lab = to_display(closest_lab)
         if custom_lab is not None:
+            custom_lab = to_display(custom_lab)
             fig.add_trace(
                 go.Scatter3d(
                     x=[custom_lab[1]],
@@ -886,9 +992,9 @@ class VisualManager:
                     legendrank=10_000,
                     hovertemplate=(
                         "<b>Custom color</b><br>"
-                        "L*: %{z:.3f}<br>"
-                        "a*: %{x:.3f}<br>"
-                        "b*: %{y:.3f}<extra></extra>"
+                        + ("R: %{z:.2f}<br>G: %{x:.2f}<br>B: %{y:.2f}<extra></extra>"
+                           if display_color_space == "RGB" else
+                           "L*: %{z:.3f}<br>a*: %{x:.3f}<br>b*: %{y:.3f}<extra></extra>")
                     ),
                 )
             )
@@ -915,9 +1021,9 @@ class VisualManager:
                     legendrank=10_001,
                     hovertemplate=(
                         f"<b>Closest: {closest_label}</b><br>"
-                        "L*: %{z:.3f}<br>"
-                        "a*: %{x:.3f}<br>"
-                        "b*: %{y:.3f}<extra></extra>"
+                        + ("R: %{z:.2f}<br>G: %{x:.2f}<br>B: %{y:.2f}<extra></extra>"
+                           if display_color_space == "RGB" else
+                           "L*: %{z:.3f}<br>a*: %{x:.3f}<br>b*: %{y:.3f}<extra></extra>")
                     ),
                 )
             )
@@ -1013,9 +1119,9 @@ class VisualManager:
             pad=dict(r=1, t=1, b=1),
         )
 
-        xaxis_range = volume_limits.comp2 if volume_limits else None
-        yaxis_range = volume_limits.comp3 if volume_limits else None
-        zaxis_range = volume_limits.comp1 if volume_limits else None
+        xaxis_range = target_limits.comp2 if target_limits else None
+        yaxis_range = target_limits.comp3 if target_limits else None
+        zaxis_range = target_limits.comp1 if target_limits else None
 
         # Legend.
         # Keep the legend at the right edge without version-specific size options.
@@ -1029,7 +1135,7 @@ class VisualManager:
             bgcolor="rgba(255,255,255,0.96)",
             bordercolor="rgba(0,0,0,0.12)",
             borderwidth=1,
-            font=dict(size=9, color="#24364f"),
+            font=dict(size=9, color="#3F374C"),
             itemsizing="constant",
             tracegroupgap=0,
         )
@@ -1044,7 +1150,7 @@ class VisualManager:
                 showarrow=False,
                 xanchor="right",
                 yanchor="top",
-                font=dict(size=12, color="#24364f"),
+                font=dict(size=12, color="#3F374C"),
             ),
         ]
 
@@ -1059,7 +1165,7 @@ class VisualManager:
                 font=dict(
                     size=17,
                     family="Arial, sans-serif",
-                    color="#24364f",
+                    color="#3F374C",
                 ),
             ),
             scene=dict(
@@ -1068,7 +1174,7 @@ class VisualManager:
                     y=[0.015, 0.895],
                 ),
                 xaxis=dict(
-                    title="a*  (green ↔ red)",
+                    title=("G (Green)" if display_color_space == "RGB" else "a*  (green ↔ red)"),
                     range=xaxis_range,
                     backgroundcolor="#f7f8fa",
                     gridcolor="white",
@@ -1077,7 +1183,7 @@ class VisualManager:
                     showspikes=False,
                 ),
                 yaxis=dict(
-                    title="b*  (blue ↔ yellow)",
+                    title=("B (Blue)" if display_color_space == "RGB" else "b*  (blue ↔ yellow)"),
                     range=yaxis_range,
                     backgroundcolor="#f7f8fa",
                     gridcolor="white",
@@ -1086,7 +1192,7 @@ class VisualManager:
                     showspikes=False,
                 ),
                 zaxis=dict(
-                    title="L*  (lightness)",
+                    title=("R (Red)" if display_color_space == "RGB" else "L*  (lightness)"),
                     range=zaxis_range,
                     backgroundcolor="#f7f8fa",
                     gridcolor="white",
@@ -1114,10 +1220,18 @@ class VisualManager:
             plot_bgcolor="white",
             hoverlabel=dict(
                 bgcolor="white",
-                bordercolor="#24364f",
-                font=dict(color="#24364f"),
+                bordercolor="#3F374C",
+                font=dict(color="#3F374C"),
             ),
         )
+
+        if str(color_space).upper() == "RGB":
+            for trace in fig.data:
+                tmpl = getattr(trace, "hovertemplate", None)
+                if isinstance(tmpl, str):
+                    trace.hovertemplate = (tmpl.replace("L*:", "R:")
+                                               .replace("a*:", "G:")
+                                               .replace("b*:", "B:"))
 
         return fig
 
@@ -1333,7 +1447,7 @@ class VisualManager:
                 font=dict(
                     size=16,
                     family="Arial, sans-serif",
-                    color="#24364f",
+                    color="#3F374C",
                 ),
             ),
             dragmode="pan",
@@ -1349,7 +1463,7 @@ class VisualManager:
                 bgcolor="rgba(255,255,255,0.94)",
                 bordercolor="rgba(0,0,0,0.12)",
                 borderwidth=1,
-                font=dict(size=10, color="#24364f"),
+                font=dict(size=10, color="#3F374C"),
                 itemsizing="constant",
             ),
             margin=dict(l=65, r=230, t=60, b=60),
@@ -1357,8 +1471,8 @@ class VisualManager:
             plot_bgcolor="white",
             hoverlabel=dict(
                 bgcolor="white",
-                bordercolor="#24364f",
-                font=dict(color="#24364f"),
+                bordercolor="#3F374C",
+                font=dict(color="#3F374C"),
             ),
         )
 
@@ -1605,7 +1719,7 @@ class VisualManager:
                 font=dict(
                     size=16,
                     family="Arial, sans-serif",
-                    color="#24364f",
+                    color="#3F374C",
                 ),
             ),
             dragmode="pan",
@@ -1621,7 +1735,7 @@ class VisualManager:
                 bgcolor="rgba(255,255,255,0.94)",
                 bordercolor="rgba(0,0,0,0.12)",
                 borderwidth=1,
-                font=dict(size=10, color="#24364f"),
+                font=dict(size=10, color="#3F374C"),
                 itemsizing="constant",
             ),
             margin=dict(l=65, r=230, t=60, b=60),
@@ -1629,8 +1743,8 @@ class VisualManager:
             plot_bgcolor="white",
             hoverlabel=dict(
                 bgcolor="white",
-                bordercolor="#24364f",
-                font=dict(color="#24364f"),
+                bordercolor="#3F374C",
+                font=dict(color="#3F374C"),
             ),
         )
 
@@ -1880,7 +1994,7 @@ class VisualManager:
                 font=dict(
                     size=16,
                     family="Arial, sans-serif",
-                    color="#24364f",
+                    color="#3F374C",
                 ),
             ),
             dragmode="pan",
@@ -1908,7 +2022,7 @@ class VisualManager:
                 bgcolor="rgba(255,255,255,0.94)",
                 bordercolor="rgba(0,0,0,0.12)",
                 borderwidth=1,
-                font=dict(size=10, color="#24364f"),
+                font=dict(size=10, color="#3F374C"),
                 itemsizing="constant",
             ),
             margin=dict(l=65, r=230, t=60, b=60),
@@ -1916,8 +2030,8 @@ class VisualManager:
             plot_bgcolor="white",
             hoverlabel=dict(
                 bgcolor="white",
-                bordercolor="#24364f",
-                font=dict(color="#24364f"),
+                bordercolor="#3F374C",
+                font=dict(color="#3F374C"),
             ),
         )
 
@@ -2135,7 +2249,7 @@ class VisualManager:
                 font=dict(
                     size=16,
                     family="Arial, sans-serif",
-                    color="#24364f",
+                    color="#3F374C",
                 ),
             ),
             dragmode="pan",
@@ -2149,8 +2263,8 @@ class VisualManager:
             bargap=0.28,
             hoverlabel=dict(
                 bgcolor="white",
-                bordercolor="#24364f",
-                font=dict(color="#24364f"),
+                bordercolor="#3F374C",
+                font=dict(color="#3F374C"),
             ),
         )
 
@@ -2298,7 +2412,7 @@ class VisualManager:
                 font=dict(
                     size=16,
                     family="Arial, sans-serif",
-                    color="#24364f",
+                    color="#3F374C",
                 ),
             ),
             dragmode="pan",
@@ -2311,8 +2425,8 @@ class VisualManager:
             bargap=0.28,
             hoverlabel=dict(
                 bgcolor="white",
-                bordercolor="#24364f",
-                font=dict(color="#24364f"),
+                bordercolor="#3F374C",
+                font=dict(color="#3F374C"),
             ),
         )
 
@@ -2409,7 +2523,7 @@ class VisualManager:
                 font=dict(
                     size=16,
                     family="Arial, sans-serif",
-                    color="#24364f",
+                    color="#3F374C",
                 ),
             ),
             dragmode="pan",
@@ -2421,8 +2535,8 @@ class VisualManager:
             bargap=0.34,
             hoverlabel=dict(
                 bgcolor="white",
-                bordercolor="#24364f",
-                font=dict(color="#24364f"),
+                bordercolor="#3F374C",
+                font=dict(color="#3F374C"),
             ),
             shapes=[
                 dict(

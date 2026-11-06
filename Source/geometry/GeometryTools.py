@@ -132,7 +132,7 @@ class GeometryTools:
         return False
 
     @staticmethod
-    def intersection_with_volume(v, p1, p2, eps=1e-9):
+    def intersection_with_volume(v, p1, p2, eps=1e-9, *, ignore_domain_boundaries=False):
         """
         Intersect the ray starting at p1 and going through p2 with the closest
         face plane of the volume. Returns the nearest valid intersection point,
@@ -147,6 +147,8 @@ class GeometryTools:
         dz = p2.z - p1.z
 
         for face in v.getFaces():
+            if ignore_domain_boundaries and face.isDomainBoundary():
+                continue
             plane = face.getPlane()
             A, B, C, D = plane.A, plane.B, plane.C, plane.D
 

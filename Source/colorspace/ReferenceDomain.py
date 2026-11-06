@@ -1,3 +1,5 @@
+import math
+
 from Source.geometry.Volume import Volume
 from Source.geometry.Point import Point
 from Source.geometry.Face import Face
@@ -38,6 +40,32 @@ class ReferenceDomain:
             cls.DEFAULT_B_MIN,
             cls.DEFAULT_B_MAX,
         )
+
+    @classmethod
+    def default_rgb_reference_domain(cls):
+        return cls(0.0, 255.0, 0.0, 255.0, 0.0, 255.0)
+
+    @classmethod
+    def for_color_space(cls, color_space="LAB"):
+        text = str(color_space).upper()
+        if text == "LAB":
+            return cls.default_voronoi_reference_domain()
+        if text == "RGB":
+            return cls.default_rgb_reference_domain()
+        raise ValueError("The geometric color space must be LAB or RGB.")
+
+    @classmethod
+    def from_bounds(cls, bounds):
+        vals = [float(v) for v in bounds]
+        if len(vals) != 6 or not all(math.isfinite(v) for v in vals):
+            raise ValueError("Reference domain requires six finite bounds.")
+        if any(vals[i] >= vals[i+1] for i in (0,2,4)):
+            raise ValueError("Reference domain minima must be smaller than maxima.")
+        return cls(*vals)
+
+    @property
+    def bounds(self):
+        return tuple(float(v) for pair in self.reference for v in pair)
 
     @classmethod
     def is_valid_lab_values(cls, L, a, b, eps=0.0):

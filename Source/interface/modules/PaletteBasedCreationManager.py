@@ -30,8 +30,8 @@ class PaletteBasedCreationManager:
     BORDER = "#d9dde3"
     TEXT = "#1f2937"
     MUTED = "#6b7280"
-    BLUE = "#1f4e8c"
-    BLUE_SOFT = "#e8f0fe"
+    BLUE = UtilsTools.UI_ACCENT
+    BLUE_SOFT = UtilsTools.UI_ACCENT_SOFT
     GREEN = "#1f5f3a"
     GREEN_SOFT = "#e0f2e9"
 
@@ -68,6 +68,7 @@ class PaletteBasedCreationManager:
         self._name_editors = []
 
         self.win = tk.Toplevel(self.root)
+        self.win.withdraw()
         self.win.title("Palette-Based Color Space Creation")
         self.win.configure(bg=self.BG)
         self.win.minsize(820, 580)
@@ -90,6 +91,7 @@ class PaletteBasedCreationManager:
             pass
 
         self.win.bind("<Escape>", lambda _e: self.close())
+        self.win.deiconify()
         self.win.focus_set()
 
     # Window / State
@@ -729,7 +731,7 @@ class PaletteBasedCreationManager:
             font=self.FONT_BOLD,
             bg=self.BLUE_SOFT,
             fg=self.BLUE,
-            activebackground="#d7e5fb",
+            activebackground=UtilsTools.UI_ACCENT_HOVER,
             activeforeground=self.BLUE,
             relief="solid",
             bd=1,

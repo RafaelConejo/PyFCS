@@ -77,7 +77,8 @@ class FuzzyColorSpaceManager:
 
             return {
                 'type': 'cns',
-                'color_data': color_data
+                'color_data': color_data,
+                'source_color_space': getattr(input_class, 'last_color_space', 'LAB') or 'LAB',
             }
 
         elif extension == '.fcs':

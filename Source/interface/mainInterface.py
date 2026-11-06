@@ -35,6 +35,7 @@ from Source.input_output.Input import Input
 from Source.interface.modules.VisualManager import VisualManager
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
+from Source.fuzzy.FuzzyColorSpaceBuilder import FuzzyColorSpaceBuilder, rebuild_in_color_space, lab_to_rgb_model_checked
 from Source.interface.modules.ImageManager import ImageManager
 from Source.interface.modules.FuzzyColorSpaceManager import FuzzyColorSpaceManager
 from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
@@ -46,9 +47,17 @@ import Source.interface.modules.UtilsTools as UtilsTools
 
 
 class PyFCSApp:
+    # Embed the distributed license so that Help > License also works in the
+    # one-file executable, where a repository-level LICENSE may not be present.
+    MIT_LICENSE_TEXT = 'MIT License\n\nCopyright (c) 2025 Rafael Vázquez Conejo\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the "Software"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n'
+
     def __init__(self, root):
         # Core references / managers
         self.root = root
+        # Tk callbacks should never terminate a user's workflow with an
+        # unhandled traceback. Log technical details, show a concise dialog.
+        self._reporting_ui_error = False
+        self.root.report_callback_exception = self._report_ui_callback_exception
 
         logo_path = UtilsTools.get_resource_path(
             os.path.join("Source", "external", "icons", "logo.png")
@@ -85,6 +94,10 @@ class PyFCSApp:
         self._image_workspace_callbacks = {}
 
         self.volume_limits = ReferenceDomain.default_voronoi_reference_domain()
+        # Creation settings are stored in each .fcs; this is the in-session default.
+        self._fcs_creation_defaults = {"color_space": "LAB", "lambda1": 0.5,
+                                       "lambda2": 1.5, "disjoint": True,
+                                       "covering": True, "samples": 27}
 
         # Shared runtime state
         self.COLOR_SPACE = False
@@ -108,6 +121,14 @@ class PyFCSApp:
         # Additional runtime state
         self.rgb_data = []
         self.graph_widget = None
+        # Visualization coordinates are independent of the model's geometry.
+        # On CNS load this defaults to the native source space (RGB/LAB).
+        self.visualization_space = tk.StringVar(master=self.root, value="LAB")
+        self._last_valid_visualization_space = "LAB"
+        self.loaded_source_color_space = "LAB"
+        # The model may be rebuilt in memory without immediately overwriting
+        # an imported CNS / JFCS / PyFCS file on disk.
+        self._model_space_unsaved = False
 
         # Retain Tk image references for the lifetime of their widgets.
         self.ui_icons = {}
@@ -125,9 +146,9 @@ class PyFCSApp:
         BORDER = "#d9dde3"
         TEXT = "#1f2937"
         MUTED = "#6b7280"
-        BLUE = "#1f4e8c"
-        BLUE_BG = "#e8f0fe"
-        BLUE_BG_ACTIVE = "#d7e5fb"
+        BLUE = UtilsTools.UI_ACCENT
+        BLUE_BG = UtilsTools.UI_ACCENT_SOFT
+        BLUE_BG_ACTIVE = UtilsTools.UI_ACCENT_HOVER
         GREEN = "#1f5f3a"
         GREEN_BG = "#e0f2e9"
         GREEN_BG_ACTIVE = "#cfeadb"
@@ -162,6 +183,7 @@ class PyFCSApp:
 
         self.root.bind("<Escape>", self.toggle_fullscreen)
         self.root.bind("<F11>", self.toggle_fullscreen)
+        self.root.protocol("WM_DELETE_WINDOW", self.exit_app)
 
         # ttk style
         try:
@@ -238,7 +260,7 @@ class PyFCSApp:
                 font=FONT_BOLD,
                 bg="#f8fafc",
                 fg=TEXT,
-                activebackground="#e8f0fe",
+                activebackground=UtilsTools.UI_ACCENT_SOFT,
                 activeforeground=TEXT,
                 relief="raised",
                 bd=2,
@@ -421,6 +443,10 @@ class PyFCSApp:
         # Help
         help_menu = Menu(self.menubar, tearoff=0)
 
+        help_menu.add_command(
+            label="License",
+            command=self.license_info
+        )
         help_menu.add_command(
             label="About",
             command=self.about_info
@@ -783,8 +809,33 @@ class PyFCSApp:
         )
         paned.add(self.colors_frame, minsize=145)
 
+        # A display-only coordinate selector: changing it never rebuilds the FCS.
+        # A CNS opens in its declared RGB/LAB space by default.
+        self.visualization_mode_bar = tk.Frame(self.colors_frame, bg=CARD_BG)
+        self.visualization_mode_bar.pack(fill="x", padx=8, pady=(10, 3))
+        tk.Label(self.visualization_mode_bar, text="View", font=FONT_SMALL_BOLD,
+                 bg=CARD_BG, fg=MUTED).pack(anchor="center", pady=(0, 2))
+        visual_choices = tk.Frame(self.visualization_mode_bar, bg=CARD_BG)
+        visual_choices.pack(anchor="center")
+        for code in ("LAB", "RGB"):
+            tk.Radiobutton(
+                visual_choices, text=code, value=code,
+                variable=self.visualization_space,
+                command=self.on_visualization_space_changed,
+                font=FONT_SMALL, bg=CARD_BG, fg=TEXT,
+                activebackground=CARD_BG, activeforeground=TEXT,
+                selectcolor=CARD_BG, highlightthickness=0,
+                cursor="hand2", padx=1
+            ).pack(side="left", padx=1)
+        self.visualization_mode_bar_hint = tk.Label(
+            self.colors_frame, text="Display coordinates only",
+            font=("Segoe UI", 7), bg=CARD_BG, fg=MUTED
+        )
+        self.visualization_mode_bar_hint.pack(anchor="center", pady=(0, 6))
+        tk.Frame(self.colors_frame, bg=BORDER, height=1).pack(fill="x", padx=10)
+
         colors_header = tk.Frame(self.colors_frame, bg=CARD_BG)
-        colors_header.pack(fill="x", padx=8, pady=(8, 4))
+        colors_header.pack(fill="x", padx=8, pady=(9, 4))
 
         tk.Label(
             colors_header,
@@ -792,8 +843,8 @@ class PyFCSApp:
             font=FONT_SMALL_BOLD,
             bg=CARD_BG,
             fg=TEXT,
-            anchor="w"
-        ).pack(side="left")
+            anchor="center"
+        ).pack(fill="x")
 
         self.scrollable_canvas = tk.Canvas(
             self.colors_frame,
@@ -895,8 +946,8 @@ class PyFCSApp:
         )
         data_panel.pack(fill="both", expand=True)
 
-        # Header: title + file name
-        data_header = tk.Frame(data_panel, bg=SOFT_BG, height=66)
+        # Data header: short title, secondary geometry metadata and file name.
+        data_header = tk.Frame(data_panel, bg=SOFT_BG, height=62)
         data_header.pack(fill="x")
         data_header.pack_propagate(False)
 
@@ -913,14 +964,15 @@ class PyFCSApp:
         )
         self.data_header_title.pack(anchor="w", pady=(10, 0))
 
-        tk.Label(
+        self.data_model_summary = tk.Label(
             header_left,
-            text="Edit prototypes, add colors, apply or delete the current color space",
+            text="No color space loaded",
             font=FONT_SMALL,
             bg=SOFT_BG,
             fg=MUTED,
             anchor="w"
-        ).pack(anchor="w", pady=(2, 0))
+        )
+        self.data_model_summary.pack(anchor="w", pady=(2, 0))
 
         name_row = tk.Frame(data_header, bg=SOFT_BG)
         name_row.pack(side="right", fill="y", padx=16)
@@ -1049,6 +1101,23 @@ class PyFCSApp:
             padx=(0, 10)
         )
 
+        # Explicit geometry conversion belongs to Data, not Model 3D.
+        # View (on the 3D tab) only changes display coordinates.
+        self.change_model_button = create_action_button(
+            left_actions,
+            text="Change Model",
+            command=self.change_model_color_space,
+            bg="#f1f3f6",
+            fg=TEXT,
+            active_bg="#e5e7eb",
+            side="left",
+            padx=(0, 10)
+        )
+        # Compact footer buttons so all four actions remain fully visible at
+        # the application's minimum width and with typical Windows scaling.
+        add_button.configure(padx=9)
+        self.change_model_button.configure(padx=9, state=tk.DISABLED)
+
         apply_button = create_action_button(
             left_actions,
             text="Apply Changes",
@@ -1070,6 +1139,8 @@ class PyFCSApp:
             side="right",
             padx=(0, 0)
         )
+        apply_button.configure(padx=9)
+        delete_button.configure(padx=9)
 
         # Internal status variable
         self.status_var = tk.StringVar(value="Ready")
@@ -1081,7 +1152,12 @@ class PyFCSApp:
         Prompt the user to confirm exiting the application.
         If the user confirms, close the application.
         """
-        confirm_exit = messagebox.askyesno("Exit", "Are you sure you want to exit?")
+        if getattr(self, "_model_space_unsaved", False):
+            prompt = ("The reconstructed model has not been saved.\n\n"
+                      "Exit without using Apply Changes?")
+        else:
+            prompt = "Are you sure you want to exit?"
+        confirm_exit = messagebox.askyesno("Exit", prompt, parent=self.root)
         if confirm_exit:
             self.root.destroy()
 
@@ -1259,6 +1335,7 @@ class PyFCSApp:
         parent_win = self._get_active_dialog_parent(parent)
 
         warning_win = tk.Toplevel(parent_win)
+        warning_win.withdraw()
         warning_win.title(title)
         warning_win.configure(bg="#eeeeee")
         warning_win.resizable(False, False)
@@ -1347,10 +1424,10 @@ class PyFCSApp:
             footer,
             text="OK",
             font=("Helvetica", 9, "bold"),
-            bg="#E8F0FE",
-            fg="#1f4e8c",
-            activebackground="#D7E5FB",
-            activeforeground="#1f4e8c",
+            bg=UtilsTools.UI_ACCENT_SOFT,
+            fg=UtilsTools.UI_ACCENT,
+            activebackground=UtilsTools.UI_ACCENT_HOVER,
+            activeforeground=UtilsTools.UI_ACCENT,
             relief="solid",
             bd=1,
             padx=18,
@@ -1388,6 +1465,7 @@ class PyFCSApp:
         )
 
         warning_win.transient(parent_win)
+        warning_win.deiconify()
         warning_win.grab_set()
 
         try:
@@ -1403,6 +1481,7 @@ class PyFCSApp:
         Display a simple loading window with the message 'Loading Color Space...'.
         """
         self.load_window = tk.Toplevel(self.root)
+        self.load_window.withdraw()
         self.load_window.title("Loading")
         self.load_window.resizable(False, False)
 
@@ -1411,6 +1490,7 @@ class PyFCSApp:
         label.pack(pady=(10, 5))
 
         self.center_popup(self.load_window, 300, 100)
+        self.load_window.deiconify()
 
         # Disable interactions with the main window
         self.load_window.grab_set()
@@ -1424,6 +1504,7 @@ class PyFCSApp:
         Display a visually appealing loading window with a progress bar.
         """
         self.load_window = tk.Toplevel(self.root)
+        self.load_window.withdraw()
         self.load_window.title("Loading")
         self.load_window.resizable(False, False)  # Disable resizing
 
@@ -1437,6 +1518,7 @@ class PyFCSApp:
 
         # Center the popup
         self.center_popup(self.load_window, 300, 150)
+        self.load_window.deiconify()
 
         # Disable interactions with the main window
         self.load_window.grab_set()
@@ -1474,11 +1556,98 @@ class PyFCSApp:
                 pass
 
 
+    def license_info(self):
+        """Show the complete MIT license, with copy and keyboard shortcuts."""
+        popup = tk.Toplevel(self.root)
+        popup.withdraw()
+        popup.title("License - PyFCS")
+        popup.configure(bg="#f5f6f8")
+        popup.resizable(True, True)
+        popup.minsize(540, 400)
+
+        try:
+            popup.iconphoto(True, self.logo)
+        except Exception:
+            pass
+
+        outer = tk.Frame(popup, bg="#f5f6f8")
+        outer.pack(fill="both", expand=True, padx=14, pady=14)
+        card = tk.Frame(outer, bg="white", bd=1, relief="solid")
+        card.pack(fill="both", expand=True)
+
+        tk.Label(
+            card, text="MIT License", font=("Segoe UI", 16, "bold"),
+            fg="#1f2937", bg="white"
+        ).pack(pady=(18, 2))
+        tk.Label(
+            card, text="PyFCS · Rafael Vázquez Conejo",
+            font=("Segoe UI", 9), fg="#6b7280", bg="white"
+        ).pack(pady=(0, 14))
+
+        body = tk.Frame(card, bg="white")
+        body.pack(fill="both", expand=True, padx=20)
+        scrollbar = ttk.Scrollbar(body, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+        license_body = tk.Text(
+            body, wrap="word", font=("Consolas", 9),
+            bg="#fafafa", fg="#374151", bd=1, relief="solid",
+            padx=12, pady=10, undo=False,
+            yscrollcommand=scrollbar.set,
+        )
+        license_body.pack(side="left", fill="both", expand=True)
+        scrollbar.configure(command=license_body.yview)
+        license_body.insert("1.0", self.MIT_LICENSE_TEXT)
+        license_body.configure(state="disabled")
+
+        footer = tk.Frame(card, bg="white")
+        footer.pack(fill="x", padx=20, pady=(14, 16))
+        actions = tk.Frame(footer, bg="white")
+        actions.pack(anchor="center")
+
+        def copy_license():
+            popup.clipboard_clear()
+            popup.clipboard_append(self.MIT_LICENSE_TEXT)
+            popup.update_idletasks()
+            copy_button.configure(text="Copied!")
+
+        def close_license(_event=None):
+            try:
+                popup.grab_release()
+            except Exception:
+                pass
+            popup.destroy()
+
+        copy_button = tk.Button(
+            actions, text="Copy License", command=copy_license,
+            font=("Segoe UI", 9, "bold"), bg="#f3f4f6", fg="#374151",
+            activebackground="#e5e7eb", relief="solid", bd=1,
+            padx=16, pady=7, cursor="hand2",
+        )
+        copy_button.pack(side="left", padx=5)
+        close_button = tk.Button(
+            actions, text="Close", command=close_license,
+            font=("Segoe UI", 9, "bold"),
+            bg=UtilsTools.UI_ACCENT_SOFT, fg=UtilsTools.UI_ACCENT_DARK,
+            activebackground=UtilsTools.UI_ACCENT_HOVER,
+            relief="solid", bd=1, padx=22, pady=7, cursor="hand2",
+        )
+        close_button.pack(side="left", padx=5)
+
+        popup.protocol("WM_DELETE_WINDOW", close_license)
+        popup.bind("<Escape>", close_license)
+        popup.update_idletasks()
+        self.center_popup(popup, 700, 575)
+        popup.transient(self.root)
+        popup.deiconify()
+        popup.grab_set()
+        close_button.focus_set()
+
     def about_info(self):
         """
         Display an improved About window for PyFCS.
         """
         about_window = tk.Toplevel(self.root)
+        about_window.withdraw()
         about_window.title("About PyFCS")
         about_window.configure(bg="#f5f6f8")
         about_window.resizable(False, False)
@@ -1600,7 +1769,7 @@ class PyFCSApp:
             text=WEBSITE_URL,
             font=("Segoe UI", 9, "underline"),
             bg="#f8fafc",
-            fg="#1f4e8c",
+            fg=UtilsTools.UI_ACCENT,
             cursor="hand2"
         )
         website_label.pack(anchor="center", pady=(0, 10))
@@ -1615,10 +1784,10 @@ class PyFCSApp:
             text="Close",
             command=close_about,
             font=("Segoe UI", 10, "bold"),
-            bg="#e8f0fe",
-            fg="#1f4e8c",
-            activebackground="#d7e5fb",
-            activeforeground="#1f4e8c",
+            bg=UtilsTools.UI_ACCENT_SOFT,
+            fg=UtilsTools.UI_ACCENT,
+            activebackground=UtilsTools.UI_ACCENT_HOVER,
+            activeforeground=UtilsTools.UI_ACCENT,
             relief="raised",
             bd=1,
             padx=30,
@@ -1637,6 +1806,7 @@ class PyFCSApp:
         self.center_popup(about_window, WIN_W, WIN_H)
 
         about_window.transient(self.root)
+        about_window.deiconify()
         about_window.grab_set()
         about_window.focus_set()
 
@@ -2192,7 +2362,8 @@ class PyFCSApp:
         # Process color prototypes from the input color data
         self.prototypes = UtilsTools.process_prototypes(self.color_data)
 
-        # Create and store the fuzzy color space using the generated prototypes
+        # update_volumes is only used when building a fresh space from .cns;
+        # loaded .fcs spaces retain their own previously saved geometry.
         self.fuzzy_color_space = FuzzyColorSpace(space_name=" ", prototypes=self.prototypes)
 
         # Precompute internal fuzzy structures for efficiency
@@ -2298,6 +2469,14 @@ class PyFCSApp:
             )
         if not filename:
             return False
+        if getattr(self, "_model_space_unsaved", False):
+            if not messagebox.askyesno(
+                "Unsaved Model Color Space",
+                "The reconstructed model has not been saved.\n\n"
+                "Load another color space and discard it?",
+                parent=self.root,
+            ):
+                return False
 
         self.show_loading_color_space()
 
@@ -2308,15 +2487,35 @@ class PyFCSApp:
                 raise ValueError("The selected file did not return valid color-space data.")
 
             new_color_data = data["color_data"]
+            if not isinstance(new_color_data, dict) or len(new_color_data) < 2:
+                raise ValueError("The file must contain at least two valid, named colors.")
+            for color_label, row in new_color_data.items():
+                if not str(color_label).strip() or not isinstance(row, dict):
+                    raise ValueError("The file contains an empty or malformed color entry.")
+                coords = np.asarray(row.get("positive_prototype", []), dtype=float).reshape(-1)
+                if coords.size != 3 or not np.all(np.isfinite(coords)):
+                    raise ValueError(f"Invalid color coordinates for '{color_label}'.")
             source_type = str(data["type"]).lower()
 
             if source_type == "cns":
-                new_prototypes = UtilsTools.process_prototypes(new_color_data)
-                new_fuzzy_color_space = FuzzyColorSpace(
-                    space_name=" ",
-                    prototypes=new_prototypes,
+                # The Data rows retain LAB for perceptual evaluation, while
+                # the FCS construction uses the native CNS coordinates.
+                native = str(data.get("source_color_space", "LAB")).upper()
+                if native not in ("LAB", "RGB"):
+                    raise ValueError("CNS color space must be LAB or RGB.")
+                native_points = {
+                    label: np.asarray(
+                        row["Color"] if native == "RGB" else row["positive_prototype"],
+                        dtype=float,
+                    ).reshape(3)
+                    for label, row in new_color_data.items()
+                }
+                new_fuzzy_color_space = FuzzyColorSpaceBuilder.build(
+                    os.path.splitext(os.path.basename(filename))[0],
+                    native_points, color_space=native,
                 )
                 new_fuzzy_color_space.precompute_pack()
+                new_prototypes = new_fuzzy_color_space.get_prototypes()
                 new_cores = new_fuzzy_color_space.get_cores()
                 new_supports = new_fuzzy_color_space.get_supports()
 
@@ -2342,15 +2541,29 @@ class PyFCSApp:
             self.color_data = new_color_data
             self.edit_color_data = copy.deepcopy(new_color_data)
             self.fuzzy_color_space = new_fuzzy_color_space
+            self._model_space_unsaved = False
+            native_source = (
+                data.get("source_color_space", "LAB")
+                if source_type == "cns" else new_fuzzy_color_space.color_space
+            )
+            native_source = str(native_source).upper()
+            if native_source not in ("LAB", "RGB"):
+                native_source = "LAB"
+            self.loaded_source_color_space = native_source
+            self.visualization_space.set(native_source)
+            self._last_valid_visualization_space = native_source
             self.prototypes = new_prototypes
             self.cores = new_cores
             self.supports = new_supports
+            self.volume_limits = new_fuzzy_color_space.reference_domain
+            self._fcs_creation_defaults = self._options_from_loaded_space(new_fuzzy_color_space)
 
             self._invalidate_mapping_caches()
 
             self.display_data_window()
             self._reset_3d_canvas()
             self.update_prototypes_info()
+            self._update_model_space_indicator()
             return True
 
         except Exception as exc:
@@ -2360,6 +2573,63 @@ class PyFCSApp:
         finally:
             self.hide_loading()
 
+
+    def _options_from_loaded_space(self, space, new_color_data=None):
+        """Save the current model, its exact coordinates and negative choices.
+
+        Editable Data rows are LAB because the evaluation pipeline works in
+        CIELAB. Persist *native* representatives unchanged when they have not
+        been edited, particularly for an imported RGB or JFCS space.
+        """
+        if space is None:
+            return {}
+        rows = new_color_data if new_color_data is not None else getattr(self, "color_data", {})
+        originals = {p.label: np.asarray(p.positive, dtype=float) for p in space.prototypes}
+        source_by_label = {name: entry.get("fcs_original_label", name)
+                           for name, entry in rows.items()}
+        old_to_new = {original: name for name, original in source_by_label.items()}
+        options = dict(
+            color_space=space.color_space, reference_domain=space.reference_domain,
+            lambda1=space.lambda1, lambda2=space.lambda2,
+            disjoint=space.disjoint, covering=space.covering,
+            samples=space.samples or 27,
+            tconorm=getattr(space, "tconorm", "bounded_sum"),
+            description=space.description,
+        )
+        native_points = {}
+        for name, old_name in source_by_label.items():
+            if old_name not in originals:
+                continue
+            row = rows[name]
+            original_lab = np.asarray(space.lab_from_model(originals[old_name]), dtype=float)
+            current_lab = np.asarray(row.get("positive_prototype", row.get("Color", [])), dtype=float).reshape(-1)
+            if current_lab.shape == (3,) and np.all(np.isfinite(current_lab)) and np.linalg.norm(
+                    original_lab - current_lab) < 1e-5:
+                native_points[name] = originals[old_name].copy()
+        options["model_points"] = native_points
+
+        if not space.disjoint:
+            # Match negatives that refer to a category by label so renaming a
+            # category retains its relationships. Preserve independent negative
+            # coordinates as LAB triples rather than discarding them.
+            auxiliary = np.asarray(getattr(space, "auxiliary_negatives", []), dtype=float).reshape(-1, 3)
+            negative_choices = {}
+            for new_name, old_name in source_by_label.items():
+                choices = []
+                for neg in space.negative_prototypes.get(old_name, []):
+                    xyz = np.asarray(neg, dtype=float).reshape(3)
+                    if len(auxiliary) and np.any(np.linalg.norm(auxiliary - xyz, axis=1) < 1e-6):
+                        continue
+                    matching = next((label for label, value in originals.items()
+                                     if label != old_name and np.linalg.norm(xyz - value) < 1e-6), None)
+                    if matching is not None:
+                        if matching in old_to_new:
+                            choices.append(old_to_new[matching])
+                    else:
+                        choices.append(tuple(space.lab_from_model(xyz)))
+                negative_choices[new_name] = list(dict.fromkeys(choices))
+            options["negative_prototypes"] = negative_choices
+        return options
 
     def create_color_space(self, parent=None):
         """
@@ -2372,13 +2642,22 @@ class PyFCSApp:
             True if the color space creation/save process was started.
             False if cancelled, invalid, or not enough colors were selected.
         """
-        selected_colors_lab = {
-            name: np.array([data["lab"]["L"], data["lab"]["A"], data["lab"]["B"]])
-            if isinstance(data["lab"], dict)
-            else np.array(data["lab"])
-            for name, data in self.color_checks.items()
-            if data["var"].get()
-        }
+        selected_colors_lab = {}
+        for name, data in getattr(self, "color_checks", {}).items():
+            try:
+                if not data.get("var") or not data["var"].get():
+                    continue
+                lab = data.get("lab")
+                if isinstance(lab, dict):
+                    arr = np.array([lab["L"], lab["A"], lab["B"]], dtype=float)
+                else:
+                    arr = np.asarray(lab, dtype=float).reshape(-1)
+                if arr.size != 3 or not np.all(np.isfinite(arr)):
+                    raise ValueError("Coordinates must contain three finite numbers.")
+                selected_colors_lab[name] = arr
+            except (KeyError, ValueError, TypeError) as exc:
+                self.custom_warning("Invalid Color", f"Cannot use '{name}': {exc}")
+                return False
 
         parent_win = parent if parent is not None else self.root
 
@@ -2440,153 +2719,42 @@ class PyFCSApp:
             )
             return False
 
-        popup = tk.Toplevel(parent_win)
-        popup.title("Color Space Name")
-        popup.resizable(False, False)
-        popup.configure(bg="#eeeeee")
+        # UI-only component: all geometry, validation and persistence stay in
+        # the existing application and FuzzyColorSpaceBuilder.
+        from Source.geometry.Voronoi import Voronoi
 
-        result = {
-            "created": False,
-            "saving": False
-        }
-
-        # Main shell
-        outer = tk.Frame(popup, bg="#eeeeee")
-        outer.pack(fill="both", expand=True, padx=12, pady=12)
-
-        panel = tk.Frame(outer, bg="white", bd=1, relief="solid")
-        panel.pack(fill="both", expand=True)
-
-        tk.Label(
-            panel,
-            text="Name for the fuzzy color space:",
-            bg="white",
-            fg="#222222",
-            font=("Sans", 10, "bold")
-        ).pack(pady=(14, 6))
-
-        name_entry = tk.Entry(
-            panel,
-            font=("Sans", 10),
-            width=28,
-            justify="center",
-            relief="solid",
-            bd=1
-        )
-        name_entry.pack(pady=(0, 8))
-
-        def on_ok():
-            if result.get("saving", False):
-                return
-
-            name = name_entry.get().strip()
-
-            if not name:
-                self.custom_warning(
-                    "Warning",
-                    "Please enter a name for the fuzzy color space.",
-                    parent=popup
+        def on_create(name, options):
+            mode = options["color_space"]
+            domain = options["reference_domain"]
+            points = {
+                label: (
+                    np.asarray(lab, dtype=float)
+                    if mode == "LAB" else
+                    lab_to_rgb_model_checked(np.asarray(lab, dtype=float).reshape(1, 3))[0]
                 )
-                return
+                for label, lab in selected_colors_lab.items()
+            }
+            Voronoi._validate_points_in_domain(
+                np.asarray(list(points.values())), domain, Voronoi.DEFAULT_EPS
+            )
+            self.save_cs(name, selected_colors_lab, options=options)
 
-            try:
-                # Lock input while starting the Color Space creation.
-                # The loading window is handled inside save_cs()
-                # through _save_color_space_file().
-                result["saving"] = True
-
-                popup.config(cursor="watch")
-                name_entry.config(state="disabled")
-                ok_button.config(state="disabled")
-                cancel_button.config(state="disabled")
-                popup.update_idletasks()
-
-                self.save_cs(name, selected_colors_lab)
-
-                result["created"] = True
-                popup.destroy()
-
-            except Exception as e:
-                result["created"] = False
-                result["saving"] = False
-
-                try:
-                    if popup.winfo_exists():
-                        popup.config(cursor="")
-                        name_entry.config(state="normal")
-                        ok_button.config(state="normal")
-                        cancel_button.config(state="normal")
-                except Exception:
-                    pass
-
-                self.custom_warning(
-                    "Error",
-                    f"The Color Space could not be saved: {e}",
-                    parent=popup
-                )
-
-        def on_cancel():
-            if result.get("saving", False):
-                return
-
-            result["created"] = False
-            popup.destroy()
-
-        button_row = tk.Frame(panel, bg="white")
-        button_row.pack(fill="x", padx=16, pady=(0, 12))
-
-        cancel_button = tk.Button(
-            button_row,
-            text="Cancel",
-            font=("Helvetica", 9),
-            bg="#f2f2f2",
-            fg="#333333",
-            relief="solid",
-            bd=1,
-            padx=14,
-            pady=4,
-            command=on_cancel
+        dialog = UtilsTools.FCSCreationDialog(
+            parent_win,
+            selected_colors_lab,
+            on_accept=on_create,
+            warn=self.custom_warning,
+            # A new FCS starts in LAB even if the currently loaded model is RGB.
         )
-        cancel_button.pack(side="right", padx=(8, 0))
-
-        ok_button = tk.Button(
-            button_row,
-            text="OK",
-            font=("Helvetica", 9, "bold"),
-            bg="#E8F0FE",
-            fg="#1f4e8c",
-            activebackground="#D7E5FB",
-            activeforeground="#1f4e8c",
-            relief="solid",
-            bd=1,
-            padx=18,
-            pady=4,
-            command=on_ok
-        )
-        ok_button.pack(side="right")
-
-        popup.bind("<Return>", lambda event: on_ok())
-        popup.bind("<Escape>", lambda event: on_cancel())
-        popup.protocol("WM_DELETE_WINDOW", on_cancel)
-
-        # Use your existing centering function
-        popup.update_idletasks()
-        self.center_popup(popup, 340, 135)
-
-        popup.transient(parent_win)
-        popup.grab_set()
-
+        dialog.transient(parent_win)
+        dialog.grab_set()
         try:
-            popup.lift(parent_win)
-            popup.focus_force()
+            dialog.lift(parent_win)
+            dialog.focus_force()
         except Exception:
             pass
-
-        name_entry.focus_set()
-
-        popup.wait_window()
-
-        return result["created"]
+        dialog.wait_window()
+        return bool(dialog.result)
 
 
     def _on_color_space_saved_success(self, name, file_path=None):
@@ -2619,17 +2787,31 @@ class PyFCSApp:
         self._invalidate_mapping_caches()
 
         self.color_data = copy.deepcopy(saved_color_data)
-        self.edit_color_data = copy.deepcopy(saved_color_data)
+        # A saved FCS has *new* canonical labels. Reset its source-label
+        # pointers, otherwise subsequent renames may refer to stale labels.
+        for color_label, item in self.color_data.items():
+            item["fcs_original_label"] = color_label
+        self.edit_color_data = copy.deepcopy(self.color_data)
         self.file_path = file_path
+        # Preserve the actual FCS name; the last color label must never
+        # replace it (e.g. "Black" when the space is named "a").
         self.file_base_name = name
 
         # The writer already built the Voronoi geometry; reuse it after saving.
         self.fuzzy_color_space = fuzzy_color_space
+        self._model_space_unsaved = False
+        # Editing/saving may change the model's geometric space.
+        self.loaded_source_color_space = fuzzy_color_space.color_space
+        self.visualization_space.set(fuzzy_color_space.color_space)
+        self._last_valid_visualization_space = fuzzy_color_space.color_space
         self.prototypes = fuzzy_color_space.get_prototypes()
         self.fuzzy_color_space.precompute_pack()
         self.cores = fuzzy_color_space.get_cores()
         self.supports = fuzzy_color_space.get_supports()
+        self.volume_limits = fuzzy_color_space.reference_domain
+        self._fcs_creation_defaults = self._options_from_loaded_space(fuzzy_color_space)
         self.update_prototypes_info()
+        self._update_model_space_indicator()
 
         self.display_data_window()
 
@@ -2639,7 +2821,8 @@ class PyFCSApp:
         )
         
 
-    def _save_color_space_file(self, name, color_dict, saved_color_data=None, apply_after_save=False):
+    def _save_color_space_file(self, name, color_dict, saved_color_data=None,
+                               apply_after_save=False, options=None):
         """
         Save a fuzzy color space file in a background thread.
         """
@@ -2676,10 +2859,9 @@ class PyFCSApp:
             try:
                 input_class = Input.instance(".fcs")
                 save_result = input_class.write_file(
-                    name,
-                    color_dict,
-                    progress_callback=update_progress,
+                    name, color_dict, progress_callback=update_progress,
                     return_fuzzy_space=apply_after_save,
+                    **(options or {}),
                 )
 
                 if apply_after_save:
@@ -2713,11 +2895,12 @@ class PyFCSApp:
         threading.Thread(target=run_save_process, daemon=True).start()
 
 
-    def save_cs(self, name, selected_colors_lab):
-        self._save_color_space_file(name, selected_colors_lab)
+    def save_cs(self, name, selected_colors_lab, options=None):
+        self._save_color_space_file(name, selected_colors_lab, options=options)
 
 
-    def save_fcs(self, name, colors, color_dict=None, apply_after_save=False):
+    def save_fcs(self, name, colors, color_dict=None, apply_after_save=False,
+                 options=None):
         if color_dict is None:
             color_dict = {}
             used_names = set()
@@ -2742,7 +2925,8 @@ class PyFCSApp:
             name,
             color_dict,
             saved_color_data=copy.deepcopy(colors),
-            apply_after_save=apply_after_save
+            apply_after_save=apply_after_save,
+            options=options,
         )
     
 
@@ -2963,21 +3147,22 @@ class PyFCSApp:
 
         self.add_button = tk.Button(
             self.Canvas1,
-            text="Interactive\nFigure",
-            font=("Segoe UI", 9, "bold"),
+            text="Interactive\nView ↗",
+            font=("Segoe UI", 8, "bold"),
             justify="center",
-            bg="#e8f0fe",
-            fg="#1f4e8c",
-            activebackground="#d7e5fb",
-            activeforeground="#1f4e8c",
-            relief="raised",
+            bg="#FFFFFF",
+            fg=UtilsTools.UI_ACCENT_DARK,
+            activebackground=UtilsTools.UI_ACCENT_SOFT,
+            activeforeground=UtilsTools.UI_ACCENT_DARK,
+            relief="solid",
             bd=1,
-            padx=10,
+            highlightthickness=0,
+            padx=12,
             pady=4,
             cursor="hand2",
             command=self._on_add_graph_current,
         )
-        self.add_button.place(relx=0.965, rely=0.05, anchor="ne")
+        self.add_button.place(relx=0.97, rely=0.018, anchor="ne")
 
 
     def _on_add_graph_current(self):
@@ -3044,6 +3229,218 @@ class PyFCSApp:
             self._interactive_button = None
 
 
+    def _report_ui_callback_exception(self, exc_type, exc_value, exc_traceback):
+        """Last-resort GUI error boundary; validation should still happen locally."""
+        import traceback
+        traceback.print_exception(exc_type, exc_value, exc_traceback)
+        if self._reporting_ui_error:
+            return
+        self._reporting_ui_error = True
+        try:
+            messagebox.showerror(
+                "PyFCS - Operation could not be completed",
+                "The requested action could not be completed. "
+                "Your previous data has not been intentionally discarded.\n\n"
+                f"Details: {exc_value}",
+                parent=self.root,
+            )
+        except (tk.TclError, RuntimeError):
+            pass
+        finally:
+            self._reporting_ui_error = False
+
+    def on_visualization_space_changed(self):
+        """Switch LAB/RGB visualization without changing the loaded FCS.
+
+        Geometry remains in the construction space. Reprojected polyhedron
+        faces are only an approximation when conversion is nonlinear.
+        """
+        target = str(self.visualization_space.get()).upper()
+        if target not in ("LAB", "RGB"):
+            self.visualization_space.set(self._last_valid_visualization_space)
+            return
+        if not self.COLOR_SPACE:
+            self._last_valid_visualization_space = target
+            return
+        previous = self._last_valid_visualization_space
+        # Switching views rebuilds the Data widgets. Commit their pending
+        # edits first so a typed label is not accidentally discarded.
+        if hasattr(self, "_commit_pending_data_label_changes"):
+            if not self._commit_pending_data_label_changes():
+                self.visualization_space.set(previous)
+                return
+        try:
+            self.on_option_select()
+            # The Data table follows the currently chosen displayed coordinates.
+            self.display_data_window()
+            self._last_valid_visualization_space = target
+        except (ValueError, RuntimeError, TypeError, tk.TclError) as exc:
+            self.visualization_space.set(previous)
+            self.custom_warning("Visualization Error",
+                                f"The {target} view could not be displayed: {exc}")
+
+    def _update_model_space_indicator(self):
+        """Refresh the Data model status and availability of geometry conversion."""
+        model = getattr(self, "fuzzy_color_space", None)
+        loaded = model is not None and bool(getattr(self, "COLOR_SPACE", False))
+        button = getattr(self, "change_model_button", None)
+        if button is not None and button.winfo_exists():
+            button.configure(state=tk.NORMAL if loaded else tk.DISABLED)
+        self._update_data_model_summary()
+
+    def _update_data_model_summary(self):
+        """Show topology, geometric model and unsaved status below the short title."""
+        label = getattr(self, "data_model_summary", None)
+        if label is None or not label.winfo_exists():
+            return
+        model = getattr(self, "fuzzy_color_space", None)
+        if model is None or not getattr(self, "COLOR_SPACE", False):
+            label.configure(text="No color space loaded")
+            return
+        pieces = [str(model.typology_description), f"{model.color_space} model"]
+        if getattr(self, "_model_space_unsaved", False):
+            pieces.append("Unsaved")
+        label.configure(text="  ·  ".join(pieces))
+
+    def _has_pending_model_data_edits(self):
+        """Do not silently discard Data edits when changing the geometry."""
+        rows = getattr(self, "edit_color_data", {}) or {}
+        committed = getattr(self, "color_data", {}) or {}
+        if list(rows) != list(committed):
+            return True
+        for label, value in rows.items():
+            old = committed[label]
+            for key in ("positive_prototype", "Color"):
+                if key in value or key in old:
+                    a = np.asarray(value.get(key, []), dtype=float).reshape(-1)
+                    b = np.asarray(old.get(key, []), dtype=float).reshape(-1)
+                    if a.shape != b.shape or not np.array_equal(a, b):
+                        return True
+        return False
+
+    def _apply_model_color_space(self, target):
+        """Rebuild atomically in memory; persist only through Apply Changes."""
+        space = getattr(self, "fuzzy_color_space", None)
+        if space is None or not getattr(self, "COLOR_SPACE", False):
+            raise ValueError("Load a Fuzzy Color Space first.")
+        if self._has_any_active_job():
+            raise ValueError("Cancel or finish running image-mapping jobs before changing the model.")
+        if not self._commit_pending_data_label_changes():
+            return False
+        if self._has_pending_model_data_edits():
+            raise ValueError("Apply your pending changes in Data before changing the model color space.")
+        if str(target).upper() == space.color_space:
+            return False
+
+        # PREPARE. This may fail (out-of-gamut, duplicates, bad geometry) but
+        # MUST NOT mutate the existing model, image jobs, or caches.
+        rebuilt = rebuild_in_color_space(space, target)
+        new_data = copy.deepcopy(self.color_data)
+        for proto in rebuilt.prototypes:
+            row = new_data[proto.label]
+            lab = np.asarray(rebuilt.lab_from_model(proto.positive), dtype=float)
+            row["positive_prototype"] = lab
+            row["Color"] = lab.tolist()
+            row["fcs_original_label"] = proto.label
+
+        # COMMIT. Image-inspection and mapping displays of the old model must
+        # not be treated as results of the rebuilt geometry.
+        self._reset_image_inspection_state()
+        self._prepare_open_images_for_color_space_change()
+        self.fuzzy_color_space = rebuilt
+        self.color_data = new_data
+        self.edit_color_data = copy.deepcopy(new_data)
+        self.prototypes = rebuilt.get_prototypes()
+        self.cores = rebuilt.get_cores()
+        self.supports = rebuilt.get_supports()
+        self.volume_limits = rebuilt.reference_domain
+        self.loaded_source_color_space = rebuilt.color_space
+        self._fcs_creation_defaults = self._options_from_loaded_space(rebuilt)
+        self._model_space_unsaved = True
+        self._invalidate_mapping_caches()
+        # View remains intentionally independent of the geometric model.
+        self.display_data_window()
+        self._reset_3d_canvas()
+        self.update_prototypes_info()
+        self._update_model_space_indicator()
+        return True
+
+    def change_model_color_space(self):
+        """Explicit LAB/RGB geometry change, distinct from the View control."""
+        current = getattr(self, "fuzzy_color_space", None)
+        if current is None or not getattr(self, "COLOR_SPACE", False):
+            self.custom_warning("Model Color Space", "Load a fuzzy color space first.")
+            return
+        if self._has_any_active_job():
+            self.custom_warning("Model Color Space", "Finish or cancel the active mapping first.")
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.withdraw()  # Never display at a temporary/unpositioned location.
+        popup.title("Change Model Color Space")
+        popup.configure(bg="#ffffff")
+        popup.resizable(False, False)
+        popup.transient(self.root)
+        popup.protocol("WM_DELETE_WINDOW", popup.destroy)
+        popup.bind("<Escape>", lambda _event: popup.destroy())
+
+        content = tk.Frame(popup, bg="#ffffff")
+        content.pack(fill="both", expand=True, padx=22, pady=18)
+        tk.Label(content, text="Model Color Space", font=("Segoe UI", 12, "bold"),
+                 fg="#242633", bg="#ffffff").pack(anchor="w")
+        tk.Label(content, text=f"Current geometry: {current.color_space}",
+                 font=("Segoe UI", 9), fg=UtilsTools.UI_ACCENT_MUTED,
+                 bg="#ffffff").pack(anchor="w", pady=(3, 13))
+
+        choice = tk.StringVar(popup, value="RGB" if current.color_space == "LAB" else "LAB")
+        choices = tk.Frame(content, bg="#ffffff")
+        choices.pack(fill="x")
+        for code, desc in (("LAB", "CIELAB"), ("RGB", "sRGB (0–255)")):
+            tk.Radiobutton(
+                choices, text=f"{code}  —  {desc}", value=code, variable=choice,
+                bg="#ffffff", fg="#242633", selectcolor="#ffffff",
+                activebackground="#ffffff", activeforeground="#242633",
+                font=("Segoe UI", 10), anchor="w", cursor="hand2"
+            ).pack(anchor="w", pady=4)
+
+        tk.Frame(content, height=1, bg="#e3e0e7").pack(fill="x", pady=(14, 10))
+        explanation = (
+            "This rebuilds the Voronoi regions, cores and supports in the "
+            "selected model. Memberships may change. The target model uses "
+            "its standard reference domain; auxiliary negatives are resampled.\n\n"
+            "The original file is not modified until you use Apply Changes. "
+            "LAB colors outside the sRGB gamut cannot be converted safely."
+        )
+        tk.Label(content, text=explanation, wraplength=415, justify="left",
+                 font=("Segoe UI", 9), fg="#5e6570", bg="#ffffff").pack(fill="x")
+        actions = tk.Frame(content, bg="#ffffff")
+        actions.pack(pady=(18, 0), anchor="center")
+
+        def confirm():
+            chosen = choice.get()
+            if chosen == current.color_space:
+                popup.destroy()
+                return
+            try:
+                if self._apply_model_color_space(chosen):
+                    popup.destroy()
+            except (ValueError, TypeError, RuntimeError, tk.TclError) as exc:
+                self.custom_warning("Model Conversion Not Applied", str(exc), parent=popup)
+
+        tk.Button(actions, text="Rebuild Model", command=confirm,
+                  bg=UtilsTools.UI_ACCENT, fg="white", activebackground=UtilsTools.UI_ACCENT_DARK,
+                  activeforeground="white", font=("Segoe UI", 9, "bold"),
+                  bd=0, relief="flat", padx=16, pady=7, cursor="hand2").pack(side="left", padx=5)
+        tk.Button(actions, text="Cancel", command=popup.destroy,
+                  bg="#f2f3f5", fg="#242633", activebackground="#e7e8eb",
+                  font=("Segoe UI", 9), bd=0, relief="flat",
+                  padx=18, pady=7, cursor="hand2").pack(side="left", padx=5)
+
+        self.center_popup(popup, 470, 350)
+        popup.deiconify()
+        popup.grab_set()
+        popup.focus_set()
+
     def on_option_select(self):
         """
         Refresh the embedded 3D model using the current visualization options.
@@ -3072,27 +3469,46 @@ class PyFCSApp:
                 self.lab_value_frame.lift()
             return
 
+        space = getattr(self,"fuzzy_color_space",None)
+        plot_hex = self.hex_color
+        plot_centroids = self.selected_centroids
+        if space and space.color_space == "RGB":
+            plot_hex = {h:space.model_from_lab(lab) for h,lab in self.hex_color.items()}
+            plot_centroids = {k:{**v,"positive_prototype":space.model_from_lab(
+                v.get("positive_prototype",v.get("Color")))} for k,v in self.selected_centroids.items()}
         VisualManager.plot_combined_3D(
-            self.ax_3d,
-            self.file_base_name,
-            self.selected_centroids,
-            self.selected_core,
-            self.selected_alpha,
-            self.selected_support,
-            self.volume_limits,
-            self.hex_color,
-            selected_options,
-            self.filtered_points,
+            self.ax_3d, self.file_base_name, plot_centroids,
+            self.selected_core, self.selected_alpha, self.selected_support,
+            self.volume_limits, plot_hex, selected_options, self.filtered_points,
+            color_space=space.color_space if space else "LAB",
+            display_color_space=self.visualization_space.get(),
         )
 
-        # Softer and smaller title
+        # Independent title and subtitle; avoid using the same large bold
+        # font for the space name and its typology. Keep the button separate.
         display_name = str(self.file_base_name).replace("_", " ")
+        space = getattr(self, "fuzzy_color_space", None)
         self.ax_3d.set_title(
             display_name,
-            fontsize=13,
+            fontsize=11,
+            color="#242633",
             fontweight="semibold",
-            pad=10
+            pad=20,
+            loc="center",
         )
+        if space:
+            view_space = self.visualization_space.get()
+            view_desc = (view_space if view_space == space.color_space
+                         else f"{view_space} view · {space.color_space} model")
+            subtitle = f"{space.typology_description}  ·  {view_desc}"
+            self.ax_3d.text2D(
+                0.5, 1.017, subtitle,
+                transform=self.ax_3d.transAxes,
+                fontsize=7.4,
+                fontweight="normal",
+                color=UtilsTools.UI_ACCENT_MUTED,
+                ha="center", va="bottom",
+            )
 
         self.graph_widget.draw()
 
@@ -3125,16 +3541,25 @@ class PyFCSApp:
         """
         Generate the interactive Plotly figure and open it in the default browser.
         """
+        space = getattr(self,"fuzzy_color_space",None)
+        plot_hex = self.hex_color
+        plot_centroids = self.selected_centroids
+        if space and space.color_space == "RGB":
+            plot_hex = {h:space.model_from_lab(lab) for h,lab in self.hex_color.items()}
+            plot_centroids = {k:{**v,"positive_prototype":space.model_from_lab(
+                v.get("positive_prototype",v.get("Color")))} for k,v in self.selected_centroids.items()}
         fig = VisualManager.plot_more_combined_3D(
             filename=self.file_base_name,
-            color_data=self.selected_centroids,
+            color_data=plot_centroids,
             core=self.selected_core,
             alpha=self.selected_alpha,
             support=self.selected_support,
             volume_limits=self.volume_limits,
-            hex_color=self.hex_color,
+            hex_color=plot_hex,
             selected_options=selected_options,
             filtered_points=self.filtered_points,
+            color_space=space.color_space if space else "LAB",
+            display_color_space=self.visualization_space.get(),
         )
 
         if hasattr(self, "lab_value_frame"):
@@ -3357,9 +3782,10 @@ class PyFCSApp:
         # can be committed immediately when Apply Changes is pressed.
         self._data_label_editors = []
 
-        # Update header counter
+        # Keep the title readable even for spaces with long topology names.
         if hasattr(self, "data_header_title"):
             self.data_header_title.config(text=f"Color Space Data ({len(data_source)})")
+        self._update_data_model_summary()
 
         # Tooltip management
         if hasattr(self, "_data_info_tooltip") and self._data_info_tooltip is not None:
@@ -3387,6 +3813,7 @@ class PyFCSApp:
 
             try:
                 tooltip = tk.Toplevel(self.data_window)
+                tooltip.withdraw()
                 tooltip.wm_overrideredirect(True)
                 tooltip.configure(bg="#fefefe", bd=1, relief="solid")
 
@@ -3405,6 +3832,7 @@ class PyFCSApp:
                     padx=10,
                     pady=6
                 ).pack()
+                tooltip.deiconify()
 
                 self._data_info_tooltip = tooltip
                 self.data_window.config(cursor="hand2")
@@ -3415,6 +3843,7 @@ class PyFCSApp:
         if not data_source:
             if hasattr(self, "data_header_title"):
                 self.data_header_title.config(text="Color Space Data (0)")
+            self._update_data_model_summary()
             self.data_window.configure(scrollregion=(0, 0, 0, 0))
             return
 
@@ -3422,11 +3851,12 @@ class PyFCSApp:
         if canvas_width <= 1:
             canvas_width = 760
 
-        # Layout configuration
-        col_widths = {
-            "L": 70,
-            "a": 70,
-            "b": 70,
+        # Layout configuration. Data stores LAB for ΔE even when geometry is RGB,
+        # but the visible coordinates reflect the loaded FCS model.
+        space = getattr(self, "fuzzy_color_space", None)
+        display_rgb = self.visualization_space.get() == "RGB"
+        axis_names = ["R", "G", "B"] if display_rgb else ["L", "a", "b"]
+        col_widths = {axis_names[0]: 70, axis_names[1]: 70, axis_names[2]: 70,
             "Label": 200,
             "Color": 100,
             "Action": 105,
@@ -3435,11 +3865,11 @@ class PyFCSApp:
         table_width = sum(col_widths.values())
         x_start = max((canvas_width - table_width) // 2, 24)
 
-        y = 14
+        y = 12
 
-        header_height = 38
-        row_height = 66
-        row_gap = 8
+        header_height = 36
+        row_height = 58
+        row_gap = 6
 
         border_color = "#d0d0d0"
         header_bg = "#f2f2f2"
@@ -3454,7 +3884,7 @@ class PyFCSApp:
             outline=border_color
         )
 
-        headers = ["L", "a", "b", "Label", "Color", "Action"]
+        headers = axis_names + ["Label", "Color", "Action"]
 
         current_x = x_start
 
@@ -3567,7 +3997,15 @@ class PyFCSApp:
             if len(lab) < 3:
                 continue
 
-            L, A, B = float(lab[0]), float(lab[1]), float(lab[2])
+            if display_rgb:
+                try:
+                    vals = VisualManager.reproject_points(lab, "LAB", "RGB")
+                except (ValueError, RuntimeError) as exc:
+                    self.custom_warning("Invalid Color", f"Cannot display '{color_name}' in RGB: {exc}")
+                    continue
+            else:
+                vals = lab
+            L, A, B = float(vals[0]), float(vals[1]), float(vals[2])
 
             self.color_matrix.append(color_name)
 
@@ -3586,8 +4024,8 @@ class PyFCSApp:
 
             current_x = x_start
 
-            # LAB cells
-            for value, header in zip([L, A, B], ["L", "a", "b"]):
+            # Geometry coordinates in the selected construction space.
+            for value, header in zip([L, A, B], axis_names):
                 width = col_widths[header]
 
                 self.data_window.create_text(
@@ -3670,7 +4108,7 @@ class PyFCSApp:
             )
 
             entry_w = label_width - 24
-            entry_h = 28
+            entry_h = 26
 
             self.data_window.create_window(
                 current_x + 12,
@@ -3703,8 +4141,8 @@ class PyFCSApp:
 
             self.hex_color[hex_color] = lab
 
-            swatch_w = 88
-            swatch_h = 36
+            swatch_w = 86
+            swatch_h = 30
 
             swatch_x = current_x + (color_width - swatch_w) / 2
             swatch_y = row_top + (row_height - swatch_h) / 2
@@ -3744,7 +4182,7 @@ class PyFCSApp:
             delete_tag = f"delete_{i}"
 
             btn_w = 30
-            btn_h = 28
+            btn_h = 26
             btn_gap = 10
 
             total_btns_width = btn_w * 2 + btn_gap
@@ -4015,6 +4453,7 @@ class PyFCSApp:
 
         if hasattr(self, "data_header_title"):
             self.data_header_title.config(text="Color Space Data (0)")
+        self._update_data_model_summary()
 
         self.file_base_name = ""
         self.color_matrix = []
@@ -4181,11 +4620,11 @@ class PyFCSApp:
                 else:
                     raise ValueError(f"Color '{key}' does not contain valid LAB data.")
 
+            options = self._options_from_loaded_space(getattr(self,"fuzzy_color_space",None),
+                                                       new_color_data=new_color_data)
             self.save_fcs(
-                output_name,
-                new_color_data,
-                color_dict=color_dict,
-                apply_after_save=True
+                output_name, new_color_data, color_dict=color_dict,
+                apply_after_save=True, options=options
             )
 
             self.file_base_name = output_name
@@ -4217,6 +4656,14 @@ class PyFCSApp:
             )
             return
 
+        if getattr(self, "_model_space_unsaved", False):
+            if not messagebox.askyesno(
+                "Unsaved Model Color Space",
+                "The reconstructed model has not been saved.\n\n"
+                "Continue deleting the original file?",
+                parent=self.root,
+            ):
+                return
         file_path = getattr(self, "file_path", None)
         file_name = os.path.basename(file_path) if file_path else "current color space"
 
@@ -4236,8 +4683,10 @@ class PyFCSApp:
                 os.remove(file_path)
 
             self.COLOR_SPACE = False
+            self._model_space_unsaved = False
             self.color_data = {}
             self.edit_color_data = {}
+            self._update_model_space_indicator()
             self.file_path = None
             self.file_base_name = ""
 
@@ -4534,11 +4983,11 @@ class PyFCSApp:
         parent = self._get_active_dialog_parent()
 
         popup = tk.Toplevel(parent)
+        popup.withdraw()
         popup.title("Save Image")
         popup.configure(bg="#eeeeee")
         popup.resizable(False, False)
         popup.transient(parent)
-        popup.grab_set()
 
         selected_id = {"value": None}
         row_refs = {}
@@ -4672,7 +5121,7 @@ class PyFCSApp:
                 text_frame,
                 text=_mode_text(wid),
                 font=("Sans", 8),
-                fg="#1f4e8c" if getattr(self, "window_mapping_mode", {}).get(wid) else "#6b7280",
+                fg=UtilsTools.UI_ACCENT if getattr(self, "window_mapping_mode", {}).get(wid) else "#6b7280",
                 bg="white",
                 anchor="w",
             )
@@ -4753,10 +5202,10 @@ class PyFCSApp:
             footer,
             text="Save Selected",
             font=("Helvetica", 9, "bold"),
-            bg="#E8F0FE",
-            fg="#1f4e8c",
-            activebackground="#D7E5FB",
-            activeforeground="#1f4e8c",
+            bg=UtilsTools.UI_ACCENT_SOFT,
+            fg=UtilsTools.UI_ACCENT,
+            activebackground=UtilsTools.UI_ACCENT_HOVER,
+            activeforeground=UtilsTools.UI_ACCENT,
             relief="solid",
             bd=1,
             padx=16,
@@ -4783,6 +5232,8 @@ class PyFCSApp:
             initial = window_ids[0]
         if initial is not None:
             _set_selected(initial)
+        popup.deiconify()
+        popup.grab_set()
 
 
     def close_all_image(self):
@@ -4972,23 +5423,56 @@ class PyFCSApp:
         self._update_image_workspace_status()
 
 
-    def _toggle_mapping_all_palette(self, window_id):
+    def _set_mapping_all_palette(self, window_id, scheme):
+        """Switch Mapping All palettes without recomputing fuzzy memberships.
+
+        original: RGB colors derived from the FCS prototypes.
+        alt:      alternative, visually separated colors of the current palette.
+        """
+        if scheme not in ("original", "alt") or self._has_active_job(window_id):
+            return "break"
         if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
-            self.custom_warning("Old Color Space",
-                                "This Color Mapping All result belongs to a previous Color Space. Press Original to use the new one.")
-            return
-        if not hasattr(self, "window_image_key") or window_id not in self.window_image_key:
-            return
+            self.custom_warning(
+                "Old Color Space",
+                "This Color Mapping All result belongs to a previous Color Space. Press Original to use the new one."
+            )
+            return "break"
+        if window_id not in getattr(self, "window_image_key", {}):
+            return "break"
         pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id)
-        if not pack:
-            return
-        new_scheme = "original" if pack.get("scheme") == "alt" else "alt"
-        pack["scheme"] = new_scheme
-        palette = pack["palettes"][new_scheme]
+        if not pack or pack.get("scheme") == scheme:
+            return "break"
+        palettes = pack.get("palettes", {})
+        if scheme not in palettes:
+            return "break"
+
+        palette = palettes[scheme]
         recolored = self.image_manager.recolor_label_map(
             pack["label_map"], palette, pack.get("alpha_values")
         )
+        if getattr(self, "fuzzy_color_space", None) is not None and not self.fuzzy_color_space.covering:
+            try:
+                source = self._get_mapping_source_image(window_id)
+                rgb = np.asarray(UtilsTools._pil_rgb_for_processing(source))
+                alpha = UtilsTools._get_alpha_values_from_pil(source)
+                unassigned = (pack["label_map"] < 0) & (alpha > 0)
+                if np.any(unassigned):
+                    recolored[unassigned, :3] = rgb[unassigned, :3]
+                    recolored[unassigned, 3] = alpha[unassigned]
+            except Exception:
+                pass
+        # Only commit the new selection when the recoloring has succeeded.
+        pack["scheme"] = scheme
         self._display_mapping_all_result(window_id, recolored, palette)
+        return "break"
+
+    def _toggle_mapping_all_palette(self, window_id):
+        """Compatibility wrapper for older callbacks using the toggle action."""
+        pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id)
+        if not pack:
+            return "break"
+        next_scheme = "original" if pack.get("scheme") == "alt" else "alt"
+        return self._set_mapping_all_palette(window_id, next_scheme)
 
 
     def _arrange_image_workspace_grid(self):
@@ -5168,7 +5652,7 @@ class PyFCSApp:
         visible_rows = max(1, min(row_count if row_count else 1, 4))
         row_h = 24
         pad_top = 5
-        footer_h = 40 if info.get("kind", "single") == "all" else 4
+        footer_h = 40  # Both single and all mappings expose a compact footer.
         bottom_pad = 4
         return pad_top + visible_rows * row_h + footer_h + bottom_pad
 
@@ -6010,13 +6494,13 @@ class PyFCSApp:
         )
         self.image_canvas.create_text(
             x + new_width + PAD_X - 43, y + 17,
-            text="−", fill="#1f4e8c", font=("Segoe UI", 11, "bold"),
+            text="−", fill=UtilsTools.UI_ACCENT, font=("Segoe UI", 11, "bold"),
             tags=(window_id, "floating", f"{window_id}_minimize_button", f"{window_id}_minimize_text")
         )
 
         self.image_canvas.create_text(
             x + 15, y + TITLE_H / 2, text="⋮",
-            fill="#1f4e8c", font=("Segoe UI", 13, "bold"),
+            fill=UtilsTools.UI_ACCENT, font=("Segoe UI", 13, "bold"),
             tags=(window_id, "floating", f"{window_id}_arrow_button", f"{window_id}_arrow_text")
         )
 
@@ -7469,6 +7953,29 @@ class PyFCSApp:
         return "break"
 
 
+    def _set_single_mapping_style(self, window_id, style):
+        """Toggle JFCS-style color/gray display without repeating membership work."""
+        if style not in ("gray", "color") or self._has_active_job(window_id):
+            return "break"
+        info = getattr(self, "proto_options", {}).get(window_id)
+        if not isinstance(info, dict) or info.get("kind") != "single":
+            return "break"
+        if info.get("display_style", "gray") == style:
+            return "break"
+        info["display_style"] = style
+        self._render_proto_options(window_id)
+
+        # A freshly opened selector may have no prototype selected yet. Keep
+        # original pixels until the user selects one. Never show a stale map
+        # from an earlier selection or an earlier Color Space.
+        current = getattr(self, "current_protos", {}).get(window_id)
+        selected = current.get() if current is not None else None
+        if selected and selected == info.get("displayed_for"):
+            gray = getattr(self, "modified_image", {}).get(window_id)
+            if isinstance(gray, np.ndarray) and gray.ndim == 2:
+                self.display_color_mapping(gray, window_id)
+        return "break"
+
     def _select_proto_from_legend(self, window_id, color_name):
         if self._has_active_job(window_id):
             return "break"
@@ -7539,7 +8046,7 @@ class PyFCSApp:
 
         pad = 5
         scrollbar_space = 12
-        footer_h = 40 if kind == "all" else 4
+        footer_h = 40  # Single: Grayscale/Color · All: Original/Alt. Colors.
         content_top = y + pad
         content_bottom = y + h - footer_h - 4
         row_h = 24
@@ -7651,25 +8158,69 @@ class PyFCSApp:
                 lambda e, wid=window_id, top=track_y1, th=track_h: self._jump_proto_options_scroll(wid, e, top, th),
             )
 
-        if kind == "all":
+        if kind == "single":
+            # Like JFCS, the same membership map can be inspected in gray or
+            # with the original RGB channels weighted by membership. Switching
+            # style does not recompute memberships or change the coverage %.
+            selected_style = info.get("display_style", "gray")
             button_y1 = y + h - 34
             button_y2 = y + h - 6
-            button_tag = f"{tag}_alt_button"
-            self.image_canvas.create_rectangle(
-                x + 7, button_y1, x + w - 7, button_y2,
-                fill="#f1f1f1", outline="#7f7f7f", width=1,
-                tags=common_tags + (button_tag,),
-            )
-            self.image_canvas.create_text(
-                x + w / 2, (button_y1 + button_y2) / 2,
-                text="Alt. Colors", fill="#111111", font=("Sans", 9),
-                tags=common_tags + (button_tag,),
-            )
-            self.image_canvas.tag_bind(
-                button_tag,
-                "<Button-1>",
-                lambda _e, wid=window_id: self._toggle_mapping_all_palette(wid),
-            )
+            half = (w - 14) / 2
+            for index, (style, caption) in enumerate((("gray", "Grayscale"), ("color", "Color"))):
+                x1 = x + 7 + index * half
+                x2 = x + 7 + (index + 1) * half
+                active = style == selected_style
+                button_tag = f"{tag}_style_{style}"
+                self.image_canvas.create_rectangle(
+                    x1, button_y1, x2, button_y2,
+                    fill=UtilsTools.UI_ACCENT_SOFT if active else "#f5f5f5",
+                    outline=UtilsTools.UI_ACCENT_MUTED if active else "#b8b8b8",
+                    width=1,
+                    tags=common_tags + (button_tag,),
+                )
+                self.image_canvas.create_text(
+                    (x1 + x2) / 2, (button_y1 + button_y2) / 2,
+                    text=caption,
+                    fill=UtilsTools.UI_ACCENT_DARK if active else "#333333",
+                    font=("Sans", 9, "bold" if active else "normal"),
+                    tags=common_tags + (button_tag,),
+                )
+                self.image_canvas.tag_bind(
+                    button_tag, "<Button-1>",
+                    lambda _e, wid=window_id, mode=style: self._set_single_mapping_style(wid, mode),
+                )
+
+        if kind == "all":
+            # Matching the Grayscale / Color segmented control of single Mapping.
+            pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id, {})
+            current_scheme = pack.get("scheme", "alt")
+            button_y1 = y + h - 34
+            button_y2 = y + h - 6
+            half = (w - 14) / 2
+            for index, (scheme, caption) in enumerate((("original", "Original"), ("alt", "Alt. Colors"))):
+                x1 = x + 7 + index * half
+                x2 = x + 7 + (index + 1) * half
+                active = scheme == current_scheme
+                button_tag = f"{tag}_palette_{scheme}"
+                self.image_canvas.create_rectangle(
+                    x1, button_y1, x2, button_y2,
+                    fill=UtilsTools.UI_ACCENT_SOFT if active else "#f5f5f5",
+                    outline=UtilsTools.UI_ACCENT_MUTED if active else "#b8b8b8",
+                    width=1,
+                    tags=common_tags + (button_tag,),
+                )
+                self.image_canvas.create_text(
+                    (x1 + x2) / 2, (button_y1 + button_y2) / 2,
+                    text=caption,
+                    fill=UtilsTools.UI_ACCENT_DARK if active else "#333333",
+                    font=("Sans", 9, "bold" if active else "normal"),
+                    tags=common_tags + (button_tag,),
+                )
+                self.image_canvas.tag_bind(
+                    button_tag,
+                    "<Button-1>",
+                    lambda _e, wid=window_id, mode=scheme: self._set_mapping_all_palette(wid, mode),
+                )
 
         # Wheel scrolling is intentionally handled by the single Canvas-level
         # dispatcher installed in _ensure_image_zoom_mousewheel_binding().
@@ -7711,6 +8262,8 @@ class PyFCSApp:
             "rows": values,
             "gap": 12,
             "scroll_index": 0,
+            "display_style": "gray",
+            "displayed_for": None,
         }
         self._reposition_proto_options(window_id)
         self._sync_workspace_card_item_states(window_id)
@@ -7730,6 +8283,14 @@ class PyFCSApp:
             except Exception:
                 rgb = (221, 221, 221)
             rows.append((prototype, rgb))
+
+        # The additional entry is informational, not a selectable prototype.
+        pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id, {})
+        label_map = pack.get("label_map")
+        space = getattr(self, "fuzzy_color_space", None)
+        if space is not None and not space.covering and label_map is not None:
+            if np.any(np.asarray(label_map) < 0):
+                rows.append(("Unassigned (original)", (220, 220, 220)))
 
         self.proto_options = getattr(self, "proto_options", {})
         self.proto_options[window_id] = {
@@ -7882,6 +8443,9 @@ class PyFCSApp:
                         return
 
                     self.display_color_mapping(grayscale_image_array, window_id)
+                    current_info = getattr(self, "proto_options", {}).get(window_id)
+                    if isinstance(current_info, dict) and current_info.get("kind") == "single":
+                        current_info["displayed_for"] = selected_proto
                     self.image_canvas.itemconfig(
                         f"{window_id}_pct_text",
                         text=f"{selected_proto}: {pct:.2f}%"
@@ -7926,7 +8490,7 @@ class PyFCSApp:
 
 
     def display_color_mapping(self, grayscale_image_array, window_id):
-        """Displays the generated grayscale image in the graphical interface, preserving transparency."""
+        """Display one membership map as grayscale or JFCS-style weighted RGB."""
         try:
             try:
                 self._disable_original_rectangle_sampling(window_id)
@@ -7946,14 +8510,29 @@ class PyFCSApp:
             except Exception:
                 alpha_values = np.full(grayscale_image_array.shape[:2], 255, dtype=np.uint8)
 
-            # Convert numpy array to PIL image with the original opacity.
-            if grayscale_image_array.ndim == 2:
+            # Preserve raw grayscale memberships in modified_image/cache.
+            # The Color style is a *rendering* of that same result: pixel RGB
+            # multiplied by its membership, exactly as in JFCS.
+            info = getattr(self, "proto_options", {}).get(window_id, {})
+            use_color = (
+                isinstance(info, dict)
+                and info.get("kind") == "single"
+                and info.get("display_style", "gray") == "color"
+                and grayscale_image_array.ndim == 2
+            )
+            if use_color:
+                # Convert through PIL so palette (P), grayscale (L) and RGBA
+                # originals all produce their actual visible RGB colors.
+                source_rgb = np.asarray(source_img.convert("RGB"), dtype=np.uint8)
+                colored = self.image_manager.colorize_membership_map(
+                    grayscale_image_array, source_rgb
+                )
+                rgba_array = UtilsTools._apply_alpha_to_rgb_array(colored, alpha_values)
+            elif grayscale_image_array.ndim == 2:
                 rgba_array = UtilsTools._apply_alpha_to_gray_array(grayscale_image_array, alpha_values)
-                grayscale_image = Image.fromarray(rgba_array.astype(np.uint8), mode="RGBA")
             else:
-                # If the returned image is RGB, preserve transparency too
                 rgba_array = UtilsTools._apply_alpha_to_rgb_array(grayscale_image_array, alpha_values)
-                grayscale_image = Image.fromarray(rgba_array.astype(np.uint8), mode="RGBA")
+            grayscale_image = Image.fromarray(rgba_array.astype(np.uint8), mode="RGBA")
 
             # Make zoom work over the generated Color Mapping image, not over the original.
             self._set_image_zoom_source(window_id, grayscale_image, reset_zoom=True)
@@ -8209,16 +8788,25 @@ class PyFCSApp:
                     scope_cache[cache_key] = label_map
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
-                original_palette = self.image_manager.build_original_palette_uint8(self.prototypes)
-                alt_palette = self.image_manager.build_alt_palette_uint8(self.prototypes, self.hex_color)
-                palette = alt_palette
+                original_palette = self.image_manager.build_original_palette_uint8(
+                    self.prototypes, self.fuzzy_color_space.color_space
+                )
+                alt_palette = self.image_manager.build_alt_palette_uint8(self.prototypes)
+                palette = original_palette
                 recolored_image = self.image_manager.recolor_label_map(label_map, palette, alpha_values)
+                if not self.fuzzy_color_space.covering:
+                    # Uncovered real-image pixels must NOT be forced into a color.
+                    # Preserve their original appearance and alpha value.
+                    unassigned = (label_map < 0) & valid_mask
+                    if np.any(unassigned):
+                        recolored_image[unassigned, :3] = np.asarray(processing_img)[unassigned, :3]
+                        recolored_image[unassigned, 3] = alpha_values[unassigned]
                 # Share label-map computations, but keep palette choices local to each window.
                 window_pack = {
                     "label_map": label_map,
                     "alpha_values": alpha_values,
                     "palettes": {"original": original_palette, "alt": alt_palette},
-                    "scheme": "alt",
+                    "scheme": "original",
                     "cache_key": cache_key,
                 }
                 def _ui():
@@ -8312,14 +8900,17 @@ class PyFCSApp:
 
                 # Step 1: filter the LAB points inside the selected volume.
                 update_progress(1, 3)
+                geometric_mode = (self.fuzzy_color_space.color_space
+                                  if getattr(self,"fuzzy_color_space",None) else "LAB")
                 filtered_points, volume_limits = self.color_manager.filter_points_with_threshold(
-                    selected_volume,
-                    threshold,
-                    step=0.25,
+                    selected_volume, threshold, step=0.25,
+                    color_space=geometric_mode,
                 )
 
                 # Save the computed ranges as CSV.
-                csv_path = self.color_manager.create_csv(self.file_base_name, volume_limits, mode)
+                csv_path = self.color_manager.create_csv(
+                    self.file_base_name, volume_limits, mode,
+                    color_space=geometric_mode)
                 print(f"Threshold CSV saved: {csv_path}")
 
                 # Step 2: prepare the plot refresh.
@@ -8332,17 +8923,18 @@ class PyFCSApp:
                     self.filtered_points = filtered_points
                     self._init_3d_canvas()
 
+                    space = getattr(self,"fuzzy_color_space",None)
+                    plot_hex = self.hex_color
+                    plot_centroids = self.selected_centroids
+                    if space and space.color_space == "RGB":
+                        plot_hex = {h:space.model_from_lab(lab) for h,lab in self.hex_color.items()}
+                        plot_centroids = {k:{**v,"positive_prototype":space.model_from_lab(
+                            v.get("positive_prototype",v.get("Color")))} for k,v in self.selected_centroids.items()}
                     VisualManager.plot_combined_3D(
-                        self.ax_3d,
-                        self.file_base_name,
-                        self.selected_centroids,
-                        self.selected_core,
-                        self.selected_alpha,
-                        self.selected_support,
-                        self.volume_limits,
-                        self.hex_color,
-                        selected_options,
-                        self.filtered_points,
+                        self.ax_3d, self.file_base_name, plot_centroids,
+                        self.selected_core, self.selected_alpha, self.selected_support,
+                        self.volume_limits, plot_hex, selected_options,
+                        self.filtered_points, color_space=space.color_space if space else "LAB",
                     )
 
                     self.graph_widget.draw()
@@ -9586,7 +10178,7 @@ class PyFCSApp:
             TEXT = "#1f2937"
             MUTED = "#6b7280"
             SEPARATOR = "#d9dde3"
-            LINK = "#1f4e8c"
+            LINK = UtilsTools.UI_ACCENT
 
             self.lab_value_frame = tk.Frame(
                 self.Canvas1,
@@ -9905,6 +10497,7 @@ class PyFCSApp:
         self._ensure_threshold_settings()
 
         win = tk.Toplevel(self.root)
+        win.withdraw()
         self._color_evaluation_window = win
 
         win.title("Color Space Evaluation")
@@ -9950,23 +10543,53 @@ class PyFCSApp:
         win.bind("<F11>", toggle_color_evaluation_fullscreen)
 
         self._build_color_evaluation_window(win)
+        win.update_idletasks()
 
-        win.focus_set()
+        # Prepare a full-size geometry while still hidden. Some window managers
+        # only honour -fullscreen once a window is mapped, so its first frame
+        # must already match the main window instead of flashing at 1080x760.
+        try:
+            self.root.update_idletasks()
+            root_w, root_h = self.root.winfo_width(), self.root.winfo_height()
+            if root_w < 980 or root_h < 680:
+                raise ValueError("Main window dimensions unavailable")
+            x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
+            win.geometry(f"{root_w}x{root_h}+{x}+{y}")
+        except (ValueError, tk.TclError):
+            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+            win.geometry(f"{sw}x{sh}+0+0")
 
-        # Open fullscreen by default
         try:
             win.attributes("-fullscreen", True)
         except tk.TclError:
-            try:
-                if platform.system() == "Windows":
+            if platform.system() == "Windows":
+                try:
                     win.state("zoomed")
-                else:
-                    screen_width = win.winfo_screenwidth()
-                    screen_height = win.winfo_screenheight()
-                    win.geometry(f"{screen_width}x{screen_height}+0+0")
-            except Exception:
+                except tk.TclError:
+                    pass
+
+        if platform.system() != "Windows":
+            # If fullscreen is unsupported before mapping, size the hidden
+            # window to the screen so even the fallback opens without a jump.
+            try:
+                if not bool(win.attributes("-fullscreen")):
+                    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+                    win.geometry(f"{sw}x{sh}+0+0")
+            except tk.TclError:
                 pass
 
+        win.deiconify()
+        # Linux/X11 and some Windows managers may defer fullscreen until map.
+        try:
+            if not bool(win.attributes("-fullscreen")):
+                win.attributes("-fullscreen", True)
+        except tk.TclError:
+            if platform.system() == "Windows":
+                try:
+                    win.state("zoomed")
+                except tk.TclError:
+                    pass
+        win.focus_set()
         win.after_idle(self._set_color_evaluation_initial_sash)
 
 
@@ -10078,7 +10701,7 @@ class PyFCSApp:
             textvariable=vars_dict["space_name_var"],
             font=("Segoe UI", 9, "bold"),
             bg="#f8fafc",
-            fg="#1f4e8c"
+            fg=UtilsTools.UI_ACCENT
         ).pack(side="left", padx=(0, 16))
 
         tk.Label(
@@ -10107,8 +10730,8 @@ class PyFCSApp:
             font=("Segoe UI", 9, "bold"),
             bg="#ffffff",
             fg="#1f2937",
-            activebackground="#e8f0fe",
-            activeforeground="#1f4e8c",
+            activebackground=UtilsTools.UI_ACCENT_SOFT,
+            activeforeground=UtilsTools.UI_ACCENT,
             relief="solid", bd=1, padx=11, pady=6,
             cursor="hand2",
         ).pack(side="left", padx=(0, 8))
@@ -10118,10 +10741,10 @@ class PyFCSApp:
             text="Load new color space",
             command=lambda: self._load_external_color_space_for_evaluation(vars_dict),
             font=("Segoe UI", 9, "bold"),
-            bg="#e8f0fe",
-            fg="#1f4e8c",
-            activebackground="#d7e5fb",
-            activeforeground="#153e70",
+            bg=UtilsTools.UI_ACCENT_SOFT,
+            fg=UtilsTools.UI_ACCENT,
+            activebackground=UtilsTools.UI_ACCENT_HOVER,
+            activeforeground=UtilsTools.UI_ACCENT_DARK,
             relief="solid", bd=1, padx=11, pady=6,
             cursor="hand2",
         ).pack(side="left")
@@ -10220,7 +10843,7 @@ class PyFCSApp:
             font=("Segoe UI", 9),
             bg="#ffffff",
             fg="#1f2937",
-            activebackground="#e8f0fe",
+            activebackground=UtilsTools.UI_ACCENT_SOFT,
             relief="solid", bd=1, padx=3, pady=3,
             cursor="hand2",
             command=lambda: self._rotate_color_evaluation_table_display_mode(vars_dict)
@@ -11425,10 +12048,10 @@ class PyFCSApp:
             try:
                 is_active = key == action_key and key != "clear"
                 button.configure(
-                    bg="#d7e5fb" if is_active else "#f8fafc",
-                    fg="#153e70" if is_active else "#1f2937",
-                    activebackground="#c5daf8" if is_active else "#e8f0fe",
-                    activeforeground="#153e70" if is_active else "#1f4e8c",
+                    bg=UtilsTools.UI_ACCENT_HOVER if is_active else "#f8fafc",
+                    fg=UtilsTools.UI_ACCENT_DARK if is_active else "#1f2937",
+                    activebackground=UtilsTools.UI_ACCENT_HOVER if is_active else UtilsTools.UI_ACCENT_SOFT,
+                    activeforeground=UtilsTools.UI_ACCENT_DARK if is_active else UtilsTools.UI_ACCENT,
                     relief="solid",
                     bd=2 if is_active else 1,
                     highlightthickness=0,
@@ -12192,11 +12815,11 @@ class PyFCSApp:
         parent = getattr(self, "_color_evaluation_window", self.root)
 
         popup = tk.Toplevel(parent)
+        popup.withdraw()
         popup.title("Sample Color from Image")
         popup.configure(bg="#eeeeee")
         popup.resizable(True, True)
         popup.transient(parent)
-        popup.grab_set()
 
         WIN_W, WIN_H = 660, 710
         popup.minsize(620, 620)
@@ -12966,6 +13589,8 @@ class PyFCSApp:
         popup.bind("<Escape>", lambda e: popup.destroy())
 
         _load_selected_image()
+        popup.deiconify()
+        popup.grab_set()
 
 
     def _get_custom_color_input_mode_help(self, mode):
@@ -13049,11 +13674,11 @@ class PyFCSApp:
         )
 
         dialog = tk.Toplevel(parent)
+        dialog.withdraw()
         dialog.title(title)
         dialog.resizable(False, False)
         dialog.configure(bg="#eeeeee")
         dialog.transient(parent)
-        dialog.grab_set()
 
         WIN_W = 700
         WIN_H = 450 if require_name else 400
@@ -13565,6 +14190,8 @@ class PyFCSApp:
         dialog.bind("<Escape>", lambda e: dialog.destroy())
 
         _refresh_inputs()
+        dialog.deiconify()
+        dialog.grab_set()
 
 
     def _submit_custom_color_input(self, vars_dict, input_vars, dialog):
@@ -13645,11 +14272,11 @@ class PyFCSApp:
         - using numpy instead of per-pixel putpixel loops
         """
         popup = tk.Toplevel(parent)
+        popup.withdraw()
         popup.title("Color Picker")
         popup.configure(bg="#1f2430")
         popup.resizable(False, False)
         popup.transient(parent)
-        popup.grab_set()
 
         WIN_W, WIN_H = 460, 440
 
@@ -14021,6 +14648,8 @@ class PyFCSApp:
         ).pack(side="right")
 
         _redraw_markers_only()
+        popup.deiconify()
+        popup.grab_set()
 
 
     def _update_color_evaluation_conversion_inspector(
@@ -14268,9 +14897,13 @@ class PyFCSApp:
         """
         manager = self._get_color_evaluation_manager()
 
+        space=vars_dict.get("loaded_fuzzy_color_space")
+        limits=(ReferenceDomain.default_voronoi_reference_domain()
+                if space is not None and space.color_space == "RGB"
+                else getattr(self, "volume_limits", None))
         return manager.resolve_volume_limits(
-            volume_limits=getattr(self, "volume_limits", None),
-            fuzzy_color_space=vars_dict.get("loaded_fuzzy_color_space"),
+            volume_limits=limits,
+            fuzzy_color_space=space,
         )
     
 
@@ -14418,20 +15051,29 @@ class PyFCSApp:
         if ctx is None:
             return
 
+        space = vars_dict.get("loaded_fuzzy_color_space")
+        mode = space.color_space if space is not None else "LAB"
+        points = ctx["color_data"]
+        hex_points = ctx["hex_color"]
+        custom = ctx.get("custom_lab")
+        closest = ctx.get("closest_lab")
+        limits = ctx["volume_limits"]
+        if mode == "RGB":
+            points = {k:{**v,"positive_prototype":space.model_from_lab(v["positive_prototype"])}
+                      for k,v in points.items()}
+            hex_points = {key:space.model_from_lab(lab) for key,lab in hex_points.items()}
+            custom = space.model_from_lab(custom) if custom is not None else None
+            closest = space.model_from_lab(closest) if closest is not None else None
+            limits = space.reference_domain
         fig = VisualManager.plot_more_combined_3D(
-            filename=ctx["filename"],
-            color_data=ctx["color_data"],
-            core=ctx["core"],
-            alpha=ctx["alpha"],
-            support=ctx["support"],
-            volume_limits=ctx["volume_limits"],
-            hex_color=ctx["hex_color"],
+            filename=ctx["filename"], color_data=points,
+            core=ctx["core"], alpha=ctx["alpha"], support=ctx["support"],
+            volume_limits=limits, hex_color=hex_points,
             selected_options=["Representative"],
-            custom_lab=ctx.get("custom_lab"),
-            custom_hex=ctx.get("custom_hex", "#ff0000"),
-            closest_label=ctx.get("closest_label"),
-            closest_lab=ctx.get("closest_lab"),
+            custom_lab=custom, custom_hex=ctx.get("custom_hex", "#ff0000"),
+            closest_label=ctx.get("closest_label"), closest_lab=closest,
             closest_hex=ctx.get("closest_hex", "#000000"),
+            color_space=mode,
         )
 
         self._show_color_eval_plotly_figure_in_browser(

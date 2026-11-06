@@ -77,6 +77,17 @@ class InputCNS(Input):
         # required internally by PyFCS.
         return values.copy()
 
+    @staticmethod
+    def rgb_values_within_range(values):
+        """Non-throwing validation, also convenient for GUI and tests."""
+        try:
+            matrix = np.asarray(values, dtype=np.float64)
+        except (TypeError, ValueError):
+            return False
+        return (matrix.ndim == 2 and matrix.shape[1] == 3
+                and np.all(np.isfinite(matrix))
+                and np.all((matrix >= 0) & (matrix <= 255)))
+
     def read_file(self, file_path):
         """
         Read a .cns crisp color space.
@@ -87,6 +98,7 @@ class InputCNS(Input):
         longer stored.
         """
         self.last_warning = None
+        self.last_color_space = None
 
         try:
             with open(
@@ -106,7 +118,7 @@ class InputCNS(Input):
             for i, line in enumerate(lines):
                 stripped = line.strip()
 
-                if "@colorSpace_" in stripped:
+                if stripped.startswith("@colorSpace_"):
                     start_index = i
                     color_space = (
                         stripped
@@ -125,14 +137,32 @@ class InputCNS(Input):
                     if not stripped or stripped.startswith("#"):
                         continue
 
-                    if "@crispColorSpaceType" in stripped:
+                    if stripped.startswith("@crispColorSpaceType"):
                         start_index = i
+                        code = stripped[len("@crispColorSpaceType"):].strip()
+                        if code in ("1000", "5"):
+                            color_space = "RGB"
+                        elif code == "1":
+                            color_space = "LAB"
+                        else:
+                            raise ValueError(
+                                f"Unsupported JFCS crisp color space type {code!r}. "
+                                "Supported formats are RGB/sRGB and LAB."
+                            )
                         break
 
             if start_index is None:
                 raise ValueError(
                     "Could not locate color space definition in the .cns file."
                 )
+
+            color_space = str(color_space).strip().upper()
+            if color_space not in ("LAB", "RGB"):
+                raise ValueError(
+                    f"Unsupported CNS color space '{color_space}'. Supported spaces: LAB, RGB."
+                )
+            # Retain the original CNS coordinates for the visualization default.
+            self.last_color_space = color_space
 
             # ---------------------------------------------------------
             # Header
@@ -165,7 +195,6 @@ class InputCNS(Input):
             raw_colors = []
             color_names = []
 
-            unique_lines = set()
 
             for line_number in range(
                 start_index + 3,
@@ -178,12 +207,8 @@ class InputCNS(Input):
                 if not line_content:
                     continue
 
-                # Preserve current PyFCS behaviour:
-                # repeated identical CNS lines are ignored.
-                if line_content in unique_lines:
-                    continue
-
-                unique_lines.add(line_content)
+                # Never discard repeated coordinate rows: different labels
+                # can legitimately share the same original CNS triplet.
 
                 parts = line_content.split()
 
@@ -260,6 +285,9 @@ class InputCNS(Input):
                     f"Invalid label: '{too_long_labels[0]}'."
                 )
 
+            if not raw_colors:
+                raise ValueError("The CNS file contains no valid color prototypes.")
+
             if num_cases != len(raw_colors):
                 self.last_warning = (
                     f"The CNS header declares {num_cases} colors, "
@@ -271,9 +299,6 @@ class InputCNS(Input):
                 # of valid colors found in the file.
                 num_cases = len(raw_colors)
 
-            if not raw_colors:
-                return {}
-
             # ---------------------------------------------------------
             # Convert ALL colors to LAB only once
             # ---------------------------------------------------------
@@ -283,10 +308,17 @@ class InputCNS(Input):
                 dtype=np.float64
             )
 
+            if not np.all(np.isfinite(raw_matrix)):
+                raise ValueError("CNS prototypes contain non-finite coordinates.")
+            if color_space == "RGB" and not self.rgb_values_within_range(raw_matrix):
+                raise ValueError("RGB CNS values must be between 0 and 255.")
+
             lab_matrix = self._convert_to_lab(
                 raw_matrix,
                 color_space
             )
+            if not np.all(np.isfinite(lab_matrix)):
+                raise ValueError("Unable to convert CNS prototype coordinates to CIELAB.")
 
             # ---------------------------------------------------------
             # Build PyFCS structure

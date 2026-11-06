@@ -4,7 +4,6 @@ from Source.geometry.Plane import Plane
 from Source.geometry.Face import Face
 from Source.geometry.Volume import Volume
 from Source.geometry.GeometryTools import GeometryTools
-from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.geometry.Prototype import Prototype
 from Source.membership.MembershipFunction import MembershipFunction
 
@@ -30,8 +29,8 @@ class FuzzyColor:
         
         # Create parallel planes for core and support
         parallel_planes = GeometryTools.parallel_planes(face.p, dist)
-        f1 = Face(p=parallel_planes[0], infinity=face.infinity)
-        f2 = Face(p=parallel_planes[1], infinity=face.infinity)
+        f1 = Face(p=parallel_planes[0], infinity=face.infinity, source_index=face.source_index)
+        f2 = Face(p=parallel_planes[1], infinity=face.infinity, source_index=face.source_index)
 
         if face.getArrayVertex() is not None:
             for v in face.getArrayVertex():
@@ -53,7 +52,7 @@ class FuzzyColor:
 
 
     @staticmethod
-    def create_core_support(prototypes, scaling_factor):
+    def create_core_support(prototypes, scaling_factor=0.5, lambda1=None, lambda2=None):
         """
         Create core and support volumes by scaling the prototypes according to the scaling factor.
 
@@ -64,6 +63,30 @@ class FuzzyColor:
         Returns:
             tuple: A tuple containing the core volumes and support volumes.
         """
+        if lambda1 is None:
+            lambda1 = float(scaling_factor)
+        if lambda2 is None:
+            lambda2 = 2.0 - float(scaling_factor)
+        if not (0.0 <= lambda1 < 1.0 and 1.0 < lambda2 <= 2.0):
+            raise ValueError("Require 0 <= lambda1 < 1 and 1 < lambda2 <= 2.")
+
+        # Historical partition 0.5 / 1.5 uses EXACTLY its previous calculation.
+        keep_legacy = abs(lambda1 - 0.5) < 1e-12 and abs(lambda2 - 1.5) < 1e-12
+
+        def scaled_face(face, center, scale):
+            pl = face.getPlane()
+            dot = pl.A * center.x + pl.B * center.y + pl.C * center.z
+            scaled_plane = Plane(pl.A, pl.B, pl.C, scale * pl.D + (scale - 1) * dot)
+            vertices = face.getArrayVertex()
+            points = None
+            if vertices is not None:
+                points = [Point(center.x + scale * (v.x - center.x),
+                                center.y + scale * (v.y - center.y),
+                                center.z + scale * (v.z - center.z)) for v in vertices]
+            return Face(p=scaled_plane, vertex=points, infinity=face.infinity,
+                        source_index=face.source_index,
+                        is_domain_boundary=face.is_domain_boundary)
+
         core_volumes = []
         support_volumes = []
         for proto in prototypes:
@@ -71,7 +94,18 @@ class FuzzyColor:
             support_volume = Volume(Point(*proto.positive))
 
             for face in proto.voronoi_volume.getFaces():
+                if face.isDomainBoundary():
+                    # This is a viewing/domain constraint, not a fuzzy color
+                    # transition.  Keep its plane at the actual domain edge
+                    # in both volumes; membership rays ignore it entirely.
+                    core_volume.addFace(face.copy())
+                    support_volume.addFace(face.copy())
+                    continue
+                if keep_legacy:
                     FuzzyColor.add_face_to_core_support(face, Point(*proto.positive), core_volume, support_volume, scaling_factor)
+                else:
+                    core_volume.addFace(scaled_face(face, Point(*proto.positive), lambda1))
+                    support_volume.addFace(scaled_face(face, Point(*proto.positive), lambda2))
 
             core_volume_dict = Prototype(
                 label=proto.label,
@@ -91,90 +125,111 @@ class FuzzyColor:
 
 
     @staticmethod
-    def update_geometry(prototypes, cores, supports):
+    def update_geometry(prototypes, cores, supports, reference_domain=None, eps=1e-7):
+        """JFCS-style support repair for disjoint atomic fuzzy colors.
+
+        JFCS moves a support plane inward if a support vertex enters another
+        color's core, or if another core vertex enters this support.  Domain
+        clipping planes are *not* color boundaries and must never be moved.
+        Only conflicts witnessed inside the declared model domain are repaired.
+
+        This deliberately does not alter the cores or Voronoi bisectors.  It
+        returns the number of adjusted support faces for regression tests and
+        diagnostic use.  The caller must not use it on non-disjoint spaces or
+        imported FCS volumes, because that changes the intended semantics.
         """
-        Java-style adjustment (updateVoronoiFuzzyColors):
-        - If a support vertex of c1 falls inside the core of c2, that face is retracted.
-        - If a core vertex of c2 falls inside the support of c1, the nearest face is moved.
-        """
+        from math import isfinite
+
+        def inside_domain(vertex):
+            return (reference_domain is None or
+                    reference_domain.contains_coordinates(
+                        (vertex.x, vertex.y, vertex.z), eps=eps))
+
+        def strictly_inside(volume, vertex):
+            if not volume.isInside(vertex, eps=eps):
+                return False
+            # Ignore rendering-only domain faces when detecting contact.
+            return not any(
+                abs(f.getPlane().evaluatePoint(vertex)) <= eps
+                for f in volume.getFaces() if not f.isDomainBoundary()
+            )
+
+        def retract(face, origin, through):
+            """Move a real support face inward; refuse unstable corrections."""
+            if face.isDomainBoundary():
+                return False
+            old_plane = face.getPlane()
+            normal = old_plane.getNormal()
+            new_plane = Plane.from_normal_point(normal, through)
+            modulus = (normal.a ** 2 + normal.b ** 2 + normal.c ** 2) ** 0.5
+            if modulus <= eps:
+                return False
+            old_signed = abs(old_plane.evaluatePoint(origin)) / modulus
+            new_signed = abs(new_plane.evaluatePoint(origin)) / modulus
+            # The support is allowed to SHRINK, never expand or cross its seed.
+            if new_signed <= eps or new_signed >= old_signed - eps:
+                return False
+            if old_plane.evaluatePoint(origin) * new_plane.evaluatePoint(origin) <= 0:
+                return False
+            vertices = face.getArrayVertex()
+            if vertices:
+                new_vertices = []
+                for v in vertices:
+                    q = GeometryTools.intersection_plane_rect(new_plane, origin, v)
+                    if q is None or not all(isfinite(x) for x in (q.x, q.y, q.z)):
+                        return False
+                    new_vertices.append(q)
+                face.setArrayVertex(new_vertices)
+            face.setPlane(new_plane)
+            return True
+
+        moved = 0
         n = len(prototypes)
-
         for i in range(n):
-            c1 = prototypes[i]
-            s1 = supports[i].voronoi_volume
-            rep1 = c1.voronoi_volume.getRepresentative()
-
+            support_i = supports[i].voronoi_volume
+            origin = support_i.getRepresentative()
+            mutable_faces = [f for f in support_i.getFaces()
+                             if not f.isDomainBoundary()]
             for j in range(n):
                 if i == j:
                     continue
+                core_j = cores[j].voronoi_volume
 
-                core2 = cores[j].voronoi_volume
-
-                # Rule 1: support(i) vertex inside core(j)
-                for fs in s1.getFaces():
-                    vi = fs.getArrayVertex()
-                    if not vi:
-                        continue
-
-                    for v in vi:
-                        if core2.isInside(v) and not core2.isInFace(v):
-                            p_face = GeometryTools.intersection_with_volume(core2, v, rep1)
-                            if p_face is not None:
-                                new_plane = Plane.from_normal_point(fs.getPlane().getNormal(), p_face)
-                                fs.setPlane(new_plane)
-
-                                # Recalculate vertices
-                                if fs.getArrayVertex():
-                                    new_vs = []
-                                    for vv in fs.getArrayVertex():
-                                        nv = GeometryTools.intersection_plane_rect(new_plane, rep1, vv)
-                                        if nv is not None:
-                                            new_vs.append(nv)
-                                    fs.setArrayVertex(new_vs)
+                # Java rule 1: a vertex of support(i) lies strictly in core(j).
+                for face in mutable_faces:
+                    for vertex in face.getArrayVertex() or ():
+                        if not inside_domain(vertex) or not strictly_inside(core_j, vertex):
+                            continue
+                        crossing = GeometryTools.intersection_with_volume(
+                            core_j, vertex, origin,
+                            ignore_domain_boundaries=True)
+                        if crossing is not None and retract(face, origin, crossing):
+                            moved += 1
                             break
 
-                # Rule 2: core(j) vertex inside support(i)
-                for fk in core2.getFaces():
-                    vi = fk.getArrayVertex()
-                    if not vi:
+                # Java rule 2: a vertex of core(j) lies strictly in support(i).
+                for core_face in core_j.getFaces():
+                    if core_face.isDomainBoundary():
                         continue
-
-                    for vk in vi:
-                        if s1.isInside(vk) and not s1.isInFace(vk):
-                            nearest = None
-                            min_d = float("inf")
-
-                            for fs in s1.getFaces():
-                                d = GeometryTools.distance_point_plane(fs.getPlane(), vk)
-                                if d < min_d:
-                                    min_d = d
-                                    nearest = fs
-
-                            if nearest is not None:
-                                new_plane = Plane.from_normal_point(nearest.getPlane().getNormal(), vk)
-                                nearest.setPlane(new_plane)
-
-                                if nearest.getArrayVertex():
-                                    new_vs = []
-                                    for vv in nearest.getArrayVertex():
-                                        nv = GeometryTools.intersection_plane_rect(new_plane, rep1, vv)
-                                        if nv is not None:
-                                            new_vs.append(nv)
-                                    nearest.setArrayVertex(new_vs)
+                    for vertex in core_face.getArrayVertex() or ():
+                        if not inside_domain(vertex) or not strictly_inside(support_i, vertex):
+                            continue
+                        if not mutable_faces:
+                            continue
+                        nearest = min(
+                            mutable_faces,
+                            key=lambda f: GeometryTools.distance_point_plane(
+                                f.getPlane(), vertex))
+                        if retract(nearest, origin, vertex):
+                            moved += 1
                             break
-
-
-
-
-
-
+        return moved
 
 
     @staticmethod
     def _raw_membership_for_index(new_color, i, pack):
         xyz = Point(new_color[0], new_color[1], new_color[2])
 
-        domain_volume = pack["domain_volume"]
         v_protos = pack["v_protos"]
         v_cores = pack["v_cores"]
         v_supps = pack["v_supps"]
@@ -190,21 +245,23 @@ class FuzzyColor:
         if v_core.isInside(xyz):
             return 1.0
 
-        p_cube = GeometryTools.intersection_with_volume(domain_volume, rep, xyz)
-        if p_cube is None:
-            return 0.0
+        # The FCS public API already checks the reference domain.  For points
+        # inside it, the ray from an in-domain representative necessarily
+        # intersects the bounding box. Computing that intersection here was
+        # redundant and expensive in pixel-wise mapping; its coordinates were
+        # not used by the membership function.
 
-        p_face = GeometryTools.intersection_with_volume(v_core, rep, xyz)
+        p_face = GeometryTools.intersection_with_volume(v_core, rep, xyz, ignore_domain_boundaries=True)
         if p_face is None:
             return 0.0
         param_a = GeometryTools.euclidean_distance(rep, p_face)
 
-        p_face = GeometryTools.intersection_with_volume(v_proto, rep, xyz)
+        p_face = GeometryTools.intersection_with_volume(v_proto, rep, xyz, ignore_domain_boundaries=True)
         if p_face is None:
             return 0.0
         param_b = GeometryTools.euclidean_distance(rep, p_face)
 
-        p_face = GeometryTools.intersection_with_volume(v_supp, rep, xyz)
+        p_face = GeometryTools.intersection_with_volume(v_supp, rep, xyz, ignore_domain_boundaries=True)
         if p_face is None:
             return 0.0
         param_c = GeometryTools.euclidean_distance(rep, p_face)
@@ -225,12 +282,18 @@ class FuzzyColor:
         v_cores = pack["v_cores"]
         v_supps = pack["v_supps"]
 
-        # Early stop: point inside a core
+        # The first core is not necessarily the nearest: non-disjoint spaces
+        # may contain multiple overlapping cores. Use the same deterministic
+        # nearest-representative tie-break as get_membership_degree().
+        core_hits = []
         for i in range(len(prototypes)):
-            if not v_supps[i].isInside(xyz):
-                continue
-            if v_cores[i].isInside(xyz):
-                return i
+            if v_supps[i].isInside(xyz) and v_cores[i].isInside(xyz):
+                core_hits.append(i)
+        if len(core_hits) == 1:
+            return core_hits[0]
+        if core_hits:
+            return min(core_hits,
+                       key=lambda i: GeometryTools.euclidean_distance(pack["rep"][i], xyz))
 
         best_idx = -1
         best_val = 0.0
@@ -289,7 +352,11 @@ class FuzzyColor:
     @staticmethod
     def get_membership_degree_for_prototype(new_color, prototype, core, support):
         """
-        Calculate fuzzy membership degree of a LAB color to a single prototype.
+        Calculate the raw membership of a model-space point in one prototype.
+
+        The public FuzzyColorSpace API validates the model reference domain.
+        This geometry-only helper must not assume the legacy LAB box when
+        used with an RGB prototype.
         """
         # Local references for better performance
         v_proto = prototype.voronoi_volume
@@ -300,7 +367,7 @@ class FuzzyColor:
         rep_c = v_core.getRepresentative()
         rep_s = v_supp.getRepresentative()
 
-        # Create point (assumed LAB)
+        # Coordinates are already in the prototype's geometric model.
         xyz = Point(new_color[0], new_color[1], new_color[2])
 
         # Outside support -> 0
@@ -311,26 +378,17 @@ class FuzzyColor:
         if v_core.isInside(xyz):
             return 1.0
 
-        # Distance to domain cube (fallback)
-        p_cube = GeometryTools.intersection_with_volume(
-            ReferenceDomain.default_voronoi_reference_domain().get_volume(),
-            rep_p,
-            xyz,
-        )
-        if p_cube is None:
-            return 0.0
-
-        p_face = GeometryTools.intersection_with_volume(v_core, rep_c, xyz)
+        p_face = GeometryTools.intersection_with_volume(v_core, rep_c, xyz, ignore_domain_boundaries=True)
         if p_face is None:
             return 0.0
         param_a = GeometryTools.euclidean_distance(rep_c, p_face)
 
-        p_face = GeometryTools.intersection_with_volume(v_proto, rep_p, xyz)
+        p_face = GeometryTools.intersection_with_volume(v_proto, rep_p, xyz, ignore_domain_boundaries=True)
         if p_face is None:
             return 0.0
         param_b = GeometryTools.euclidean_distance(rep_p, p_face)
 
-        p_face = GeometryTools.intersection_with_volume(v_supp, rep_s, xyz)
+        p_face = GeometryTools.intersection_with_volume(v_supp, rep_s, xyz, ignore_domain_boundaries=True)
         if p_face is None:
             return 0.0
         param_c = GeometryTools.euclidean_distance(rep_s, p_face)

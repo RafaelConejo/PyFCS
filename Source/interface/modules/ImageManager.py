@@ -54,6 +54,21 @@ class ImageManager:
         img01 = img_rgb.astype(np.float32) / 255.0
         return color.rgb2lab(img01)
 
+    def _unique_model_colors(self, image, fuzzy_color_space):
+        """Quantize image colors once and return unique model-space values.
+
+        Shared by single-prototype mapping and Mapping All, preventing the two
+        paths from drifting in conversion or quantization behavior.
+        """
+        rgb_model = getattr(fuzzy_color_space, "color_space", "LAB") == "RGB"
+        model_image = self._pil_to_rgb_uint8(image) if rgb_model else self._pil_to_lab_image(image)
+        height, width = model_image.shape[:2]
+        scale = 1.0 if rgb_model else 100.0
+        source_space = "RGB" if rgb_model else "LAB"
+        integer_colors = np.rint(model_image.reshape(-1, 3) * scale).astype(np.int32)
+        uniq, inverse = np.unique(integer_colors, axis=0, return_inverse=True)
+        return uniq, inverse, height, width, scale, source_space
+
     def get_proto_percentage(
         self,
         prototypes,
@@ -78,12 +93,11 @@ class ImageManager:
         if cancel_callback and cancel_callback():
             return None
 
-        lab_image = self._pil_to_lab_image(image)
-        height, width = lab_image.shape[:2]
-
-        lab_int = np.round(lab_image.reshape(-1, 3) * 100.0).astype(np.int32)
-        # Evaluate each quantized LAB value once and map results back to pixels.
-        uniq, inv = np.unique(lab_int, axis=0, return_inverse=True)
+        # Construct/evaluate directly in the space used by the loaded FCS.
+        # RGB is encoded as 0..255 channel values; LAB is quantized to 0.01.
+        uniq, inv, height, width, scale, source_space = self._unique_model_colors(
+            image, fuzzy_color_space
+        )
 
         values_for_uniq = np.empty((uniq.shape[0],), dtype=np.float32)
         total_uniqs = int(uniq.shape[0])
@@ -92,10 +106,9 @@ class ImageManager:
             if cancel_callback and cancel_callback():
                 return None
 
-            lab_tuple = tuple((uniq[i].astype(np.float32) / 100.0).tolist())
+            lab_tuple = tuple((uniq[i].astype(np.float32) / scale).tolist())
             value = fuzzy_color_space.calculate_membership_for_prototype(
-                lab_tuple,
-                selected_option
+                lab_tuple, selected_option, input_space=source_space
             )
             values_for_uniq[i] = np.clip(float(value), 0.0, 1.0)
 
@@ -111,6 +124,26 @@ class ImageManager:
         ).astype(np.uint8)
 
         return grayscale_image
+
+    @staticmethod
+    def colorize_membership_map(membership_gray, original_rgb):
+        """JFCS color mapping: original RGB multiplied by fuzzy membership.
+
+        `membership_gray` is the existing 0..255 grayscale membership map;
+        `original_rgb` is an H x W x 3 uint8 RGB array. The output is RGB,
+        and the original arrays are never modified. This is NOT prototype
+        recoloring (that remains the separate Color Mapping All workflow).
+        """
+        degrees = np.asarray(membership_gray)
+        original = np.asarray(original_rgb)
+        if degrees.ndim != 2:
+            raise ValueError("The membership map must be a two-dimensional array.")
+        if original.ndim != 3 or original.shape[:2] != degrees.shape or original.shape[2] != 3:
+            raise ValueError("The original RGB image must match the membership map size.")
+        return np.clip(
+            original.astype(np.float32) * (degrees.astype(np.float32) / 255.0)[..., None],
+            0, 255
+        ).astype(np.uint8)
 
     @staticmethod
     def estimate_proto_coverage(grayscale_image_array, valid_mask):
@@ -163,11 +196,11 @@ class ImageManager:
 
         fuzzy_color_space.precompute_pack()
 
-        lab_image = self._pil_to_lab_image(image)
-        height, width = lab_image.shape[:2]
-
-        lab_int = np.round(lab_image.reshape(-1, 3) * 100.0).astype(np.int32)
-        uniq, inv = np.unique(lab_int, axis=0, return_inverse=True)
+        # Construct/evaluate directly in the space used by the loaded FCS.
+        # RGB is encoded as 0..255 channel values; LAB is quantized to 0.01.
+        uniq, inv, height, width, scale, source_space = self._unique_model_colors(
+            image, fuzzy_color_space
+        )
 
         best_for_uniq = np.empty((uniq.shape[0],), dtype=np.int32)
         total_uniqs = int(uniq.shape[0])
@@ -176,8 +209,8 @@ class ImageManager:
             if cancel_callback and cancel_callback():
                 return None
 
-            lab_tuple = tuple((uniq[i].astype(np.float32) / 100.0).tolist())
-            best_idx = fuzzy_color_space.best_prototype_index_from_lab(lab_tuple)
+            lab_tuple = tuple((uniq[i].astype(np.float32) / scale).tolist())
+            best_idx = fuzzy_color_space.best_prototype_index(lab_tuple, input_space=source_space)
             best_for_uniq[i] = int(best_idx) if best_idx is not None else -1
 
             if progress_callback and (i % 500 == 0 or i == total_uniqs - 1):
@@ -195,73 +228,53 @@ class ImageManager:
         return label_map
 
     @staticmethod
-    def build_original_palette_uint8(prototypes):
+    def build_original_palette_uint8(prototypes, color_space="LAB"):
+        """Actual sRGB colors of the stored FCS representatives, in prototype order.
+
+        The saved FCS geometry may be LAB or RGB; its display palette is always
+        RGB. Never depend on the Data tab's HEX-keyed dictionary: repeated HEX
+        values would silently collapse entries and shift label/color alignment.
         """
-        Build a dynamic high-contrast visualization palette in prototype order.
-        Requires: import matplotlib.pyplot as plt
+        if not prototypes:
+            return np.empty((0, 3), dtype=np.uint8)
+        coords = np.asarray([p.positive for p in prototypes], dtype=np.float64).reshape(-1, 3)
+        if not np.all(np.isfinite(coords)):
+            raise ValueError("FCS prototype coordinates must be finite.")
+        mode = str(color_space).upper()
+        if mode == "RGB":
+            rgb255 = coords
+        elif mode == "LAB":
+            rgb255 = color.lab2rgb(coords.reshape(1, -1, 3)).reshape(-1, 3) * 255.0
+        else:
+            raise ValueError("FCS color space must be LAB or RGB.")
+        return np.rint(np.clip(rgb255, 0.0, 255.0)).astype(np.uint8)
+
+    @staticmethod
+    def build_alt_palette_uint8(prototypes, hex_color=None):
+        """High-contrast artificial colors to distinguish assigned categories.
+
+        `hex_color` remains optional for backwards-compatible callers, but it
+        is intentionally NOT used to construct the alternative palette.
         """
         n = len(prototypes)
         if n == 0:
-            return np.zeros((0, 3), dtype=np.uint8)
+            return np.empty((0, 3), dtype=np.uint8)
 
-        qualitative_cmaps = ["tab20", "tab20b", "tab20c", "Set3", "Dark2", "Accent"]
-        colors = []
-
+        qualitative_cmaps = ("tab20", "tab20b", "tab20c", "Set3", "Dark2", "Accent")
+        palette = []
         for cmap_name in qualitative_cmaps:
             cmap = plt.get_cmap(cmap_name)
             for i in range(cmap.N):
-                rgb01 = np.array(cmap(i)[:3], dtype=float)
-                colors.append((np.clip(rgb01, 0, 1) * 255).astype(np.uint8))
-                if len(colors) >= n:
+                palette.append(np.rint(np.asarray(cmap(i)[:3]) * 255.0).astype(np.uint8))
+                if len(palette) >= n:
                     break
-            if len(colors) >= n:
+            if len(palette) >= n:
                 break
-
-        if len(colors) < n:
-            remaining = n - len(colors)
-            hsv = plt.get_cmap("hsv", remaining)
-            for i in range(remaining):
-                rgb01 = np.array(hsv(i)[:3], dtype=float)
-                colors.append((np.clip(rgb01, 0, 1) * 255).astype(np.uint8))
-
-        palette = []
-        for i, prototype in enumerate(prototypes):
-            rgb255 = colors[i].copy()
-            if getattr(prototype, "label", "").lower() == "black":
-                rgb255 = np.array([0, 0, 0], dtype=np.uint8)
-            palette.append(rgb255)
-
-        return np.stack(palette, axis=0).astype(np.uint8)
-
-    @staticmethod
-    def build_alt_palette_uint8(prototypes, hex_color):
-        """Build the representative-color palette using the colors stored in hex_color."""
-        if isinstance(hex_color, dict):
-            hex_colors = list(hex_color.keys())
-        else:
-            hex_colors = list(hex_color or [])
-
-        alt = []
-        for i, _prototype in enumerate(prototypes):
-            rgb = np.array([0, 0, 0], dtype=np.uint8)
-
-            if i < len(hex_colors):
-                hx = str(hex_colors[i]).strip()
-                if hx.startswith("#") and len(hx) == 7:
-                    try:
-                        rgb = np.array(
-                            [int(hx[j:j + 2], 16) for j in (1, 3, 5)],
-                            dtype=np.uint8
-                        )
-                    except ValueError:
-                        rgb = np.array([0, 0, 0], dtype=np.uint8)
-
-            alt.append(rgb)
-
-        if not alt:
-            return np.zeros((0, 3), dtype=np.uint8)
-
-        return np.stack(alt, axis=0).astype(np.uint8)
+        if len(palette) < n:
+            cmap = plt.get_cmap("hsv", n - len(palette))
+            for i in range(n - len(palette)):
+                palette.append(np.rint(np.asarray(cmap(i)[:3]) * 255.0).astype(np.uint8))
+        return np.stack(palette, axis=0)
 
     @staticmethod
     def recolor_label_map(label_map, palette_uint8, source_alpha=None):

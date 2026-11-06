@@ -70,7 +70,7 @@ class ColorEvaluationManager:
         self.output_dir = os.path.abspath(output_dir)
 
     # CSV / Volume Filtering
-    def create_csv(self, file_base_name, volume_limits, mode=None):
+    def create_csv(self, file_base_name, volume_limits, mode=None, color_space="LAB"):
         csv_data = []
 
         for vol_name, limits in volume_limits.items():
@@ -79,11 +79,11 @@ class ColorEvaluationManager:
                     return "-"
                 return f'"{vmin:.2f} - {vmax:.2f}"'
 
-            csv_data.append({
-                "Volume": vol_name,
-                "L*": fmt(limits["L"][0], limits["L"][1]),
-                "a*": fmt(limits["a"][0], limits["a"][1]),
-                "b*": fmt(limits["b"][0], limits["b"][1]),
+            labels = ("R", "G", "B") if color_space.upper() == "RGB" else ("L*", "a*", "b*")
+            csv_data.append({"Volume": vol_name,
+                labels[0]: fmt(limits["L"][0], limits["L"][1]),
+                labels[1]: fmt(limits["a"][0], limits["a"][1]),
+                labels[2]: fmt(limits["b"][0], limits["b"][1]),
             })
 
         df = pd.DataFrame(csv_data)
@@ -96,7 +96,7 @@ class ColorEvaluationManager:
         print(f"✅ CSV saved: {csv_name}")
         return csv_path
 
-    def filter_points_with_threshold(self, selected_volume, threshold, step, metric="CIEDE2000"):
+    def filter_points_with_threshold(self, selected_volume, threshold, step, metric="CIEDE2000", color_space="LAB"):
         """
         Original behavior is preserved by default with CIEDE2000.
         You can now pass another scalar metric if needed.
@@ -104,6 +104,16 @@ class ColorEvaluationManager:
         filtered_points = {}
         volume_limits = {}
         metric = self.normalize_metric_name(metric)
+        use_rgb = str(color_space).upper() == "RGB"
+        if use_rgb:
+            from skimage import color as skcolor
+            step = max(1.0, step)
+            def to_lab(x):
+                q = np.asarray(x,dtype=float).reshape(1,1,3)
+                return skcolor.rgb2lab(np.clip(q,0,255)/255.0)[0,0]
+        else:
+            def to_lab(x):
+                return x
 
         for idx, prototype in enumerate(selected_volume):
             positive = np.array(prototype.positive, dtype=float)
@@ -121,7 +131,7 @@ class ColorEvaluationManager:
                 visited.add(point)
 
                 try:
-                    metric_value = self.calculate_metric_value(point, positive, metric)
+                    metric_value = self.calculate_metric_value(to_lab(point),to_lab(positive),metric)
                 except Exception:
                     metric_value = np.inf
 
