@@ -1,71 +1,62 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-LOGFILE="setup_pyfcs.log"
+# Resolve all paths from the location of this script.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+REQUIREMENTS="$SCRIPT_DIR/requirements.txt"
+VENV_DIR="$PROJECT_ROOT/venv_pyfcs"
+LOGFILE="$PROJECT_ROOT/setup_pyfcs.log"
+
 exec > >(tee "$LOGFILE") 2>&1
 
-echo "🚀 Starting automatic setup for PyFCS environment (clean mode with log)..."
+echo "Starting PyFCS setup on macOS..."
 
-# Check if Homebrew is installed
-if ! command -v brew &>/dev/null; then
-    echo "❌ Homebrew is not installed. Please install it first: https://brew.sh/"
+if ! command -v brew >/dev/null 2>&1; then
+    echo "Homebrew is required: https://brew.sh/" >&2
     exit 1
 fi
 
-ARCH=$(uname -m)
-echo "🧠 Detected architecture: $ARCH"
+# Initialize the Homebrew environment on Apple Silicon and Intel Macs.
+eval "$(brew shellenv)"
 
-if [[ "$ARCH" == "arm64" ]]; then
-    BREW_PREFIX="/opt/homebrew"
-else
-    BREW_PREFIX="/usr/local"
-fi
-
-eval "$(${BREW_PREFIX}/bin/brew shellenv)"
-
-# 1. Check if Python is installed via Homebrew
-if ! brew list python &> /dev/null; then
-    echo "🔧 Installing the latest version of Python via Homebrew..."
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Installing Python 3 with Homebrew..."
     brew install python
-else
-    echo "✅ Python is already installed via Homebrew."
 fi
 
-# 2. Get the path to the latest installed version of Python
-PYTHON_PATH="$(${BREW_PREFIX}/bin/brew --prefix python)/bin/python3"
-echo "🐍 Using Python: $($PYTHON_PATH --version)"
-echo "📍 Python location: $PYTHON_PATH"
+PYTHON_PATH="$(command -v python3)"
+echo "Using Python: $($PYTHON_PATH --version)"
 
-# 3. Check that tkinter works
-echo "🔎 Checking tkinter (please close the window by clicking 'Quit' to continue)..."
-$PYTHON_PATH -c "import tkinter; tkinter._test()" || {
-    echo "❌ tkinter is not working properly. Aborting."
-    exit 1
-}
+# Homebrew may provide tkinter as a separate package.
+if ! "$PYTHON_PATH" -c 'import tkinter' >/dev/null 2>&1; then
+    PYTHON_VERSION="$(
+        "$PYTHON_PATH" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+    )"
 
-# 4. Remove virtual environment if it already exists
-if [ -d "venv_pyfcs" ]; then
-    echo "🧹 Removing previous virtual environment..."
-    rm -rf venv_pyfcs
-fi
-
-# 5. Create new virtual environment
-echo "🧱 Creating virtual environment 'venv_pyfcs'..."
-$PYTHON_PATH -m venv venv_pyfcs
-
-# 6. Activate virtual environment
-echo "⚙️ Activating virtual environment..."
-source venv_pyfcs/bin/activate
-
-# 7. Install requirements
-if [ -f "PyFCS/external/requirements.txt" ]; then
-    echo "📦 Installing requirements from requirements.txt..."
-    pip install --upgrade pip
-    pip install -r PyFCS/external/requirements.txt
-else
-    echo "❌ PyFCS/external/requirements.txt not found"
+    echo "Tkinter is not available for Python $PYTHON_VERSION." >&2
+    echo "Install a compatible python-tk package (e.g. brew install python-tk@$PYTHON_VERSION) and rerun." >&2
     exit 1
 fi
 
-# 8. Launch application
-echo "🚀 Launching PyFCS..."
-python PyFCS/interface/mainInterface.py
+if [[ ! -f "$REQUIREMENTS" ]]; then
+    echo "Requirements file not found: $REQUIREMENTS" >&2
+    exit 1
+fi
+
+# Reuse an existing environment; remove it manually for a clean reinstall.
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    echo "Creating virtual environment: $VENV_DIR"
+    "$PYTHON_PATH" -m venv "$VENV_DIR"
+fi
+
+VENV_PYTHON="$VENV_DIR/bin/python"
+
+"$VENV_PYTHON" -m pip install --upgrade pip
+"$VENV_PYTHON" -m pip install -r "$REQUIREMENTS"
+
+# Module execution keeps Source.* imports valid.
+echo "Launching PyFCS..."
+cd "$PROJECT_ROOT"
+
+"$VENV_PYTHON" -m Source.interface.mainInterface

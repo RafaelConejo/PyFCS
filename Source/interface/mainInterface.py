@@ -121,10 +121,8 @@ class PyFCSApp:
         # Additional runtime state
         self.rgb_data = []
         self.graph_widget = None
-        # Visualization coordinates are independent of the model's geometry.
-        # On CNS load this defaults to the native source space (RGB/LAB).
-        self.visualization_space = tk.StringVar(master=self.root, value="LAB")
-        self._last_valid_visualization_space = "LAB"
+        # The 3D model always displays the FCS in its native geometric space.
+        # An explicit conversion/rebuild is available from the Data tab.
         self.loaded_source_color_space = "LAB"
         # The model may be rebuilt in memory without immediately overwriting
         # an imported CNS / JFCS / PyFCS file on disk.
@@ -809,31 +807,6 @@ class PyFCSApp:
         )
         paned.add(self.colors_frame, minsize=145)
 
-        # A display-only coordinate selector: changing it never rebuilds the FCS.
-        # A CNS opens in its declared RGB/LAB space by default.
-        self.visualization_mode_bar = tk.Frame(self.colors_frame, bg=CARD_BG)
-        self.visualization_mode_bar.pack(fill="x", padx=8, pady=(10, 3))
-        tk.Label(self.visualization_mode_bar, text="View", font=FONT_SMALL_BOLD,
-                 bg=CARD_BG, fg=MUTED).pack(anchor="center", pady=(0, 2))
-        visual_choices = tk.Frame(self.visualization_mode_bar, bg=CARD_BG)
-        visual_choices.pack(anchor="center")
-        for code in ("LAB", "RGB"):
-            tk.Radiobutton(
-                visual_choices, text=code, value=code,
-                variable=self.visualization_space,
-                command=self.on_visualization_space_changed,
-                font=FONT_SMALL, bg=CARD_BG, fg=TEXT,
-                activebackground=CARD_BG, activeforeground=TEXT,
-                selectcolor=CARD_BG, highlightthickness=0,
-                cursor="hand2", padx=1
-            ).pack(side="left", padx=1)
-        self.visualization_mode_bar_hint = tk.Label(
-            self.colors_frame, text="Display coordinates only",
-            font=("Segoe UI", 7), bg=CARD_BG, fg=MUTED
-        )
-        self.visualization_mode_bar_hint.pack(anchor="center", pady=(0, 6))
-        tk.Frame(self.colors_frame, bg=BORDER, height=1).pack(fill="x", padx=10)
-
         colors_header = tk.Frame(self.colors_frame, bg=CARD_BG)
         colors_header.pack(fill="x", padx=8, pady=(9, 4))
 
@@ -1101,11 +1074,10 @@ class PyFCSApp:
             padx=(0, 10)
         )
 
-        # Explicit geometry conversion belongs to Data, not Model 3D.
-        # View (on the 3D tab) only changes display coordinates.
+        # Geometric conversion is an explicit Data action, not a display switch.
         self.change_model_button = create_action_button(
             left_actions,
-            text="Change Model",
+            text="Change Color Space",
             command=self.change_model_color_space,
             bg="#f1f3f6",
             fg=TEXT,
@@ -1116,7 +1088,7 @@ class PyFCSApp:
         # Compact footer buttons so all four actions remain fully visible at
         # the application's minimum width and with typical Windows scaling.
         add_button.configure(padx=9)
-        self.change_model_button.configure(padx=9, state=tk.DISABLED)
+        self.change_model_button.configure(padx=7, state=tk.DISABLED)
 
         apply_button = create_action_button(
             left_actions,
@@ -1326,233 +1298,330 @@ class PyFCSApp:
         return tk_img
 
 
+        
     def custom_warning(self, title="Warning", message="Warning", parent=None):
-        """
-        Creates a custom warning window whose size adapts automatically
-        to the rendered message.
-        """
-
+        """Show a compact, modal warning using the Loading/Processing visual style."""
         parent_win = self._get_active_dialog_parent(parent)
+        accent = UtilsTools.UI_ACCENT
+        accent_dark = UtilsTools.UI_ACCENT_DARK
+        bg = "#f5f6f8"
+        white = "#ffffff"
+        muted = "#667085"
 
-        warning_win = tk.Toplevel(parent_win)
-        warning_win.withdraw()
-        warning_win.title(title)
-        warning_win.configure(bg="#eeeeee")
-        warning_win.resizable(False, False)
-
-        message_text = str(message)
-
-        # Main panel
-        outer = tk.Frame(warning_win, bg="#eeeeee")
-        outer.pack(fill="both", expand=True, padx=10, pady=10)
-
-        panel = tk.Frame(
-            outer,
-            bg="white",
-            bd=1,
-            relief="solid"
-        )
-        panel.pack(fill="both", expand=True)
-
-        # Content row
-        body = tk.Frame(panel, bg="white")
-        body.pack(fill="both", expand=True, padx=14, pady=(12, 8))
+        dialog = tk.Toplevel(parent_win)
+        dialog.withdraw()
+        dialog.title(str(title))
+        dialog.configure(bg=bg)
+        dialog.resizable(False, False)
+        dialog.transient(parent_win)
 
         try:
-            warning_icon = self.load_toolbar_icon(
-                "warning.png",
-                size=(45, 40)
-            )
+            dialog.iconphoto(True, self.logo)
+        except (AttributeError, tk.TclError):
+            pass
 
+        # Card
+        shell = tk.Frame(dialog, bg="#e5e7eb")
+        shell.pack(fill="both", expand=True, padx=10, pady=10)
+
+        card = tk.Frame(shell, bg=white)
+        card.pack(fill="both", expand=True, padx=1, pady=1)
+
+        body = tk.Frame(card, bg=white, padx=22, pady=20)
+        body.pack(fill="both", expand=True)
+
+        # Warning icon
+        icon_box = tk.Frame(
+            body, bg=white, width=52, height=52
+        )
+        icon_box.pack(side="left", anchor="n", padx=(0, 17))
+        icon_box.pack_propagate(False)
+
+        try:
+            icon_image = self.load_toolbar_icon(
+                "warning.png", size=(38, 35)
+            )
             icon_label = tk.Label(
-                body,
-                image=warning_icon,
-                bg="white",
+                icon_box, image=icon_image,
+                bg=white, bd=0
+            )
+            icon_label.image = icon_image
+        except Exception:
+            icon_label = tk.Label(
+                icon_box,
+                text="!",
+                font=("Segoe UI", 22, "bold"),
+                fg="#a16207",
+                bg=white,
                 bd=0
             )
-            icon_label.image = warning_icon
-            icon_label.pack(
-                side="left",
-                anchor="n",
-                padx=(0, 12)
-            )
 
-        except Exception:
-            icon_label = tk.Label(
-                body,
-                text="!",
-                font=("Segoe UI", 18, "bold"),
-                fg="#9a6500",
-                bg="#fff4d6",
-                width=2,
-                height=1,
-                relief="solid",
-                bd=1,
-                anchor="center"
-            )
-            icon_label.pack(
-                side="left",
-                anchor="n",
-                padx=(0, 12)
-            )
+        icon_label.pack(expand=True)
 
-        message_label = tk.Label(
-            body,
-            text=message_text,
-            font=("Sans", 10),
-            fg="#333333",
-            bg="white",
+        # Message
+        content = tk.Frame(body, bg=white)
+        content.pack(side="left", fill="both", expand=True)
+
+        tk.Label(
+            content,
+            text=str(title),
+            font=("Segoe UI", 12, "bold"),
+            bg=white,
+            fg="#242735",
+            anchor="w",
             justify="left",
-            anchor="nw",
-            wraplength=430
-        )
-        message_label.pack(
-            side="left",
-            fill="both",
-            expand=True
-        )
+            wraplength=395
+        ).pack(fill="x", anchor="w", pady=(0, 7))
 
-        # Button row
-        footer = tk.Frame(panel, bg="white")
-        footer.pack(
-            fill="x",
-            padx=14,
-            pady=(0, 10)
-        )
+        tk.Label(
+            content,
+            text=str(message),
+            font=("Segoe UI", 10),
+            bg=white,
+            fg=muted,
+            anchor="w",
+            justify="left",
+            wraplength=395
+        ).pack(fill="x", anchor="w")
 
-        btn_ok = tk.Button(
+        # Footer
+        tk.Frame(
+            card, bg="#ebe7f0", height=1
+        ).pack(fill="x")
+
+        footer = tk.Frame(
+            card, bg="#faf9fc", padx=18, pady=12
+        )
+        footer.pack(fill="x")
+
+        def close_dialog(_event=None):
+            try:
+                if dialog.winfo_exists():
+                    try:
+                        dialog.grab_release()
+                    except tk.TclError:
+                        pass
+                    dialog.destroy()
+            except tk.TclError:
+                pass
+
+        ok_btn = tk.Button(
             footer,
             text="OK",
-            font=("Helvetica", 9, "bold"),
-            bg=UtilsTools.UI_ACCENT_SOFT,
-            fg=UtilsTools.UI_ACCENT,
-            activebackground=UtilsTools.UI_ACCENT_HOVER,
-            activeforeground=UtilsTools.UI_ACCENT,
-            relief="solid",
-            bd=1,
-            padx=18,
-            pady=4,
+            command=close_dialog,
+            font=("Segoe UI", 9, "bold"),
+            bg=accent,
+            fg="white",
+            activebackground=accent_dark,
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+            padx=23,
+            pady=7,
             cursor="hand2",
-            command=warning_win.destroy
+            highlightthickness=0
         )
-        btn_ok.pack(side="right")
+        ok_btn.pack(side="right")
 
-        warning_win.bind(
-            "<Return>",
-            lambda event: warning_win.destroy()
-        )
-        warning_win.bind(
-            "<Escape>",
-            lambda event: warning_win.destroy()
-        )
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.bind("<Return>", close_dialog)
+        dialog.bind("<Escape>", close_dialog)
 
-        btn_ok.focus_set()
+        # Automatic sizing and centering
+        dialog.update_idletasks()
 
-        # Calculate REAL required size
-        warning_win.update_idletasks()
+        width = max(485, min(dialog.winfo_reqwidth() + 6, 650))
+        height = max(180, dialog.winfo_reqheight() + 6)
 
-        required_width = warning_win.winfo_reqwidth()
-        required_height = warning_win.winfo_reqheight()
-
-        # Keep warnings visually consistent while allowing them to grow
-        WIN_W = max(430, min(required_width, 560))
-        WIN_H = max(145, required_height)
-
-        self.center_popup(
-            warning_win,
-            WIN_W,
-            WIN_H
+        self.center_popup_to_parent(
+            dialog, width, height, parent_win
         )
 
-        warning_win.transient(parent_win)
-        warning_win.deiconify()
-        warning_win.grab_set()
+        dialog.deiconify()
 
         try:
-            warning_win.lift(parent_win)
-        except Exception:
-            warning_win.lift()
+            dialog.lift(parent_win)
+        except tk.TclError:
+            dialog.lift()
 
-        warning_win.wait_window()
+        # Tk supports one active grab: restore the parent's modal grab after
+        # a nested warning closes (e.g. Change Color Space / Creation).
+        try:
+            previous_grab = dialog.grab_current()
+        except tk.TclError:
+            previous_grab = None
+        try:
+            dialog.grab_set()
+            ok_btn.focus_set()
+            dialog.wait_window()
+        finally:
+            if previous_grab is not None and previous_grab != dialog:
+                try:
+                    if previous_grab.winfo_exists():
+                        previous_grab.grab_set()
+                except tk.TclError:
+                    pass
+
 
 
     def show_loading_color_space(self):
+        """Display a compact loading dialog while a color space is prepared."""
+        popup = tk.Toplevel(self.root)
+        popup.withdraw()
+        popup.title("Loading Color Space")
+        popup.configure(bg="#f6f6f8")
+        popup.resizable(False, False)
+        popup.transient(self.root)
+        popup.protocol("WM_DELETE_WINDOW", lambda: None)
+        self.load_window = popup
+
+        card = tk.Frame(popup, bg="#ffffff", padx=24, pady=21)
+        card.pack(fill="both", expand=True, padx=10, pady=10)
+        tk.Label(
+            card, text="Loading Color Space",
+            bg="#ffffff", fg="#262832",
+            font=("Segoe UI", 13, "bold"), anchor="w"
+        ).pack(fill="x")
+        tk.Label(
+            card, text="Reading colors and preparing the model...",
+            bg="#ffffff", fg="#667085",
+            font=("Segoe UI", 9), anchor="w"
+        ).pack(fill="x", pady=(6, 16))
+        self._loading_color_space_progress = ttk.Progressbar(
+            card, mode="indeterminate", orient="horizontal",
+            length=325, style="PyFCS.Load.Horizontal.TProgressbar"
+        )
+        self._loading_color_space_progress.pack(fill="x")
+        self._loading_color_space_progress.start(12)
+        tk.Label(
+            card, text="The current workspace is preserved until loading completes.",
+            bg="#ffffff", fg="#89909c",
+            font=("Segoe UI", 8), anchor="w"
+        ).pack(fill="x", pady=(12, 0))
+
+        style = ttk.Style(popup)
+        style.configure(
+            "PyFCS.Load.Horizontal.TProgressbar",
+            troughcolor="#eae7ef", background=UtilsTools.UI_ACCENT,
+            borderwidth=0, thickness=7
+        )
+        self.center_popup(popup, 430, 188)
+        popup.deiconify()
+        popup.grab_set()
+        # Do not enter a nested event loop; the caller returns promptly to
+        # Tk's mainloop while the file is prepared in the worker thread.
+        popup.update_idletasks()
+
+
+    def show_loading(self, title="Processing Color Space",
+                     message="Preparing the color-space geometry...",
+                     note="This window closes automatically when the operation finishes."):
+        """Unified, non-blocking progress window for save/threshold operations.
+
+        Start indeterminate: computing Voronoi geometry has no meaningful
+        per-step percentage. Switch to determinate only when a writer reports
+        its actual progress.
         """
-        Display a simple loading window with the message 'Loading Color Space...'.
-        """
-        self.load_window = tk.Toplevel(self.root)
-        self.load_window.withdraw()
-        self.load_window.title("Loading")
-        self.load_window.resizable(False, False)
+        popup = tk.Toplevel(self.root)
+        popup.withdraw()
+        popup.title(title)
+        popup.configure(bg="#f6f6f8")
+        popup.resizable(False, False)
+        popup.transient(self.root)
+        popup.protocol("WM_DELETE_WINDOW", lambda: None)
+        self.load_window = popup
 
-        # Label with large font
-        label = tk.Label(self.load_window, text="Loading Color Space...", font=("Sans", 16, "bold"), padx=20, pady=20)
-        label.pack(pady=(10, 5))
+        style = ttk.Style(popup)
+        style.configure(
+            "PyFCS.Load.Horizontal.TProgressbar",
+            troughcolor="#eae7ef", background=UtilsTools.UI_ACCENT,
+            borderwidth=0, thickness=7
+        )
 
-        self.center_popup(self.load_window, 300, 100)
-        self.load_window.deiconify()
+        card = tk.Frame(popup, bg="#ffffff", padx=24, pady=21)
+        card.pack(fill="both", expand=True, padx=10, pady=10)
+        tk.Label(
+            card, text=title, bg="#ffffff", fg="#262832",
+            font=("Segoe UI", 13, "bold"), anchor="w"
+        ).pack(fill="x")
+        self._processing_status_label = tk.Label(
+            card, text=message, bg="#ffffff", fg="#667085",
+            font=("Segoe UI", 9), justify="left", anchor="w",
+            wraplength=370
+        )
+        self._processing_status_label.pack(fill="x", pady=(6, 16))
 
-        # Disable interactions with the main window
-        self.load_window.grab_set()
+        self.progress = ttk.Progressbar(
+            card, mode="indeterminate", orient="horizontal",
+            length=325, style="PyFCS.Load.Horizontal.TProgressbar"
+        )
+        self.progress.pack(fill="x")
+        self.progress.start(12)
+        tk.Label(
+            card, text=note, bg="#ffffff", fg="#89909c",
+            font=("Segoe UI", 8), anchor="w", wraplength=370
+        ).pack(fill="x", pady=(12, 0))
 
-        # Ensure the loading window updates and displays properly
-        self.load_window.update()  
+        self.center_popup(popup, 430, 188)
+        popup.deiconify()
+        popup.grab_set()
+        popup.update_idletasks()
 
-
-    def show_loading(self):
-        """
-        Display a visually appealing loading window with a progress bar.
-        """
-        self.load_window = tk.Toplevel(self.root)
-        self.load_window.withdraw()
-        self.load_window.title("Loading")
-        self.load_window.resizable(False, False)  # Disable resizing
-
-        # Label for the loading message
-        label = tk.Label(self.load_window, text="Processing...", font=("Sans", 12), padx=10, pady=10)
-        label.pack(pady=(10, 5))
-
-        # Progress bar
-        self.progress = ttk.Progressbar(self.load_window, orient="horizontal", mode="determinate", length=200)
-        self.progress.pack(pady=(0, 10))
-
-        # Center the popup
-        self.center_popup(self.load_window, 300, 150)
-        self.load_window.deiconify()
-
-        # Disable interactions with the main window
-        self.load_window.grab_set()
-
-        # Ensure the loading window updates and displays properly
-        self.root.update_idletasks()
-
+    def _set_processing_progress(self, value=None, message=None):
+        """Update the Processing window on the Tk main thread only."""
+        popup = getattr(self, "load_window", None)
+        progress = getattr(self, "progress", None)
+        if popup is None or progress is None:
+            return
+        try:
+            if not popup.winfo_exists() or not progress.winfo_exists():
+                return
+            label = getattr(self, "_processing_status_label", None)
+            if message is not None and label is not None and label.winfo_exists():
+                label.configure(text=message)
+            if value is not None:
+                if str(progress.cget("mode")) != "determinate":
+                    progress.stop()
+                    progress.configure(mode="determinate", maximum=100)
+                progress["value"] = max(0.0, min(100.0, float(value)))
+        except tk.TclError:
+            pass
 
     def hide_loading(self):
+        """Close either progress dialog safely (Tk main thread only).
+
+        ttk.Progressbar.stop() must run *before* destroying its Toplevel.
+        Detach the references first to make repeated/reentrant cleanup safe.
         """
-        Close the loading window if it exists.
-        This method ensures that the loading window is properly destroyed.
-        """
-        if hasattr(self, "load_window"):
+        popup = getattr(self, "load_window", None)
+        bars = (
+            getattr(self, "_loading_color_space_progress", None),
+            getattr(self, "progress", None),
+        )
+        self._loading_color_space_progress = None
+        self.progress = None
+        self._processing_status_label = None
+        self.load_window = None
+
+        for indicator in bars:
+            if indicator is None:
+                continue
             try:
-                if self.load_window.winfo_exists():
+                if indicator.winfo_exists():
+                    indicator.stop()
+            except (tk.TclError, RuntimeError):
+                # The root/dialog may have been closed independently.
+                pass
+
+        if popup is not None:
+            try:
+                if popup.winfo_exists():
                     try:
-                        self.load_window.grab_release()
-                    except Exception:
+                        popup.grab_release()
+                    except (tk.TclError, RuntimeError):
                         pass
-
-                    self.load_window.destroy()
-            except Exception:
-                pass
-
-            try:
-                del self.load_window
-            except Exception:
-                pass
-
-        if hasattr(self, "progress"):
-            try:
-                del self.progress
-            except Exception:
+                    popup.destroy()
+            except (tk.TclError, RuntimeError):
                 pass
 
 
@@ -1750,7 +1819,7 @@ class PyFCSApp:
 
         tk.Label(
             info_box,
-            text="Version 1.4.2",
+            text="Version 1.5.0",
             font=("Segoe UI", 10, "bold"),
             bg="#f8fafc",
             fg="#1f2937"
@@ -1870,7 +1939,7 @@ class PyFCSApp:
         return bool(getattr(self, "load_images_names", {}))
 
 
-    def _ensure_fuzzy_color_space_loaded_for_feature(self, feature_name):
+    def _ensure_fuzzy_color_space_loaded_for_feature(self, feature_name, on_success=None):
         """
         Ensure that a Fuzzy Color Space is loaded.
 
@@ -1894,12 +1963,10 @@ class PyFCSApp:
         if not load_now:
             return False
 
-        self.load_color_space()
-
-        return (
-            getattr(self, "COLOR_SPACE", False)
-            and getattr(self, "fuzzy_color_space", None) is not None
-        )
+        # Loading is asynchronous. Re-open the requested feature only when
+        # the new model is actually ready; never use the previously loaded one.
+        self.load_color_space(on_success=on_success)
+        return False
 
 
     def on_mouse_wheel(self, event, target):
@@ -2304,7 +2371,10 @@ class PyFCSApp:
 
         # Option A: an image is not required here. The inspection workspace can
         # open empty and its own Open Image action can be used afterwards.
-        if not self._ensure_fuzzy_color_space_loaded_for_feature("Image Inspection"):
+        if not self._ensure_fuzzy_color_space_loaded_for_feature(
+            "Image Inspection",
+            on_success=lambda: self.open_image_inspection(initial_info=initial_info),
+        ):
             return
 
         self._ensure_threshold_settings()
@@ -2445,13 +2515,120 @@ class PyFCSApp:
             self._mapping_all_pack_by_window.clear()
 
 
-    def load_color_space(self, filename=None):
-        """
-        Load a color-space source and update the application state.
+    def _prepare_color_space_load(self, filename):
+        """Parse/validate/build the candidate FCS outside the Tk event loop.
 
-        File parsing and geometry preparation happen before the active workspace
-        is reset. A corrupt/invalid source therefore leaves the current FCS
-        untouched.
+        This worker phase must not access Tk widgets or mutate the currently
+        active workspace. CNS warnings are returned for display on the UI
+        thread instead of opening messageboxes inside the worker.
+        """
+        extension = os.path.splitext(filename)[1].lower()
+        handler = Input.instance(extension)
+        warning_message = None
+        if extension == ".cns":
+            new_color_data = handler.read_file(filename)
+            source_type = "cns"
+            source_native = str(getattr(handler, "last_color_space", "LAB") or "LAB").upper()
+            warning_message = getattr(handler, "last_warning", None)
+            data = {"color_data": new_color_data, "type": source_type,
+                    "source_color_space": source_native}
+        elif extension == ".fcs":
+            new_color_data, new_fuzzy_color_space = handler.read_file(filename)
+            source_type = "fcs"
+            data = {"color_data": new_color_data, "type": source_type,
+                    "fuzzy_color_space": new_fuzzy_color_space}
+        else:
+            raise ValueError(f"Unsupported color-space file format: {extension}")
+
+        if not isinstance(data, dict) or "color_data" not in data or "type" not in data:
+            raise ValueError("The selected file did not return valid color-space data.")
+
+        new_color_data = data["color_data"]
+        if not isinstance(new_color_data, dict) or len(new_color_data) < 2:
+            raise ValueError("The file must contain at least two valid, named colors.")
+        for color_label, row in new_color_data.items():
+            if not str(color_label).strip() or not isinstance(row, dict):
+                raise ValueError("The file contains an empty or malformed color entry.")
+            coords = np.asarray(row.get("positive_prototype", []), dtype=float).reshape(-1)
+            if coords.size != 3 or not np.all(np.isfinite(coords)):
+                raise ValueError(f"Invalid color coordinates for '{color_label}'.")
+
+        if source_type == "cns":
+            # Data rows remain LAB; the geometry is built in the CNS's native
+            # space exactly as in the previous synchronous implementation.
+            native = data["source_color_space"]
+            if native not in ("LAB", "RGB"):
+                raise ValueError("CNS color space must be LAB or RGB.")
+            native_points = {
+                label: np.asarray(
+                    row["Color"] if native == "RGB" else row["positive_prototype"],
+                    dtype=float,
+                ).reshape(3)
+                for label, row in new_color_data.items()
+            }
+            new_fuzzy_color_space = FuzzyColorSpaceBuilder.build(
+                os.path.splitext(os.path.basename(filename))[0],
+                native_points, color_space=native,
+            )
+        else:
+            new_fuzzy_color_space = data.get("fuzzy_color_space")
+            if new_fuzzy_color_space is None:
+                raise ValueError("The selected FCS file does not contain a valid fuzzy color space.")
+            native = new_fuzzy_color_space.color_space
+
+        new_fuzzy_color_space.precompute_pack()
+        return {
+            "color_data": new_color_data,
+            "space": new_fuzzy_color_space,
+            "source_type": source_type,
+            "native_source": native,
+            "warning_message": warning_message,
+        }
+
+    def _commit_color_space_load(self, filename, prepared):
+        """Update the GUI and active workspace on Tk's main thread only."""
+        new_color_data = prepared["color_data"]
+        new_fuzzy_color_space = prepared["space"]
+        source_type = prepared["source_type"]
+
+        # Only replace the current model after parsing and construction have
+        # succeeded; a malformed input never clears the old FCS.
+        self._reset_image_inspection_state()
+        self._prepare_open_images_for_color_space_change()
+
+        self.file_path = filename
+        self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
+        self.color_data = new_color_data
+        self.edit_color_data = copy.deepcopy(new_color_data)
+        self.fuzzy_color_space = new_fuzzy_color_space
+        self._model_space_unsaved = False
+        native_source = str(prepared["native_source"]).upper()
+        if native_source not in ("LAB", "RGB"):
+            native_source = "LAB"
+        self.loaded_source_color_space = native_source
+        if source_type == "cns":
+            self.prototypes = new_fuzzy_color_space.get_prototypes()
+            self.cores = new_fuzzy_color_space.get_cores()
+            self.supports = new_fuzzy_color_space.get_supports()
+        else:
+            self.prototypes = new_fuzzy_color_space.prototypes
+            self.cores = new_fuzzy_color_space.cores
+            self.supports = new_fuzzy_color_space.supports
+        self.volume_limits = new_fuzzy_color_space.reference_domain
+        self._fcs_creation_defaults = self._options_from_loaded_space(new_fuzzy_color_space)
+
+        self._invalidate_mapping_caches()
+        self.display_data_window()
+        self._reset_3d_canvas()
+        self.update_prototypes_info()
+        self._update_model_space_indicator()
+
+    def load_color_space(self, filename=None, *, on_success=None):
+        """Start loading asynchronously so the Loading indicator keeps moving.
+
+        Returns True when a load is successfully *started* (not completed).
+        The optional on_success callback runs on Tk's thread only after the
+        model has been committed. No work on Tk widgets runs in the worker.
         """
         if self._has_any_active_job():
             self.custom_warning(
@@ -2478,100 +2655,58 @@ class PyFCSApp:
             ):
                 return False
 
-        self.show_loading_color_space()
+        self._loading_color_space_running = True
+        try:
+            self.show_loading_color_space()
+        except Exception:
+            self._loading_color_space_running = False
+            raise
+
+        result = {"prepared": None, "error": None}
+        finished = threading.Event()
+
+        def worker():
+            try:
+                result["prepared"] = self._prepare_color_space_load(filename)
+            except Exception as exc:
+                result["error"] = exc
+            finally:
+                finished.set()
+
+        def poll_result():
+            if not finished.is_set():
+                self.root.after(35, poll_result)
+                return
+
+            error = result["error"]
+            prepared = result["prepared"]
+            if error is None:
+                try:
+                    self._commit_color_space_load(filename, prepared)
+                except Exception as exc:
+                    error = exc
+
+            # Release the modal grab before opening any subsequent messagebox.
+            self._loading_color_space_running = False
+            self.hide_loading()
+            if error is not None:
+                self.custom_warning("File Error", str(error))
+                return
+            if prepared["warning_message"]:
+                messagebox.showwarning(
+                    "CNS File Warning", prepared["warning_message"], parent=self.root
+                )
+            if on_success is not None:
+                on_success()
 
         try:
-            # PREPARE: do all file/geometry work against temporary state.
-            data = self.fuzzy_manager.load_color_file(filename)
-            if not isinstance(data, dict) or "color_data" not in data or "type" not in data:
-                raise ValueError("The selected file did not return valid color-space data.")
-
-            new_color_data = data["color_data"]
-            if not isinstance(new_color_data, dict) or len(new_color_data) < 2:
-                raise ValueError("The file must contain at least two valid, named colors.")
-            for color_label, row in new_color_data.items():
-                if not str(color_label).strip() or not isinstance(row, dict):
-                    raise ValueError("The file contains an empty or malformed color entry.")
-                coords = np.asarray(row.get("positive_prototype", []), dtype=float).reshape(-1)
-                if coords.size != 3 or not np.all(np.isfinite(coords)):
-                    raise ValueError(f"Invalid color coordinates for '{color_label}'.")
-            source_type = str(data["type"]).lower()
-
-            if source_type == "cns":
-                # The Data rows retain LAB for perceptual evaluation, while
-                # the FCS construction uses the native CNS coordinates.
-                native = str(data.get("source_color_space", "LAB")).upper()
-                if native not in ("LAB", "RGB"):
-                    raise ValueError("CNS color space must be LAB or RGB.")
-                native_points = {
-                    label: np.asarray(
-                        row["Color"] if native == "RGB" else row["positive_prototype"],
-                        dtype=float,
-                    ).reshape(3)
-                    for label, row in new_color_data.items()
-                }
-                new_fuzzy_color_space = FuzzyColorSpaceBuilder.build(
-                    os.path.splitext(os.path.basename(filename))[0],
-                    native_points, color_space=native,
-                )
-                new_fuzzy_color_space.precompute_pack()
-                new_prototypes = new_fuzzy_color_space.get_prototypes()
-                new_cores = new_fuzzy_color_space.get_cores()
-                new_supports = new_fuzzy_color_space.get_supports()
-
-            elif source_type == "fcs":
-                new_fuzzy_color_space = data.get("fuzzy_color_space")
-                if new_fuzzy_color_space is None:
-                    raise ValueError("The selected FCS file does not contain a valid fuzzy color space.")
-                new_fuzzy_color_space.precompute_pack()
-                new_prototypes = new_fuzzy_color_space.prototypes
-                new_cores = new_fuzzy_color_space.cores
-                new_supports = new_fuzzy_color_space.supports
-
-            else:
-                raise ValueError(f"Unsupported color-space type: {data['type']}")
-
-            # COMMIT: preparation succeeded, so the active FCS may change.
-            self._reset_image_inspection_state()
-
-            self._prepare_open_images_for_color_space_change()
-
-            self.file_path = filename
-            self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
-            self.color_data = new_color_data
-            self.edit_color_data = copy.deepcopy(new_color_data)
-            self.fuzzy_color_space = new_fuzzy_color_space
-            self._model_space_unsaved = False
-            native_source = (
-                data.get("source_color_space", "LAB")
-                if source_type == "cns" else new_fuzzy_color_space.color_space
-            )
-            native_source = str(native_source).upper()
-            if native_source not in ("LAB", "RGB"):
-                native_source = "LAB"
-            self.loaded_source_color_space = native_source
-            self.visualization_space.set(native_source)
-            self._last_valid_visualization_space = native_source
-            self.prototypes = new_prototypes
-            self.cores = new_cores
-            self.supports = new_supports
-            self.volume_limits = new_fuzzy_color_space.reference_domain
-            self._fcs_creation_defaults = self._options_from_loaded_space(new_fuzzy_color_space)
-
-            self._invalidate_mapping_caches()
-
-            self.display_data_window()
-            self._reset_3d_canvas()
-            self.update_prototypes_info()
-            self._update_model_space_indicator()
-            return True
-
-        except Exception as exc:
-            self.custom_warning("File Error", str(exc))
-            return False
-
-        finally:
+            self.root.after(35, poll_result)
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            self._loading_color_space_running = False
             self.hide_loading()
+            raise
+        return True
 
 
     def _options_from_loaded_space(self, space, new_color_data=None):
@@ -2737,7 +2872,7 @@ class PyFCSApp:
             Voronoi._validate_points_in_domain(
                 np.asarray(list(points.values())), domain, Voronoi.DEFAULT_EPS
             )
-            self.save_cs(name, selected_colors_lab, options=options)
+            return self.save_cs(name, selected_colors_lab, options=options)
 
         dialog = UtilsTools.FCSCreationDialog(
             parent_win,
@@ -2802,8 +2937,6 @@ class PyFCSApp:
         self._model_space_unsaved = False
         # Editing/saving may change the model's geometric space.
         self.loaded_source_color_space = fuzzy_color_space.color_space
-        self.visualization_space.set(fuzzy_color_space.color_space)
-        self._last_valid_visualization_space = fuzzy_color_space.color_space
         self.prototypes = fuzzy_color_space.get_prototypes()
         self.fuzzy_color_space.precompute_pack()
         self.cores = fuzzy_color_space.get_cores()
@@ -2823,80 +2956,116 @@ class PyFCSApp:
 
     def _save_color_space_file(self, name, color_dict, saved_color_data=None,
                                apply_after_save=False, options=None):
-        """
-        Save a fuzzy color space file in a background thread.
-        """
-        self.show_loading()
+        """Build and atomically save an FCS without blocking the Tk interface."""
+        if self._has_any_active_job() or getattr(self, "_processing_job_running", False):
+            self.custom_warning("Process Running", "Finish the current task before saving a color space.")
+            return False
+
+        # Validate and ask *before* launching any worker. The FCS writer and
+        # its backwards-compatible on-disk format are intentionally unchanged.
+        try:
+            safe_name = UtilsTools.validate_color_space_name(name)
+            target_file = os.path.abspath(os.path.join(
+                UtilsTools.get_base_path(), "fuzzy_color_spaces", safe_name + ".fcs"
+            ))
+        except (TypeError, ValueError) as exc:
+            self.custom_warning("Invalid Color Space Name", str(exc))
+            return False
+
+        current_file = getattr(self, "file_path", None)
+        editing_same_file = (
+            apply_after_save and current_file is not None
+            and os.path.normcase(os.path.abspath(str(current_file)))
+                == os.path.normcase(target_file)
+        )
+        if os.path.isfile(target_file) and not editing_same_file:
+            # Prefer the grabbed creation/data dialog, if any. A confirmation
+            # behind that modal window would be impossible to interact with.
+            try:
+                confirm_parent = self.root.grab_current()
+            except tk.TclError:
+                confirm_parent = None
+            if confirm_parent is None:
+                confirm_parent = self._get_active_dialog_parent()
+            if not messagebox.askyesno(
+                "Overwrite Color Space",
+                f"The color space '{safe_name}' already exists.\n\n"
+                "Do you want to replace its file?",
+                parent=confirm_parent,
+                icon="warning",
+            ):
+                return False
+
+        self._processing_job_running = True
+        try:
+            self.show_loading(
+                title="Processing Color Space",
+                message="Building Core, Voronoi and Support geometry...",
+                note="The color-space file is saved only after processing succeeds."
+            )
+        except Exception:
+            self._processing_job_running = False
+            raise
 
         def update_progress(current_line, total_lines):
-            """Queue a loading-progress update on Tk's main thread."""
+            """The writer reports actual serialized lines, not geometry time."""
             if total_lines <= 0:
                 return
-
-            progress_percentage = max(
-                0.0,
-                min(100.0, (current_line / total_lines) * 100.0),
-            )
-
-            def _ui(progress_value=progress_percentage):
-                try:
-                    if not hasattr(self, "progress") or self.progress is None:
-                        return
-                    if not hasattr(self, "load_window") or self.load_window is None:
-                        return
-                    if not self.progress.winfo_exists() or not self.load_window.winfo_exists():
-                        return
-                    self.progress["value"] = progress_value
-                except Exception:
-                    pass
-
+            pct = 100.0 * current_line / total_lines
             try:
-                self.root.after(0, _ui)
-            except Exception:
+                self.root.after(
+                    0,
+                    lambda value=pct: self._set_processing_progress(
+                        value=value, message="Writing the FCS file..."
+                    )
+                )
+            except (RuntimeError, tk.TclError):
                 pass
 
         def run_save_process():
+            result = None
+            error = None
             try:
-                input_class = Input.instance(".fcs")
-                save_result = input_class.write_file(
+                writer = Input.instance(".fcs")
+                result = writer.write_file(
                     name, color_dict, progress_callback=update_progress,
                     return_fuzzy_space=apply_after_save,
                     **(options or {}),
                 )
+            except Exception as exc:
+                error = exc
 
-                if apply_after_save:
-                    file_path, fuzzy_color_space = save_result
-                    self.root.after(
-                        0,
-                        lambda: self._on_apply_changes_saved_success(
-                            name,
-                            file_path,
-                            saved_color_data,
-                            fuzzy_color_space,
-                        )
+            # All UI operations, including hiding the modal loading popup,
+            # happen in one ordered main-thread callback. In particular, the
+            # success/warning dialogs must never appear under its grab.
+            def finalize():
+                self._processing_job_running = False
+                self.hide_loading()
+                if error is not None:
+                    self.custom_warning("Error", f"An error occurred while saving: {error}")
+                elif apply_after_save:
+                    file_path, space = result
+                    self._on_apply_changes_saved_success(
+                        name, file_path, saved_color_data, space
                     )
                 else:
-                    file_path = save_result
-                    self.root.after(
-                        0,
-                        lambda: self._on_color_space_saved_success(name, file_path)
-                    )
+                    self._on_color_space_saved_success(name, result)
 
-            except Exception as e:
-                error_msg = f"An error occurred while saving: {e}"
-                self.root.after(
-                    0,
-                    lambda msg=error_msg: self.custom_warning("Error", msg)
-                )
+            try:
+                self.root.after(0, finalize)
+            except (RuntimeError, tk.TclError):
+                self._processing_job_running = False
 
-            finally:
-                self.root.after(0, self.hide_loading)
-
-        threading.Thread(target=run_save_process, daemon=True).start()
-
+        try:
+            threading.Thread(target=run_save_process, daemon=True).start()
+        except Exception:
+            self._processing_job_running = False
+            self.hide_loading()
+            raise
+        return True
 
     def save_cs(self, name, selected_colors_lab, options=None):
-        self._save_color_space_file(name, selected_colors_lab, options=options)
+        return self._save_color_space_file(name, selected_colors_lab, options=options)
 
 
     def save_fcs(self, name, colors, color_dict=None, apply_after_save=False,
@@ -2921,7 +3090,7 @@ class PyFCSApp:
 
             self.color_entry_detect.clear()
 
-        self._save_color_space_file(
+        return self._save_color_space_file(
             name,
             color_dict,
             saved_color_data=copy.deepcopy(colors),
@@ -3249,36 +3418,6 @@ class PyFCSApp:
         finally:
             self._reporting_ui_error = False
 
-    def on_visualization_space_changed(self):
-        """Switch LAB/RGB visualization without changing the loaded FCS.
-
-        Geometry remains in the construction space. Reprojected polyhedron
-        faces are only an approximation when conversion is nonlinear.
-        """
-        target = str(self.visualization_space.get()).upper()
-        if target not in ("LAB", "RGB"):
-            self.visualization_space.set(self._last_valid_visualization_space)
-            return
-        if not self.COLOR_SPACE:
-            self._last_valid_visualization_space = target
-            return
-        previous = self._last_valid_visualization_space
-        # Switching views rebuilds the Data widgets. Commit their pending
-        # edits first so a typed label is not accidentally discarded.
-        if hasattr(self, "_commit_pending_data_label_changes"):
-            if not self._commit_pending_data_label_changes():
-                self.visualization_space.set(previous)
-                return
-        try:
-            self.on_option_select()
-            # The Data table follows the currently chosen displayed coordinates.
-            self.display_data_window()
-            self._last_valid_visualization_space = target
-        except (ValueError, RuntimeError, TypeError, tk.TclError) as exc:
-            self.visualization_space.set(previous)
-            self.custom_warning("Visualization Error",
-                                f"The {target} view could not be displayed: {exc}")
-
     def _update_model_space_indicator(self):
         """Refresh the Data model status and availability of geometry conversion."""
         model = getattr(self, "fuzzy_color_space", None)
@@ -3318,7 +3457,7 @@ class PyFCSApp:
                         return True
         return False
 
-    def _apply_model_color_space(self, target):
+    def _apply_model_color_space(self, target, prepared_space=None):
         """Rebuild atomically in memory; persist only through Apply Changes."""
         space = getattr(self, "fuzzy_color_space", None)
         if space is None or not getattr(self, "COLOR_SPACE", False):
@@ -3334,7 +3473,12 @@ class PyFCSApp:
 
         # PREPARE. This may fail (out-of-gamut, duplicates, bad geometry) but
         # MUST NOT mutate the existing model, image jobs, or caches.
-        rebuilt = rebuild_in_color_space(space, target)
+        if prepared_space is None:
+            rebuilt = rebuild_in_color_space(space, target)
+        else:
+            if str(prepared_space.color_space).upper() != str(target).upper():
+                raise ValueError("The prepared geometry does not match the selected color space.")
+            rebuilt = prepared_space
         new_data = copy.deepcopy(self.color_data)
         for proto in rebuilt.prototypes:
             row = new_data[proto.label]
@@ -3358,7 +3502,6 @@ class PyFCSApp:
         self._fcs_creation_defaults = self._options_from_loaded_space(rebuilt)
         self._model_space_unsaved = True
         self._invalidate_mapping_caches()
-        # View remains intentionally independent of the geometric model.
         self.display_data_window()
         self._reset_3d_canvas()
         self.update_prototypes_info()
@@ -3366,18 +3509,18 @@ class PyFCSApp:
         return True
 
     def change_model_color_space(self):
-        """Explicit LAB/RGB geometry change, distinct from the View control."""
+        """Explicitly convert and rebuild the FCS in the selected LAB/RGB space."""
         current = getattr(self, "fuzzy_color_space", None)
         if current is None or not getattr(self, "COLOR_SPACE", False):
-            self.custom_warning("Model Color Space", "Load a fuzzy color space first.")
+            self.custom_warning("Change Color Space", "Load a fuzzy color space first.")
             return
         if self._has_any_active_job():
-            self.custom_warning("Model Color Space", "Finish or cancel the active mapping first.")
+            self.custom_warning("Change Color Space", "Finish or cancel the active mapping first.")
             return
 
         popup = tk.Toplevel(self.root)
         popup.withdraw()  # Never display at a temporary/unpositioned location.
-        popup.title("Change Model Color Space")
+        popup.title("Change Color Space")
         popup.configure(bg="#ffffff")
         popup.resizable(False, False)
         popup.transient(self.root)
@@ -3386,9 +3529,9 @@ class PyFCSApp:
 
         content = tk.Frame(popup, bg="#ffffff")
         content.pack(fill="both", expand=True, padx=22, pady=18)
-        tk.Label(content, text="Model Color Space", font=("Segoe UI", 12, "bold"),
+        tk.Label(content, text="Change Color Space", font=("Segoe UI", 12, "bold"),
                  fg="#242633", bg="#ffffff").pack(anchor="w")
-        tk.Label(content, text=f"Current geometry: {current.color_space}",
+        tk.Label(content, text=f"Current color space: {current.color_space}",
                  font=("Segoe UI", 9), fg=UtilsTools.UI_ACCENT_MUTED,
                  bg="#ffffff").pack(anchor="w", pady=(3, 13))
 
@@ -3413,30 +3556,130 @@ class PyFCSApp:
         )
         tk.Label(content, text=explanation, wraplength=415, justify="left",
                  font=("Segoe UI", 9), fg="#5e6570", bg="#ffffff").pack(fill="x")
+        # The geometry is built away from Tk's event thread so the progress
+        # indicator continues to animate. Only the final UI commit runs on Tk.
+        busy = {"value": False}
+        # A worker completion event avoids raising queue.Empty during normal
+        # polling (and avoids Visual Studio/VS Code breaking on it).
+        completed = threading.Event()
+        outcome = {"rebuilt": None, "error": None}
+
+        ttk.Style(popup).configure(
+            "PyFCS.Load.Horizontal.TProgressbar",
+            troughcolor="#eae7ef", background=UtilsTools.UI_ACCENT,
+            borderwidth=0, thickness=7
+        )
+        indicator = ttk.Progressbar(
+            content, orient="horizontal", mode="indeterminate",
+            style="PyFCS.Load.Horizontal.TProgressbar"
+        )
+        status = tk.Label(
+            content, text="", bg="#ffffff", fg="#687180",
+            font=("Segoe UI", 9), anchor="w"
+        )
         actions = tk.Frame(content, bg="#ffffff")
-        actions.pack(pady=(18, 0), anchor="center")
+        actions.pack(pady=(16, 0), anchor="center")
+
+        def close_dialog():
+            if not busy["value"]:
+                popup.destroy()
+
+        def set_busy(active):
+            busy["value"] = active
+            self._model_rebuild_running = active
+            rebuild_button.configure(state=tk.DISABLED if active else tk.NORMAL)
+            cancel_button.configure(state=tk.DISABLED if active else tk.NORMAL)
+            for radio in choices.winfo_children():
+                radio.configure(state=tk.DISABLED if active else tk.NORMAL)
+            if active:
+                status.configure(text="Rebuilding Core, Voronoi and Support...")
+                status.pack(fill="x", before=actions, pady=(14, 0))
+                indicator.pack(fill="x", before=actions, pady=(8, 0))
+                indicator.start(12)
+            else:
+                indicator.stop()
+                indicator.pack_forget()
+                status.pack_forget()
+
+        def poll_result():
+            if not popup.winfo_exists():
+                return
+            if not completed.is_set():
+                popup.after(60, poll_result)
+                return
+
+            rebuilt, error = outcome["rebuilt"], outcome["error"]
+            if error is not None:
+                set_busy(False)
+                self.custom_warning("Model Conversion Not Applied", str(error), parent=popup)
+                return
+
+            # Background work is finished. Drop its global busy flag before
+            # _apply_model_color_space checks for *other* active jobs. Tk owns
+            # the commit so there is no concurrent UI mutation at this point.
+            self._model_rebuild_running = False
+            status.configure(text="Updating workspace...")
+            try:
+                if self._apply_model_color_space(choice.get(), prepared_space=rebuilt):
+                    popup.destroy()
+                else:
+                    set_busy(False)
+            except (ValueError, TypeError, RuntimeError, tk.TclError) as exc:
+                set_busy(False)
+                self.custom_warning("Model Conversion Not Applied", str(exc), parent=popup)
 
         def confirm():
+            if busy["value"]:
+                return
             chosen = choice.get()
             if chosen == current.color_space:
                 popup.destroy()
                 return
             try:
-                if self._apply_model_color_space(chosen):
-                    popup.destroy()
+                if self._has_any_active_job():
+                    raise ValueError("Finish or cancel the active mapping first.")
+                if not self._commit_pending_data_label_changes():
+                    return
+                if self._has_pending_model_data_edits():
+                    raise ValueError("Apply pending Data changes before rebuilding the model.")
             except (ValueError, TypeError, RuntimeError, tk.TclError) as exc:
                 self.custom_warning("Model Conversion Not Applied", str(exc), parent=popup)
+                return
 
-        tk.Button(actions, text="Rebuild Model", command=confirm,
-                  bg=UtilsTools.UI_ACCENT, fg="white", activebackground=UtilsTools.UI_ACCENT_DARK,
-                  activeforeground="white", font=("Segoe UI", 9, "bold"),
-                  bd=0, relief="flat", padx=16, pady=7, cursor="hand2").pack(side="left", padx=5)
-        tk.Button(actions, text="Cancel", command=popup.destroy,
-                  bg="#f2f3f5", fg="#242633", activebackground="#e7e8eb",
-                  font=("Segoe UI", 9), bd=0, relief="flat",
-                  padx=18, pady=7, cursor="hand2").pack(side="left", padx=5)
+            set_busy(True)
 
-        self.center_popup(popup, 470, 350)
+            def prepare_geometry():
+                try:
+                    outcome["rebuilt"] = rebuild_in_color_space(current, chosen)
+                except Exception as exc:
+                    outcome["error"] = exc
+                finally:
+                    # Event publication makes the result visible to Tk; the
+                    # worker never touches any widget.
+                    completed.set()
+
+            threading.Thread(target=prepare_geometry, daemon=True).start()
+            popup.after(60, poll_result)
+
+        rebuild_button = tk.Button(
+            actions, text="Rebuild Geometry", command=confirm,
+            bg=UtilsTools.UI_ACCENT, fg="white",
+            activebackground=UtilsTools.UI_ACCENT_DARK,
+            activeforeground="white", font=("Segoe UI", 9, "bold"),
+            bd=0, relief="flat", padx=16, pady=7, cursor="hand2"
+        )
+        rebuild_button.pack(side="left", padx=5)
+        cancel_button = tk.Button(
+            actions, text="Cancel", command=close_dialog,
+            bg="#f2f3f5", fg="#242633", activebackground="#e7e8eb",
+            font=("Segoe UI", 9), bd=0, relief="flat",
+            padx=18, pady=7, cursor="hand2"
+        )
+        cancel_button.pack(side="left", padx=5)
+
+        popup.protocol("WM_DELETE_WINDOW", close_dialog)
+        popup.bind("<Escape>", lambda _event: close_dialog())
+        self.center_popup(popup, 470, 390)
         popup.deiconify()
         popup.grab_set()
         popup.focus_set()
@@ -3481,7 +3724,7 @@ class PyFCSApp:
             self.selected_core, self.selected_alpha, self.selected_support,
             self.volume_limits, plot_hex, selected_options, self.filtered_points,
             color_space=space.color_space if space else "LAB",
-            display_color_space=self.visualization_space.get(),
+            display_color_space=space.color_space if space else "LAB",
         )
 
         # Independent title and subtitle; avoid using the same large bold
@@ -3497,10 +3740,7 @@ class PyFCSApp:
             loc="center",
         )
         if space:
-            view_space = self.visualization_space.get()
-            view_desc = (view_space if view_space == space.color_space
-                         else f"{view_space} view · {space.color_space} model")
-            subtitle = f"{space.typology_description}  ·  {view_desc}"
+            subtitle = f"{space.typology_description}  ·  {space.color_space}"
             self.ax_3d.text2D(
                 0.5, 1.017, subtitle,
                 transform=self.ax_3d.transAxes,
@@ -3559,7 +3799,7 @@ class PyFCSApp:
             selected_options=selected_options,
             filtered_points=self.filtered_points,
             color_space=space.color_space if space else "LAB",
-            display_color_space=self.visualization_space.get(),
+            display_color_space=space.color_space if space else "LAB",
         )
 
         if hasattr(self, "lab_value_frame"):
@@ -3616,20 +3856,26 @@ class PyFCSApp:
         selected_centroids = {}
         selected_indices = []
         color_keys = list(self.color_data.keys())
+        index_by_label = {name: i for i, name in enumerate(color_keys)}
 
         for color_name, selected in self.selected_colors.items():
-            if selected.get() and color_name in self.color_data:
+            if selected.get() and color_name in index_by_label:
                 selected_centroids[color_name] = self.color_data[color_name]
-                selected_indices.append(color_keys.index(color_name))
+                selected_indices.append(index_by_label[color_name])
 
         self.selected_centroids = selected_centroids
 
         if selected_indices:
+            # Use exact LAB triples as keys instead of scanning the entire
+            # HEX palette once per selected color.
+            selected_labs = {
+                tuple(np.asarray(self.color_data[color_keys[i]]["positive_prototype"]).reshape(-1))
+                for i in selected_indices
+            }
             self.selected_hex_color = {
                 hex_color_key: lab_value
-                for index in selected_indices
                 for hex_color_key, lab_value in self.hex_color.items()
-                if np.array_equal(lab_value, self.color_data[color_keys[index]]["positive_prototype"])
+                if tuple(np.asarray(lab_value).reshape(-1)) in selected_labs
             }
             self.selected_alpha = [self.prototypes[i] for i in selected_indices]
             self.selected_core = [self.cores[i] for i in selected_indices]
@@ -3851,10 +4097,10 @@ class PyFCSApp:
         if canvas_width <= 1:
             canvas_width = 760
 
-        # Layout configuration. Data stores LAB for ΔE even when geometry is RGB,
-        # but the visible coordinates reflect the loaded FCS model.
+        # Data continues to store LAB internally for ΔE, while displaying
+        # coordinates in the FCS's actual geometric color space.
         space = getattr(self, "fuzzy_color_space", None)
-        display_rgb = self.visualization_space.get() == "RGB"
+        display_rgb = bool(space and space.color_space == "RGB")
         axis_names = ["R", "G", "B"] if display_rgb else ["L", "a", "b"]
         col_widths = {axis_names[0]: 70, axis_names[1]: 70, axis_names[2]: 70,
             "Label": 200,
@@ -4620,15 +4866,16 @@ class PyFCSApp:
                 else:
                     raise ValueError(f"Color '{key}' does not contain valid LAB data.")
 
-            options = self._options_from_loaded_space(getattr(self,"fuzzy_color_space",None),
-                                                       new_color_data=new_color_data)
+            options = self._options_from_loaded_space(
+                getattr(self, "fuzzy_color_space", None),
+                new_color_data=new_color_data
+            )
+
+            # The active name is updated only after the save operation succeeds.
             self.save_fcs(
                 output_name, new_color_data, color_dict=color_dict,
                 apply_after_save=True, options=options
             )
-
-            self.file_base_name = output_name
-            self._data_name_source = output_name
 
         except Exception as e:
             self.custom_warning(
@@ -7468,14 +7715,15 @@ class PyFCSApp:
 
 
     def _is_job_cancelled(self, window_id, cancel_event, job_id):
-        """Returns True if the window/job is no longer valid."""
+        """Worker-safe cancellation check; never query Tk widgets here.
+
+        Closing/replacing an image sets its cancel_event on the UI thread.
+        Checking the job ID also prevents obsolete results from being applied.
+        """
         if cancel_event.is_set():
             return True
-        if not self._window_exists(window_id):
-            return True
-        if not self._is_current_job(window_id, job_id):
-            return True
-        return False
+        info = getattr(self, "image_jobs", {}).get(window_id)
+        return info is None or info.get("job_id") != job_id
 
 
     def _start_window_job(self, window_id, kind, target):
@@ -7763,7 +8011,10 @@ class PyFCSApp:
         """Returns True if there is any running job in any image/window."""
         self._ensure_image_jobs()
 
-        if getattr(self, "_threshold_job_running", False):
+        if (getattr(self, "_threshold_job_running", False)
+                or getattr(self, "_processing_job_running", False)
+                or getattr(self, "_loading_color_space_running", False)
+                or getattr(self, "_model_rebuild_running", False)):
             return True
 
         for info in self.image_jobs.values():
@@ -8847,36 +9098,21 @@ class PyFCSApp:
             return
         self._threshold_job_running = True
         try:
-            self.show_loading()
+            self.show_loading(
+                title="Processing Color Evaluation",
+                message="Evaluating colors within the selected volumes...",
+                note="The 3D visualization will update when the analysis finishes."
+            )
         except Exception:
             self._threshold_job_running = False
             raise
 
-        def update_progress(current_step, total_steps):
-            """Queue the AT/PT progress update on Tk's main thread."""
-            if total_steps <= 0:
-                return
-
-            progress_percentage = max(
-                0.0,
-                min(100.0, (current_step / total_steps) * 100.0),
-            )
-
-            def _ui(progress_value=progress_percentage):
-                try:
-                    if not hasattr(self, "progress") or self.progress is None:
-                        return
-                    if not hasattr(self, "load_window") or self.load_window is None:
-                        return
-                    if not self.progress.winfo_exists() or not self.load_window.winfo_exists():
-                        return
-                    self.progress["value"] = progress_value
-                except Exception:
-                    pass
-
+        def update_status(message):
             try:
-                self.root.after(0, _ui)
-            except Exception:
+                self.root.after(
+                    0, lambda text=message: self._set_processing_progress(message=text)
+                )
+            except (RuntimeError, tk.TclError):
                 pass
 
         def run_threshold_process():
@@ -8899,7 +9135,6 @@ class PyFCSApp:
                 selected_volume = priority_map[selected_option]
 
                 # Step 1: filter the LAB points inside the selected volume.
-                update_progress(1, 3)
                 geometric_mode = (self.fuzzy_color_space.color_space
                                   if getattr(self,"fuzzy_color_space",None) else "LAB")
                 filtered_points, volume_limits = self.color_manager.filter_points_with_threshold(
@@ -8914,7 +9149,7 @@ class PyFCSApp:
                 print(f"Threshold CSV saved: {csv_path}")
 
                 # Step 2: prepare the plot refresh.
-                update_progress(2, 3)
+                update_status("Preparing the updated 3D visualization...")
 
                 def redraw_filtered_plot():
                     """
@@ -8943,24 +9178,27 @@ class PyFCSApp:
                         self.lab_value_frame.lift()
 
                 # Step 3: redraw the figure on the Tkinter main thread.
-                update_progress(3, 3)
-                self.root.after(0, redraw_filtered_plot)
+                def finish_success():
+                    try:
+                        redraw_filtered_plot()
+                    finally:
+                        self._threshold_job_running = False
+                        self.hide_loading()
 
-            except Exception as e:
-                error_msg = str(e)
-                self.root.after(
-                    0,
-                    lambda msg=error_msg: self.custom_warning(
-                        "Error",
-                        f"An error occurred while filtering points: {msg}"
-                    )
-                )
-            finally:
-                def _finish_threshold_job():
+                self.root.after(0, finish_success)
+
+            except Exception as exc:
+                error_msg = str(exc)
+
+                def finish_error(msg=error_msg):
                     self._threshold_job_running = False
                     self.hide_loading()
+                    self.custom_warning(
+                        "Error", f"An error occurred while filtering points: {msg}"
+                    )
+
                 try:
-                    self.root.after(0, _finish_threshold_job)
+                    self.root.after(0, finish_error)
                 except (RuntimeError, tk.TclError):
                     self._threshold_job_running = False
 

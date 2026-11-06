@@ -1,0 +1,2048 @@
+{
+  "kind": "PyFCS / JFCS FCS saved-geometry comparison",
+  "created_utc": "2026-11-06T15:12:09.292329+00:00",
+  "seed": 6123108,
+  "points_per_margin": 1500,
+  "margins": [
+    0.0,
+    25.0,
+    50.0,
+    80.0
+  ],
+  "membership_tolerance": 1e-05,
+  "plane_tolerance": 1e-05,
+  "methodology": "Both saved geometries evaluated with PyFCS raw membership; NOT Java membership execution",
+  "results": [
+    {
+      "pair": "Partition",
+      "pyfcs_file": "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\fixtures\\partition_pyfcs.fcs",
+      "jfcs_file": "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\fixtures\\partition_jfcs.fcs",
+      "configuration": {
+        "geometry": "RGB",
+        "disjoint": true,
+        "covering": true,
+        "domain": [
+          0.0,
+          255.0,
+          0.0,
+          255.0,
+          0.0,
+          255.0
+        ],
+        "lambda1": 0.5,
+        "lambda2": 1.5,
+        "samples_effective": null,
+        "labels": [
+          "Pink",
+          "Red",
+          "Orange",
+          "Brown",
+          "Yellow",
+          "Olive",
+          "Yellow-Green",
+          "Green",
+          "Blue",
+          "Purple",
+          "White",
+          "Gray",
+          "Black"
+        ],
+        "representatives_max_absolute_delta": 3.183009411600324e-13,
+        "raw_samples_fields": {
+          "pyfcs": 0,
+          "jfcs": 27
+        },
+        "source_formats": {
+          "pyfcs": null,
+          "jfcs": "JFCS_ATOMIC"
+        }
+      },
+      "geometry": {
+        "core": {
+          "pyfcs_faces": 119,
+          "jfcs_faces": 98,
+          "matching_planes": 84,
+          "pyfcs_domain_faces": 35,
+          "jfcs_domain_faces": 0,
+          "by_category": [
+            {
+              "label": "Pink",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 6,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Red",
+              "pyfcs_faces": 7,
+              "jfcs_faces": 5,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 4
+            },
+            {
+              "label": "Orange",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Brown",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 8,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 7
+            },
+            {
+              "label": "Yellow",
+              "pyfcs_faces": 7,
+              "jfcs_faces": 4,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 4
+            },
+            {
+              "label": "Olive",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 8,
+              "pyfcs_domain_faces": 1,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Yellow-Green",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 10,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Green",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 7,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 7
+            },
+            {
+              "label": "Blue",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 7,
+              "pyfcs_domain_faces": 4,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Purple",
+              "pyfcs_faces": 12,
+              "jfcs_faces": 10,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 9
+            },
+            {
+              "label": "White",
+              "pyfcs_faces": 6,
+              "jfcs_faces": 5,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 3
+            },
+            {
+              "label": "Gray",
+              "pyfcs_faces": 13,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 11
+            },
+            {
+              "label": "Black",
+              "pyfcs_faces": 8,
+              "jfcs_faces": 8,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 5
+            }
+          ]
+        },
+        "voronoi": {
+          "pyfcs_faces": 119,
+          "jfcs_faces": 98,
+          "matching_planes": 84,
+          "pyfcs_domain_faces": 35,
+          "jfcs_domain_faces": 0,
+          "by_category": [
+            {
+              "label": "Pink",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 6,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Red",
+              "pyfcs_faces": 7,
+              "jfcs_faces": 5,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 4
+            },
+            {
+              "label": "Orange",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Brown",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 8,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 7
+            },
+            {
+              "label": "Yellow",
+              "pyfcs_faces": 7,
+              "jfcs_faces": 4,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 4
+            },
+            {
+              "label": "Olive",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 8,
+              "pyfcs_domain_faces": 1,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Yellow-Green",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 10,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Green",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 7,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 7
+            },
+            {
+              "label": "Blue",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 7,
+              "pyfcs_domain_faces": 4,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Purple",
+              "pyfcs_faces": 12,
+              "jfcs_faces": 10,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 9
+            },
+            {
+              "label": "White",
+              "pyfcs_faces": 6,
+              "jfcs_faces": 5,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 3
+            },
+            {
+              "label": "Gray",
+              "pyfcs_faces": 13,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 11
+            },
+            {
+              "label": "Black",
+              "pyfcs_faces": 8,
+              "jfcs_faces": 8,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 5
+            }
+          ]
+        },
+        "support": {
+          "pyfcs_faces": 119,
+          "jfcs_faces": 98,
+          "matching_planes": 80,
+          "pyfcs_domain_faces": 35,
+          "jfcs_domain_faces": 0,
+          "by_category": [
+            {
+              "label": "Pink",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 6,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 4
+            },
+            {
+              "label": "Red",
+              "pyfcs_faces": 7,
+              "jfcs_faces": 5,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 2
+            },
+            {
+              "label": "Orange",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Brown",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 8,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 7
+            },
+            {
+              "label": "Yellow",
+              "pyfcs_faces": 7,
+              "jfcs_faces": 4,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 4
+            },
+            {
+              "label": "Olive",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 8,
+              "pyfcs_domain_faces": 1,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Yellow-Green",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 10,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Green",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 7,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 7
+            },
+            {
+              "label": "Blue",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 7,
+              "pyfcs_domain_faces": 4,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Purple",
+              "pyfcs_faces": 12,
+              "jfcs_faces": 10,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 9
+            },
+            {
+              "label": "White",
+              "pyfcs_faces": 6,
+              "jfcs_faces": 5,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 3
+            },
+            {
+              "label": "Gray",
+              "pyfcs_faces": 13,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 11
+            },
+            {
+              "label": "Black",
+              "pyfcs_faces": 8,
+              "jfcs_faces": 8,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 5
+            }
+          ]
+        }
+      },
+      "regions": [
+        {
+          "region": "full",
+          "samples": 1500,
+          "seed": 6123108,
+          "raw_different_points": 124,
+          "raw_different_percent": 8.26667,
+          "raw_winner_changes": 0,
+          "mapping_winner_changes": 0,
+          "max_raw_membership_difference": 0.10012033876503643,
+          "mean_pointwise_max_raw_difference": 0.0037317129704875444,
+          "affected_categories": {
+            "Red": 44,
+            "Pink": 91,
+            "Purple": 3
+          },
+          "top_cases": [
+            {
+              "region": "full",
+              "x1": 217.94080840719803,
+              "x2": 70.51592219947091,
+              "x3": 224.3273223275079,
+              "label": "Pink",
+              "mu_pyfcs": 0.10012033876503643,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.10012033876503643,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 227.20559930959942,
+              "x2": 57.95981857980108,
+              "x3": 254.23612120125918,
+              "label": "Pink",
+              "mu_pyfcs": 0.0993595816599593,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.0993595816599593,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 235.0360474869732,
+              "x2": 64.79874360593213,
+              "x3": 130.1511824999483,
+              "label": "Pink",
+              "mu_pyfcs": 0.09920874380645757,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.09920874380645757,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 248.95059137391775,
+              "x2": 72.0089878727532,
+              "x3": 77.29786964473791,
+              "label": "Pink",
+              "mu_pyfcs": 0.11180519743949027,
+              "mu_jfcs_geometry": 0.01460784669116646,
+              "absolute_difference": 0.09719735074832381,
+              "winner_pyfcs": "Orange",
+              "winner_jfcs_geometry": "Orange"
+            },
+            {
+              "region": "full",
+              "x1": 234.08435967288966,
+              "x2": 52.94976700851552,
+              "x3": 237.42362611911634,
+              "label": "Pink",
+              "mu_pyfcs": 0.09647718234428372,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.09647718234428372,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 240.2954280948669,
+              "x2": 49.461454696161454,
+              "x3": 231.887989813824,
+              "label": "Pink",
+              "mu_pyfcs": 0.1153065601076673,
+              "mu_jfcs_geometry": 0.01898589079121623,
+              "absolute_difference": 0.09632066931645106,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 184.2851592558822,
+              "x2": 112.53451304593206,
+              "x3": 159.41772536363123,
+              "label": "Pink",
+              "mu_pyfcs": 0.11779824350048629,
+              "mu_jfcs_geometry": 0.022101449164039902,
+              "absolute_difference": 0.09569679433644639,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 221.46295328338422,
+              "x2": 77.99350114627609,
+              "x3": 126.8265633089695,
+              "label": "Pink",
+              "mu_pyfcs": 0.09553266574591561,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.09553266574591561,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 185.75643318937225,
+              "x2": 101.32050558816454,
+              "x3": 244.04765595119235,
+              "label": "Pink",
+              "mu_pyfcs": 0.11853488805786926,
+              "mu_jfcs_geometry": 0.023022536941549557,
+              "absolute_difference": 0.0955123511163197,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 220.09620895372123,
+              "x2": 82.39597681547481,
+              "x3": 121.30784588783412,
+              "label": "Pink",
+              "mu_pyfcs": 0.11967914595673267,
+              "mu_jfcs_geometry": 0.02445329748189289,
+              "absolute_difference": 0.09522584847483978,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 212.2443313143654,
+              "x2": 81.00599519922724,
+              "x3": 200.9853253055723,
+              "label": "Pink",
+              "mu_pyfcs": 0.12235575970932536,
+              "mu_jfcs_geometry": 0.027800089619185158,
+              "absolute_difference": 0.0945556700901402,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 229.75154856620924,
+              "x2": 105.55568994598818,
+              "x3": 70.9715534100388,
+              "label": "Pink",
+              "mu_pyfcs": 0.1260774061794903,
+              "mu_jfcs_geometry": 0.0324535728242506,
+              "absolute_difference": 0.09362383335523969,
+              "winner_pyfcs": "Orange",
+              "winner_jfcs_geometry": "Orange"
+            },
+            {
+              "region": "full",
+              "x1": 218.0463428501517,
+              "x2": 77.69232085816512,
+              "x3": 185.89910224113459,
+              "label": "Pink",
+              "mu_pyfcs": 0.12793163015465622,
+              "mu_jfcs_geometry": 0.034772062824849695,
+              "absolute_difference": 0.09315956732980653,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 205.74832373406696,
+              "x2": 91.09213146710503,
+              "x3": 180.23014292754297,
+              "label": "Pink",
+              "mu_pyfcs": 0.1358679352044552,
+              "mu_jfcs_geometry": 0.04469548315925052,
+              "absolute_difference": 0.09117245204520469,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 188.23642932715018,
+              "x2": 104.44679716028948,
+              "x3": 170.84456536869197,
+              "label": "Pink",
+              "mu_pyfcs": 0.08881104656185951,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.08881104656185951,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 239.77222653348363,
+              "x2": 108.89747027267505,
+              "x3": 71.46723198877706,
+              "label": "Pink",
+              "mu_pyfcs": 0.14597972368645734,
+              "mu_jfcs_geometry": 0.057339090834340224,
+              "absolute_difference": 0.08864063285211712,
+              "winner_pyfcs": "Orange",
+              "winner_jfcs_geometry": "Orange"
+            },
+            {
+              "region": "full",
+              "x1": 233.86168099072648,
+              "x2": 51.975887928090394,
+              "x3": 239.65151956862294,
+              "label": "Pink",
+              "mu_pyfcs": 0.08724066790241752,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.08724066790241752,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 229.7862700446857,
+              "x2": 69.60514915137125,
+              "x3": 189.1540764717519,
+              "label": "Pink",
+              "mu_pyfcs": 0.16455994648685326,
+              "mu_jfcs_geometry": 0.08057148419600835,
+              "absolute_difference": 0.08398846229084492,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 234.06211110675025,
+              "x2": 58.352191083554004,
+              "x3": 251.3423220000494,
+              "label": "Pink",
+              "mu_pyfcs": 0.1659851256475383,
+              "mu_jfcs_geometry": 0.08235350388584657,
+              "absolute_difference": 0.08363162176169174,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 204.00898984510695,
+              "x2": 98.33795573016879,
+              "x3": 170.6439659905778,
+              "label": "Pink",
+              "mu_pyfcs": 0.17994372058064043,
+              "mu_jfcs_geometry": 0.09980709266924595,
+              "absolute_difference": 0.08013662791139448,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 230.824928316962,
+              "x2": 83.55930609802391,
+              "x3": 90.25636866011342,
+              "label": "Pink",
+              "mu_pyfcs": 0.19871129800164083,
+              "mu_jfcs_geometry": 0.12327375104973723,
+              "absolute_difference": 0.0754375469519036,
+              "winner_pyfcs": "Orange",
+              "winner_jfcs_geometry": "Orange"
+            },
+            {
+              "region": "full",
+              "x1": 164.6316284373647,
+              "x2": 133.1441777490769,
+              "x3": 217.13107157193267,
+              "label": "Pink",
+              "mu_pyfcs": 0.1997143555875855,
+              "mu_jfcs_geometry": 0.12452795712957919,
+              "absolute_difference": 0.0751863984580063,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 248.80879015651246,
+              "x2": 122.3910527470441,
+              "x3": 74.8565454034255,
+              "label": "Pink",
+              "mu_pyfcs": 0.2215021185925647,
+              "mu_jfcs_geometry": 0.15177100399938476,
+              "absolute_difference": 0.06973111459317993,
+              "winner_pyfcs": "Orange",
+              "winner_jfcs_geometry": "Orange"
+            },
+            {
+              "region": "full",
+              "x1": 187.21165517963155,
+              "x2": 101.1121105831923,
+              "x3": 191.31426560493426,
+              "label": "Pink",
+              "mu_pyfcs": 0.06950649017406377,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.06950649017406377,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 246.4558426182405,
+              "x2": 52.91417307937866,
+              "x3": 111.26814673328455,
+              "label": "Pink",
+              "mu_pyfcs": 0.06945616053577477,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.06945616053577477,
+              "winner_pyfcs": "Red",
+              "winner_jfcs_geometry": "Red"
+            }
+          ],
+          "normalized": {
+            "different_points": 123,
+            "different_percent": 8.2,
+            "max_difference": 0.10012033876503679,
+            "raw_sum_pyfcs": {
+              "min": 0.8685566478222903,
+              "mean": 1.0951851170964597,
+              "max": 2.294637756235926
+            },
+            "raw_sum_jfcs_geometry": {
+              "min": 0.868556647822295,
+              "mean": 1.091190667204429,
+              "max": 2.2880118488656596
+            }
+          }
+        },
+        {
+          "region": "margin_25",
+          "samples": 1500,
+          "seed": 6123109,
+          "raw_different_points": 97,
+          "raw_different_percent": 6.46667,
+          "raw_winner_changes": 0,
+          "mapping_winner_changes": 0,
+          "max_raw_membership_difference": 0.09970822804156088,
+          "mean_pointwise_max_raw_difference": 0.002752387708745335,
+          "affected_categories": {
+            "Pink": 64,
+            "Red": 41
+          },
+          "top_cases": [
+            {
+              "region": "margin_25",
+              "x1": 173.91448731883105,
+              "x2": 116.29756695800607,
+              "x3": 199.6867845533118,
+              "label": "Pink",
+              "mu_pyfcs": 0.10177704844576417,
+              "mu_jfcs_geometry": 0.002068820404203294,
+              "absolute_difference": 0.09970822804156088,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 186.86365670023545,
+              "x2": 109.63989605259673,
+              "x3": 150.00320022571492,
+              "label": "Pink",
+              "mu_pyfcs": 0.10302735663755479,
+              "mu_jfcs_geometry": 0.003632184420181864,
+              "absolute_difference": 0.09939517221737293,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 220.24885834823553,
+              "x2": 72.89280235090534,
+              "x3": 211.65581029364765,
+              "label": "Pink",
+              "mu_pyfcs": 0.13130286710264286,
+              "mu_jfcs_geometry": 0.0389873999460688,
+              "absolute_difference": 0.09231546715657406,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 227.9700055044279,
+              "x2": 63.465868567164804,
+              "x3": 192.98912959014856,
+              "label": "Pink",
+              "mu_pyfcs": 0.09055120396497363,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.09055120396497363,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 214.74473749971105,
+              "x2": 91.12636926899613,
+              "x3": 107.79282715364437,
+              "label": "Pink",
+              "mu_pyfcs": 0.13913686797296196,
+              "mu_jfcs_geometry": 0.048782900881129444,
+              "absolute_difference": 0.09035396709183252,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 185.21794746278593,
+              "x2": 106.60661068411339,
+              "x3": 226.93662019328258,
+              "label": "Pink",
+              "mu_pyfcs": 0.1460285345792573,
+              "mu_jfcs_geometry": 0.057400123141324824,
+              "absolute_difference": 0.08862841143793247,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 204.8050902855018,
+              "x2": 99.11831658627189,
+              "x3": 131.1665473438665,
+              "label": "Pink",
+              "mu_pyfcs": 0.14970791741556222,
+              "mu_jfcs_geometry": 0.062000760620192226,
+              "absolute_difference": 0.08770715679537,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 215.1210625638813,
+              "x2": 133.2744141744898,
+              "x3": 64.56640136805237,
+              "label": "Pink",
+              "mu_pyfcs": 0.11756912891282596,
+              "mu_jfcs_geometry": 0.03274881232306349,
+              "absolute_difference": 0.08482031658976247,
+              "winner_pyfcs": "Orange",
+              "winner_jfcs_geometry": "Orange"
+            },
+            {
+              "region": "margin_25",
+              "x1": 210.69374024068262,
+              "x2": 96.26234481315332,
+              "x3": 119.85965621995884,
+              "label": "Pink",
+              "mu_pyfcs": 0.1650326617320443,
+              "mu_jfcs_geometry": 0.08116255926772889,
+              "absolute_difference": 0.08387010246431542,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 221.3202543127796,
+              "x2": 81.85448727578787,
+              "x3": 162.35113540434114,
+              "label": "Pink",
+              "mu_pyfcs": 0.1735653877064718,
+              "mu_jfcs_geometry": 0.09183173414334077,
+              "absolute_difference": 0.08173365356313105,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 179.63687130168302,
+              "x2": 119.82459250834994,
+              "x3": 192.87184172311035,
+              "label": "Pink",
+              "mu_pyfcs": 0.18405360759462924,
+              "mu_jfcs_geometry": 0.10494602522171122,
+              "absolute_difference": 0.07910758237291803,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 172.71656089396427,
+              "x2": 123.7896664843029,
+              "x3": 227.32961004611,
+              "label": "Pink",
+              "mu_pyfcs": 0.1965688871809327,
+              "mu_jfcs_geometry": 0.12059491713780303,
+              "absolute_difference": 0.07597397004312968,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 184.26947852218467,
+              "x2": 114.25711548630589,
+              "x3": 214.70159831674033,
+              "label": "Pink",
+              "mu_pyfcs": 0.19867970193310477,
+              "mu_jfcs_geometry": 0.12323424386509244,
+              "absolute_difference": 0.07544545806801234,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 192.15519798030147,
+              "x2": 111.35753491263335,
+              "x3": 142.57001348887053,
+              "label": "Pink",
+              "mu_pyfcs": 0.1483080006260787,
+              "mu_jfcs_geometry": 0.07597469843541478,
+              "absolute_difference": 0.07233330219066393,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 227.5616875477916,
+              "x2": 62.17671659255437,
+              "x3": 190.7218835444293,
+              "label": "Pink",
+              "mu_pyfcs": 0.07119772238668247,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.07119772238668247,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 219.70577352226064,
+              "x2": 86.81988271147458,
+              "x3": 176.5936623846677,
+              "label": "Pink",
+              "mu_pyfcs": 0.22376516360275203,
+              "mu_jfcs_geometry": 0.15460067684220272,
+              "absolute_difference": 0.06916448676054932,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 223.38766943712386,
+              "x2": 84.6789618000885,
+              "x3": 166.56363835360173,
+              "label": "Pink",
+              "mu_pyfcs": 0.22639750102295797,
+              "mu_jfcs_geometry": 0.15789210660942637,
+              "absolute_difference": 0.0685053944135316,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 188.8680641850074,
+              "x2": 117.41241798947094,
+              "x3": 174.02590021127062,
+              "label": "Pink",
+              "mu_pyfcs": 0.22727762482065186,
+              "mu_jfcs_geometry": 0.158992598379339,
+              "absolute_difference": 0.06828502644131287,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 202.90648104470247,
+              "x2": 106.91445032089986,
+              "x3": 147.5962889794792,
+              "label": "Pink",
+              "mu_pyfcs": 0.2277976153112015,
+              "mu_jfcs_geometry": 0.15964278561070686,
+              "absolute_difference": 0.06815482970049463,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 206.45299642506748,
+              "x2": 79.76127642839766,
+              "x3": 212.30800002077433,
+              "label": "Pink",
+              "mu_pyfcs": 0.06728252444282747,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.06728252444282747,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 199.26168795245766,
+              "x2": 102.82681402909743,
+              "x3": 223.3906118786517,
+              "label": "Pink",
+              "mu_pyfcs": 0.23975020313078818,
+              "mu_jfcs_geometry": 0.17458809734876862,
+              "absolute_difference": 0.06516210578201956,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 182.71469487215114,
+              "x2": 121.72642015837573,
+              "x3": 214.03732664384395,
+              "label": "Pink",
+              "mu_pyfcs": 0.257070176191774,
+              "mu_jfcs_geometry": 0.19624469595305413,
+              "absolute_difference": 0.06082548023871989,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 152.7527889358251,
+              "x2": 131.97323044776596,
+              "x3": 204.96811448567814,
+              "label": "Pink",
+              "mu_pyfcs": 0.05954695740669197,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.05954695740669197,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 162.3850881669524,
+              "x2": 142.50635262713735,
+              "x3": 209.6380229310164,
+              "label": "Pink",
+              "mu_pyfcs": 0.2623302088818559,
+              "mu_jfcs_geometry": 0.2028217510219868,
+              "absolute_difference": 0.05950845785986908,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_25",
+              "x1": 178.10859229722013,
+              "x2": 33.873445468029075,
+              "x3": 147.3760611947934,
+              "label": "Red",
+              "mu_pyfcs": 0.060319171236505986,
+              "mu_jfcs_geometry": 0.0016424143786348047,
+              "absolute_difference": 0.05867675685787118,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            }
+          ],
+          "normalized": {
+            "different_points": 97,
+            "different_percent": 6.46667,
+            "max_difference": 0.09947910408079175,
+            "raw_sum_pyfcs": {
+              "min": 0.8788372715915268,
+              "mean": 1.1235386387110162,
+              "max": 2.493179311264983
+            },
+            "raw_sum_jfcs_geometry": {
+              "min": 0.8788372715915269,
+              "mean": 1.1206594752973624,
+              "max": 2.4931793112649867
+            }
+          }
+        },
+        {
+          "region": "margin_50",
+          "samples": 1500,
+          "seed": 6123110,
+          "raw_different_points": 47,
+          "raw_different_percent": 3.13333,
+          "raw_winner_changes": 0,
+          "mapping_winner_changes": 0,
+          "max_raw_membership_difference": 0.1000114931350831,
+          "mean_pointwise_max_raw_difference": 0.0013106059611694195,
+          "affected_categories": {
+            "Pink": 34,
+            "Red": 14
+          },
+          "top_cases": [
+            {
+              "region": "margin_50",
+              "x1": 201.30724015140166,
+              "x2": 89.62864216207154,
+              "x3": 199.27477624875274,
+              "label": "Pink",
+              "mu_pyfcs": 0.10056584328227894,
+              "mu_jfcs_geometry": 0.0005543501471958379,
+              "absolute_difference": 0.1000114931350831,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 189.63786292324303,
+              "x2": 102.01317089365662,
+              "x3": 204.67132418129086,
+              "label": "Pink",
+              "mu_pyfcs": 0.11727931234485844,
+              "mu_jfcs_geometry": 0.021452586506972033,
+              "absolute_difference": 0.09582672583788641,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 193.7139026793327,
+              "x2": 104.62140925340535,
+              "x3": 151.02043802322038,
+              "label": "Pink",
+              "mu_pyfcs": 0.12040578974728125,
+              "mu_jfcs_geometry": 0.025361880471300193,
+              "absolute_difference": 0.09504390927598105,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 176.74027430317722,
+              "x2": 115.723421952571,
+              "x3": 173.4832402573042,
+              "label": "Pink",
+              "mu_pyfcs": 0.09300715795501235,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.09300715795501235,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 198.42851499257682,
+              "x2": 97.64592173096793,
+              "x3": 199.65247983129964,
+              "label": "Pink",
+              "mu_pyfcs": 0.15284163210359694,
+              "mu_jfcs_geometry": 0.06591910396288468,
+              "absolute_difference": 0.08692252814071226,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 192.53488523304702,
+              "x2": 110.50880813283516,
+              "x3": 143.30024995099967,
+              "label": "Pink",
+              "mu_pyfcs": 0.15284453417509,
+              "mu_jfcs_geometry": 0.07229691876625116,
+              "absolute_difference": 0.08054761540883884,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 169.15875704290352,
+              "x2": 120.48650061521539,
+              "x3": 182.36641196091844,
+              "label": "Pink",
+              "mu_pyfcs": 0.0774955149798639,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.0774955149798639,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 198.08974263182793,
+              "x2": 105.44565121704724,
+              "x3": 170.0661572442582,
+              "label": "Pink",
+              "mu_pyfcs": 0.19278371565265373,
+              "mu_jfcs_geometry": 0.11586200328466523,
+              "absolute_difference": 0.0769217123679885,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 183.4143057837672,
+              "x2": 119.8944738866433,
+              "x3": 178.29962360140576,
+              "label": "Pink",
+              "mu_pyfcs": 0.20429883601579016,
+              "mu_jfcs_geometry": 0.13026031318424736,
+              "absolute_difference": 0.0740385228315428,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 171.85147130175216,
+              "x2": 129.34556887279774,
+              "x3": 194.59041217411803,
+              "label": "Pink",
+              "mu_pyfcs": 0.2055197484857899,
+              "mu_jfcs_geometry": 0.1317869212915844,
+              "absolute_difference": 0.07373282719420551,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 202.73061944292726,
+              "x2": 107.58662888919237,
+              "x3": 161.11375061266904,
+              "label": "Pink",
+              "mu_pyfcs": 0.24840743287539824,
+              "mu_jfcs_geometry": 0.18541294961291155,
+              "absolute_difference": 0.06299448326248669,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 173.46663450797985,
+              "x2": 134.47239305529303,
+              "x3": 187.4005815403309,
+              "label": "Pink",
+              "mu_pyfcs": 0.2636608600180347,
+              "mu_jfcs_geometry": 0.20448557448389904,
+              "absolute_difference": 0.059175285534135647,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 195.82068406489486,
+              "x2": 113.71244581440091,
+              "x3": 179.3886959139188,
+              "label": "Pink",
+              "mu_pyfcs": 0.26375605226615956,
+              "mu_jfcs_geometry": 0.20460460124569735,
+              "absolute_difference": 0.05915145102046221,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 166.6413111406515,
+              "x2": 137.9009828942926,
+              "x3": 190.88596597524003,
+              "label": "Pink",
+              "mu_pyfcs": 0.22420388512968148,
+              "mu_jfcs_geometry": 0.16601218515735885,
+              "absolute_difference": 0.058191699972322625,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 195.17770309251222,
+              "x2": 50.903326211510894,
+              "x3": 139.02650189182776,
+              "label": "Red",
+              "mu_pyfcs": 0.10779405158281434,
+              "mu_jfcs_geometry": 0.05545296330246747,
+              "absolute_difference": 0.05234108828034687,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 164.70416944442024,
+              "x2": 121.44028450664452,
+              "x3": 189.39017638104784,
+              "label": "Pink",
+              "mu_pyfcs": 0.05215615720127066,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.05215615720127066,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 171.15179889473586,
+              "x2": 131.70654763231718,
+              "x3": 176.54940137753346,
+              "label": "Pink",
+              "mu_pyfcs": 0.17178784511106465,
+              "mu_jfcs_geometry": 0.11989850923024023,
+              "absolute_difference": 0.05188933588082442,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_50",
+              "x1": 187.12705110233995,
+              "x2": 63.782922766056814,
+              "x3": 129.06491921924777,
+              "label": "Red",
+              "mu_pyfcs": 0.11587557588133018,
+              "mu_jfcs_geometry": 0.06461299183697311,
+              "absolute_difference": 0.051262584044357073,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 199.31277189730187,
+              "x2": 78.58365006428555,
+              "x3": 121.47972577799926,
+              "label": "Red",
+              "mu_pyfcs": 0.15231550032427602,
+              "mu_jfcs_geometry": 0.10591593610380097,
+              "absolute_difference": 0.046399564220475045,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 204.66825504040372,
+              "x2": 86.41861366342664,
+              "x3": 118.78562727236061,
+              "label": "Red",
+              "mu_pyfcs": 0.1552567622953781,
+              "mu_jfcs_geometry": 0.1092497185175594,
+              "absolute_difference": 0.04600704377781871,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_50",
+              "x1": 161.564679762371,
+              "x2": 143.89546311874602,
+              "x3": 197.047290693425,
+              "label": "Pink",
+              "mu_pyfcs": 0.22399525787578056,
+              "mu_jfcs_geometry": 0.18142560339633285,
+              "absolute_difference": 0.042569654479447716,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_50",
+              "x1": 183.92533125747195,
+              "x2": 130.03154280961928,
+              "x3": 168.23286419701202,
+              "label": "Pink",
+              "mu_pyfcs": 0.2775721788755266,
+              "mu_jfcs_geometry": 0.23764817187125456,
+              "absolute_difference": 0.03992400700427204,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_50",
+              "x1": 181.23637903654858,
+              "x2": 131.4962173917899,
+              "x3": 170.53573273195752,
+              "label": "Pink",
+              "mu_pyfcs": 0.26379463403850295,
+              "mu_jfcs_geometry": 0.22508458127553346,
+              "absolute_difference": 0.03871005276296949,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_50",
+              "x1": 199.44323896791286,
+              "x2": 113.9964068072035,
+              "x3": 135.20718688901144,
+              "label": "Pink",
+              "mu_pyfcs": 0.21210551277642783,
+              "mu_jfcs_geometry": 0.17489223570375925,
+              "absolute_difference": 0.03721327707266858,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_50",
+              "x1": 179.00722878648264,
+              "x2": 138.13062761614447,
+              "x3": 189.70779531469233,
+              "label": "Pink",
+              "mu_pyfcs": 0.35603730225870517,
+              "mu_jfcs_geometry": 0.31999150067985654,
+              "absolute_difference": 0.036045801578848624,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            }
+          ],
+          "normalized": {
+            "different_points": 47,
+            "different_percent": 3.13333,
+            "max_difference": 0.09994989080847827,
+            "raw_sum_pyfcs": {
+              "min": 0.8667776765032804,
+              "mean": 1.1310669190521214,
+              "max": 2.165572877781949
+            },
+            "raw_sum_jfcs_geometry": {
+              "min": 0.866777676503284,
+              "mean": 1.1297509728035324,
+              "max": 2.1655728777819516
+            }
+          }
+        },
+        {
+          "region": "margin_80",
+          "samples": 1500,
+          "seed": 6123111,
+          "raw_different_points": 11,
+          "raw_different_percent": 0.73333,
+          "raw_winner_changes": 0,
+          "mapping_winner_changes": 0,
+          "max_raw_membership_difference": 0.09760824757999789,
+          "mean_pointwise_max_raw_difference": 0.0002460700299250481,
+          "affected_categories": {
+            "Pink": 11
+          },
+          "top_cases": [
+            {
+              "region": "margin_80",
+              "x1": 173.68833965240907,
+              "x2": 119.34893109936006,
+              "x3": 171.77567604490463,
+              "label": "Pink",
+              "mu_pyfcs": 0.09760824757999789,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.09760824757999789,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_80",
+              "x1": 168.31546548257944,
+              "x2": 120.60567559545748,
+              "x3": 172.8044298196565,
+              "label": "Pink",
+              "mu_pyfcs": 0.05949349900505406,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.05949349900505406,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_80",
+              "x1": 167.90090528533773,
+              "x2": 119.68097071176355,
+              "x3": 172.93734253430068,
+              "label": "Pink",
+              "mu_pyfcs": 0.046473148196118516,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.046473148196118516,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_80",
+              "x1": 174.88921948517083,
+              "x2": 120.75659952777855,
+              "x3": 152.82919323666812,
+              "label": "Pink",
+              "mu_pyfcs": 0.03512586189028669,
+              "mu_jfcs_geometry": 0.0012593899917133205,
+              "absolute_difference": 0.03386647189857337,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_80",
+              "x1": 164.80512628583296,
+              "x2": 122.43463840258113,
+              "x3": 173.66503364050232,
+              "label": "Pink",
+              "mu_pyfcs": 0.03117539920746149,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.03117539920746149,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_80",
+              "x1": 164.48967972652804,
+              "x2": 131.3484530225761,
+              "x3": 171.96243699992598,
+              "label": "Pink",
+              "mu_pyfcs": 0.06188485933879295,
+              "mu_jfcs_geometry": 0.031569717673706546,
+              "absolute_difference": 0.030315141665086406,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_80",
+              "x1": 169.58778300144053,
+              "x2": 124.31723505263211,
+              "x3": 160.5441571719901,
+              "label": "Pink",
+              "mu_pyfcs": 0.02858890611184077,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.02858890611184077,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_80",
+              "x1": 171.32479565968612,
+              "x2": 113.75250644532979,
+              "x3": 166.5235216787907,
+              "label": "Pink",
+              "mu_pyfcs": 0.013204836889420337,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.013204836889420337,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "margin_80",
+              "x1": 169.88456021115616,
+              "x2": 128.5399339489066,
+              "x3": 160.88159064848173,
+              "label": "Pink",
+              "mu_pyfcs": 0.05494204408590195,
+              "mu_jfcs_geometry": 0.04303835788752871,
+              "absolute_difference": 0.011903686198373238,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_80",
+              "x1": 165.3636963559572,
+              "x2": 123.92666268727149,
+              "x3": 167.11613735366228,
+              "label": "Pink",
+              "mu_pyfcs": 0.009790516415131382,
+              "mu_jfcs_geometry": 0.0,
+              "absolute_difference": 0.009790516415131382,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            },
+            {
+              "region": "margin_80",
+              "x1": 172.52083449408303,
+              "x2": 135.58830127937387,
+              "x3": 168.14754774022978,
+              "label": "Pink",
+              "mu_pyfcs": 0.162189571921821,
+              "mu_jfcs_geometry": 0.15550438020242716,
+              "absolute_difference": 0.006685191719393857,
+              "winner_pyfcs": "Gray",
+              "winner_jfcs_geometry": "Gray"
+            }
+          ],
+          "normalized": {
+            "different_points": 11,
+            "different_percent": 0.73333,
+            "max_difference": 0.08892812877017288,
+            "raw_sum_pyfcs": {
+              "min": 0.9622761165826456,
+              "mean": 1.0338567100468772,
+              "max": 1.516671927894541
+            },
+            "raw_sum_jfcs_geometry": {
+              "min": 0.9622761165826457,
+              "mean": 1.033610640016953,
+              "max": 1.5166719278945413
+            }
+          }
+        }
+      ],
+      "identical_stored_planes": false,
+      "elapsed_seconds": 61.488
+    },
+    {
+      "pair": "Disjoint_NonCovering",
+      "pyfcs_file": "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\fixtures\\noncover_pyfcs.fcs",
+      "jfcs_file": "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\fixtures\\noncover_jfcs.fcs",
+      "configuration": {
+        "geometry": "RGB",
+        "disjoint": true,
+        "covering": false,
+        "domain": [
+          0.0,
+          255.0,
+          0.0,
+          255.0,
+          0.0,
+          255.0
+        ],
+        "lambda1": 0.5,
+        "lambda2": 1.5,
+        "samples_effective": 27,
+        "labels": [
+          "Pink",
+          "Red",
+          "Orange",
+          "Brown",
+          "Yellow",
+          "Olive",
+          "Yellow-Green",
+          "Green",
+          "Blue",
+          "Purple",
+          "White",
+          "Gray",
+          "Black"
+        ],
+        "representatives_max_absolute_delta": 3.183009411600324e-13,
+        "raw_samples_fields": {
+          "pyfcs": 27,
+          "jfcs": 27
+        },
+        "source_formats": {
+          "pyfcs": null,
+          "jfcs": "JFCS_ATOMIC"
+        }
+      },
+      "geometry": {
+        "core": {
+          "pyfcs_faces": 138,
+          "jfcs_faces": 148,
+          "matching_planes": 107,
+          "pyfcs_domain_faces": 31,
+          "jfcs_domain_faces": 0,
+          "by_category": [
+            {
+              "label": "Pink",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Red",
+              "pyfcs_faces": 8,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 5
+            },
+            {
+              "label": "Orange",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Brown",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Yellow",
+              "pyfcs_faces": 7,
+              "jfcs_faces": 6,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 4
+            },
+            {
+              "label": "Olive",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 1,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 9
+            },
+            {
+              "label": "Yellow-Green",
+              "pyfcs_faces": 11,
+              "jfcs_faces": 12,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 9
+            },
+            {
+              "label": "Green",
+              "pyfcs_faces": 14,
+              "jfcs_faces": 15,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 12
+            },
+            {
+              "label": "Blue",
+              "pyfcs_faces": 13,
+              "jfcs_faces": 14,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 11
+            },
+            {
+              "label": "Purple",
+              "pyfcs_faces": 16,
+              "jfcs_faces": 14,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 13
+            },
+            {
+              "label": "White",
+              "pyfcs_faces": 6,
+              "jfcs_faces": 13,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 3
+            },
+            {
+              "label": "Gray",
+              "pyfcs_faces": 16,
+              "jfcs_faces": 14,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 14
+            },
+            {
+              "label": "Black",
+              "pyfcs_faces": 8,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 5
+            }
+          ]
+        },
+        "voronoi": {
+          "pyfcs_faces": 138,
+          "jfcs_faces": 148,
+          "matching_planes": 107,
+          "pyfcs_domain_faces": 31,
+          "jfcs_domain_faces": 0,
+          "by_category": [
+            {
+              "label": "Pink",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Red",
+              "pyfcs_faces": 8,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 5
+            },
+            {
+              "label": "Orange",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Brown",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Yellow",
+              "pyfcs_faces": 7,
+              "jfcs_faces": 6,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 4
+            },
+            {
+              "label": "Olive",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 1,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 9
+            },
+            {
+              "label": "Yellow-Green",
+              "pyfcs_faces": 11,
+              "jfcs_faces": 12,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 9
+            },
+            {
+              "label": "Green",
+              "pyfcs_faces": 14,
+              "jfcs_faces": 15,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 12
+            },
+            {
+              "label": "Blue",
+              "pyfcs_faces": 13,
+              "jfcs_faces": 14,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 11
+            },
+            {
+              "label": "Purple",
+              "pyfcs_faces": 16,
+              "jfcs_faces": 14,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 13
+            },
+            {
+              "label": "White",
+              "pyfcs_faces": 6,
+              "jfcs_faces": 13,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 3
+            },
+            {
+              "label": "Gray",
+              "pyfcs_faces": 16,
+              "jfcs_faces": 14,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 14
+            },
+            {
+              "label": "Black",
+              "pyfcs_faces": 8,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 5
+            }
+          ]
+        },
+        "support": {
+          "pyfcs_faces": 138,
+          "jfcs_faces": 148,
+          "matching_planes": 107,
+          "pyfcs_domain_faces": 31,
+          "jfcs_domain_faces": 0,
+          "by_category": [
+            {
+              "label": "Pink",
+              "pyfcs_faces": 9,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 6
+            },
+            {
+              "label": "Red",
+              "pyfcs_faces": 8,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 5
+            },
+            {
+              "label": "Orange",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Brown",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 8
+            },
+            {
+              "label": "Yellow",
+              "pyfcs_faces": 7,
+              "jfcs_faces": 6,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 4
+            },
+            {
+              "label": "Olive",
+              "pyfcs_faces": 10,
+              "jfcs_faces": 11,
+              "pyfcs_domain_faces": 1,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 9
+            },
+            {
+              "label": "Yellow-Green",
+              "pyfcs_faces": 11,
+              "jfcs_faces": 12,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 9
+            },
+            {
+              "label": "Green",
+              "pyfcs_faces": 14,
+              "jfcs_faces": 15,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 12
+            },
+            {
+              "label": "Blue",
+              "pyfcs_faces": 13,
+              "jfcs_faces": 14,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 11
+            },
+            {
+              "label": "Purple",
+              "pyfcs_faces": 16,
+              "jfcs_faces": 14,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 13
+            },
+            {
+              "label": "White",
+              "pyfcs_faces": 6,
+              "jfcs_faces": 13,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 3
+            },
+            {
+              "label": "Gray",
+              "pyfcs_faces": 16,
+              "jfcs_faces": 14,
+              "pyfcs_domain_faces": 2,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 14
+            },
+            {
+              "label": "Black",
+              "pyfcs_faces": 8,
+              "jfcs_faces": 9,
+              "pyfcs_domain_faces": 3,
+              "jfcs_domain_faces": 0,
+              "matching_planes": 5
+            }
+          ]
+        }
+      },
+      "regions": [
+        {
+          "region": "full",
+          "samples": 1500,
+          "seed": 6123108,
+          "raw_different_points": 3,
+          "raw_different_percent": 0.2,
+          "raw_winner_changes": 0,
+          "mapping_winner_changes": 0,
+          "max_raw_membership_difference": 0.0646837516159523,
+          "mean_pointwise_max_raw_difference": 0.00010827410150141563,
+          "affected_categories": {
+            "Purple": 3
+          },
+          "top_cases": [
+            {
+              "region": "full",
+              "x1": 132.71334879889557,
+              "x2": 142.88574377709188,
+              "x3": 239.53526760609012,
+              "label": "Purple",
+              "mu_pyfcs": 0.9441289699452566,
+              "mu_jfcs_geometry": 0.8794452183293043,
+              "absolute_difference": 0.0646837516159523,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 146.35016945220576,
+              "x2": 122.88588191416373,
+              "x3": 249.50950421293527,
+              "label": "Purple",
+              "mu_pyfcs": 1.0,
+              "mu_jfcs_geometry": 0.9407791286517615,
+              "absolute_difference": 0.0592208713482385,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            },
+            {
+              "region": "full",
+              "x1": 133.88463901626932,
+              "x2": 141.6084425157858,
+              "x3": 236.46797820864,
+              "label": "Purple",
+              "mu_pyfcs": 0.9327857519210211,
+              "mu_jfcs_geometry": 0.8942792226353533,
+              "absolute_difference": 0.03850652928566778,
+              "winner_pyfcs": "Purple",
+              "winner_jfcs_geometry": "Purple"
+            }
+          ]
+        },
+        {
+          "region": "margin_25",
+          "samples": 1500,
+          "seed": 6123109,
+          "raw_different_points": 0,
+          "raw_different_percent": 0.0,
+          "raw_winner_changes": 0,
+          "mapping_winner_changes": 0,
+          "max_raw_membership_difference": 2.2093438190040615e-14,
+          "mean_pointwise_max_raw_difference": 1.6792576443963591e-15,
+          "affected_categories": {},
+          "top_cases": []
+        },
+        {
+          "region": "margin_50",
+          "samples": 1500,
+          "seed": 6123110,
+          "raw_different_points": 0,
+          "raw_different_percent": 0.0,
+          "raw_winner_changes": 0,
+          "mapping_winner_changes": 0,
+          "max_raw_membership_difference": 2.2887941542037993e-14,
+          "mean_pointwise_max_raw_difference": 1.549401413015091e-15,
+          "affected_categories": {},
+          "top_cases": []
+        },
+        {
+          "region": "margin_80",
+          "samples": 1500,
+          "seed": 6123111,
+          "raw_different_points": 0,
+          "raw_different_percent": 0.0,
+          "raw_winner_changes": 0,
+          "mapping_winner_changes": 0,
+          "max_raw_membership_difference": 5.384581669432009e-15,
+          "mean_pointwise_max_raw_difference": 7.336327183769809e-16,
+          "affected_categories": {},
+          "top_cases": []
+        }
+      ],
+      "identical_stored_planes": false,
+      "elapsed_seconds": 194.455
+    }
+  ]
+}

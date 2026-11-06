@@ -1,0 +1,25 @@
+PyFCS regression suite | root: C:\Users\rafav\Desktop\PYFCS
+Discovering Source/test/test_*.py (including global workflows)...
+test_different_topologies_fail_before_sampling (test_comparison_tool.ComparisonToolRegressionTests)
+Detect incompatible typologies without deliberately raising an exception. ... ok
+test_identical_file_has_identical_geometry_and_memberships (test_comparison_tool.ComparisonToolRegressionTests)
+Compare a stored FCS against itself as a zero-difference control. ... ok
+test_change_color_space_is_explicit_and_non_destructive (test_global_workflows.GlobalWorkflowsTests)
+Changing color space rebuilds geometry without mutating the source. ... ok
+test_eight_constructions_roundtrip_and_raw_memberships (test_global_workflows.GlobalWorkflowsTests)
+All four typologies x LAB/RGB survive write/read unchanged. ... ok
+test_jfcs_compatibility_metrics_and_invalid_input (test_global_workflows.GlobalWorkflowsTests)
+Validate JFCS loading, RGB ranges and CIEDE2000 accuracy. ... ok
+test_rgb_native_image_single_all_and_palette (test_global_workflows.GlobalWorkflowsTests)
+Individual maps, winner map and two palettes share the same RGB model. ... ok
+test_visual_closed_surfaces_and_membership_geometry_unchanged (test_global_workflows.GlobalWorkflowsTests)
+Rendering all solids cannot insert planes into membership volumes. ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 2.671s
+
+OK
+
+Summary: 7 tests | 0 failures | 0 errors | 0 skipped | 5.345s
+Log: C:\Users\rafav\Desktop\PYFCS\Source\test\test_reports\global_20261106_163249.log
+JSON: C:\Users\rafav\Desktop\PYFCS\Source\test\test_reports\global_20261106_163249.json

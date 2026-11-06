@@ -1,0 +1,19 @@
+{
+  "kind": "PyFCS global regression",
+  "started_utc": "2026-11-06T15:32:49.735061+00:00",
+  "project_root": "C:\\Users\\rafav\\Desktop\\PYFCS",
+  "python": "3.10.13 | packaged by Anaconda, Inc. | (main, Sep 11 2023, 13:24:38) [MSC v.1916 64 bit (AMD64)]",
+  "tests_run": 7,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "gui": "not_requested",
+  "gui_error": null,
+  "elapsed_seconds": 5.345,
+  "passed": true,
+  "failure_details": [],
+  "error_details": [],
+  "skipped_details": []
+}

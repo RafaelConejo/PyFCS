@@ -1,5 +1,6 @@
 import numpy as np
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from matplotlib.colors import to_rgba
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -75,14 +76,16 @@ class VisualManager:
 
 
     @staticmethod
-    def display_polygons_for_volume(volume, domain):
-        """Return a CLOSED visible polyhedron without changing fuzzy geometry.
+    def display_polygons_for_volume(volume, domain, include_domain_caps=True):
+        """Clip a fuzzy polyhedron to the view domain, without changing its geometry.
 
-        The original RGB/LAB domain is purely a display clip.  Simply
-        clamping individual vertices can leave non-planar faces and gaps,
-        especially after the JFCS-style support adjustment. Reconstruct the
-        visible polygons by intersecting the genuine fuzzy halfspaces with the
-        domain box; the membership volumes and their planes are untouched.
+        This is VISUAL geometry only: the real fuzzy halfspaces are clipped
+        against the display domain, including the resulting closing faces.
+        Those domain caps are essential to display closed Core / Voronoi /
+        Support volumes.  They do not become membership boundaries: the fuzzy
+        engine continues to ignore domain faces during radial membership.
+
+        For diagnostic use, include_domain_caps=False yields open surfaces.
         """
         from Source.geometry.Voronoi import Voronoi
 
@@ -115,7 +118,99 @@ class VisualManager:
             if not faces:
                 return []
         return [np.asarray(face.vertices, dtype=float)
-                for face in faces if face.vertices is not None and len(face.vertices) >= 3]
+                for face in faces
+                if face.vertices is not None and len(face.vertices) >= 3
+                and (include_domain_caps or not face.is_domain_boundary)]
+
+    @staticmethod
+    def _cached_display_polygons(prototype, domain):
+        """Reuse the expensive plane/domain intersection between plot backends.
+
+        Geometry is rebuilt with a new volume on ordinary model updates.  The
+        plane coefficients in the key also catch in-place support corrections.
+        """
+        volume = prototype.voronoi_volume
+        limits = (tuple(domain.comp1), tuple(domain.comp2), tuple(domain.comp3))
+        planes = tuple((float(f.getPlane().A), float(f.getPlane().B),
+                        float(f.getPlane().C), float(f.getPlane().D),
+                        bool(f.isDomainBoundary())) for f in volume.getFaces())
+        key = (id(volume), limits, planes)
+        cached = getattr(prototype, "_cached_visible_fuzzy_surfaces", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        # Render the complete CLIPPED polyhedron (including caps at RGB/LAB
+        # domain edges).  This does not affect the membership geometry.
+        polygons = VisualManager.display_polygons_for_volume(
+            volume, domain, include_domain_caps=True)
+        prototype._cached_visible_fuzzy_surfaces = (key, polygons)
+        return polygons
+
+    @staticmethod
+    def _cached_projected_display_faces(prototype, domain, source_space,
+                                       display_space):
+        """Return view-space polygons in plotting axis order (y,z,x).
+
+        Avoid repeated LAB/RGB conversions on every Matplotlib redraw, and
+        share projections with the optional Plotly Interactive View.
+        """
+        polygons = VisualManager._cached_display_polygons(prototype, domain)
+        source_space = str(source_space).upper()
+        display_space = str(display_space).upper()
+        old = getattr(prototype, "_cached_projected_fuzzy_surfaces", None)
+        if (old is not None and old[0] is polygons
+                and old[1] == source_space and old[2] == display_space):
+            return old[3]
+        if polygons:
+            lengths = [len(polygon) for polygon in polygons]
+            combined = np.concatenate(polygons, axis=0)
+            converted = VisualManager.reproject_points(
+                combined, source_space, display_space)[:, [1, 2, 0]]
+            stops = np.cumsum(lengths)[:-1]
+            result = np.split(converted, stops)
+        else:
+            result = []
+        prototype._cached_projected_fuzzy_surfaces = (
+            polygons, source_space, display_space, result)
+        return result
+
+
+    @staticmethod
+    def _cached_plotly_display_mesh(prototype, domain, source_space,
+                                    display_space):
+        """Triangulate each visible polygon once, without duplicating triangles' vertices.
+
+        Keep separate vertices for separate faces. Apart from saving work and
+        reducing the serialized Mesh3d arrays, this preserves the per-face
+        appearance (no vertex sharing between neighbouring faces).
+        """
+        polygons = VisualManager._cached_projected_display_faces(
+            prototype, domain, source_space, display_space)
+        previous = getattr(prototype, "_cached_plotly_visible_mesh", None)
+        if previous is not None and previous[0] is polygons:
+            return previous[1]
+
+        vertices = []
+        i_indices = []
+        j_indices = []
+        k_indices = []
+        for polygon in polygons:
+            n = len(polygon)
+            if n < 3:
+                continue
+            first = len(vertices)
+            vertices.extend(polygon)
+            for corner in range(1, n - 1):
+                i_indices.append(first)
+                j_indices.append(first + corner)
+                k_indices.append(first + corner + 1)
+
+        if not i_indices:
+            mesh = None
+        else:
+            mesh = (np.asarray(vertices, dtype=float),
+                    i_indices, j_indices, k_indices)
+        prototype._cached_plotly_visible_mesh = (polygons, mesh)
+        return mesh
 
 
     @staticmethod
@@ -370,80 +465,72 @@ class VisualManager:
                     depthshade=False,
                 )
 
-        # Fuzzy volumes and filtered points
-        for option in ("0.5-cut", "Core", "Support"):
-            if option not in selected_options:
-                continue
+        # Sort the surfaces from ALL selected layers together.  Separate
+        # transparent Poly3DCollections are sorted as whole objects by mplot3d;
+        # with nested Core / 0.5-cut / Support volumes this produces the odd
+        # dark patches that depend on the camera angle. One collection allows
+        # face-by-face depth sorting and per-layer alpha values.
+        active_layers = [name for name in ("Core", "0.5-cut", "Support")
+                         if name in selected_options and data_map.get(name)]
+        all_faces = []
+        all_facecolors = []
+        all_edgecolors = []
+        filtered_coords = []
+        multiple_layers = len(active_layers) > 1
+        primary_layer = active_layers[0] if active_layers else None
+        solo_alpha = {"Core": 0.38, "0.5-cut": 0.30, "Support": 0.18}
+        # Keep the inner layer legible but make outer translucent shells much
+        # lighter when more than one nested volume is selected.
+        nested_alpha = {"Core": 0.34, "0.5-cut": 0.18, "Support": 0.07}
 
-            prototypes = data_map.get(option)
-
-            if not prototypes:
-                continue
-
-            all_faces = []
-            all_facecolors = []
-            all_filtered_points = []
-
+        for option in active_layers:
+            prototypes = data_map[option]
+            opacity = (solo_alpha[option] if not multiple_layers
+                       else (nested_alpha[option] if option == primary_layer
+                             else nested_alpha[option] * 0.80))
+            # The real clipping caps MUST remain in the visible geometry;
+            # otherwise the domain-bounded volumes appear open or triangular.
+            # Their rendering never changes the functional membership faces.
             for prototype in prototypes:
                 color = inverse_hex_color.get(
-                    lab_to_key(prototype.positive),
-                    "#000000",
-                )
-
-                cache_attr = f"_cached_faces_{option.replace('-', '_')}_{color_space}_{display_color_space}"
-
-                if not hasattr(prototype, cache_attr):
-                    valid_faces = []
-                    for polygon in VisualManager.display_polygons_for_volume(
-                            prototype.voronoi_volume, volume_limits):
-                        valid_faces.append(to_display(polygon)[:, [1, 2, 0]])
-
-                    setattr(prototype, cache_attr, valid_faces)
-
-                valid_faces = getattr(prototype, cache_attr)
-
-                for face_vertices in valid_faces:
-                    all_faces.append(face_vertices)
-                    all_facecolors.append(color)
+                    lab_to_key(prototype.positive), "#000000")
+                valid_faces = VisualManager._cached_projected_display_faces(
+                    prototype, volume_limits, color_space, display_color_space)
+                # The same material is applied to every polygon of a given
+                # prototype/layer. Prepare it once rather than per face.
+                face_rgba = to_rgba(color, opacity)
+                edge_alpha = (0.34 if option == primary_layer else 0.16)
+                if not multiple_layers:
+                    edge_alpha = 0.48 if option == "Core" else 0.38
+                edge_rgba = (0.08, 0.08, 0.08, edge_alpha)
+                all_faces.extend(valid_faces)
+                all_facecolors.extend([face_rgba] * len(valid_faces))
+                all_edgecolors.extend([edge_rgba] * len(valid_faces))
 
                 if filtered_points_arrays:
-                    for _proto_name, points_array in filtered_points_arrays.items():
+                    for points_array in filtered_points_arrays.values():
                         if len(points_array) == 0:
                             continue
+                        filtered_coords.extend(
+                            point for point in points_array
+                            if prototype.voronoi_volume.isInside(Point(*point)))
 
-                        points_inside = [
-                            point
-                            for point in points_array
-                            if prototype.voronoi_volume.isInside(Point(*point))
-                        ]
-
-                        if points_inside:
-                            all_filtered_points.extend(points_inside)
-
-            if all_faces:
-                ax.add_collection3d(
-                    Poly3DCollection(
-                        all_faces,
-                        facecolors=all_facecolors,
-                        edgecolors="black",
-                        linewidths=0.5,
-                        alpha=0.5,
-                    )
+        if all_faces:
+            ax.add_collection3d(
+                Poly3DCollection(
+                    all_faces,
+                    facecolors=all_facecolors,
+                    edgecolors=all_edgecolors,
+                    linewidths=0.26 if multiple_layers else 0.34,
+                    zsort="average",
                 )
+            )
 
-            if all_filtered_points:
-                points_array = to_display(np.asarray(all_filtered_points, dtype=float))
-
-                ax.scatter(
-                    points_array[:, 1],
-                    points_array[:, 2],
-                    points_array[:, 0],
-                    c="red",
-                    marker="o",
-                    s=10,
-                    alpha=0.8,
-                    depthshade=False,
-                )
+        if filtered_coords:
+            points_array = to_display(np.asarray(filtered_coords, dtype=float))
+            ax.scatter(points_array[:, 1], points_array[:, 2], points_array[:, 0],
+                       c="red", marker="o", s=10, alpha=0.8,
+                       depthshade=False)
 
         if str(display_color_space).upper() == "RGB":
             ax.set_xlabel("G (Green)", fontsize=10, labelpad=10)
@@ -482,9 +569,12 @@ class VisualManager:
         Draw a fixed-position 3D orientation inset with a fixed camera,
         independent from the main axes.
         """
-        for existing_ax in fig.axes[:]:
+        # The inset has a fixed camera and fixed labels; it is independent
+        # of the currently displayed fuzzy geometry. Reuse it across option
+        # changes instead of deleting and redrawing six 3D arrows each time.
+        for existing_ax in fig.axes:
             if hasattr(existing_ax, "_is_orientation_inset"):
-                fig.delaxes(existing_ax)
+                return existing_ax
 
         ax_inset = fig.add_axes([0.02, 0.02, 0.18, 0.30], projection="3d")
         ax_inset._is_orientation_inset = True
@@ -685,6 +775,15 @@ class VisualManager:
             "0.5-cut": 0.26,
             "Support": 0.16,
         }
+        active_volumes = [name for name in ("Core", "0.5-cut", "Support")
+                          if name in selected_options]
+        if len(active_volumes) > 1:
+            # Plotly also has transparency-ordering limitations with nested
+            # Mesh3d traces; avoid opaque-looking stacked shells.
+            soft_opacity = {"Core": 0.34, "0.5-cut": 0.15, "Support": 0.055}
+            for name in active_volumes:
+                layer_opacity[name] = (soft_opacity[name] if name == active_volumes[0]
+                                       else soft_opacity[name] * 0.8)
 
         marker_sizes = {
             "Representative": 5.8,
@@ -703,12 +802,20 @@ class VisualManager:
         color_control_indices = []
         legend_labels_added = set()
 
+        # The plot draws the same prototypes in several layers. Resolve the
+        # representative-to-HEX lookup once instead of scanning the palette
+        # for every marker and every mesh. Retain the first-match semantics.
+        hex_lookup = {}
+        if isinstance(hex_color, dict):
+            for candidate_hex, candidate_value in hex_color.items():
+                try:
+                    hex_lookup.setdefault(VisualManager._lab_key(candidate_value),
+                                          candidate_hex)
+                except (ValueError, TypeError):
+                    continue
+
         def _prototype_hex_from_lab(lab):
-            return VisualManager._find_hex_for_lab(
-                lab,
-                hex_color,
-                default="#000000"
-            )
+            return hex_lookup.get(VisualManager._lab_key(lab), "#000000")
 
         def _safe_label(value):
             try:
@@ -755,33 +862,6 @@ class VisualManager:
             trace_idx = len(fig.data) - 1
             color_control_indices.append(trace_idx)
             legend_labels_added.add(label)
-
-        def _build_mesh_vertices_and_faces(prototype):
-            vertices = []
-            faces = []
-
-            try:
-                visible_polygons = VisualManager.display_polygons_for_volume(
-                    prototype.voronoi_volume, volume_limits)
-            except (ValueError, TypeError, ArithmeticError):
-                return None, None
-
-            for polygon in visible_polygons:
-                try:
-                    # Plotly axes: x=a*, y=b*, z=L* (or G,B,R).
-                    clipped = to_display(polygon)[:, [1, 2, 0]]
-                    triangles = VisualManager._triangulate_face(clipped)
-                    for triangle in triangles:
-                        base_idx = len(vertices)
-                        vertices.extend(triangle)
-                        faces.append([base_idx, base_idx + 1, base_idx + 2])
-                except (ValueError, TypeError, ArithmeticError):
-                    continue
-
-            if not vertices or not faces:
-                return None, None
-
-            return np.asarray(vertices, dtype=float), faces
 
         # Legend anchors first.
         for rank, (label, value) in enumerate(color_data.items()):
@@ -856,19 +936,23 @@ class VisualManager:
                 except Exception:
                     continue
 
-                vertices, faces = _build_mesh_vertices_and_faces(prototype)
-
-                if vertices is None or faces is None:
+                try:
+                    mesh = VisualManager._cached_plotly_display_mesh(
+                        prototype, volume_limits, color_space, display_color_space)
+                except (ValueError, TypeError, ArithmeticError):
                     continue
+                if mesh is None:
+                    continue
+                vertices, i_indices, j_indices, k_indices = mesh
 
                 fig.add_trace(
                     go.Mesh3d(
                         x=vertices[:, 0],
                         y=vertices[:, 1],
                         z=vertices[:, 2],
-                        i=[face[0] for face in faces],
-                        j=[face[1] for face in faces],
-                        k=[face[2] for face in faces],
+                        i=i_indices,
+                        j=j_indices,
+                        k=k_indices,
                         color=proto_hex,
                         opacity=_initial_opacity(layer_name),
                         visible=True,

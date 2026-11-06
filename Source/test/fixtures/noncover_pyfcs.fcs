@@ -6,7 +6,7 @@
 # General information:
 #   @name                       Fuzzy color space name
 #   @description                Space typology
-#   @colorSpace                 Color space (LAB or RGB)
+#   @colorSpace                 Color space (LAB, RGB, ...)
 #   @reference                  Domain: min1 max1 min2 max2 min3 max3
 #
 # Geometry parameters:
@@ -35,7 +35,7 @@
 # Created by RafaConejo
 #
 ################################################################################
-@name disjon_nocover_pyfcs
+@name disjon-nocover_pyfcs
 @descriptionDISJOINT and NON-COVERING
 @colorSpaceRGB
 @reference 0 255 0 255 0 255

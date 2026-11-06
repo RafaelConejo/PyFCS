@@ -1,8 +1,7 @@
 import os
-import heapq
+from collections import deque
 import numpy as np
 import pandas as pd
-from scipy.spatial import distance
 
 # Project modules
 from Source.geometry.Point import Point
@@ -97,75 +96,83 @@ class ColorEvaluationManager:
         return csv_path
 
     def filter_points_with_threshold(self, selected_volume, threshold, step, metric="CIEDE2000", color_space="LAB"):
-        """
-        Original behavior is preserved by default with CIEDE2000.
-        You can now pass another scalar metric if needed.
+        """Find threshold-qualified grid points inside each selected volume.
+
+        Explore the connected qualifying region around each representative.
+        Non-qualifying points are *not* expanded: this avoids the original
+        arbitrary ten-failure cutoff (which lost valid points) without
+        traversing the entire 3D Voronoi volume.
+
+        As with the previous grid algorithm, this is a discrete exploration,
+        not a proof of completeness for disconnected threshold regions.
         """
         filtered_points = {}
         volume_limits = {}
         metric = self.normalize_metric_name(metric)
+        threshold = float(threshold)
+        step = float(step)
+        if not np.isfinite(threshold) or threshold <= 0:
+            raise ValueError("Threshold must be a finite positive number.")
+        if not np.isfinite(step) or step <= 0:
+            raise ValueError("Grid step must be a finite positive number.")
+
         use_rgb = str(color_space).upper() == "RGB"
         if use_rgb:
             from skimage import color as skcolor
             step = max(1.0, step)
+
             def to_lab(x):
-                q = np.asarray(x,dtype=float).reshape(1,1,3)
-                return skcolor.rgb2lab(np.clip(q,0,255)/255.0)[0,0]
+                rgb = np.asarray(x, dtype=float).reshape(1, 1, 3)
+                return skcolor.rgb2lab(np.clip(rgb, 0, 255) / 255.0)[0, 0]
         else:
             def to_lab(x):
                 return x
 
         for idx, prototype in enumerate(selected_volume):
-            positive = np.array(prototype.positive, dtype=float)
+            positive = np.asarray(prototype.positive, dtype=float)
+            positive_lab = to_lab(positive)
+            origin = tuple(float(v) for v in positive)
             points_within_threshold = []
-            # Visit candidate LAB points in order of proximity to the representative.
-            heap = [(0, tuple(np.round(positive, 2)))]
-            visited = set()
-            consecutive_failures = 0
-            max_failures = 10
+            frontier = deque([origin])
+            visited = {origin}
+            volume = prototype.voronoi_volume
 
-            while heap:
-                _, point = heapq.heappop(heap)
-                if point in visited:
+            while frontier:
+                point = frontier.popleft()
+                # A neighbor can fall outside the geometric volume; do not
+                # expand beyond that boundary.
+                if not volume.isInside(Point(*point)):
                     continue
-                visited.add(point)
-
                 try:
-                    metric_value = self.calculate_metric_value(to_lab(point),to_lab(positive),metric)
+                    metric_value = self.calculate_metric_value(
+                        to_lab(point), positive_lab, metric
+                    )
                 except Exception:
-                    metric_value = np.inf
+                    continue
+                if not (0 <= metric_value < threshold):
+                    continue
 
-                if 0 < metric_value < threshold and prototype.voronoi_volume.isInside(Point(*point)):
-                    points_within_threshold.append(point)
-                    consecutive_failures = 0
-                else:
-                    consecutive_failures += 1
-
-                if consecutive_failures > max_failures:
-                    break
-
+                points_within_threshold.append(point)
                 for axis in range(3):
                     for sign in (-1, 1):
                         neighbor = list(point)
-                        neighbor[axis] = np.round(neighbor[axis] + sign * step, 2)
+                        neighbor[axis] = round(neighbor[axis] + sign * step, 2)
                         neighbor = tuple(neighbor)
-                        if prototype.voronoi_volume.isInside(Point(*neighbor)):
-                            heapq.heappush(heap, (distance.euclidean(neighbor, positive), neighbor))
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            frontier.append(neighbor)
 
             filtered_points[f"Volume_{idx}"] = points_within_threshold
-
             if points_within_threshold:
-                pts = np.array(points_within_threshold)
+                pts = np.asarray(points_within_threshold, dtype=float)
                 volume_limits[prototype.label] = {
-                    "L": (np.min(pts[:, 0]), np.max(pts[:, 0])),
-                    "a": (np.min(pts[:, 1]), np.max(pts[:, 1])),
-                    "b": (np.min(pts[:, 2]), np.max(pts[:, 2])),
+                    "L": (float(np.min(pts[:, 0])), float(np.max(pts[:, 0]))),
+                    "a": (float(np.min(pts[:, 1])), float(np.max(pts[:, 1]))),
+                    "b": (float(np.min(pts[:, 2])), float(np.max(pts[:, 2]))),
                 }
             else:
                 volume_limits[prototype.label] = {
-                    "L": (None, None),
-                    "a": (None, None),
-                    "b": (None, None),
+                    "L": (None, None), "a": (None, None), "b": (None, None),
                 }
 
         return filtered_points, volume_limits

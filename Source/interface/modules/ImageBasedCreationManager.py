@@ -1,8 +1,9 @@
 import os
 import platform
+import re
 import threading
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
 
 import numpy as np
 from PIL import Image, ImageTk, ImageOps
@@ -15,7 +16,9 @@ class ImageBasedCreationManager:
     Single-workspace image-based fuzzy color space creation tool.
 
     The workspace keeps image browsing, manual sampling, automatic color
-    detection and the selected-color list in one persistent window.
+    detection, imported color sources and the selected-color list in one
+    persistent window. Imported .cns/.fcs files contribute representatives
+    only; their original files and saved FCS geometry remain unchanged.
     """
 
     BG = "#f5f6f8"
@@ -79,6 +82,7 @@ class ImageBasedCreationManager:
         self.colors = {}
         self.color_checks = {}
         self._name_editors = []
+        self.loaded_color_sources = {}
 
         # Automatic detection state.
         self._detection_running = False
@@ -155,6 +159,7 @@ class ImageBasedCreationManager:
         self.sample_hex_var = tk.StringVar(value="HEX: —")
 
         self.selected_count_var = tk.StringVar(value="0 of 0 selected")
+        self.color_source_status_var = tk.StringVar(value="")
 
         self.threshold_var = tk.DoubleVar(value=0.50)
         self.min_samples_var = tk.IntVar(value=160)
@@ -698,20 +703,51 @@ class ImageBasedCreationManager:
         footer = tk.Frame(card, bg=self.CARD)
         footer.pack(fill="x")
 
+        # Keep color inputs together, with FCS creation on its own row.
+        source_buttons = tk.Frame(footer, bg=self.CARD)
+        source_buttons.pack(fill="x")
+
         tk.Button(
-            footer,
+            source_buttons,
             text="+ Add Custom Color",
             command=self._add_custom_color,
             font=self.FONT_BOLD,
             relief="solid",
             bd=1,
-            padx=10,
+            padx=8,
             pady=5,
             cursor="hand2",
         ).pack(side="left")
 
+        self.add_color_source_button = tk.Button(
+            source_buttons,
+            text="+ Add Color Source...",
+            command=self._open_color_source,
+            font=self.FONT_BOLD,
+            relief="solid",
+            bd=1,
+            padx=8,
+            pady=5,
+            cursor="hand2",
+        )
+        self.add_color_source_button.pack(side="right")
+
+        create_row = tk.Frame(footer, bg=self.CARD)
+        create_row.pack(fill="x", pady=(8, 0))
+
+        tk.Label(
+            create_row,
+            textvariable=self.color_source_status_var,
+            bg=self.CARD,
+            fg=self.MUTED,
+            font=self.FONT_SMALL,
+            anchor="w",
+            wraplength=180,
+            justify="left",
+        ).pack(side="left", fill="x", expand=True)
+
         tk.Button(
-            footer,
+            create_row,
             text="Create Color Space",
             command=self._create_color_space,
             font=self.FONT_BOLD,
@@ -721,7 +757,7 @@ class ImageBasedCreationManager:
             activeforeground=self.BLUE,
             relief="solid",
             bd=1,
-            padx=14,
+            padx=12,
             pady=5,
             cursor="hand2",
         ).pack(side="right")
@@ -1417,12 +1453,15 @@ class ImageBasedCreationManager:
 
         name = self._next_unique_name("Image Color")
         source = self._sources.get(self.current_source_key, {})
+
         self._add_color(
             name=name,
             rgb=sample["rgb"],
             lab=sample["lab"],
             source=source.get("name", "Image"),
         )
+
+        self.color_source_status_var.set("Color added from image · selected")
 
     # Automatic Detection
     def _update_threshold_label(self):
@@ -1457,6 +1496,7 @@ class ImageBasedCreationManager:
             "next_source_button",
             "open_image_button",
             "refresh_sources_button",
+            "add_color_source_button",
         ):
             try:
                 getattr(self, widget_name).configure(state=state)
@@ -1760,6 +1800,10 @@ class ImageBasedCreationManager:
             if filtered:
                 status += f" · {filtered} filtered out"
             self._set_detection_busy(False, status)
+            if added > 0:
+                self.color_source_status_var.set(
+                    f"{added} color{'s' if added != 1 else ''} detected · selected"
+                )
 
         if added == 0 and not filtered:
             self.app.custom_warning(
@@ -1810,6 +1854,134 @@ class ImageBasedCreationManager:
             self.win.after_idle(self._scroll_colors_to_bottom)
 
         return name
+
+    @staticmethod
+    def _color_source_key(path):
+        """Identify previously imported sources by normalized filename."""
+        stem = os.path.splitext(os.path.basename(str(path)))[0]
+        return re.sub(r"[\s_\-]+", "", stem).casefold()
+
+    @staticmethod
+    def _normalize_source_color(data):
+        """Convert imported CNS/FCS representatives into valid LAB and RGB triples."""
+        try:
+            if isinstance(data, dict):
+                lab_source = next(
+                    (data[key] for key in ("positive_prototype", "lab", "Color")
+                     if key in data),
+                    None,
+                )
+                rgb_source = data.get("rgb")
+            else:
+                lab_source = data
+                rgb_source = None
+
+            if lab_source is None:
+                return None
+
+            if isinstance(lab_source, dict):
+                lab = (
+                    float(lab_source["L"]),
+                    float(lab_source.get("A", lab_source.get("a"))),
+                    float(lab_source.get("B", lab_source.get("b"))),
+                )
+            else:
+                values = np.asarray(lab_source, dtype=float).reshape(-1)
+                if values.size < 3:
+                    return None
+                lab = tuple(float(v) for v in values[:3])
+
+            if not np.all(np.isfinite(lab)):
+                return None
+
+            if rgb_source is None:
+                rgb_source = UtilsTools.lab_to_rgb(lab)
+            rgb_array = np.asarray(rgb_source, dtype=float).reshape(-1)
+            if rgb_array.size < 3 or not np.all(np.isfinite(rgb_array[:3])):
+                return None
+            rgb = tuple(int(np.clip(round(v), 0, 255)) for v in rgb_array[:3])
+            return rgb, lab
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+            return None
+
+    def _add_color_source_data(self, raw_colors, source_name):
+        """Append source representatives, preserving all current color selections."""
+        prepared = []
+        for name, data in (raw_colors or {}).items():
+            normalized = self._normalize_source_color(data)
+            if normalized is not None:
+                prepared.append((str(name).strip() or "Color", *normalized))
+
+        if not prepared:
+            raise ValueError("The selected source does not contain valid colors.")
+
+        added_names = []
+        for name, rgb, lab in prepared:
+            added_names.append(
+                self._add_color(
+                    name, rgb, lab, source=source_name,
+                    selected=False, refresh=False,
+                )
+            )
+
+        self._append_color_rows(added_names)
+        self._update_selected_count()
+        self.win.after_idle(self._scroll_colors_to_bottom)
+        return added_names
+
+    def _open_color_source(self):
+        """Import CNS/FCS representatives without replacing image samples or geometry."""
+        if self._detection_running or not self._commit_pending_color_names():
+            return
+
+        base_path = UtilsTools.get_base_path()
+        initial_dir = os.path.join(base_path, "fuzzy_color_spaces")
+        if not os.path.isdir(initial_dir):
+            initial_dir = base_path
+
+        path = filedialog.askopenfilename(
+            title="Add Color Source",
+            initialdir=initial_dir,
+            parent=self.win,
+            filetypes=[
+                ("PyFCS Color Sources", "*.cns *.fcs *.CNS *.FCS"),
+                ("Color Name System", "*.cns *.CNS"),
+                ("Fuzzy Color Space", "*.fcs *.FCS"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        source_key = self._color_source_key(path)
+        if source_key in self.loaded_color_sources:
+            previous_name = self.loaded_color_sources[source_key][0]
+            if not messagebox.askyesno(
+                "Color Source Already Loaded",
+                f"A color source with this name is already loaded:\n"
+                f"'{previous_name}'\n\n"
+                f"Do you want to load '{os.path.basename(path)}' again?",
+                parent=self.win,
+            ):
+                return
+
+        try:
+            # Only color_data is used; imported volumes remain untouched.
+            loaded = self.app.fuzzy_manager.load_color_file(path)
+            source_name = os.path.basename(path)
+            added = self._add_color_source_data(
+                loaded.get("color_data", {}), source_name
+            )
+            self.loaded_color_sources.setdefault(source_key, []).append(source_name)
+            self.color_source_status_var.set(
+                f"{len(added)} imported · select to include"
+            )
+        except Exception as exc:
+            self.app.custom_warning(
+                "Color Source Error",
+                f"The selected color source could not be loaded:\n{exc}",
+                parent=self.win,
+            )
 
     def _create_color_row(self, name):
         """Create only the Tk widgets required for one color row."""
@@ -2092,6 +2264,7 @@ class ImageBasedCreationManager:
                 return
 
             self._add_color(clean_name, sample_rgb, sample_lab, source="Custom")
+            self.color_source_status_var.set("1 custom color added · selected")
             dialog.destroy()
 
         self.app._open_custom_color_dialog(

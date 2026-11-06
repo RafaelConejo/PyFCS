@@ -1,57 +1,56 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-LOGFILE="setup_pyfcs.log"
+# Resolve all paths from the location of this script.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+REQUIREMENTS="$SCRIPT_DIR/requirements.txt"
+VENV_DIR="$PROJECT_ROOT/venv_pyfcs"
+LOGFILE="$PROJECT_ROOT/setup_pyfcs.log"
+
 exec > >(tee "$LOGFILE") 2>&1
 
-echo "🚀 Starting automatic setup for PyFCS environment (clean mode with log)..."
+echo "Starting PyFCS setup on Linux..."
 
-# 1. Check if Python 3 is installed
-if ! command -v python3 &> /dev/null; then
-    echo "🔧 Installing Python 3..."
-    sudo apt update && sudo apt install -y python3 python3-venv python3-pip
-else
-    echo "✅ Python 3 is already installed."
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Installing Python 3..."
+    sudo apt-get update
+    sudo apt-get install -y python3 python3-venv python3-pip
 fi
 
-# 2. Get Python 3 path and version
-PYTHON_PATH="$(which python3)"
-echo "🐍 Using Python: $($PYTHON_PATH --version)"
-echo "📍 Python location: $PYTHON_PATH"
+PYTHON_PATH="$(command -v python3)"
+echo "Using Python: $($PYTHON_PATH --version)"
 
-# 3. Check that tkinter works
-echo "🔎 Checking tkinter (please close the window by clicking 'Quit' to continue)..."
-$PYTHON_PATH -c "import tkinter; tkinter._test()" || {
-    echo "❌ tkinter is not working properly. Trying to install..."
-    sudo apt install -y python3-tk || {
-        echo "❌ Failed to install tkinter. Aborting."
-        exit 1
-    }
-}
-
-# 4. Remove virtual environment if it already exists
-if [ -d "venv_pyfcs" ]; then
-    echo "🧹 Removing previous virtual environment..."
-    rm -rf venv_pyfcs
+# Tkinter must be available to the system Python used to create the venv.
+if ! "$PYTHON_PATH" -c 'import tkinter' >/dev/null 2>&1; then
+    echo "Installing Tkinter..."
+    sudo apt-get update
+    sudo apt-get install -y python3-tk
+    "$PYTHON_PATH" -c 'import tkinter'
 fi
 
-# 5. Create new virtual environment
-echo "🧱 Creating virtual environment 'venv_pyfcs'..."
-$PYTHON_PATH -m venv venv_pyfcs
-
-# 6. Activate virtual environment
-echo "⚙️ Activating virtual environment..."
-source venv_pyfcs/bin/activate
-
-# 7. Install requirements
-if [ -f "PyFCS/external/requirements.txt" ]; then
-    echo "📦 Installing requirements from requirements.txt..."
-    pip install --upgrade pip
-    pip install -r PyFCS/external/requirements.txt
-else
-    echo "❌ PyFCS/external/requirements.txt not found"
+if [[ ! -f "$REQUIREMENTS" ]]; then
+    echo "Requirements file not found: $REQUIREMENTS" >&2
     exit 1
 fi
 
-# 8. Launch application
-echo "🚀 Launching PyFCS..."
-python PyFCS/interface/mainInterface.py
+# Reuse an existing environment; recreate it manually if needed.
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    echo "Creating virtual environment: $VENV_DIR"
+
+    "$PYTHON_PATH" -m venv "$VENV_DIR" || {
+        echo "Python venv is unavailable. On Debian/Ubuntu, install python3-venv." >&2
+        exit 1
+    }
+fi
+
+VENV_PYTHON="$VENV_DIR/bin/python"
+
+"$VENV_PYTHON" -m pip install --upgrade pip
+"$VENV_PYTHON" -m pip install -r "$REQUIREMENTS"
+
+# Module execution keeps Source.* imports valid.
+echo "Launching PyFCS..."
+cd "$PROJECT_ROOT"
+
+"$VENV_PYTHON" -m Source.interface.mainInterface

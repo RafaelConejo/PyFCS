@@ -2366,7 +2366,11 @@ class FCSCreationDialog(tk.Toplevel):
             name, options = self.build_options()
             self.ok_button.configure(state="disabled")
             self.update_idletasks()
-            self._on_accept(name, options)
+            # An explicit False means the save did not start (for example,
+            # the user declined to overwrite an existing .fcs). Keep editing.
+            if self._on_accept(name, options) is False:
+                self.ok_button.configure(state="normal")
+                return
         except Exception as exc:
             self.ok_button.configure(state="normal")
             if self._warn:

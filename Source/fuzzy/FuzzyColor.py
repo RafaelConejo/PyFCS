@@ -183,6 +183,64 @@ class FuzzyColor:
             face.setPlane(new_plane)
             return True
 
+        # Fast conservative rejection of vertex sets against the target volume.
+        # A pair is rejected only when every candidate fails at least one
+        # non-degenerate half-space. Potential conflicts retain the original
+        # point-by-point tests and support-plane retraction rules.
+        import numpy as np
+
+        bounds = (np.asarray(reference_domain.bounds, dtype=float).reshape(3, 2)
+                  if reference_domain is not None else None)
+
+        def eligible_vertices(faces):
+            values = [(v.x, v.y, v.z)
+                      for face in faces for v in (face.getArrayVertex() or ())]
+            if not values:
+                return np.empty((0, 3), dtype=float)
+            coords = np.asarray(values, dtype=float)
+            if bounds is not None:
+                inside = np.all(
+                    (coords >= bounds[:, 0] - eps) &
+                    (coords <= bounds[:, 1] + eps), axis=1)
+                coords = coords[inside]
+            return coords
+
+        def oriented_halfspaces(volume):
+            rep = volume.getRepresentative()
+            coefficients = []
+            for face in volume.getFaces():
+                plane = face.getPlane()
+                side = plane.evaluatePoint(rep)
+                # Volume.isInside() uses a vertex-based fallback in this case.
+                # Skipping such a plane is conservative: it cannot reject an
+                # otherwise valid candidate.
+                if abs(side) <= eps:
+                    continue
+                coefficients.append((plane.A * side, plane.B * side,
+                                     plane.C * side, plane.D * side))
+            return np.asarray(coefficients, dtype=float).reshape(-1, 4)
+
+        def may_contain_vertex(coordinates, halfspaces):
+            if not len(coordinates):
+                return False
+            if not len(halfspaces):
+                return True
+            # A small numerical margin avoids discarding points very close to
+            # a separating plane. False positives are checked by the exact
+            # Volume.isInside() implementation below.
+            signed = (coordinates @ halfspaces[:, :3].T
+                      + halfspaces[:, 3])
+            return bool(np.any(np.all(signed >= -eps - 1e-8, axis=1)))
+
+        core_data = []
+        for entry in cores:
+            volume = entry.voronoi_volume
+            real_faces = [face for face in volume.getFaces()
+                          if not face.isDomainBoundary()]
+            core_data.append((volume, real_faces,
+                              eligible_vertices(real_faces),
+                              oriented_halfspaces(volume)))
+
         moved = 0
         n = len(prototypes)
         for i in range(n):
@@ -190,39 +248,47 @@ class FuzzyColor:
             origin = support_i.getRepresentative()
             mutable_faces = [f for f in support_i.getFaces()
                              if not f.isDomainBoundary()]
+            support_vertices = eligible_vertices(mutable_faces)
+            support_planes = oriented_halfspaces(support_i)
+
             for j in range(n):
                 if i == j:
                     continue
-                core_j = cores[j].voronoi_volume
+                core_j, core_faces, core_vertices, core_planes = core_data[j]
 
-                # Java rule 1: a vertex of support(i) lies strictly in core(j).
-                for face in mutable_faces:
-                    for vertex in face.getArrayVertex() or ():
-                        if not inside_domain(vertex) or not strictly_inside(core_j, vertex):
-                            continue
-                        crossing = GeometryTools.intersection_with_volume(
-                            core_j, vertex, origin,
-                            ignore_domain_boundaries=True)
-                        if crossing is not None and retract(face, origin, crossing):
-                            moved += 1
-                            break
+                # Rule 1: a support vertex is strictly inside the other core.
+                if may_contain_vertex(support_vertices, core_planes):
+                    for face in mutable_faces:
+                        for vertex in face.getArrayVertex() or ():
+                            if not inside_domain(vertex) or not strictly_inside(core_j, vertex):
+                                continue
+                            crossing = GeometryTools.intersection_with_volume(
+                                core_j, vertex, origin,
+                                ignore_domain_boundaries=True)
+                            if crossing is not None and retract(face, origin, crossing):
+                                moved += 1
+                                # Later tests must see the updated face geometry.
+                                support_vertices = eligible_vertices(mutable_faces)
+                                support_planes = oriented_halfspaces(support_i)
+                                break
 
-                # Java rule 2: a vertex of core(j) lies strictly in support(i).
-                for core_face in core_j.getFaces():
-                    if core_face.isDomainBoundary():
-                        continue
-                    for vertex in core_face.getArrayVertex() or ():
-                        if not inside_domain(vertex) or not strictly_inside(support_i, vertex):
-                            continue
-                        if not mutable_faces:
-                            continue
-                        nearest = min(
-                            mutable_faces,
-                            key=lambda f: GeometryTools.distance_point_plane(
-                                f.getPlane(), vertex))
-                        if retract(nearest, origin, vertex):
-                            moved += 1
-                            break
+                # Rule 2: a core vertex is strictly inside this support.
+                if may_contain_vertex(core_vertices, support_planes):
+                    for core_face in core_faces:
+                        for vertex in core_face.getArrayVertex() or ():
+                            if not inside_domain(vertex) or not strictly_inside(support_i, vertex):
+                                continue
+                            if not mutable_faces:
+                                continue
+                            nearest = min(
+                                mutable_faces,
+                                key=lambda f: GeometryTools.distance_point_plane(
+                                    f.getPlane(), vertex))
+                            if retract(nearest, origin, vertex):
+                                moved += 1
+                                support_vertices = eligible_vertices(mutable_faces)
+                                support_planes = oriented_halfspaces(support_i)
+                                break
         return moved
 
 
@@ -341,11 +407,15 @@ class FuzzyColor:
                 total += v
 
         if not raw:
+            # An empty result cannot be normalized. The caller can inspect the
+            # original memberships when diagnosing a gap in a partition.
             return {}
 
-        if len(raw) == 1:
-            k = next(iter(raw))
-            return {k: 1.0}
+        # A partition is presented as a Ruspini distribution (sum(mu) = 1),
+        # while calculate_raw_memberships() retains the geometric values for
+        # comparisons with JFCS. Avoid modifying already normalized values.
+        if abs(total - 1.0) <= 1e-9:
+            return raw
 
         return {k: v / total for k, v in raw.items()}
 
