@@ -3,7 +3,11 @@ from abc import ABC, abstractmethod
 class Input(ABC):
     @staticmethod
     def instance(ext):
-        if ext == '.cns':
+        ext = str(ext).lower()
+        if ext == '.json':
+            from Source.input_output.InputJSON import InputJSON
+            return InputJSON()
+        elif ext == '.cns':
             from Source.input_output.InputCNS import InputCNS
             return InputCNS()
         elif ext == '.fcs':

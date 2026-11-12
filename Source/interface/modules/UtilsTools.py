@@ -20,7 +20,7 @@ MAX_COLOR_NAME_CHARS = 24
 
 
 def validate_color_space_name(value):
-    """Validate a portable, safe FCS filename, returning the clean name."""
+    """Validate a portable, safe color-space filename, returning the clean name."""
     import re
     name = str(value).strip() if value is not None else ""
     if not name:
@@ -1445,8 +1445,9 @@ def prompt_file_selection(initial_subdir, parent=None):
         initial_directory = base_path if os.path.isdir(base_path) else os.getcwd()
 
     filetypes = [
-        ("PyFCS Color Spaces", "*.fcs *.cns *.FCS *.CNS"),
-        ("Fuzzy Color Space", "*.fcs *.FCS"),
+        ("PyFCS Color Spaces", "*.json *.fcs *.cns *.JSON *.FCS *.CNS"),
+        ("PyFCS JSON Color Space", "*.json *.JSON"),
+        ("Legacy Fuzzy Color Space", "*.fcs *.FCS"),
         ("Color Name System", "*.cns *.CNS"),
         ("All Files", "*.*"),
     ]
@@ -2367,7 +2368,7 @@ class FCSCreationDialog(tk.Toplevel):
             self.ok_button.configure(state="disabled")
             self.update_idletasks()
             # An explicit False means the save did not start (for example,
-            # the user declined to overwrite an existing .fcs). Keep editing.
+            # the user declined to overwrite an existing .json). Keep editing.
             if self._on_accept(name, options) is False:
                 self.ok_button.configure(state="normal")
                 return

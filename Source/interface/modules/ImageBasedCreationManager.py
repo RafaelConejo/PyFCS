@@ -1944,7 +1944,8 @@ class ImageBasedCreationManager:
             initialdir=initial_dir,
             parent=self.win,
             filetypes=[
-                ("PyFCS Color Sources", "*.cns *.fcs *.CNS *.FCS"),
+                ("PyFCS Color Sources", "*.json *.cns *.fcs *.JSON *.CNS *.FCS"),
+                ("PyFCS JSON Color Space", "*.json *.JSON"),
                 ("Color Name System", "*.cns *.CNS"),
                 ("Fuzzy Color Space", "*.fcs *.FCS"),
                 ("All Files", "*.*"),

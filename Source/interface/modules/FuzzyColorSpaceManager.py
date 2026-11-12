@@ -11,7 +11,7 @@ import Source.interface.modules.UtilsTools as UtilsTools
 FuzzyColorSpaceManager module
 
 This module provides helper utilities for PyFCS to:
-- Load fuzzy color-related files (.cns and .fcs) using the appropriate Input handler.
+- Load fuzzy color-related files (.cns, .fcs and .json) using the appropriate Input handler.
 - Build consistent Tkinter/ttk UI rows to display colors, their LAB values, and a selectable checkbox.
 
 In practice, it acts as a bridge between:
@@ -22,7 +22,7 @@ and
 
 class FuzzyColorSpaceManager:
     # Input handlers accept only CNS and FCS files.
-    SUPPORTED_EXTENSIONS = {'.cns', '.fcs'}
+    SUPPORTED_EXTENSIONS = {'.cns', '.fcs', '.json'}
 
     def __init__(self, root):
         # Tk parent for dialogs and selectable color rows.
@@ -31,7 +31,7 @@ class FuzzyColorSpaceManager:
     @staticmethod
     def load_color_file(filename):
         """
-        Load and parse a fuzzy color space or color data file (.cns or .fcs).
+        Load and parse a fuzzy color space or color data file (.cns, .fcs or .json).
 
         Parameters
         ----------
@@ -42,9 +42,9 @@ class FuzzyColorSpaceManager:
         -------
         dict
             A dictionary describing the loaded content, containing:
-            - type: 'cns' or 'fcs'
+            - type: 'cns' or 'fcs' (both .fcs and .json use 'fcs' internally)
             - color_data: parsed colors/metadata
-            - fuzzy_color_space: (only for .fcs) the fuzzy color space object/structure
+            - fuzzy_color_space: (for .fcs and .json) the fuzzy color space object/structure
 
         Raises
         ------
@@ -81,7 +81,7 @@ class FuzzyColorSpaceManager:
                 'source_color_space': getattr(input_class, 'last_color_space', 'LAB') or 'LAB',
             }
 
-        elif extension == '.fcs':
+        elif extension in ('.fcs', '.json'):
             color_data, fuzzy_color_space = input_class.read_file(filename)
             return {
                 'type': 'fcs',

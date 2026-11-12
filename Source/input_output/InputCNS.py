@@ -9,7 +9,7 @@ class InputCNS(Input):
 
     def write_file(self, file_path):
         raise NotImplementedError(
-            "InputCNS is read-only. Use InputFCS to export the edited color space as .fcs."
+            "InputCNS is read-only. Use InputJSON to save color spaces as .json."
         )
 
     @staticmethod

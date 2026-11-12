@@ -94,7 +94,7 @@ class PyFCSApp:
         self._image_workspace_callbacks = {}
 
         self.volume_limits = ReferenceDomain.default_voronoi_reference_domain()
-        # Creation settings are stored in each .fcs; this is the in-session default.
+        # Geometry settings are stored in each .json; this is the in-session default.
         self._fcs_creation_defaults = {"color_space": "LAB", "lambda1": 0.5,
                                        "lambda2": 1.5, "disjoint": True,
                                        "covering": True, "samples": 27}
@@ -2433,7 +2433,7 @@ class PyFCSApp:
         self.prototypes = UtilsTools.process_prototypes(self.color_data)
 
         # update_volumes is only used when building a fresh space from .cns;
-        # loaded .fcs spaces retain their own previously saved geometry.
+        # loaded .fcs/.json spaces retain their saved geometry.
         self.fuzzy_color_space = FuzzyColorSpace(space_name=" ", prototypes=self.prototypes)
 
         # Precompute internal fuzzy structures for efficiency
@@ -2532,7 +2532,7 @@ class PyFCSApp:
             warning_message = getattr(handler, "last_warning", None)
             data = {"color_data": new_color_data, "type": source_type,
                     "source_color_space": source_native}
-        elif extension == ".fcs":
+        elif extension in (".fcs", ".json"):
             new_color_data, new_fuzzy_color_space = handler.read_file(filename)
             source_type = "fcs"
             data = {"color_data": new_color_data, "type": source_type,
@@ -2728,7 +2728,6 @@ class PyFCSApp:
             lambda1=space.lambda1, lambda2=space.lambda2,
             disjoint=space.disjoint, covering=space.covering,
             samples=space.samples or 27,
-            tconorm=getattr(space, "tconorm", "bounded_sum"),
             description=space.description,
         )
         native_points = {}
@@ -2922,13 +2921,13 @@ class PyFCSApp:
         self._invalidate_mapping_caches()
 
         self.color_data = copy.deepcopy(saved_color_data)
-        # A saved FCS has *new* canonical labels. Reset its source-label
+        # A saved JSON space has *new* canonical labels. Reset its source-label
         # pointers, otherwise subsequent renames may refer to stale labels.
         for color_label, item in self.color_data.items():
             item["fcs_original_label"] = color_label
         self.edit_color_data = copy.deepcopy(self.color_data)
         self.file_path = file_path
-        # Preserve the actual FCS name; the last color label must never
+        # Preserve the actual space name; the last color label must never
         # replace it (e.g. "Black" when the space is named "a").
         self.file_base_name = name
 
@@ -2956,17 +2955,16 @@ class PyFCSApp:
 
     def _save_color_space_file(self, name, color_dict, saved_color_data=None,
                                apply_after_save=False, options=None):
-        """Build and atomically save an FCS without blocking the Tk interface."""
+        """Build and atomically save a JSON color space without blocking Tk."""
         if self._has_any_active_job() or getattr(self, "_processing_job_running", False):
             self.custom_warning("Process Running", "Finish the current task before saving a color space.")
             return False
 
-        # Validate and ask *before* launching any worker. The FCS writer and
-        # its backwards-compatible on-disk format are intentionally unchanged.
+        # Validate and ask *before* launching any worker. The JSON writer preserves complete Core/Voronoi/Support geometry.
         try:
             safe_name = UtilsTools.validate_color_space_name(name)
             target_file = os.path.abspath(os.path.join(
-                UtilsTools.get_base_path(), "fuzzy_color_spaces", safe_name + ".fcs"
+                UtilsTools.get_base_path(), "fuzzy_color_spaces", safe_name + ".json"
             ))
         except (TypeError, ValueError) as exc:
             self.custom_warning("Invalid Color Space Name", str(exc))
@@ -3016,7 +3014,7 @@ class PyFCSApp:
                 self.root.after(
                     0,
                     lambda value=pct: self._set_processing_progress(
-                        value=value, message="Writing the FCS file..."
+                        value=value, message="Writing the JSON file..."
                     )
                 )
             except (RuntimeError, tk.TclError):
@@ -3026,7 +3024,7 @@ class PyFCSApp:
             result = None
             error = None
             try:
-                writer = Input.instance(".fcs")
+                writer = Input.instance(".json")
                 result = writer.write_file(
                     name, color_dict, progress_callback=update_progress,
                     return_fuzzy_space=apply_after_save,
@@ -3068,7 +3066,7 @@ class PyFCSApp:
         return self._save_color_space_file(name, selected_colors_lab, options=options)
 
 
-    def save_fcs(self, name, colors, color_dict=None, apply_after_save=False,
+    def save_json(self, name, colors, color_dict=None, apply_after_save=False,
                  options=None):
         if color_dict is None:
             color_dict = {}
@@ -4872,7 +4870,7 @@ class PyFCSApp:
             )
 
             # The active name is updated only after the save operation succeeds.
-            self.save_fcs(
+            self.save_json(
                 output_name, new_color_data, color_dict=color_dict,
                 apply_after_save=True, options=options
             )
@@ -4886,7 +4884,7 @@ class PyFCSApp:
 
 
     def delete_color_space(self):
-        """Delete the currently loaded color space file (.fcs or .cns) and clear the app state."""
+        """Delete the currently loaded color space file (.json, .fcs or .cns) and clear the app state."""
         if not self.COLOR_SPACE:
             self.custom_warning(
                 "Error",
