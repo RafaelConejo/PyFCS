@@ -35,6 +35,7 @@ from Source.input_output.Input import Input
 from Source.interface.modules.VisualManager import VisualManager
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
+from Source.fuzzy.GranularFuzzyColorSpace import GranularFuzzyColorSpace
 from Source.fuzzy.FuzzyColorSpaceBuilder import FuzzyColorSpaceBuilder, rebuild_in_color_space, lab_to_rgb_model_checked
 from Source.interface.modules.ImageManager import ImageManager
 from Source.interface.modules.FuzzyColorSpaceManager import FuzzyColorSpaceManager
@@ -2446,6 +2447,138 @@ class PyFCSApp:
         self.update_prototypes_info()
 
 
+    def _geometry_for_categories(self, selected_labels):
+        """3D visualization displays ALL real granules; image palettes stay per category."""
+        space = getattr(self, "fuzzy_color_space", None)
+        if isinstance(space, GranularFuzzyColorSpace):
+            selected = set(selected_labels)
+            groups = [cat for cat in space.categories if cat.label in selected]
+            return (
+                [p for cat in groups for p in cat.prototypes],
+                [p for cat in groups for p in cat.cores],
+                [p for cat in groups for p in cat.supports],
+            )
+        indices = [i for i, proto in enumerate(getattr(self, "prototypes", []))
+                   if proto.label in set(selected_labels)]
+        return ([self.prototypes[i] for i in indices],
+                [self.cores[i] for i in indices],
+                [self.supports[i] for i in indices])
+
+    def _granular_visualization_data(self):
+        """Return one representative marker and color per selected *granule*."""
+        space = getattr(self, "fuzzy_color_space", None)
+        selected = set(self.selected_centroids)
+        color_data, hexes = {}, {}
+        if not isinstance(space, GranularFuzzyColorSpace):
+            return self.selected_centroids, self.hex_color
+        for cat in space.categories:
+            if cat.label not in selected:
+                continue
+            for proto in cat.prototypes:
+                xyz = np.asarray(proto.positive, dtype=float)
+                lab = space.lab_from_model(xyz)
+                color_data[proto.label] = {"positive_prototype": xyz}
+                hexes[UtilsTools.lab_to_hex(lab)] = xyz
+        return color_data, hexes
+
+    def _granular_save_options(self, new_color_data):
+        """Prepare a complete grouped model from Data (no silent flattening).
+
+        Unedited native RGB coordinates are preserved bit-for-bit. Any edited
+        LAB prototype is converted with the same gamut checks as atomic FCS.
+        Explicit negative references follow their old granule if it moves.
+        """
+        space = self.fuzzy_color_space
+        old_groups = ({cat.label: cat for cat in space.categories}
+                      if isinstance(space, GranularFuzzyColorSpace) else {})
+        old_sites = ({p.label: np.asarray(p.positive, dtype=float)
+                      for cat in space.categories for p in cat.prototypes}
+                     if isinstance(space, GranularFuzzyColorSpace) else
+                     {p.label: np.asarray(p.positive, dtype=float)
+                      for p in space.prototypes})
+        pending = getattr(self, "_pending_granules", {}) or {}
+        categories = {}
+        updated_by_old = {}
+        for label, row in new_color_data.items():
+            source = row.get("fcs_original_label", label)
+            if source in pending:
+                entries = copy.deepcopy(pending[source])
+            elif source in old_groups:
+                entries = [{"label": p.label, "original_label": p.label,
+                            "prototype_lab": list(space.lab_from_model(p.positive))}
+                           for p in old_groups[source].prototypes]
+            elif source in old_sites:
+                entries = [{"label": source, "original_label": source,
+                            "prototype_lab": list(space.lab_from_model(old_sites[source]))}]
+            else:
+                entries = [{"label": label, "original_label": None,
+                            "prototype_lab": list(row["positive_prototype"])}]
+            # The visible Data representative is always the first real granule.
+            # It may have been edited after closing the Granules dialog.
+            entries[0]["prototype_lab"] = list(np.asarray(
+                row["positive_prototype"], dtype=float).reshape(3))
+            converted = {}
+            for item in entries:
+                glabel = item["label"]
+                lab = np.asarray(item["prototype_lab"], dtype=float).reshape(3)
+                old = item.get("original_label")
+                if old in old_sites and np.linalg.norm(
+                        np.asarray(space.lab_from_model(old_sites[old])) - lab) < 1e-5:
+                    value = old_sites[old].copy()
+                elif space.color_space == "LAB":
+                    value = lab
+                else:
+                    value = lab_to_rgb_model_checked(lab.reshape(1, 3))[0]
+                converted[glabel] = value
+                if old in old_sites:
+                    updated_by_old[old] = value
+            categories[label] = converted
+
+        auxiliary = [tuple(map(float, p)) for p in getattr(space, "auxiliary_negatives", [])]
+        negatives = {}
+        if not space.disjoint:
+            for label, row in new_color_data.items():
+                source = row.get("fcs_original_label", label)
+                own = []
+                for q in space.negative_prototypes.get(source, []):
+                    xyz = np.asarray(q, dtype=float).reshape(3)
+                    if any(np.linalg.norm(xyz - aux) < 1e-7 for aux in auxiliary):
+                        continue
+                    match = next((old for old, v in old_sites.items()
+                                  if np.linalg.norm(v - xyz) < 1e-7), None)
+                    if match is not None:
+                        if match not in updated_by_old:
+                            raise ValueError(f"A negative used by '{label}' refers to a deleted granule '{match}'.")
+                        xyz = updated_by_old[match]
+                    own.append(tuple(xyz))
+                negatives[label] = own
+
+        prebuilt = None
+        if isinstance(space, GranularFuzzyColorSpace):
+            # Renaming the file or reapplying unchanged Data must not rerun
+            # Voronoi or perturb already-imported stored polyhedra.
+            original_cats = {cat.label: cat for cat in space.categories}
+            if list(categories) == list(original_cats) and all(
+                list(granules) == [p.label for p in original_cats[label].prototypes]
+                and all(np.array_equal(np.asarray(value, dtype=float), old.positive)
+                        for value, old in zip(granules.values(), original_cats[label].prototypes))
+                for label, granules in categories.items()
+            ):
+                prebuilt = space
+        return {
+            "_granular_prebuilt_space": prebuilt,
+            "_granular_categories": categories,
+            "color_space": space.color_space,
+            "reference_domain": space.reference_domain,
+            "lambda1": space.lambda1, "lambda2": space.lambda2,
+            "disjoint": space.disjoint, "covering": space.covering,
+            "samples": space.samples or 27,
+            "negative_prototypes": negatives,
+            "auxiliary_negatives": auxiliary if not space.covering else [],
+            "tconorm": (getattr(self, "_pending_granular_tconorm", None)
+                        or getattr(space, "tconorm", "bounded_sum")),
+        }
+
     def update_prototypes_info(self):
         # Update 3D graph flags and application state variables
         self.COLOR_SPACE = True
@@ -2465,9 +2598,9 @@ class PyFCSApp:
         # Store current selections for visualization and processing
         self.selected_centroids = self.color_data
         self.selected_hex_color = self.hex_color
-        self.selected_alpha = self.prototypes
-        self.selected_core = self.cores
-        self.selected_support = self.supports
+        self.selected_alpha, self.selected_core, self.selected_support = (
+            self._geometry_for_categories(self.color_data)
+        )
 
         # Trigger update based on the selected options
         self.on_option_select()
@@ -2600,6 +2733,8 @@ class PyFCSApp:
         self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
         self.color_data = new_color_data
         self.edit_color_data = copy.deepcopy(new_color_data)
+        self._pending_granules = {}
+        self._pending_granular_tconorm = None
         self.fuzzy_color_space = new_fuzzy_color_space
         self._model_space_unsaved = False
         native_source = str(prepared["native_source"]).upper()
@@ -2925,7 +3060,21 @@ class PyFCSApp:
         # pointers, otherwise subsequent renames may refer to stale labels.
         for color_label, item in self.color_data.items():
             item["fcs_original_label"] = color_label
+        if isinstance(fuzzy_color_space, GranularFuzzyColorSpace):
+            # Keep the Data rows in sync with the *actual* saved granule list.
+            for category in fuzzy_color_space.categories:
+                row = self.color_data[category.label]
+                labs = [np.asarray(fuzzy_color_space.lab_from_model(p.positive), dtype=float)
+                        for p in category.prototypes]
+                row["granules"] = [
+                    {"label": proto.label, "prototype": lab}
+                    for proto, lab in zip(category.prototypes, labs)
+                ]
+                row["positive_prototype"] = labs[0].copy()
+                row["Color"] = labs[0].tolist()
         self.edit_color_data = copy.deepcopy(self.color_data)
+        self._pending_granules = {}
+        self._pending_granular_tconorm = None
         self.file_path = file_path
         # Preserve the actual space name; the last color label must never
         # replace it (e.g. "Black" when the space is named "a").
@@ -2933,6 +3082,7 @@ class PyFCSApp:
 
         # The writer already built the Voronoi geometry; reuse it after saving.
         self.fuzzy_color_space = fuzzy_color_space
+        self.fuzzy_color_space.space_name = name
         self._model_space_unsaved = False
         # Editing/saving may change the model's geometric space.
         self.loaded_source_color_space = fuzzy_color_space.color_space
@@ -3025,11 +3175,30 @@ class PyFCSApp:
             error = None
             try:
                 writer = Input.instance(".json")
-                result = writer.write_file(
-                    name, color_dict, progress_callback=update_progress,
-                    return_fuzzy_space=apply_after_save,
-                    **(options or {}),
-                )
+                save_options = dict(options or {})
+                granular_categories = save_options.pop("_granular_categories", None)
+                prebuilt_space = save_options.pop("_granular_prebuilt_space", None)
+                if prebuilt_space is not None:
+                    # Runtime-only t-conorm may have changed in the editor;
+                    # this is not part of the serialized JSON geometry.
+                    operator = save_options.get("tconorm", "bounded_sum")
+                    prebuilt_space.set_tconorm(operator)
+                    result = writer.save_space(
+                        prebuilt_space, name=name, progress_callback=update_progress,
+                        return_fuzzy_space=apply_after_save,
+                    )
+                elif granular_categories is not None:
+                    result = writer.write_granular_file(
+                        name, granular_categories, progress_callback=update_progress,
+                        return_fuzzy_space=apply_after_save,
+                        **save_options,
+                    )
+                else:
+                    result = writer.write_file(
+                        name, color_dict, progress_callback=update_progress,
+                        return_fuzzy_space=apply_after_save,
+                        **save_options,
+                    )
             except Exception as exc:
                 error = exc
 
@@ -3441,6 +3610,8 @@ class PyFCSApp:
 
     def _has_pending_model_data_edits(self):
         """Do not silently discard Data edits when changing the geometry."""
+        if getattr(self, "_pending_granules", None):
+            return True
         rows = getattr(self, "edit_color_data", {}) or {}
         committed = getattr(self, "color_data", {}) or {}
         if list(rows) != list(committed):
@@ -3717,6 +3888,8 @@ class PyFCSApp:
             plot_hex = {h:space.model_from_lab(lab) for h,lab in self.hex_color.items()}
             plot_centroids = {k:{**v,"positive_prototype":space.model_from_lab(
                 v.get("positive_prototype",v.get("Color")))} for k,v in self.selected_centroids.items()}
+        if isinstance(space, GranularFuzzyColorSpace):
+            plot_centroids, plot_hex = self._granular_visualization_data()
         VisualManager.plot_combined_3D(
             self.ax_3d, self.file_base_name, plot_centroids,
             self.selected_core, self.selected_alpha, self.selected_support,
@@ -3786,6 +3959,8 @@ class PyFCSApp:
             plot_hex = {h:space.model_from_lab(lab) for h,lab in self.hex_color.items()}
             plot_centroids = {k:{**v,"positive_prototype":space.model_from_lab(
                 v.get("positive_prototype",v.get("Color")))} for k,v in self.selected_centroids.items()}
+        if isinstance(space, GranularFuzzyColorSpace):
+            plot_centroids, plot_hex = self._granular_visualization_data()
         fig = VisualManager.plot_more_combined_3D(
             filename=self.file_base_name,
             color_data=plot_centroids,
@@ -3818,9 +3993,9 @@ class PyFCSApp:
 
         self.selected_centroids = self.color_data
         self.selected_hex_color = self.hex_color
-        self.selected_alpha = self.prototypes
-        self.selected_core = self.cores
-        self.selected_support = self.supports
+        self.selected_alpha, self.selected_core, self.selected_support = (
+            self._geometry_for_categories(self.color_data)
+        )
 
         for _, var in self.selected_colors.items():
             var.set(True)
@@ -3875,9 +4050,9 @@ class PyFCSApp:
                 for hex_color_key, lab_value in self.hex_color.items()
                 if tuple(np.asarray(lab_value).reshape(-1)) in selected_labs
             }
-            self.selected_alpha = [self.prototypes[i] for i in selected_indices]
-            self.selected_core = [self.cores[i] for i in selected_indices]
-            self.selected_support = [self.supports[i] for i in selected_indices]
+            self.selected_alpha, self.selected_core, self.selected_support = (
+                self._geometry_for_categories(selected_centroids)
+            )
         else:
             self.selected_hex_color = {}
             self.selected_alpha = []
@@ -4864,10 +5039,14 @@ class PyFCSApp:
                 else:
                     raise ValueError(f"Color '{key}' does not contain valid LAB data.")
 
-            options = self._options_from_loaded_space(
-                getattr(self, "fuzzy_color_space", None),
-                new_color_data=new_color_data
-            )
+            has_pending = bool(getattr(self, "_pending_granules", None))
+            active = getattr(self, "fuzzy_color_space", None)
+            if isinstance(active, GranularFuzzyColorSpace) or has_pending:
+                options = self._granular_save_options(new_color_data)
+            else:
+                options = self._options_from_loaded_space(
+                    active, new_color_data=new_color_data
+                )
 
             # The active name is updated only after the save operation succeeds.
             self.save_json(
@@ -13872,15 +14051,17 @@ class PyFCSApp:
         )
 
 
+
     def _open_custom_color_dialog(
         self,
         parent=None,
         title="Custom Color",
-        subtitle="RGB, LAB or HEX",
+        subtitle="",
         submit_text="OK",
         require_name=False,
         default_name="Custom Color",
         on_submit=None,
+        initial_lab=None,
     ):
         """
         Open a reusable styled dialog to input a custom color in RGB, LAB, or HEX.
@@ -13892,13 +14073,16 @@ class PyFCSApp:
         title : str
             Dialog title.
         subtitle : str
-            Header subtitle.
+            Kept for compatibility with existing callers; the mode selector
+            communicates the available color representations.
         submit_text : str
             Text for the submit button.
         require_name : bool
             Whether to request a color name.
         default_name : str
             Initial color name when require_name=True.
+        initial_lab : sequence of 3 floats, optional
+            Prefill an existing granule with its unrounded LAB coordinates.
         on_submit : callable
             Callback called as:
                 on_submit(name, sample_lab, sample_rgb, sample_hex, dialog, input_vars)
@@ -13913,11 +14097,11 @@ class PyFCSApp:
         dialog.withdraw()
         dialog.title(title)
         dialog.resizable(False, False)
-        dialog.configure(bg="#eeeeee")
+        dialog.configure(bg="#f5f6f8")
         dialog.transient(parent)
 
-        WIN_W = 700
-        WIN_H = 450 if require_name else 400
+        WIN_W = 760
+        WIN_H = 420 if require_name else 390
 
         try:
             if parent is not None and hasattr(parent, "winfo_x"):
@@ -13938,285 +14122,185 @@ class PyFCSApp:
             "limits_var": tk.StringVar(value=""),
             "example_var": tk.StringVar(value=""),
             "preview_hex_var": tk.StringVar(value="#D9D9D9"),
+            "preview_rgb_var": tk.StringVar(value="—"),
+            "preview_lab_var": tk.StringVar(value="—"),
         }
 
-        state = {"suspend_validation": False}
+        state = {"suspend_validation": False, "previous_mode": "RGB"}
 
-        # Local styling
         style = ttk.Style(dialog)
-
         try:
-            style.configure(
-                "CustomColor.TCombobox",
-                padding=4
-            )
-            style.configure(
-                "CustomColor.Primary.TButton",
-                font=("Helvetica", 10, "bold"),
-                padding=(14, 8)
-            )
-            style.configure(
-                "CustomColor.Secondary.TButton",
-                font=("Helvetica", 10),
-                padding=(14, 8)
-            )
+            style.configure("CustomColor.TCombobox", padding=4)
+            style.configure("CustomColor.Secondary.TButton", font=("Helvetica", 10), padding=(14, 8))
         except Exception:
             pass
 
-        # Main shell
-        outer = tk.Frame(dialog, bg="#eeeeee")
+        outer = tk.Frame(dialog, bg="#f5f6f8")
         outer.pack(fill="both", expand=True, padx=14, pady=14)
 
-        panel = tk.Frame(outer, bg="white", bd=1, relief="solid")
+        panel = tk.Frame(outer, bg="white", highlightbackground="#d9dde3", highlightthickness=1)
         panel.pack(fill="both", expand=True)
 
-        header = tk.Frame(panel, bg="#f6f6f6", height=58)
+        header = tk.Frame(panel, bg="#f6f7f9", height=58)
         header.pack(fill="x")
         header.pack_propagate(False)
 
         tk.Label(
-            header,
-            text=title,
-            font=("Sans", 13, "bold"),
-            bg="#f6f6f6",
-            fg="#222222",
-            anchor="w",
-            padx=16
+            header, text=title, font=("Sans", 13, "bold"), bg="#f6f7f9",
+            fg="#222222", anchor="w", padx=16
         ).pack(side="left", fill="y")
 
-        tk.Label(
-            header,
-            text=subtitle,
-            font=("Sans", 10, "italic"),
-            fg="#666666",
-            bg="#f6f6f6",
-            padx=16
-        ).pack(side="right", fill="y")
+        # The selected input mode already explains which formats are available.
+        # Keep `subtitle` in the signature for compatibility with callers,
+        # but do not repeat hard-coded mode names in the window header.
 
         body = tk.Frame(panel, bg="white")
-        body.pack(fill="both", expand=True, padx=18, pady=16)
+        body.pack(fill="both", expand=True, padx=18, pady=14)
+        body.grid_columnconfigure(0, weight=1, minsize=290)
+        body.grid_columnconfigure(1, weight=0, minsize=14)
+        body.grid_columnconfigure(2, weight=1, minsize=320)
 
-        body.grid_columnconfigure(0, weight=1, minsize=255)
-        body.grid_columnconfigure(1, weight=0, minsize=16)
-        body.grid_columnconfigure(2, weight=1, minsize=235)
-
-        # Left panel
+        # Left side: preview and derived values
         left_panel = tk.Frame(body, bg="white")
         left_panel.grid(row=0, column=0, sticky="nsew")
 
-        left_panel.grid_columnconfigure(0, minsize=115, weight=0)
-        left_panel.grid_columnconfigure(1, minsize=165, weight=0)
-        left_panel.grid_columnconfigure(2, weight=1)
-
-        current_row = 0
-
-        if require_name:
-            tk.Label(
-                left_panel,
-                text="Color name",
-                bg="white",
-                anchor="w",
-                font=("Sans", 10, "bold")
-            ).grid(row=current_row, column=0, sticky="w", pady=(2, 10))
-
-            def _validate_name_length(proposed_text):
-                return len(proposed_text) <= MAX_NAME_CHARS
-
-            name_vcmd = (dialog.register(_validate_name_length), "%P")
-
-            name_entry = tk.Entry(
-                left_panel,
-                textvariable=input_vars["name_var"],
-                width=24,
-                font=("Sans", 10),
-                validate="key",
-                validatecommand=name_vcmd,
-            )
-            name_entry.grid(row=current_row, column=1, sticky="w", pady=(2, 10))
-
-            current_row += 1
+        preview_card = tk.Frame(left_panel, bg="#fafafa", bd=1, relief="solid", width=285, height=255)
+        preview_card.pack(fill="both", expand=True)
+        preview_card.pack_propagate(False)
 
         tk.Label(
-            left_panel,
-            text="Input mode",
-            bg="white",
-            anchor="w",
-            font=("Sans", 10, "bold")
-        ).grid(row=current_row, column=0, sticky="w", pady=(2, 12))
+            preview_card, text="Color preview", bg="#fafafa", fg="#222222",
+            font=("Sans", 10, "bold"), anchor="center", pady=8
+        ).pack(fill="x")
 
-        mode_combo = ttk.Combobox(
-            left_panel,
-            textvariable=input_vars["mode_var"],
-            state="readonly",
-            width=18,
-            values=["RGB", "LAB", "HEX"],
-            style="CustomColor.TCombobox"
+        preview_canvas = tk.Canvas(
+            preview_card, width=240, height=75, bg="#fafafa",
+            highlightthickness=0, bd=0
         )
-        mode_combo.grid(row=current_row, column=1, sticky="w", pady=(2, 12))
-
-        pick_color_btn = ttk.Button(
-            left_panel,
-            text="Pick Color...",
-            width=14
+        preview_canvas.pack(fill="x", padx=12, pady=(0, 7))
+        preview_rect = preview_canvas.create_rectangle(
+            5, 6, 235, 69, fill="#d9d9d9", outline="#8c93a0", width=1
         )
-        pick_color_btn.grid(row=current_row, column=2, sticky="w", padx=(8, 0), pady=(2, 12))
 
-        input_start_row = current_row + 1
+        def _resize_preview(event):
+            preview_canvas.coords(preview_rect, 5, 6, max(6, event.width - 5), max(7, event.height - 6))
 
-        lbl1 = tk.Label(left_panel, text="R:", bg="white", anchor="w", font=("Sans", 10))
-        entry1 = tk.Entry(left_panel, textvariable=input_vars["v1_var"], width=21, font=("Sans", 10))
+        preview_canvas.bind("<Configure>", _resize_preview)
 
-        lbl2 = tk.Label(left_panel, text="G:", bg="white", anchor="w", font=("Sans", 10))
-        entry2 = tk.Entry(left_panel, textvariable=input_vars["v2_var"], width=21, font=("Sans", 10))
-
-        lbl3 = tk.Label(left_panel, text="B:", bg="white", anchor="w", font=("Sans", 10))
-        entry3 = tk.Entry(left_panel, textvariable=input_vars["v3_var"], width=21, font=("Sans", 10))
-
-        hex_label = tk.Label(left_panel, text="HEX:", bg="white", anchor="w", font=("Sans", 10))
-        hex_entry = tk.Entry(left_panel, textvariable=input_vars["hex_var"], width=23, font=("Sans", 10))
+        # One centered two-column group: captions beside values, not stacked.
+        values_block = tk.Frame(preview_card, bg="#fafafa")
+        values_block.pack(anchor="center", pady=(2, 6))
+        for row_index, (caption, variable) in enumerate((
+            ("HEX", input_vars["preview_hex_var"]),
+            ("RGB", input_vars["preview_rgb_var"]),
+            ("CIELAB", input_vars["preview_lab_var"]),
+        )):
+            tk.Label(
+                values_block, text=caption, bg="#fafafa", fg="#667085",
+                font=("Segoe UI", 9, "bold"), anchor="e", width=7
+            ).grid(row=row_index, column=0, sticky="e", padx=(0, 12), pady=4)
+            tk.Label(
+                values_block, textvariable=variable, bg="#fafafa", fg="#1f2937",
+                font=("Consolas", 9), anchor="w", width=22
+            ).grid(row=row_index, column=1, sticky="w", pady=4)
 
         # Separator
         separator = tk.Frame(body, bg="#dddddd", width=1)
         separator.grid(row=0, column=1, sticky="ns", padx=10)
 
-        # Right panel
-        right_panel = tk.Frame(body, bg="white", width=270, height=220)
+        # Right side: editable fields
+        right_panel = tk.Frame(body, bg="white")
         right_panel.grid(row=0, column=2, sticky="nsew")
-        right_panel.grid_propagate(False)
-        right_panel.pack_propagate(False)
+        right_panel.grid_columnconfigure(1, weight=1)
 
-        guide_card = tk.Frame(
-            right_panel,
-            bg="#fafafa",
-            bd=1,
-            relief="solid",
-            width=260,
-            height=100
+        current_row = 0
+        if require_name:
+            tk.Label(right_panel, text="Granule name", bg="white", anchor="w", font=("Sans", 10, "bold")
+                     ).grid(row=current_row, column=0, sticky="w", pady=(2, 10), padx=(0, 10))
+
+            def _validate_name_length(proposed_text):
+                return len(proposed_text) <= MAX_NAME_CHARS
+
+            name_vcmd = (dialog.register(_validate_name_length), "%P")
+            name_entry = tk.Entry(
+                right_panel, textvariable=input_vars["name_var"], font=("Sans", 10),
+                validate="key", validatecommand=name_vcmd, relief="solid", bd=1
+            )
+            name_entry.grid(row=current_row, column=1, sticky="ew", pady=(2, 10))
+            current_row += 1
+
+        tk.Label(right_panel, text="Input mode", bg="white", anchor="w", font=("Sans", 10, "bold")
+                 ).grid(row=current_row, column=0, sticky="w", pady=(2, 10), padx=(0, 10))
+
+        mode_holder = tk.Frame(right_panel, bg="white")
+        mode_holder.grid(row=current_row, column=1, sticky="ew", pady=(2, 10))
+        mode_holder.grid_columnconfigure(1, weight=1)
+        mode_combo = ttk.Combobox(
+            mode_holder, textvariable=input_vars["mode_var"], state="readonly", width=10,
+            values=["RGB", "LAB", "HEX"], style="CustomColor.TCombobox"
         )
-        guide_card.pack(fill="x", pady=(0, 12))
-        guide_card.pack_propagate(False)
-
-        tk.Label(
-            guide_card,
-            text="Input Guide",
-            bg="#fafafa",
-            fg="#222222",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            padx=12,
-            pady=7
-        ).pack(fill="x")
-
-        tk.Label(
-            guide_card,
-            textvariable=input_vars["limits_var"],
-            bg="#fafafa",
-            fg="#333333",
-            justify="left",
-            anchor="nw",
-            wraplength=230,
-            padx=12
-        ).pack(fill="x", pady=(0, 5))
-
-        tk.Label(
-            guide_card,
-            textvariable=input_vars["example_var"],
-            bg="#fafafa",
-            fg="#666666",
-            justify="left",
-            anchor="w",
-            wraplength=230,
-            font=("Sans", 9, "italic"),
-            padx=12
-        ).pack(fill="x", pady=(0, 8))
-
-        preview_card = tk.Frame(
-            right_panel,
-            bg="#fafafa",
-            bd=1,
-            relief="solid",
-            width=260,
-            height=160
+        mode_combo.grid(row=0, column=0, sticky="w")
+        pick_color_btn = tk.Button(
+            mode_holder, text="Pick color...", font=("Segoe UI", 9, "bold"),
+            bg=UtilsTools.UI_ACCENT_SOFT, fg=UtilsTools.UI_ACCENT,
+            activebackground=UtilsTools.UI_ACCENT_HOVER,
+            activeforeground=UtilsTools.UI_ACCENT_DARK,
+            relief="flat", bd=0, highlightthickness=0,
+            padx=12, pady=5, cursor="hand2",
         )
-        preview_card.pack(fill="x")
-        preview_card.pack_propagate(False)
+        pick_color_btn.grid(row=0, column=1, sticky="e")
+        current_row += 1
 
-        preview_header = tk.Frame(preview_card, bg="#fafafa")
-        preview_header.pack(fill="x")
+        lbl1 = tk.Label(right_panel, text="R:", bg="white", anchor="w", font=("Sans", 10))
+        entry1 = tk.Entry(right_panel, textvariable=input_vars["v1_var"], font=("Sans", 10), relief="solid", bd=1)
+        lbl2 = tk.Label(right_panel, text="G:", bg="white", anchor="w", font=("Sans", 10))
+        entry2 = tk.Entry(right_panel, textvariable=input_vars["v2_var"], font=("Sans", 10), relief="solid", bd=1)
+        lbl3 = tk.Label(right_panel, text="B:", bg="white", anchor="w", font=("Sans", 10))
+        entry3 = tk.Entry(right_panel, textvariable=input_vars["v3_var"], font=("Sans", 10), relief="solid", bd=1)
+        hex_label = tk.Label(right_panel, text="HEX:", bg="white", anchor="w", font=("Sans", 10))
+        hex_entry = tk.Entry(right_panel, textvariable=input_vars["hex_var"], font=("Sans", 10), relief="solid", bd=1)
+        input_start_row = current_row
 
-        tk.Label(
-            preview_header,
-            text="Preview",
-            bg="#fafafa",
-            fg="#222222",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            padx=12,
-            pady=9
-        ).pack(side="left")
+        hint_label = tk.Label(right_panel, textvariable=input_vars["limits_var"], bg="white", fg="#667085",
+                              justify="center", anchor="center", wraplength=285, font=("Sans", 9))
+        example_label = tk.Label(right_panel, textvariable=input_vars["example_var"], bg="white", fg="#8c8c8c",
+                                 justify="center", anchor="center", wraplength=285, font=("Sans", 9, "italic"))
 
-        tk.Label(
-            preview_header,
-            textvariable=input_vars["preview_hex_var"],
-            bg="#fafafa",
-            fg="#555555",
-            font=("Sans", 9),
-            padx=12
-        ).pack(side="right")
-
-        preview_canvas = tk.Canvas(
-            preview_card,
-            width=205,
-            height=66,
-            bg="#fafafa",
-            highlightthickness=0,
-            bd=0
-        )
-        preview_canvas.pack(padx=12, pady=(0, 8))
-
-        preview_rect = preview_canvas.create_rectangle(
-            10, 8, 195, 58,
-            fill="#d9d9d9",
-            outline="#555555",
-            width=1
-        )
-
-        # Status + buttons
         footer = tk.Frame(panel, bg="white")
         footer.pack(fill="x", padx=16, pady=(0, 14))
 
         status_label = tk.Label(
-            footer,
-            textvariable=input_vars["status_var"],
-            bg="white",
-            fg="#8a4f00",
-            anchor="w",
-            justify="left",
-            wraplength=390,
-            font=("Sans", 9, "italic")
+            footer, textvariable=input_vars["status_var"], bg="white", fg="#8a4f00",
+            anchor="w", justify="left", wraplength=390, font=("Sans", 9, "italic")
         )
         status_label.pack(side="left", fill="x", expand=True)
 
         buttons_frame = tk.Frame(footer, bg="white")
         buttons_frame.pack(side="right")
-
-        btn_cancel = ttk.Button(
-            buttons_frame,
-            text="Cancel",
-            command=dialog.destroy,
-            style="CustomColor.Secondary.TButton"
+        btn_cancel = tk.Button(
+            buttons_frame, text="Cancel", command=dialog.destroy,
+            font=("Segoe UI", 10), bg="#E8E9EC", fg="#263044",
+            activebackground="#DDE0E5", relief="flat", bd=0,
+            padx=16, pady=8, cursor="hand2",
         )
         btn_cancel.pack(side="left", padx=(0, 8))
-
-        btn_submit = ttk.Button(
-            buttons_frame,
-            text=submit_text,
-            state="disabled",
-            style="CustomColor.Primary.TButton"
+        btn_submit = tk.Button(
+            buttons_frame, text=submit_text, state="disabled",
+            font=("Segoe UI", 10, "bold"),
+            bg=UtilsTools.UI_ACCENT_SOFT, fg="white",
+            activebackground=UtilsTools.UI_ACCENT_DARK,
+            activeforeground="white", disabledforeground="#9b90a5",
+            relief="flat", bd=0, highlightthickness=0,
+            padx=16, pady=8, cursor="hand2",
         )
         btn_submit.pack(side="left")
 
-        # Helpers
+        def _set_submit_enabled(enabled):
+            btn_submit.configure(
+                state="normal" if enabled else "disabled",
+                bg=UtilsTools.UI_ACCENT if enabled else UtilsTools.UI_ACCENT_SOFT,
+            )
+
         def _clear_numeric_fields():
             input_vars["v1_var"].set("")
             input_vars["v2_var"].set("")
@@ -14232,122 +14316,117 @@ class PyFCSApp:
         def _reset_preview():
             preview_canvas.itemconfig(preview_rect, fill="#d9d9d9")
             input_vars["preview_hex_var"].set("#D9D9D9")
+            input_vars["preview_rgb_var"].set("—")
+            input_vars["preview_lab_var"].set("—")
 
         def _validate_name():
             if not require_name:
                 return True, ""
-
             name = input_vars["name_var"].get().strip()
-
             if not name:
                 return False, "Enter a color name."
-
             if len(name) > MAX_NAME_CHARS:
                 return False, f"Color name must contain at most {MAX_NAME_CHARS} characters."
-
             return True, ""
 
         def _validate_live(*_):
             if state["suspend_validation"]:
                 return
-
             name_ok, name_message = _validate_name()
             if not name_ok:
                 _reset_preview()
                 _set_status(name_message, ok=False)
-                btn_submit.config(state="disabled")
+                _set_submit_enabled(False)
                 return
-
             mode = input_vars["mode_var"].get().strip().upper()
-
-            ok, message, _, sample_rgb, _ = self._normalize_custom_color_input(
+            ok, message, sample_lab, sample_rgb, _ = self._normalize_custom_color_input(
                 input_mode=mode,
                 value_1=input_vars["v1_var"].get(),
                 value_2=input_vars["v2_var"].get(),
                 value_3=input_vars["v3_var"].get(),
                 hex_value=input_vars["hex_var"].get()
             )
-
             if ok and sample_rgb is not None:
                 preview_hex = self._safe_hex_from_rgb(sample_rgb)
                 preview_canvas.itemconfig(preview_rect, fill=preview_hex)
                 input_vars["preview_hex_var"].set(preview_hex.upper())
-
+                input_vars["preview_rgb_var"].set(", ".join(str(int(round(float(v)))) for v in sample_rgb[:3]))
+                input_vars["preview_lab_var"].set(", ".join(f"{float(v):.2f}" for v in sample_lab[:3]))
                 _set_status(message or "Valid color input.", ok=True)
-                btn_submit.config(state="normal")
+                _set_submit_enabled(True)
             else:
                 _reset_preview()
                 _set_status(message or "Enter a valid color value.", ok=False)
-                btn_submit.config(state="disabled")
+                _set_submit_enabled(False)
 
         def _refresh_inputs(*_):
+            mode = input_vars["mode_var"].get().strip().upper()
+            previous = state.get("previous_mode", "RGB")
+            previous_lab = previous_rgb = None
+            if previous != mode:
+                ok, _, previous_lab, previous_rgb, _ = self._normalize_custom_color_input(
+                    input_mode=previous,
+                    value_1=input_vars["v1_var"].get(),
+                    value_2=input_vars["v2_var"].get(),
+                    value_3=input_vars["v3_var"].get(),
+                    hex_value=input_vars["hex_var"].get(),
+                )
+                if not ok:
+                    previous_lab = previous_rgb = None
             state["suspend_validation"] = True
-
             try:
-                mode = input_vars["mode_var"].get().strip().upper()
+                state["previous_mode"] = mode
                 help_data = self._get_custom_color_input_mode_help(mode)
-
                 input_vars["limits_var"].set(help_data["limits"])
                 input_vars["example_var"].set(help_data["example"])
-
-                # Hide all input widgets first
-                for widget in (
-                    lbl1, entry1,
-                    lbl2, entry2,
-                    lbl3, entry3,
-                    hex_label, hex_entry
-                ):
+                for widget in (lbl1, entry1, lbl2, entry2, lbl3, entry3, hex_label, hex_entry, hint_label, example_label):
                     try:
                         widget.grid_remove()
                     except Exception:
                         pass
-
-                # Important:
-                # Always clear fields when switching input mode.
-                # This avoids validating previous RGB values as LAB, LAB values as RGB, etc.
                 _clear_numeric_fields()
                 _clear_hex_field()
-
                 _reset_preview()
                 _set_status("Enter a color value.", ok=False)
-                btn_submit.config(state="disabled")
-
+                _set_submit_enabled(False)
                 if mode in ("RGB", "LAB"):
                     lbl1.config(text=f"{help_data['labels'][0]}:")
                     lbl2.config(text=f"{help_data['labels'][1]}:")
                     lbl3.config(text=f"{help_data['labels'][2]}:")
-
-                    lbl1.grid(row=input_start_row, column=0, sticky="w", pady=7)
-                    entry1.grid(row=input_start_row, column=1, sticky="w", pady=7)
-
-                    lbl2.grid(row=input_start_row + 1, column=0, sticky="w", pady=7)
-                    entry2.grid(row=input_start_row + 1, column=1, sticky="w", pady=7)
-
-                    lbl3.grid(row=input_start_row + 2, column=0, sticky="w", pady=7)
-                    entry3.grid(row=input_start_row + 2, column=1, sticky="w", pady=7)
-
+                    lbl1.grid(row=input_start_row, column=0, sticky="w", pady=5, padx=(0, 10))
+                    entry1.grid(row=input_start_row, column=1, sticky="ew", pady=5)
+                    lbl2.grid(row=input_start_row + 1, column=0, sticky="w", pady=5, padx=(0, 10))
+                    entry2.grid(row=input_start_row + 1, column=1, sticky="ew", pady=5)
+                    lbl3.grid(row=input_start_row + 2, column=0, sticky="w", pady=5, padx=(0, 10))
+                    entry3.grid(row=input_start_row + 2, column=1, sticky="ew", pady=5)
                     dialog.after_idle(entry1.focus_set)
-
+                    next_row = input_start_row + 3
                 else:
-                    hex_label.grid(row=input_start_row, column=0, sticky="w", pady=7)
-                    hex_entry.grid(row=input_start_row, column=1, sticky="w", pady=7)
-
+                    hex_label.grid(row=input_start_row, column=0, sticky="w", pady=5, padx=(0, 10))
+                    hex_entry.grid(row=input_start_row, column=1, sticky="ew", pady=5)
                     dialog.after_idle(hex_entry.focus_set)
-
+                    next_row = input_start_row + 1
+                hint_label.grid(row=next_row, column=0, columnspan=2, sticky="ew", pady=(12, 2))
+                example_label.grid(row=next_row + 1, column=0, columnspan=2, sticky="ew", pady=(0, 2))
+                if previous_lab is not None and previous_rgb is not None:
+                    if mode == "LAB":
+                        for variable, value in zip((input_vars["v1_var"], input_vars["v2_var"], input_vars["v3_var"]), previous_lab):
+                            variable.set(f"{float(value):.15g}")
+                    elif mode == "RGB":
+                        for variable, value in zip((input_vars["v1_var"], input_vars["v2_var"], input_vars["v3_var"]), previous_rgb):
+                            variable.set(str(int(round(float(value)))))
+                    else:
+                        input_vars["hex_var"].set(self._safe_hex_from_rgb(previous_rgb).upper())
             finally:
                 state["suspend_validation"] = False
+                _validate_live()
 
         def _submit():
             name_ok, name_message = _validate_name()
             if not name_ok:
                 _set_status(name_message, ok=False)
-                self.custom_warning(
-                    "Invalid Color Name",
-                    name_message,
-                    parent=dialog
-                )
+                self.custom_warning("Invalid Color Name", name_message, parent=dialog)
                 return
-
             ok, message, sample_lab, sample_rgb, sample_hex = self._normalize_custom_color_input(
                 input_mode=input_vars["mode_var"].get(),
                 value_1=input_vars["v1_var"].get(),
@@ -14355,33 +14434,18 @@ class PyFCSApp:
                 value_3=input_vars["v3_var"].get(),
                 hex_value=input_vars["hex_var"].get()
             )
-
             if not ok:
                 _set_status(message, ok=False)
-                self.custom_warning(
-                    "Invalid Custom Color",
-                    message,
-                    parent=dialog
-                )
+                self.custom_warning("Invalid Custom Color", message, parent=dialog)
                 return
-
             color_name = input_vars["name_var"].get().strip() if require_name else default_name
-
             if callable(on_submit):
-                on_submit(
-                    color_name,
-                    sample_lab,
-                    sample_rgb,
-                    sample_hex,
-                    dialog,
-                    input_vars
-                )
+                on_submit(color_name, sample_lab, sample_rgb, sample_hex, dialog, input_vars)
             else:
                 dialog.destroy()
 
         def _get_current_rgb_for_picker():
             mode = input_vars["mode_var"].get().strip().upper()
-
             ok, _, _, sample_rgb, _ = self._normalize_custom_color_input(
                 input_mode=mode,
                 value_1=input_vars["v1_var"].get(),
@@ -14389,18 +14453,12 @@ class PyFCSApp:
                 value_3=input_vars["v3_var"].get(),
                 hex_value=input_vars["hex_var"].get()
             )
-
             if ok and sample_rgb is not None:
                 return sample_rgb
-
             return (217, 217, 217)
-        
+
         def _open_picker():
-            self._open_square_color_picker(
-                parent=dialog,
-                initial_rgb=_get_current_rgb_for_picker(),
-                on_apply=_apply_picker_result
-            )
+            self._open_square_color_picker(parent=dialog, initial_rgb=_get_current_rgb_for_picker(), on_apply=_apply_picker_result)
 
         def _apply_picker_result(rgb, hex_value=None):
             state["suspend_validation"] = True
@@ -14411,23 +14469,26 @@ class PyFCSApp:
                 dialog.after_idle(_validate_live)
 
         pick_color_btn.configure(command=_open_picker)
-
         btn_submit.configure(command=_submit)
-
         mode_combo.bind("<<ComboboxSelected>>", _refresh_inputs)
-
         for var_name in ("v1_var", "v2_var", "v3_var", "hex_var", "name_var"):
             input_vars[var_name].trace_add("write", _validate_live)
-
-        dialog.bind(
-            "<Return>",
-            lambda e: btn_submit.invoke() if str(btn_submit["state"]) == "normal" else None
-        )
+        dialog.bind("<Return>", lambda e: btn_submit.invoke() if str(btn_submit["state"]) == "normal" else None)
         dialog.bind("<Escape>", lambda e: dialog.destroy())
-
         _refresh_inputs()
+        if initial_lab is not None:
+            try:
+                values = np.asarray(initial_lab, dtype=float).reshape(3)
+                input_vars["mode_var"].set("LAB")
+                _refresh_inputs()
+                for variable, value in zip((input_vars["v1_var"], input_vars["v2_var"], input_vars["v3_var"]), values):
+                    variable.set(f"{float(value):.15g}")
+                _validate_live()
+            except (ValueError, TypeError):
+                pass
         dialog.deiconify()
         dialog.grab_set()
+        return dialog
 
 
     def _submit_custom_color_input(self, vars_dict, input_vars, dialog):
@@ -14495,397 +14556,18 @@ class PyFCSApp:
             input_vars["v3_var"].set("")
 
 
-    def _open_square_color_picker(self, parent, initial_rgb=(217, 217, 217), on_apply=None):
-        """
-        Open an optimized custom color picker with:
-        - saturation/value square
-        - hue slider
-        - Select Color button
-
-        The picker is optimized by:
-        - building the hue bar only once
-        - rebuilding the saturation/value square only when hue changes
-        - using numpy instead of per-pixel putpixel loops
-        """
-        popup = tk.Toplevel(parent)
-        popup.withdraw()
-        popup.title("Color Picker")
-        popup.configure(bg="#1f2430")
-        popup.resizable(False, False)
-        popup.transient(parent)
-
-        WIN_W, WIN_H = 460, 440
-
-        try:
-            self.center_popup_to_parent(popup, WIN_W, WIN_H, parent=parent)
-        except Exception:
-            self.center_popup(popup, WIN_W, WIN_H)
-
-        # Initial HSV from RGB
-        r0, g0, b0 = initial_rgb
-        h0, s0, v0 = colorsys.rgb_to_hsv(
-            r0 / 255.0,
-            g0 / 255.0,
-            b0 / 255.0
+    def _open_square_color_picker(
+        self, parent, initial_rgb=(217, 217, 217), on_apply=None,
+        *, initial_lab=None, granule_name=None, on_granule_submit=None,
+        submit_text=None, title=None,
+    ):
+        """Compatibility entry-point; shared UI lives in UtilsTools."""
+        return UtilsTools.open_square_color_picker(
+            self, parent, initial_rgb=initial_rgb, on_apply=on_apply,
+            initial_lab=initial_lab, granule_name=granule_name,
+            on_granule_submit=on_granule_submit, submit_text=submit_text,
+            title=title,
         )
-
-        state = {
-            "h": h0,
-            "s": s0,
-            "v": v0,
-            "sv_photo": None,
-            "hue_photo": None,
-        }
-
-        sv_w, sv_h = 385, 215
-        hue_w, hue_h = 385, 18
-
-        # Layout
-        main = tk.Frame(popup, bg="#1f2430")
-        main.pack(fill="both", expand=True, padx=14, pady=14)
-
-        header = tk.Frame(main, bg="#202531")
-        header.pack(fill="x", pady=(0, 10))
-
-        tk.Label(
-            header,
-            text="Pick your Color",
-            font=("Sans", 12, "bold"),
-            bg="#202531",
-            fg="white",
-            anchor="w",
-            padx=10,
-            pady=8
-        ).pack(side="left", fill="y")
-
-        tk.Label(
-            header,
-            text="Saturation / Brightness + Hue",
-            font=("Sans", 9, "italic"),
-            bg="#202531",
-            fg="#bfc7d5",
-            anchor="e",
-            padx=10
-        ).pack(side="right", fill="y")
-
-        sv_canvas = tk.Canvas(
-            main,
-            width=sv_w,
-            height=sv_h,
-            bg="black",
-            highlightthickness=1,
-            highlightbackground="#40485a",
-            bd=0
-        )
-        sv_canvas.pack()
-
-        hue_canvas = tk.Canvas(
-            main,
-            width=hue_w,
-            height=hue_h,
-            bg="#1f2430",
-            highlightthickness=0,
-            bd=0
-        )
-        hue_canvas.pack(pady=(12, 0))
-
-        # Info panel
-        info_frame = tk.Frame(main, bg="#1f2430")
-        info_frame.pack(fill="x", pady=(12, 0))
-
-        hex_var = tk.StringVar()
-        rgb_var = tk.StringVar()
-        hsv_var = tk.StringVar()
-
-        hex_card = tk.Frame(info_frame, bg="#252b38", bd=1, relief="solid")
-        hex_card.pack(side="left", fill="x", expand=True, padx=(0, 6))
-
-        rgb_card = tk.Frame(info_frame, bg="#252b38", bd=1, relief="solid")
-        rgb_card.pack(side="left", fill="x", expand=True, padx=(6, 6))
-
-        hsv_card = tk.Frame(info_frame, bg="#252b38", bd=1, relief="solid")
-        hsv_card.pack(side="left", fill="x", expand=True, padx=(6, 0))
-
-        tk.Label(
-            hex_card,
-            text="HEX",
-            bg="#252b38",
-            fg="#cfd6e6",
-            font=("Sans", 8)
-        ).pack(pady=(4, 0))
-
-        tk.Label(
-            hex_card,
-            textvariable=hex_var,
-            bg="#252b38",
-            fg="white",
-            font=("Consolas", 10, "bold")
-        ).pack(pady=(0, 5))
-
-        tk.Label(
-            rgb_card,
-            text="RGB",
-            bg="#252b38",
-            fg="#cfd6e6",
-            font=("Sans", 8)
-        ).pack(pady=(4, 0))
-
-        tk.Label(
-            rgb_card,
-            textvariable=rgb_var,
-            bg="#252b38",
-            fg="white",
-            font=("Consolas", 10)
-        ).pack(pady=(0, 5))
-
-        tk.Label(
-            hsv_card,
-            text="HSV",
-            bg="#252b38",
-            fg="#cfd6e6",
-            font=("Sans", 8)
-        ).pack(pady=(4, 0))
-
-        tk.Label(
-            hsv_card,
-            textvariable=hsv_var,
-            bg="#252b38",
-            fg="white",
-            font=("Consolas", 10)
-        ).pack(pady=(0, 5))
-
-        # Buttons
-        button_row = tk.Frame(main, bg="#1f2430")
-        button_row.pack(fill="x", pady=(14, 0))
-
-        # Image generation helpers
-        def _clamp(value, low, high):
-            return max(low, min(high, value))
-
-        def _get_current_rgb():
-            rr, gg, bb = colorsys.hsv_to_rgb(
-                state["h"],
-                state["s"],
-                state["v"]
-            )
-
-            return (
-                int(round(rr * 255)),
-                int(round(gg * 255)),
-                int(round(bb * 255)),
-            )
-
-        def _rgb_to_hex(rgb):
-            return "#{:02X}{:02X}{:02X}".format(*rgb)
-
-        def _build_hue_image_fast():
-            """
-            Build hue bar once using numpy.
-            """
-            xs = np.linspace(0.0, 1.0, hue_w, dtype=np.float32)
-
-            rgb_row = np.zeros((hue_w, 3), dtype=np.uint8)
-
-            for x, h_value in enumerate(xs):
-                rr, gg, bb = colorsys.hsv_to_rgb(float(h_value), 1.0, 1.0)
-                rgb_row[x] = [
-                    int(rr * 255),
-                    int(gg * 255),
-                    int(bb * 255)
-                ]
-
-            img_array = np.tile(rgb_row[np.newaxis, :, :], (hue_h, 1, 1))
-            return ImageTk.PhotoImage(Image.fromarray(img_array, "RGB"))
-
-        def _build_sv_image_fast(h_value):
-            """
-            Build saturation/value square using numpy.
-
-            This is much faster than nested putpixel loops.
-            """
-            s_values = np.linspace(0.0, 1.0, sv_w, dtype=np.float32)
-            v_values = np.linspace(1.0, 0.0, sv_h, dtype=np.float32)
-
-            s_grid, v_grid = np.meshgrid(s_values, v_values)
-
-            # HSV to RGB vectorized manually
-            h = float(h_value) * 6.0
-            i = int(np.floor(h)) % 6
-            f = h - np.floor(h)
-
-            p = v_grid * (1.0 - s_grid)
-            q = v_grid * (1.0 - f * s_grid)
-            t = v_grid * (1.0 - (1.0 - f) * s_grid)
-
-            if i == 0:
-                r, g, b = v_grid, t, p
-            elif i == 1:
-                r, g, b = q, v_grid, p
-            elif i == 2:
-                r, g, b = p, v_grid, t
-            elif i == 3:
-                r, g, b = p, q, v_grid
-            elif i == 4:
-                r, g, b = t, p, v_grid
-            else:
-                r, g, b = v_grid, p, q
-
-            img_array = np.dstack((r, g, b))
-            img_array = np.clip(img_array * 255.0, 0, 255).astype(np.uint8)
-
-            return ImageTk.PhotoImage(Image.fromarray(img_array, "RGB"))
-
-        # Canvas items
-        state["hue_photo"] = _build_hue_image_fast()
-        state["sv_photo"] = _build_sv_image_fast(state["h"])
-
-        sv_image_id = sv_canvas.create_image(
-            0,
-            0,
-            anchor="nw",
-            image=state["sv_photo"]
-        )
-
-        hue_image_id = hue_canvas.create_image(
-            0,
-            0,
-            anchor="nw",
-            image=state["hue_photo"]
-        )
-
-        sv_marker = sv_canvas.create_oval(
-            0,
-            0,
-            0,
-            0,
-            outline="white",
-            width=2
-        )
-
-        sv_marker_shadow = sv_canvas.create_oval(
-            0,
-            0,
-            0,
-            0,
-            outline="#222222",
-            width=1
-        )
-
-        hue_marker = hue_canvas.create_rectangle(
-            0,
-            0,
-            0,
-            hue_h,
-            outline="white",
-            width=2
-        )
-
-        # Redraw helpers
-        def _update_info():
-            rgb = _get_current_rgb()
-            hex_value = _rgb_to_hex(rgb)
-
-            hex_var.set(hex_value)
-            rgb_var.set(f"{rgb[0]}, {rgb[1]}, {rgb[2]}")
-
-            h_deg = int(round(state["h"] * 360))
-            s_pct = int(round(state["s"] * 100))
-            v_pct = int(round(state["v"] * 100))
-            hsv_var.set(f"{h_deg}°, {s_pct}%, {v_pct}%")
-
-        def _redraw_markers_only():
-            """
-            Move markers only. Do not rebuild images.
-            This is used while dragging inside the saturation/value square.
-            """
-            x_sv = int(state["s"] * (sv_w - 1))
-            y_sv = int((1.0 - state["v"]) * (sv_h - 1))
-
-            sv_canvas.coords(
-                sv_marker_shadow,
-                x_sv - 7,
-                y_sv - 7,
-                x_sv + 7,
-                y_sv + 7
-            )
-
-            sv_canvas.coords(
-                sv_marker,
-                x_sv - 6,
-                y_sv - 6,
-                x_sv + 6,
-                y_sv + 6
-            )
-
-            x_h = int(state["h"] * (hue_w - 1))
-            hue_canvas.coords(
-                hue_marker,
-                x_h - 3,
-                0,
-                x_h + 3,
-                hue_h
-            )
-
-            _update_info()
-
-        def _redraw_sv_image_and_markers():
-            """
-            Rebuild saturation/value square only when hue changes.
-            """
-            state["sv_photo"] = _build_sv_image_fast(state["h"])
-            sv_canvas.itemconfig(sv_image_id, image=state["sv_photo"])
-            _redraw_markers_only()
-
-        # Events
-        def _on_sv_event(event):
-            x = _clamp(event.x, 0, sv_w - 1)
-            y = _clamp(event.y, 0, sv_h - 1)
-
-            state["s"] = x / max(sv_w - 1, 1)
-            state["v"] = 1.0 - (y / max(sv_h - 1, 1))
-
-            _redraw_markers_only()
-
-        def _on_hue_event(event):
-            x = _clamp(event.x, 0, hue_w - 1)
-
-            state["h"] = x / max(hue_w - 1, 1)
-
-            _redraw_sv_image_and_markers()
-
-        sv_canvas.bind("<Button-1>", _on_sv_event)
-        sv_canvas.bind("<B1-Motion>", _on_sv_event)
-
-        hue_canvas.bind("<Button-1>", _on_hue_event)
-        hue_canvas.bind("<B1-Motion>", _on_hue_event)
-
-        # Apply selected color
-        def _select_color():
-            rgb = _get_current_rgb()
-            hex_value = _rgb_to_hex(rgb)
-
-            if callable(on_apply):
-                on_apply(rgb, hex_value)
-
-            popup.destroy()
-
-        tk.Button(
-            button_row,
-            text="Cancel",
-            width=13,
-            command=popup.destroy
-        ).pack(side="right", padx=(8, 0))
-
-        tk.Button(
-            button_row,
-            text="Select Color",
-            width=14,
-            command=_select_color
-        ).pack(side="right")
-
-        _redraw_markers_only()
-        popup.deiconify()
-        popup.grab_set()
 
 
     def _update_color_evaluation_conversion_inspector(
@@ -15060,7 +14742,8 @@ class PyFCSApp:
             color_rows=rows,
             metric=metric_name,
             threshold_settings=self.threshold_settings,
-            top_n=7
+            top_n=7,
+            fuzzy_color_space=vars_dict.get("loaded_fuzzy_color_space"),
         )
 
         if not top_7:
@@ -15223,6 +14906,11 @@ class PyFCSApp:
         core = vars_dict.get("loaded_cores")
         alpha = vars_dict.get("loaded_prototypes")
         support = vars_dict.get("loaded_supports")
+        loaded_space = vars_dict.get("loaded_fuzzy_color_space")
+        if isinstance(loaded_space, GranularFuzzyColorSpace):
+            core = loaded_space.get_all_cores()
+            alpha = loaded_space.get_all_prototypes()
+            support = loaded_space.get_all_supports()
 
         volume_limits = self._get_color_evaluation_volume_limits(vars_dict)
 
@@ -15233,8 +14921,14 @@ class PyFCSApp:
 
         if closest_best:
             closest_label = closest_best.get("label")
+            if isinstance(loaded_space, GranularFuzzyColorSpace) and closest_best.get("granule_lab") is not None:
+                closest_lab = np.asarray(closest_best["granule_lab"], dtype=float)
+                closest_label = closest_best.get("granule_label", closest_label)
+                closest_hex = UtilsTools.lab_to_hex(closest_lab)
 
             for label, lab in rows:
+                if closest_lab is not None:
+                    break
                 if str(label) == str(closest_label):
                     closest_lab = np.asarray(lab, dtype=float).reshape(-1)[:3]
                     closest_hex = self._get_evaluation_proto_hex(vars_dict, label)
@@ -15291,6 +14985,14 @@ class PyFCSApp:
         mode = space.color_space if space is not None else "LAB"
         points = ctx["color_data"]
         hex_points = ctx["hex_color"]
+        if isinstance(space, GranularFuzzyColorSpace):
+            points = {}
+            hex_points = {}
+            for category in space.categories:
+                for proto in category.prototypes:
+                    lab = np.asarray(space.lab_from_model(proto.positive), dtype=float)
+                    points[proto.label] = {"positive_prototype": lab}
+                    hex_points[UtilsTools.lab_to_hex(lab)] = lab
         custom = ctx.get("custom_lab")
         closest = ctx.get("closest_lab")
         limits = ctx["volume_limits"]

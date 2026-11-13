@@ -6,12 +6,19 @@ from tkinter import ttk, filedialog, messagebox
 
 import numpy as np
 
+from Source.geometry.Voronoi import Voronoi
+from Source.fuzzy.FuzzyColorSpaceBuilder import lab_to_rgb_model_checked
+from Source.interface.modules.GranuleManager import GranuleManager
 import Source.interface.modules.UtilsTools as UtilsTools
 
 
 class PaletteBasedCreationManager:
     """
     Single-window palette-based fuzzy color space creation workspace.
+
+    Each palette row is a category with one or more positive granules. Atomic
+    palettes still use the existing creation path; multiple granules activate
+    the granular builder without changing the shared creation dialog.
 
     The default source is the ISCC-NBS Basic palette. Additional .cns
     palettes or representative colors from existing .fcs files can be added
@@ -64,8 +71,12 @@ class PaletteBasedCreationManager:
         self.colors = {}
         self.color_checks = {}
         self._row_widgets = {}
+        self._row_details = {}
+        self._expanded_categories = set()
         # Commit edits from visible name fields before creating the color space.
         self._name_editors = []
+        # Avoid reentrant Return/FocusOut commits while a warning is modal.
+        self._granule_name_commits_in_progress = set()
 
         self.win = tk.Toplevel(self.root)
         self.win.withdraw()
@@ -96,22 +107,21 @@ class PaletteBasedCreationManager:
 
     # Window / State
     def _configure_window_size(self):
-        """Open the palette workspace as a centered resizable window."""
-        width = 920
-        height = 680
-
+        """Center over PyFCS, then raise slightly for a balanced position."""
+        width, height = 960, 680
         try:
             self.win.update_idletasks()
             self.app.center_popup(self.win, width, height)
+            geometry = self.win.geometry()
+            match = re.fullmatch(r"\d+x\d+([+-]\d+)([+-]\d+)", geometry)
+            if match:
+                x, y = int(match.group(1)), int(match.group(2))
+                self.win.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y - 50)}")
         except Exception:
-            try:
-                sw = self.win.winfo_screenwidth()
-                sh = self.win.winfo_screenheight()
-                x = max(0, (sw - width) // 2)
-                y = max(0, (sh - height) // 2)
-                self.win.geometry(f"{width}x{height}+{x}+{y}")
-            except Exception:
-                self.win.geometry(f"{width}x{height}")
+            sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
+            x = max(0, (sw - width) // 2)
+            y = max(0, (sh - height) // 2 - 50)
+            self.win.geometry(f"{width}x{height}+{x}+{y}")
 
     def close(self):
         try:
@@ -199,6 +209,244 @@ class PaletteBasedCreationManager:
             index += 1
         return f"{base} ({index})"
 
+    def _used_granule_labels(self, excluding_category=None):
+        return {
+            granule["label"]
+            for category, data in self.colors.items() if category != excluding_category
+            for granule in data.get("granules", [])
+        }
+
+    @staticmethod
+    def _reserve_granule_label(requested, used):
+        base = str(requested or "Granule").strip() or "Granule"
+        if base not in used:
+            used.add(base)
+            return base
+        number = 2
+        while f"{base} ({number})" in used:
+            number += 1
+        result = f"{base} ({number})"
+        used.add(result)
+        return result
+
+    @staticmethod
+    def _auto_granule_label(category, index):
+        suffix = f"-g{index + 1}"
+        return f"{category[:UtilsTools.MAX_COLOR_NAME_CHARS - len(suffix)]}{suffix}"
+
+    def _granule_display_label(self, category, granule, index):
+        # Show the actual prototype label. A category named "Pink" starts
+        # with granule "Pink"; extra granules become "Pink-g2", etc.
+        return granule["label"]
+
+    def _sync_representative(self, category):
+        """Show the first *included* prototype where possible."""
+        data = self.colors[category]
+        granules = data.get("granules", [])
+        if not granules:
+            return
+        enabled = next((g for g in granules if g.get("enabled", True)), granules[0])
+        lab = tuple(enabled["lab"])
+        rgb = tuple(max(0, min(255, int(round(float(v)))))
+                    for v in UtilsTools.lab_to_rgb(lab))
+        data.update(lab=lab, rgb=rgb, hex=UtilsTools.rgb_to_hex(rgb).upper())
+        check = self.color_checks[category]
+        check.update(lab=lab, rgb=rgb)
+
+    def _set_category_granules(self, category, entries):
+        """Commit an edit locally, preserving each granule's inclusion state."""
+        if category not in self.colors or not entries:
+            raise ValueError("A palette category must contain at least one granule.")
+        prior = self.colors[category].get("granules", [])
+        old_flags = {g["label"]: g.get("enabled", True) for g in prior}
+        occupied = [
+            (other, g["label"], g["lab"])
+            for other, data in self.colors.items() if other != category
+            for g in data.get("granules", [])
+        ]
+        validated = []
+        for entry in entries:
+            label, point, error = UtilsTools.check_granule_site(
+                entry.get("label"), entry.get("lab"), occupied,
+                max_name_length=64  # Existing imported identifiers may be longer.
+            )
+            if error:
+                raise ValueError(error)
+            occupied.append((category, label, point))
+            validated.append({
+                "label": label,
+                "lab": point,
+                "enabled": bool(entry.get("enabled", old_flags.get(label, True))),
+            })
+        # All validation succeeds before mutating data or refreshing widgets.
+        data = self.colors[category]
+        data["granules"] = validated
+        # If editing removes all active granules, the category is deselected.
+        if not any(g["enabled"] for g in validated):
+            self.color_checks[category]["var"].set(False)
+        self._sync_representative(category)
+        if not hasattr(self, "_expanded_categories"):
+            self._expanded_categories = set()
+        self._expanded_categories.add(category)
+        self._rebuild_category_granules(category)
+        self._refresh_category_summary(category)
+        self._update_selection_counter()
+
+    def _open_granules(self, row_data):
+        # Resolve by identity: a category may have been renamed by the user.
+        for label, data in self.colors.items():
+            if data is row_data:
+                GranuleManager(self, label).add()
+                return
+
+    def _update_selection_counter(self):
+        if hasattr(self, "selected_count_var") and hasattr(self, "search_var"):
+            self._update_counts(visible=len(getattr(self, "_row_widgets", {})))
+
+    def _on_category_toggle(self, category):
+        """Update one category without recreating any table rows."""
+        check = self.color_checks[category]["var"]
+        if check.get():
+            for granule in self.colors[category]["granules"]:
+                granule["enabled"] = True
+        self._sync_representative(category)
+        self._refresh_category_controls(category)
+        self._refresh_category_summary(category)
+        self._update_selection_counter()
+
+    def _on_granule_toggle(self, category, index, enabled):
+        """Include/exclude a site and update only its parent row in place."""
+        granules = self.colors[category]["granules"]
+        if not 0 <= index < len(granules):
+            return
+        if enabled and not self.color_checks[category]["var"].get():
+            # An unchecked category can be enabled using just one child.
+            for child in granules:
+                child["enabled"] = False
+        granules[index]["enabled"] = bool(enabled)
+        self.color_checks[category]["var"].set(any(g.get("enabled", True) for g in granules))
+        self._sync_representative(category)
+        self._refresh_category_controls(category)
+        self._refresh_category_summary(category)
+        self._update_selection_counter()
+
+    def _refresh_category_controls(self, category):
+        info = self._row_details.get(category)
+        if not info:
+            return
+        checked = bool(self.color_checks[category]["var"].get())
+        for index, var in info.get("granule_vars", []):
+            if index < len(self.colors[category]["granules"]):
+                var.set(checked and self.colors[category]["granules"][index].get("enabled", True))
+        self._refresh_category_caption(category)
+
+    def _refresh_category_caption(self, category):
+        info = self._row_details.get(category)
+        if not info:
+            return
+        total = len(self.colors[category]["granules"])
+        checked = self.color_checks[category]["var"].get()
+        active = sum(bool(g.get("enabled", True)) for g in self.colors[category]["granules"]) if checked else 0
+        if total > 1:
+            count_text = f"{active}/{total} granules"
+        else:
+            count_text = "1 granule"
+        expanded = category in self._expanded_categories
+        # The category may acquire its second granule after the row was built:
+        # update its badge styling without recreating the entire table.
+        multiple = total > 1
+        info["button"].configure(
+            text=count_text,
+            bg=self.BLUE_SOFT if multiple else self.SOFT,
+            fg=self.BLUE if multiple else self.MUTED,
+            activebackground=self.BLUE_SOFT if multiple else self.SOFT,
+            activeforeground=self.BLUE if multiple else self.MUTED,
+        )
+        swatch = info.get("swatch")
+        if swatch:
+            canvas, _rectangle, arrow = swatch
+            canvas.itemconfigure(arrow, state="normal" if expanded else "hidden")
+
+    def _refresh_category_summary(self, category):
+        """Hide duplicate representative values while the granules are visible."""
+        info = self._row_details.get(category)
+        if not info or "summary" not in info:
+            return
+        expanded = category in self._expanded_categories
+        data = self.colors[category]
+        rgb = data["rgb"]
+        lab = data["lab"]
+        values = {
+            "rgb": f"{rgb[0]}, {rgb[1]}, {rgb[2]}",
+            "hex": data["hex"],
+            "lab": f"{lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
+        }
+        for key, label in info["summary"].items():
+            label.configure(text="" if expanded else values[key])
+        swatch = info.get("swatch")
+        if swatch:
+            canvas, rectangle, _arrow = swatch
+            canvas.itemconfigure(rectangle, state="hidden" if expanded else "normal",
+                                  fill=data["hex"])
+
+    def _rebuild_category_granules(self, category):
+        """Replace at most one expanded subsection after adding/editing a site."""
+        info = self._row_details.get(category)
+        if not info:
+            return
+        self._suspend_granule_name_commit = True
+        try:
+            panel = info.get("panel")
+            if panel is not None:
+                panel.destroy()
+            info["panel"] = None
+            info["granule_vars"] = []
+            info["granule_name_vars"] = []
+            if category in self._expanded_categories:
+                panel = self._create_granule_breakdown(info["wrapper"], category,
+                                                       self.colors[category])
+                info["panel"] = panel
+                panel.pack(fill="x", pady=(0, 3))
+            self._refresh_category_caption(category)
+        finally:
+            self._suspend_granule_name_commit = False
+
+    def _commit_granule_name(self, category, index, variable):
+        """Commit one inline edit once, even if Return also triggers FocusOut.
+
+        A modal warning takes focus away from the entry. Without this guard,
+        that nested FocusOut event can show the same warning a second time.
+        """
+        if getattr(self, "_suspend_granule_name_commit", False):
+            return
+        granules = self.colors.get(category, {}).get("granules", [])
+        if not 0 <= index < len(granules):
+            return
+
+        current_name = self._granule_display_label(category, granules[index], index)
+        requested = variable.get().strip()
+        if requested == current_name:
+            return
+
+        pending = self._granule_name_commits_in_progress
+        key = id(variable)
+        if key in pending:
+            return
+        pending.add(key)
+        try:
+            # Keep the original name visible before a modal warning steals
+            # focus; subsequent FocusOut events now find an unchanged value.
+            variable.set(current_name)
+            manager = GranuleManager(self, category)
+            display = manager.rename(index, requested)
+            variable.set(display)
+        except (ValueError, TypeError) as exc:
+            variable.set(current_name)
+            self.app.custom_warning(
+                "Invalid Granule Name", str(exc), parent=self.win)
+        finally:
+            pending.discard(key)
+
     def _update_source_summary(self):
         """Show a compact count of source loads; per-color origins stay hidden."""
         count = sum(len(entries) for entries in self.loaded_sources.values())
@@ -227,6 +475,7 @@ class PaletteBasedCreationManager:
 
         # Track reserved names across the entire import.
         existing_names = set(self.colors.keys())
+        used_granules = self._used_granule_labels()
 
         def reserve_unique_name(requested_name):
             base = str(requested_name or "Color").strip() or "Color"
@@ -251,6 +500,17 @@ class PaletteBasedCreationManager:
 
             normalized["custom"] = False
             unique_name = reserve_unique_name(raw_name)
+            # Imported granular JSON categories retain all their positive sites.
+            # Labels from a second source must not collide with existing sites.
+            originals = normalized["granules"]
+            normalized["granules"] = [
+                {"label": self._reserve_granule_label(
+                    (unique_name if len(originals) == 1 and i == 0 and
+                     item["label"] in (None, str(raw_name)) else item["label"]),
+                    used_granules),
+                 "lab": item["lab"], "enabled": True}
+                for i, item in enumerate(originals)
+            ]
             additions.append((unique_name, normalized))
 
             self.colors[unique_name] = normalized
@@ -292,6 +552,32 @@ class PaletteBasedCreationManager:
         if new_name == old_name:
             return old_name
 
+        original = self.colors[old_name]
+        granules = original.get("granules", [])
+        # Reserve manually named granules before assigning automatic names,
+        # so renaming a category can never silently duplicate a sibling label.
+        # A removed granule can leave gaps (Pink, Pink-g2, Pink-g4).
+        # Recognize the numeric suffix rather than assuming index + 1.
+        auto_suffixes = []
+        for i, g in enumerate(granules):
+            label = g["label"]
+            suffix = label[len(old_name) + 2:] if label.startswith(old_name + "-g") else ""
+            if i == 0 and label == old_name:
+                auto_suffixes.append(0)
+            elif suffix.isdigit() and int(suffix) >= 1:
+                auto_suffixes.append(int(suffix))
+            else:
+                auto_suffixes.append(None)
+        reserved = self._used_granule_labels(excluding_category=old_name)
+        reserved.update(g["label"] for g, suffix in zip(granules, auto_suffixes)
+                        if suffix is None)
+        for granule, suffix in zip(granules, auto_suffixes):
+            if suffix is not None:
+                requested_label = (new_name if suffix == 0 else
+                                   f"{new_name}-g{suffix}")
+                granule["label"] = self._reserve_granule_label(
+                    requested_label, reserved)
+
         new_colors = {}
         for name, data in self.colors.items():
             new_colors[new_name if name == old_name else name] = data
@@ -302,6 +588,9 @@ class PaletteBasedCreationManager:
 
         self.colors = new_colors
         self.color_checks = new_checks
+        if old_name in self._expanded_categories:
+            self._expanded_categories.remove(old_name)
+            self._expanded_categories.add(new_name)
         return new_name
 
     def _commit_color_name(self, old_name, name_var):
@@ -366,10 +655,27 @@ class PaletteBasedCreationManager:
             if not color_hex.startswith("#"):
                 color_hex = f"#{color_hex}"
 
+            # The JSON reader supplies a full list for granular categories.
+            # Legacy CNS/FCS colors simply become a one-granule category.
+            raw_granules = data.get("granules") if isinstance(data, dict) else None
+            parsed = []
+            if raw_granules:
+                for granule in raw_granules:
+                    coords = np.asarray(granule.get("prototype", granule.get("lab")),
+                                        dtype=float).reshape(-1)
+                    if coords.shape != (3,) or not np.all(np.isfinite(coords)):
+                        return None
+                    label = str(granule.get("label", "")).strip()
+                    if not label:
+                        return None
+                    parsed.append({"label": label, "lab": tuple(float(v) for v in coords)})
+            else:
+                parsed.append({"label": None, "lab": lab})
             return {
                 "rgb": rgb,
                 "lab": lab,
                 "hex": color_hex,
+                "granules": parsed,
                 "custom": bool(data.get("custom", False)) if isinstance(data, dict) else False,
             }
 
@@ -498,7 +804,7 @@ class PaletteBasedCreationManager:
 
         tk.Label(
             inner,
-            text="Build FCS from selected colors",
+            text="Build FCS from selected categories",
             font=self.FONT_SMALL,
             bg=self.CARD,
             fg=self.MUTED,
@@ -543,46 +849,29 @@ class PaletteBasedCreationManager:
 
         bottom = tk.Frame(card, bg=self.CARD)
         bottom.pack(fill="x", padx=12, pady=(0, 10))
+        bottom.grid_columnconfigure(0, weight=1, uniform="toolbar")
+        bottom.grid_columnconfigure(2, weight=1, uniform="toolbar")
 
+        actions = tk.Frame(bottom, bg=self.CARD)
+        actions.grid(row=0, column=1)
         tk.Button(
-            bottom,
-            text="Select All",
-            command=self._select_all_colors,
-            font=self.FONT,
-            relief="solid",
-            bd=1,
-            padx=10,
-            pady=3,
+            actions, text="Select All", command=self._select_all_colors,
+            font=self.FONT, relief="solid", bd=1, padx=10, pady=3,
             cursor="hand2",
         ).pack(side="left")
-
         tk.Button(
-            bottom,
-            text="Deselect All",
-            command=self._deselect_all_colors,
-            font=self.FONT,
-            relief="solid",
-            bd=1,
-            padx=10,
-            pady=3,
+            actions, text="Deselect All", command=self._deselect_all_colors,
+            font=self.FONT, relief="solid", bd=1, padx=10, pady=3,
             cursor="hand2",
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=(8, 0))
 
-        tk.Label(
-            bottom,
-            textvariable=self.visible_count_var,
-            font=self.FONT_SMALL,
-            bg=self.CARD,
-            fg=self.MUTED,
-        ).pack(side="right", padx=(12, 0))
-
-        tk.Label(
-            bottom,
-            textvariable=self.selected_count_var,
-            font=self.FONT_BOLD,
-            bg=self.CARD,
-            fg=self.BLUE,
-        ).pack(side="right")
+        counters = tk.Frame(bottom, bg=self.CARD)
+        counters.grid(row=0, column=2, sticky="e")
+        tk.Label(counters, textvariable=self.selected_count_var,
+                 font=self.FONT_BOLD, bg=self.CARD, fg=self.BLUE).pack(side="left")
+        tk.Label(counters, textvariable=self.visible_count_var,
+                 font=self.FONT_SMALL, bg=self.CARD,
+                 fg=self.MUTED).pack(side="left", padx=(10, 0))
 
     def _configure_table_columns(self, widget):
         """Keep the table columns aligned in the header and every color row."""
@@ -644,8 +933,8 @@ class PaletteBasedCreationManager:
             font=self.FONT_SMALL_BOLD,
             bg=self.SOFT,
             fg=self.MUTED,
-            anchor="e",
-        ).grid(row=0, column=3, sticky="nsew", padx=(6, 14))
+            anchor="center",
+        ).grid(row=0, column=3, sticky="nsew", padx=6)
 
         holder = tk.Frame(card, bg=self.CARD)
         holder.pack(fill="both", expand=True, pady=(5, 0))
@@ -665,6 +954,9 @@ class PaletteBasedCreationManager:
 
         scrollbar.pack(side="right", fill="y")
         self.colors_canvas.pack(side="left", fill="both", expand=True)
+        # Header sits outside the scrolling canvas: reserve the scrollbar's
+        # width and match the 3px inset of each category row.
+        header.pack_configure(padx=(3, scrollbar.winfo_reqwidth() + 6))
 
         self.colors_inner = tk.Frame(self.colors_canvas, bg=self.CARD)
         self.colors_window_id = self.colors_canvas.create_window(
@@ -697,7 +989,7 @@ class PaletteBasedCreationManager:
 
         tk.Button(
             footer,
-            text="+ Add Custom Color",
+            text="+ Add Color Category",
             command=self._add_custom_color,
             font=self.FONT_BOLD,
             bg="#f8fafc",
@@ -809,6 +1101,12 @@ class PaletteBasedCreationManager:
                 hex_without_hash,
                 " ".join(rgb_values),
                 " ".join(lab_values),
+                " ".join(
+                    f"{self._granule_display_label(name, g, index)} "
+                    f"{' '.join(f'{float(v):.2f}' for v in g['lab'])} "
+                    f"{UtilsTools.rgb_to_hex(UtilsTools.lab_to_rgb(g['lab']))}"
+                    for index, g in enumerate(data.get("granules", []))
+                ),
             ]
         )
 
@@ -816,122 +1114,190 @@ class PaletteBasedCreationManager:
         # useful without requiring exact punctuation or spacing.
         return all(token in searchable for token in query_tokens)
 
+    def _toggle_category_details(self, row_data):
+        """Expand aligned sub-rows, not a boxed panel inside the table."""
+        name = next((key for key, value in self.colors.items() if value is row_data), None)
+        if name is None:
+            return
+        info = self._row_details.get(name)
+        if not info:
+            return
+        if name in self._expanded_categories:
+            self._expanded_categories.remove(name)
+            if info["panel"] is not None:
+                info["panel"].pack_forget()
+        else:
+            self._expanded_categories.add(name)
+            if info["panel"] is None:
+                info["panel"] = self._create_granule_breakdown(info["wrapper"], name, row_data)
+            info["panel"].pack(fill="x", padx=(0, 0), pady=(0, 3))
+        self._refresh_category_caption(name)
+        self._refresh_category_summary(name)
+
+    def _create_granule_breakdown(self, wrapper, category, data):
+        """Inline children sharing the header's Color / RGB / HEX / LAB grid."""
+        panel = tk.Frame(wrapper, bg=self.CARD)
+        header = tk.Frame(panel, bg=self.CARD)
+        header.pack(fill="x", pady=(1, 1))
+        tk.Label(header, text="GRANULES", font=self.FONT_SMALL_BOLD,
+                 bg=self.CARD, fg=self.MUTED).pack(side="left", padx=(64, 0))
+        for i, granule in enumerate(data.get("granules", [])):
+            row_bg = self.PANEL if i % 2 == 0 else self.CARD
+            row = tk.Frame(panel, bg=row_bg, height=28)
+            row.pack(fill="x")
+            row.pack_propagate(False)
+            self._configure_table_columns(row)
+            cell = tk.Frame(row, bg=row_bg)
+            cell.grid(row=0, column=0, sticky="nsew", padx=(17, 8))
+            tk.Label(cell, text="↳", font=self.FONT_SMALL,
+                     bg=row_bg, fg="#b0b7c4").pack(side="left", padx=(3, 4))
+            active = bool(self.color_checks[category]["var"].get())
+            flag = tk.BooleanVar(value=active and granule.get("enabled", True))
+            tk.Checkbutton(
+                cell, variable=flag, bg=row_bg, activebackground=row_bg,
+                selectcolor=row_bg, bd=0, highlightthickness=0,
+                cursor="hand2", command=lambda key=category, ix=i, v=flag:
+                    self._on_granule_toggle(key, ix, v.get())
+            ).pack(side="left", padx=(0, 3))
+            self._row_details[category]["granule_vars"].append((i, flag))
+            rgb = tuple(max(0, min(255, int(round(float(v)))))
+                        for v in UtilsTools.lab_to_rgb(granule["lab"]))
+            sw = tk.Canvas(cell, width=19, height=19, bg=row_bg,
+                           highlightthickness=0, bd=0)
+            sw.pack(side="left", padx=(0, 8))
+            sw.create_rectangle(2, 2, 17, 17, fill=UtilsTools.rgb_to_hex(rgb),
+                                outline="#9199a6")
+            text = self._granule_display_label(category, granule, i)
+            name_var = tk.StringVar(value=text)
+            name_entry = tk.Entry(cell, textvariable=name_var, font=self.FONT,
+                                  bg=row_bg, fg=self.TEXT, relief="solid", bd=1,
+                                  highlightthickness=0, insertbackground=self.TEXT)
+            name_entry.pack(side="left", fill="x", expand=True)
+            self._row_details[category]["granule_name_vars"].append((i, name_var))
+            name_entry.bind("<Return>", lambda _e, key=category, ix=i, v=name_var:
+                            self._commit_granule_name(key, ix, v))
+            name_entry.bind("<FocusOut>", lambda _e, key=category, ix=i, v=name_var:
+                            self._commit_granule_name(key, ix, v))
+            tk.Button(cell, text="Edit", font=self.FONT_SMALL,
+                      bg=row_bg, fg=self.BLUE, relief="flat", bd=0, padx=5,
+                      cursor="hand2", command=lambda key=category, ix=i:
+                      GranuleManager(self, key).edit(ix)).pack(side="right")
+            if len(data["granules"]) > 1:
+                tk.Button(cell, text="×", font=self.FONT,
+                          bg=row_bg, fg=self.MUTED, relief="flat", bd=0, padx=4,
+                          cursor="hand2", command=lambda key=category, ix=i:
+                          GranuleManager(self, key).remove(ix)).pack(side="right")
+            tk.Label(row, text=f"{rgb[0]}, {rgb[1]}, {rgb[2]}",
+                     bg=row_bg, fg=self.MUTED, font=self.FONT_SMALL,
+                     anchor="center").grid(row=0, column=1, sticky="nsew", padx=6)
+            tk.Label(row, text=UtilsTools.rgb_to_hex(rgb).upper(),
+                     bg=row_bg, fg=self.MUTED, font=self.FONT_SMALL,
+                     anchor="center").grid(row=0, column=2, sticky="nsew", padx=6)
+            l, a, b = granule["lab"]
+            tk.Label(row, text=f"{l:.2f}, {a:.2f}, {b:.2f}",
+                     bg=row_bg, fg=self.MUTED, font=self.FONT_SMALL,
+                     anchor="center").grid(row=0, column=3, sticky="nsew", padx=6)
+        return panel
+
     def _create_color_row(self, name, index):
-        """Create one visible color row and register its editable-name state."""
+        """Build one category row, optionally expanded to show its granules."""
         if name not in self.colors or name not in self.color_checks:
             return None
 
         data = self.colors[name]
         check_data = self.color_checks[name]
-
         row_bg = self.CARD if index % 2 == 0 else "#fbfcfd"
-        row = tk.Frame(self.colors_inner, bg=row_bg, bd=0)
-        row.pack(fill="x", padx=3, pady=1)
+
+        # Each category owns an independent wrapper containing its one-line
+        # summary and its collapsible detail panel.
+        wrapper = tk.Frame(self.colors_inner, bg=self.CARD)
+        wrapper.pack(fill="x", padx=3, pady=1)
+        row = tk.Frame(wrapper, bg=row_bg, bd=0)
+        row.pack(fill="x")
         self._configure_table_columns(row)
 
-        # Color column: checkbox + swatch + name
         color_cell = tk.Frame(row, bg=row_bg)
-        color_cell.grid(row=0, column=0, sticky="nsew", padx=(4, 8))
+        color_cell.grid(row=0, column=0, sticky="nsew", padx=(2, 8))
 
         check = tk.Checkbutton(
-            color_cell,
-            variable=check_data["var"],
-            bg=row_bg,
-            activebackground=row_bg,
-            selectcolor=row_bg,
-            command=self._update_counts,
-            cursor="hand2",
-            bd=0,
-            highlightthickness=0,
-        )
-        check.pack(side="left", padx=(0, 5), pady=5)
+            color_cell, variable=check_data["var"], bg=row_bg,
+            activebackground=row_bg, selectcolor=row_bg,
+            command=lambda key=name: self._on_category_toggle(key), cursor="hand2", bd=0,
+            highlightthickness=0)
+        check.pack(side="left", padx=(0, 4), pady=5)
 
-        swatch = tk.Canvas(
-            color_cell,
-            width=28,
-            height=28,
-            bg=row_bg,
-            highlightthickness=0,
-            bd=0,
-        )
+        swatch = tk.Canvas(color_cell, width=28, height=28, bg=row_bg,
+                           highlightthickness=0, bd=0)
         swatch.pack(side="left", padx=(0, 9), pady=4)
-        swatch.create_rectangle(
-            2,
-            2,
-            26,
-            26,
-            fill=data["hex"],
-            outline="#707070",
-        )
+        swatch_rectangle = swatch.create_rectangle(2, 2, 26, 26, fill=data["hex"], outline="#707070")
+        swatch_arrow = swatch.create_text(14, 14, text="▾", fill=self.BLUE,
+                                          font=("Segoe UI", 17, "bold"), state="hidden")
+        swatch.configure(cursor="hand2")
+        swatch.bind("<Button-1>", lambda _e, item=data: self._toggle_category_details(item))
 
         name_frame = tk.Frame(color_cell, bg=row_bg)
         name_frame.pack(side="left", fill="x", expand=True)
-
         name_var = tk.StringVar(value=name)
-        name_entry = tk.Entry(
-            name_frame,
-            textvariable=name_var,
-            font=self.FONT_BOLD,
-            bg="#ffffff",
-            fg=self.TEXT,
-            relief="solid",
-            bd=1,
-            highlightthickness=0,
-        )
-        name_entry.pack(fill="x")
+        name_entry = tk.Entry(name_frame, textvariable=name_var,
+                              font=self.FONT_BOLD, bg=self.CARD, fg=self.TEXT,
+                              relief="solid", bd=1, highlightthickness=0)
+        name_entry.pack(side="left", fill="x", expand=True)
 
-        name_entry.bind(
-            "<Return>",
-            lambda _e, old=name, var=name_var: self._commit_color_name(old, var),
+        count = len(data.get("granules", []))
+        expanded = name in self._expanded_categories
+        tk.Button(
+            name_frame, text="+ Add granule",
+            command=lambda key=name: GranuleManager(self, key).add(),
+            font=self.FONT_SMALL_BOLD, bg=row_bg, fg=self.BLUE,
+            activebackground=row_bg, relief="flat", bd=0,
+            padx=5, pady=3, cursor="hand2"
+        ).pack(side="right", padx=(5, 0))
+        expand_button = tk.Button(
+            name_frame,
+            text=f"{count} granule{'s' if count != 1 else ''}",
+            command=lambda item=data: self._toggle_category_details(item),
+            font=self.FONT_SMALL_BOLD,
+            bg=self.BLUE_SOFT if count > 1 else self.SOFT,
+            fg=self.BLUE if count > 1 else self.MUTED,
+            relief="flat", bd=0, padx=7, pady=3, cursor="hand2"
         )
-        name_entry.bind(
-            "<FocusOut>",
-            lambda _e, old=name, var=name_var: self._commit_color_name(old, var),
-        )
+        expand_button.pack(side="right", padx=(6, 0))
+
+        name_entry.bind("<Return>",
+                        lambda _e, old=name, var=name_var: self._commit_color_name(old, var))
+        name_entry.bind("<FocusOut>",
+                        lambda _e, old=name, var=name_var: self._commit_color_name(old, var))
         self._name_editors.append((name, name_var))
 
-        if data.get("custom"):
-            tk.Label(
-                name_frame,
-                text="Custom color",
-                font=self.FONT_SMALL,
-                bg=row_bg,
-                fg=self.BLUE,
-                anchor="w",
-            ).pack(fill="x", pady=(1, 0))
 
-        # RGB / HEX / LAB columns
         rgb = data["rgb"]
-        tk.Label(
-            row,
-            text=f"{rgb[0]}, {rgb[1]}, {rgb[2]}",
-            font=self.FONT,
-            bg=row_bg,
-            fg=self.MUTED,
-            anchor="center",
-        ).grid(row=0, column=1, sticky="nsew", padx=6)
-
-        tk.Label(
-            row,
-            text=data["hex"],
-            font=self.FONT,
-            bg=row_bg,
-            fg=self.MUTED,
-            anchor="center",
-        ).grid(row=0, column=2, sticky="nsew", padx=6)
-
+        rgb_label = tk.Label(row, text=f"{rgb[0]}, {rgb[1]}, {rgb[2]}",
+                             font=self.FONT, bg=row_bg, fg=self.MUTED, anchor="center")
+        rgb_label.grid(row=0, column=1, sticky="nsew", padx=6)
+        hex_label = tk.Label(row, text=data["hex"], font=self.FONT, bg=row_bg,
+                             fg=self.MUTED, anchor="center")
+        hex_label.grid(row=0, column=2, sticky="nsew", padx=6)
         lab = data["lab"]
-        tk.Label(
-            row,
-            text=f"{lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
-            font=self.FONT,
-            bg=row_bg,
-            fg=self.MUTED,
-            anchor="e",
-        ).grid(row=0, column=3, sticky="nsew", padx=(6, 12))
+        lab_label = tk.Label(row, text=f"{lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}",
+                             font=self.FONT, bg=row_bg, fg=self.MUTED, anchor="center")
+        lab_label.grid(row=0, column=3, sticky="nsew", padx=6)
 
-        self._row_widgets[name] = row
-        return row
+        # Build the breakdown lazily; collapsed categories add no granule widgets.
+        self._row_widgets[name] = wrapper
+        self._row_details[name] = {
+            "wrapper": wrapper, "panel": None, "button": expand_button,
+            "granule_vars": [],
+            "granule_name_vars": [],
+            "summary": {"rgb": rgb_label, "hex": hex_label, "lab": lab_label},
+            "swatch": (swatch, swatch_rectangle, swatch_arrow),
+        }
+        self._refresh_category_summary(name)
+        if expanded:
+            details = self._create_granule_breakdown(wrapper, name, data)
+            self._row_details[name]["panel"] = details
+            details.pack(fill="x", pady=(0, 3))
+        self._refresh_category_caption(name)
+        return wrapper
 
     def _append_color_rows(self, names):
         """
@@ -952,7 +1318,7 @@ class PaletteBasedCreationManager:
         ]
 
         if not names:
-            self._update_counts(visible=len(self._row_widgets))
+            self._update_selection_counter()
             return
 
         # Remove the empty-state row before appending a color.
@@ -960,12 +1326,13 @@ class PaletteBasedCreationManager:
             for child in self.colors_inner.winfo_children():
                 child.destroy()
             self._name_editors = []
+            self._row_details = {}
 
         start_index = len(self._row_widgets)
         for offset, name in enumerate(names):
             self._create_color_row(name, start_index + offset)
 
-        self._update_counts(visible=len(self._row_widgets))
+        self._update_selection_counter()
 
     def _refresh_color_list(self):
         """
@@ -982,6 +1349,7 @@ class PaletteBasedCreationManager:
             child.destroy()
 
         self._row_widgets = {}
+        self._row_details = {}
         self._name_editors = []
         visible_names = [name for name in self.colors if self._matches_search(name)]
 
@@ -1030,7 +1398,14 @@ class PaletteBasedCreationManager:
                 item["var"].set(True)
             except Exception:
                 pass
-        self._update_counts()
+        for name, data in self.colors.items():
+            for granule in data["granules"]:
+                granule["enabled"] = True
+            self._sync_representative(name)
+        for name in self.colors:
+            self._refresh_category_controls(name)
+            self._refresh_category_summary(name)
+        self._update_selection_counter()
 
     def _deselect_all_colors(self):
         for item in self.color_checks.values():
@@ -1038,60 +1413,18 @@ class PaletteBasedCreationManager:
                 item["var"].set(False)
             except Exception:
                 pass
-        self._update_counts()
+        for name in self.colors:
+            self._refresh_category_controls(name)
+            self._refresh_category_summary(name)
+        self._update_selection_counter()
 
     # Custom Color / Create
     def _next_unique_name(self, base):
         return self._make_unique_color_name(base)
 
     def _add_custom_color(self):
-        default_name = self._next_unique_name("Custom Color")
-
-        def on_submit(color_name, sample_lab, sample_rgb, sample_hex, dialog, input_vars):
-            clean_name = str(color_name).strip()[:UtilsTools.MAX_COLOR_NAME_CHARS]
-
-            if not clean_name:
-                input_vars["status_var"].set("Enter a color name.")
-                return
-
-            clean_name = self._make_unique_color_name(clean_name)
-
-            lab_arr = np.asarray(sample_lab, dtype=float).reshape(-1)
-            lab = (float(lab_arr[0]), float(lab_arr[1]), float(lab_arr[2]))
-            rgb = tuple(int(v) for v in sample_rgb[:3])
-            color_hex = str(sample_hex).upper()
-
-            self.colors[clean_name] = {
-                "rgb": rgb,
-                "lab": lab,
-                "hex": color_hex,
-                "custom": True,
-            }
-            self.color_checks[clean_name] = {
-                "var": tk.BooleanVar(value=True),
-                "lab": lab,
-                "rgb": rgb,
-            }
-
-            dialog.destroy()
-
-            # Clear the search if it would hide the new color; otherwise append its row.
-            if self.search_var.get().strip() and not self._matches_search(clean_name):
-                self.search_var.set("")
-                self.win.after(60, self._scroll_to_bottom)
-            else:
-                self._append_color_rows([clean_name])
-                self.win.after_idle(self._scroll_to_bottom)
-
-        self.app._open_custom_color_dialog(
-            parent=self.win,
-            title="Add Custom Color",
-            subtitle="Create a palette color from RGB, LAB or HEX",
-            submit_text="Add Color",
-            require_name=True,
-            default_name=default_name,
-            on_submit=on_submit,
-        )
+        """Create a category with one or more positive granules in one place."""
+        UtilsTools.CustomCategoryDialog(self)
 
     def _commit_pending_color_names(self):
         """Commit every visible name editor before validation/creation."""
@@ -1114,41 +1447,140 @@ class PaletteBasedCreationManager:
         if changed:
             self._refresh_color_list()
 
+    def _commit_pending_granule_names(self):
+        """Commit names even when the Create button doesn't move keyboard focus."""
+        for category, info in list(self._row_details.items()):
+            for index, variable in list(info.get("granule_name_vars", [])):
+                items = self.colors.get(category, {}).get("granules", [])
+                if 0 <= index < len(items):
+                    shown = self._granule_display_label(category, items[index], index)
+                    if variable.get().strip() != shown:
+                        self._commit_granule_name(category, index, variable)
+
+    def _selected_category_granules(self):
+        """Return only active granules of selected categories."""
+        selected = {}
+        for name, check in self.color_checks.items():
+            if not check["var"].get():
+                continue
+            active = {
+                item["label"]: np.asarray(item["lab"], dtype=float)
+                for item in self.colors[name]["granules"]
+                if item.get("enabled", True)
+            }
+            if active:
+                selected[name] = active
+        return selected
+
     def _create_color_space(self):
-        # Save pending name edits before passing colors to FCS creation.
+        # Commit both child and parent names before validation / construction.
+        self._commit_pending_granule_names()
         self._commit_pending_color_names()
-
-        selected = 0
-        for item in self.color_checks.values():
-            try:
-                if item["var"].get():
-                    selected += 1
-            except Exception:
-                pass
-
-        if selected < 2:
+        selected = self._selected_category_granules()
+        if len(selected) < 2:
             self.app.custom_warning(
-                "Not Enough Colors",
-                "At least two colors must be selected to create the Color Space.",
+                "Not Enough Colors", "Select at least two categories to create the Color Space.",
                 parent=self.win,
             )
             return
 
-        previous_checks = getattr(self.app, "color_checks", None)
-        self.app.color_checks = self.color_checks
+        sites = {label: lab for granules in selected.values() for label, lab in granules.items()}
+        if len(sites) != sum(len(granules) for granules in selected.values()):
+            self.app.custom_warning("Duplicate Granules", "Each granule needs a unique label.",
+                                    parent=self.win)
+            return
+        if any(not UtilsTools.is_valid_lab(lab) for lab in sites.values()):
+            self.app.custom_warning("Invalid LAB", "One or more granules are outside the CIELAB domain.",
+                                    parent=self.win)
+            return
+        duplicates = UtilsTools.find_duplicate_lab_pairs(sites)
+        if duplicates:
+            name_a, name_b, _point = duplicates[0]
+            self.app.custom_warning("Duplicate LAB", f"Granules '{name_a}' and '{name_b}' "
+                                    "have coincident prototypes.", parent=self.win)
+            return
 
-        try:
-            result = self.app.create_color_space(parent=self.win)
-        finally:
-            if previous_checks is None:
-                try:
-                    delattr(self.app, "color_checks")
-                except Exception:
-                    pass
+        # The normal palette path stays genuinely atomic and keeps its previous
+        # creation dialog, validators and execution semantics unchanged.
+        is_granular = any(len(granules) > 1 or next(iter(granules)) != category
+                          for category, granules in selected.items())
+        if not is_granular:
+            previous_checks = getattr(self.app, "color_checks", None)
+            self.app.color_checks = self.color_checks
+            try:
+                started = self.app.create_color_space(parent=self.win)
+            finally:
+                if previous_checks is None:
+                    try:
+                        delattr(self.app, "color_checks")
+                    except AttributeError:
+                        pass
+                else:
+                    self.app.color_checks = previous_checks
+            if started:
+                self.close()
+            return
+
+        representatives = {category: next(iter(granules.values()))
+                           for category, granules in selected.items()}
+
+        def on_create(name, options):
+            mode = options["color_space"]
+            domain = options["reference_domain"]
+
+            def convert(lab):
+                point = np.asarray(lab, dtype=float).reshape(1, 3)
+                if mode == "LAB":
+                    return point[0]
+                return lab_to_rgb_model_checked(point)[0]
+
+            categories_native = {
+                category: {glabel: convert(lab) for glabel, lab in granules.items()}
+                for category, granules in selected.items()
+            }
+            all_prototypes = np.asarray([point for group in categories_native.values()
+                                         for point in group.values()], dtype=float)
+            Voronoi._validate_points_in_domain(all_prototypes, domain, Voronoi.DEFAULT_EPS)
+            Voronoi._validate_no_duplicate_points(all_prototypes, Voronoi.DEFAULT_MERGE_EPS)
+
+            saved_options = dict(options)
+            configured_negatives = saved_options.get("negative_prototypes") or {}
+            if saved_options["disjoint"]:
+                saved_options["negative_prototypes"] = None
             else:
-                self.app.color_checks = previous_checks
+                # The shared creation dialog selects negative CATEGORIES. Each
+                # chosen category contributes ALL its positive granules.
+                negatives_native = {}
+                for owner, negative_labels in configured_negatives.items():
+                    sites_for_owner = []
+                    for candidate in negative_labels:
+                        if isinstance(candidate, str):
+                            if candidate not in categories_native:
+                                raise ValueError(f"Unknown negative category '{candidate}'.")
+                            if candidate == owner:
+                                raise ValueError("A category cannot negate itself.")
+                            sites_for_owner.extend(categories_native[candidate].values())
+                        else:
+                            sites_for_owner.append(convert(candidate))
+                    negatives_native[owner] = sites_for_owner
+                saved_options["negative_prototypes"] = negatives_native
+            saved_options["_granular_categories"] = categories_native
+            # The default t-conorm lives in the engine; never in JSON.
+            return self.app.save_cs(name, representatives, options=saved_options)
 
-        if result:
+        dialog = UtilsTools.FCSCreationDialog(
+            self.win, representatives,
+            on_accept=on_create, warn=self.app.custom_warning,
+        )
+        dialog.transient(self.win)
+        dialog.grab_set()
+        try:
+            dialog.lift(self.win)
+            dialog.focus_force()
+        except Exception:
+            pass
+        dialog.wait_window()
+        if dialog.result:
             self.close()
 
     def _scroll_to_top(self):

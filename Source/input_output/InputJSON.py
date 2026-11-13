@@ -1,4 +1,4 @@
-"""PyFCS JSON v1 persistence: full geometry and atomic-engine compatibility.
+"""PyFCS JSON v1 persistence: full geometry, atomic and granular FCS.
 
 The native schema is intentionally small and stable::
 
@@ -6,10 +6,6 @@ The native schema is intentionally small and stable::
     metadata: {name, geometry_input_sha256}
     model: {color_space, reference_domain, construction, categories}
     geometry: {granules: {label: {core, voronoi, support}}}
-
-One-category/multiple-granule documents are valid as a *file format*, but
-cannot yet be loaded into the pre-granular FuzzyColorSpace engine. A clear
-error is raised rather than silently discarding granules.
 
 Membership operators (MAX/BOUNDED_SUM) are intentionally NOT persisted.
 Geometry is always loaded from the saved planes/faces; Voronoi is never
@@ -26,6 +22,8 @@ from skimage import color as skcolor
 
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
+from Source.fuzzy.GranularFuzzyColor import GranularFuzzyColor
+from Source.fuzzy.GranularFuzzyColorSpace import GranularFuzzyColorSpace
 from Source.fuzzy.FuzzyColorSpaceBuilder import FuzzyColorSpaceBuilder, lab_to_rgb_model_checked
 from Source.geometry.Face import Face
 from Source.geometry.Plane import Plane
@@ -92,10 +90,17 @@ class InputJSON(Input):
         sites = []
         for category in model["categories"]:
             negatives = [] if disjoint else cls._canonical_points(category["negatives"])
+            siblings = [cls._triple(g["prototype"], "prototype")
+                        for g in category["granules"]]
             for granule in category["granules"]:
                 item = {"prototype": cls._triple(granule["prototype"], "prototype")}
                 if not disjoint:
                     item["negatives"] = negatives
+                    # Sibling positives limit the cell, but are not semantic
+                    # negatives. They matter for the hash only when present.
+                    if len(siblings) > 1:
+                        item["siblings"] = cls._canonical_points(
+                            p for p in siblings if p != item["prototype"])
                 sites.append(item)
         sites.sort(key=lambda entry: (entry["prototype"], entry.get("negatives", [])))
         return {
@@ -247,6 +252,15 @@ class InputJSON(Input):
             raise ValueError("At least two positive prototypes are required.")
         points = np.asarray([e[2] for e in entries], dtype=float)
         Voronoi._validate_no_duplicate_points(points, Voronoi.DEFAULT_MERGE_EPS)
+        if not disjoint:
+            owners = [label for label, _, _, _ in entries]
+            for category in categories:
+                label = category["label"]
+                for q in category["negatives"]:
+                    if any(np.linalg.norm(np.asarray(q) - site) < Voronoi.DEFAULT_MERGE_EPS
+                           and owner == label
+                           for owner, site in zip(owners, points)):
+                        raise ValueError(f"Category '{label}' cannot use its own granule as negative.")
         if not disjoint and covering:
             for category in categories:
                 for q in category["negatives"]:
@@ -260,11 +274,12 @@ class InputJSON(Input):
 
     @classmethod
     def serialize_space(cls, space):
-        """Convert one already-built *atomic* space to the agreed JSON v1 dict.
+        """Convert an already-built atomic/granular FCS to the agreed JSON v1.
 
-        Separated from file I/O so a future granular engine can reuse the
-        geometry serializer without altering the JSON schema.
+        All category/granule geometry is serialized without rebuilding Voronoi.
         """
+        if isinstance(space, GranularFuzzyColorSpace):
+            return cls._serialize_granular_space(space)
         if len(space.prototypes) != len(space.cores) or len(space.prototypes) != len(space.supports):
             raise ValueError("Inconsistent number of prototype/core/support volumes.")
         auxiliary = cls._canonical_points(getattr(space, "auxiliary_negatives", []))
@@ -316,6 +331,118 @@ class InputJSON(Input):
             "model": model,
             "geometry": {"granules": geometries},
         }
+
+    @classmethod
+    def _serialize_granular_space(cls, space):
+        auxiliary = cls._canonical_points(getattr(space, "auxiliary_negatives", []))
+        aux_set = {tuple(p) for p in auxiliary}
+        geometries = {}
+        categories = []
+        for category in space.categories:
+            label = cls._label(category.label, "Category label")
+            negatives = [] if space.disjoint else [
+                cls._triple(p, f"Negatives for '{label}'")
+                for p in space.negative_prototypes.get(label, [])
+                if tuple(float(v) for v in p) not in aux_set
+            ]
+            granules = []
+            for proto, core, support in zip(category.prototypes,
+                                            category.cores, category.supports):
+                glabel = cls._label(proto.label, "Granule label")
+                if glabel in geometries:
+                    raise ValueError(f"Duplicate granule label '{glabel}'.")
+                granules.append({
+                    "label": glabel,
+                    "prototype": cls._triple(proto.positive, glabel),
+                })
+                geometries[glabel] = {
+                    "core": cls._volume_to_data(core),
+                    "voronoi": cls._volume_to_data(proto),
+                    "support": cls._volume_to_data(support),
+                }
+            categories.append({"label": label, "negatives": negatives,
+                               "granules": granules})
+        bounds = space.reference_domain.bounds
+        model = {
+            "color_space": space.color_space,
+            "reference_domain": [[bounds[i], bounds[i + 1]] for i in (0, 2, 4)],
+            "construction": {
+                "method": "voronoi", "lambda1": float(space.lambda1),
+                "lambda2": float(space.lambda2), "disjoint": bool(space.disjoint),
+                "covering": bool(space.covering), "aux_negatives": auxiliary,
+            },
+            "categories": categories,
+        }
+        cls._validate_model(model)
+        return {
+            "format_version": cls.FORMAT_VERSION,
+            "metadata": {
+                "name": space.space_name,
+                "geometry_input_sha256": cls.geometry_input_sha256(model),
+            },
+            "model": model,
+            "geometry": {"granules": geometries},
+        }
+
+    @staticmethod
+    def _write_document_atomic(name, document, progress_callback=None):
+        encoded = (json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2)
+                   + "\n").encode("utf-8")
+        folder = os.path.join(get_base_path(), "fuzzy_color_spaces")
+        os.makedirs(folder, exist_ok=True)
+        destination = os.path.join(folder, name + ".json")
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(dir=folder, prefix="." + name + "_", suffix=".json.tmp")
+            with os.fdopen(fd, "wb") as target:
+                total = len(encoded)
+                for start in range(0, total, 65536):
+                    segment = encoded[start:start + 65536]
+                    target.write(segment)
+                    if progress_callback:
+                        progress_callback(min(start + len(segment), total), total)
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(tmp, destination)
+        finally:
+            if tmp is not None and os.path.isfile(tmp):
+                os.unlink(tmp)
+        return destination
+
+    def save_space(self, space, name=None, progress_callback=None,
+                   return_fuzzy_space=False):
+        """Persist an already-built atomic or granular space without rebuilding.
+
+        Ideal when no geometric inputs have changed. Metadata and saved
+        geometry are validated and regenerated from the same in-memory object.
+        """
+        filename = validate_color_space_name(name or space.space_name)
+        document = self.serialize_space(space)
+        document["metadata"]["name"] = filename
+        destination = self._write_document_atomic(filename, document, progress_callback)
+        return (destination, space) if return_fuzzy_space else destination
+
+    def write_granular_file(self, name, categories, progress_callback=None,
+                            return_fuzzy_space=False, *, color_space="LAB",
+                            reference_domain=None, lambda1=0.5, lambda2=1.5,
+                            disjoint=True, covering=True, samples=27,
+                            negative_prototypes=None, auxiliary_negatives=None,
+                            tconorm="bounded_sum"):
+        """Build and save all granules. Input coordinates are NATIVE model values.
+
+        categories = {category_label: {granule_label: [x,y,z], ...}, ...}
+        This API also supports exact auxiliary site preservation on edits.
+        """
+        name = validate_color_space_name(name)
+        space = FuzzyColorSpaceBuilder.build_granular(
+            name, categories, color_space=color_space,
+            reference_domain=reference_domain, lambda1=lambda1, lambda2=lambda2,
+            disjoint=disjoint, covering=covering, samples=samples,
+            negative_prototypes=negative_prototypes,
+            auxiliary_negatives=auxiliary_negatives, tconorm=tconorm,
+        )
+        return self.save_space(space, name=name, progress_callback=progress_callback,
+                               return_fuzzy_space=return_fuzzy_space)
 
     def write_file(self, name, selected_colors_lab, progress_callback=None,
                    return_fuzzy_space=False, *, color_space="LAB",
@@ -383,29 +510,8 @@ class InputJSON(Input):
         # Runtime-only option. Keeping it out of JSON is intentional.
         if tconorm is not None:
             space.tconorm = tconorm
-        document = self.serialize_space(space)
-        encoded = (json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2)
-                   + "\n").encode("utf-8")
-        folder = os.path.join(get_base_path(), "fuzzy_color_spaces")
-        os.makedirs(folder, exist_ok=True)
-        destination = os.path.join(folder, name + ".json")
-        tmp = None
-        try:
-            fd, tmp = tempfile.mkstemp(dir=folder, prefix="." + name + "_", suffix=".json.tmp")
-            with os.fdopen(fd, "wb") as target:
-                total = len(encoded)
-                for start in range(0, total, 65536):
-                    segment = encoded[start:start + 65536]
-                    target.write(segment)
-                    if progress_callback:
-                        progress_callback(min(start + len(segment), total), total)
-                target.flush()
-                os.fsync(target.fileno())
-            os.replace(tmp, destination)
-        finally:
-            if tmp is not None and os.path.isfile(tmp):
-                os.unlink(tmp)
-        return (destination, space) if return_fuzzy_space else destination
+        return self.save_space(space, name=name, progress_callback=progress_callback,
+                               return_fuzzy_space=return_fuzzy_space)
 
     @staticmethod
     def _distinct_object_pairs(pairs):
@@ -417,7 +523,7 @@ class InputJSON(Input):
         return obj
 
     def read_file(self, file_path):
-        """Load JSON v1 without rebuilding Voronoi; reject unsupported granularity."""
+        """Load atomic or granular JSON v1 without recomputing Voronoi."""
         try:
             with open(file_path, "r", encoding="utf-8") as handle:
                 doc = json.load(
@@ -456,15 +562,12 @@ class InputJSON(Input):
                 raise ValueError(
                     "Geometry keys must match exactly the granule labels in model.categories."
                 )
-            # The format supports multiple granules; the current atomic
-            # FuzzyColorSpace class does not. Never silently flatten them.
-            if any(len(category["granules"]) != 1 for category in doc["model"]["categories"]):
-                raise ValueError(
-                    "This JSON contains a granular category (multiple granules). "
-                    "The PyFCS 2.0 granular membership engine is not implemented "
-                    "yet; use an atomic JSON space for now."
-                )
-            colors, cores, protos, supports = {}, [], [], []
+            is_granular = any(
+                len(category["granules"]) > 1 or
+                category["granules"][0]["label"] != category["label"]
+                for category in doc["model"]["categories"]
+            )
+            colors, category_parts, all_sites = {}, {}, []
             for label, glabel, xyz, _negatives in entries:
                 item = blocks[glabel]
                 if not isinstance(item, dict):
@@ -472,41 +575,61 @@ class InputJSON(Input):
                 sections = []
                 for kind in ("core", "voronoi", "support"):
                     volume = self._volume_from_data(item.get(kind), glabel, xyz, kind)
-                    sections.append(Prototype(label, xyz, voronoi_volume=volume))
-                cores.append(sections[0])
-                protos.append(sections[1])
-                supports.append(sections[2])
-                if mode == "LAB":
-                    lab = np.asarray(xyz, dtype=float)
-                else:
-                    lab = skcolor.rgb2lab(
-                        (np.clip(xyz, 0, 255) / 255.0).reshape(1, 1, 3)
-                    )[0, 0]
+                    sections.append(Prototype(glabel, xyz, voronoi_volume=volume))
+                category_parts.setdefault(label, []).append(sections)
+                all_sites.append((label, xyz))
+            for label, records in category_parts.items():
+                first_xyz = records[0][1].positive
+                lab = (np.asarray(first_xyz, dtype=float)
+                       if mode == "LAB" else skcolor.rgb2lab(
+                           (np.clip(first_xyz, 0, 255) / 255.0).reshape(1, 1, 3))[0, 0])
                 colors[label] = {
                     "Color": [float(x) for x in lab],
                     "positive_prototype": np.asarray(lab, dtype=float),
                     "fcs_original_label": label,
                 }
-            labels = [label for label, *_ in entries]
-            positives = np.asarray([p.positive for p in protos], dtype=float)
+                if is_granular:
+                    colors[label]["granules"] = [
+                        {"label": item[1].label, "prototype": np.asarray(
+                            item[1].positive if mode == "LAB" else skcolor.rgb2lab(
+                                (np.clip(item[1].positive, 0, 255) / 255.0).reshape(1, 1, 3)
+                            )[0, 0], dtype=float)}
+                        for item in records
+                    ]
             negmap = {}
-            for index, (_, _, _, negatives) in enumerate(entries):
+            for category in doc["model"]["categories"]:
+                label = category["label"]
                 if config["disjoint"]:
-                    own = [tuple(p) for j, p in enumerate(positives) if j != index]
+                    own = [tuple(point) for owner, point in all_sites if owner != label]
                 else:
-                    own = [tuple(p) for p in negatives]
+                    own = [tuple(p) for p in category["negatives"]]
                 own.extend(tuple(p) for p in auxiliary)
-                negmap[labels[index]] = own
-            space = FuzzyColorSpace(
-                name, protos, cores, supports,
+                negmap[label] = own
+            base_kw = dict(
                 color_space=mode, reference_domain=domain,
                 lambda1=config["lambda1"], lambda2=config["lambda2"],
                 disjoint=config["disjoint"], covering=config["covering"],
-                # Sampling resolution is not part of the agreed JSON schema.
-                # Auxiliary coordinates themselves ARE stored exactly.
+                # The sampling count is not stored; the sites themselves are.
                 samples=(27 if not config["covering"] else 0),
                 negative_prototypes=negmap, auxiliary_negatives=auxiliary,
             )
+            if is_granular:
+                groups = [GranularFuzzyColor(
+                    label,
+                    [part[1] for part in records],
+                    [part[0] for part in records],
+                    [part[2] for part in records],
+                ) for label, records in category_parts.items()]
+                space = GranularFuzzyColorSpace(name, groups, **base_kw)
+            else:
+                # Keep existing atomic partition membership and UI unchanged.
+                cores = [records[0][0] for records in category_parts.values()]
+                protos = [records[0][1] for records in category_parts.values()]
+                supports = [records[0][2] for records in category_parts.values()]
+                for proto, core, support, label in zip(
+                        protos, cores, supports, category_parts):
+                    proto.label = core.label = support.label = label
+                space = FuzzyColorSpace(name, protos, cores, supports, **base_kw)
             space.source_file_format = "PYFCS_JSON_V1"
             return colors, space
         except (OSError, UnicodeError, ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as exc:

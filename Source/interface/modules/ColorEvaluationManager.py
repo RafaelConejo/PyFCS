@@ -848,27 +848,53 @@ class ColorEvaluationManager:
         return sorted(membership_degrees.items(), key=lambda kv: kv[1], reverse=True)
 
     @classmethod
-    def rank_closest_prototypes(cls, sample_lab, color_rows, metric="CIEDE2000", threshold_settings=None, top_n=7):
+    def rank_closest_prototypes(cls, sample_lab, color_rows, metric="CIEDE2000",
+                                threshold_settings=None, top_n=7,
+                                fuzzy_color_space=None):
+        """Rank CATEGORIES by the closest real granule under the chosen ΔE metric.
+
+        Atomic spaces keep their existing single-prototype behavior. For a
+        granular category the distance is min_j ΔE(sample, prototype_j): a
+        category has no mathematical central prototype to compare against.
+        This *metric* ranking is separate from fuzzy membership aggregation.
+        """
         settings = cls.normalize_threshold_settings(threshold_settings)
         metric = cls.normalize_metric_name(metric or settings.get("metric", "CIEDE2000"))
+        space = fuzzy_color_space
+        groups = {}
+        if getattr(space, "is_granular", False):
+            for category in space.categories:
+                groups[category.label] = [
+                    (proto.label, np.asarray(space.lab_from_model(proto.positive), dtype=float))
+                    for proto in category.prototypes
+                ]
         ranking = []
         for label, proto_lab in color_rows:
-            try:
-                evaluation = cls.evaluate_color_difference_threshold(sample_lab, proto_lab, metric, settings)
-                metric_value = evaluation.get("metric_value", evaluation.get("delta_e"))
-                if metric_value is None:
+            candidates = groups.get(label, [(label, proto_lab)])
+            winner = None
+            for granule_label, candidate in candidates:
+                try:
+                    evaluation = cls.evaluate_color_difference_threshold(
+                        sample_lab, candidate, metric, settings)
+                    metric_value = evaluation.get("metric_value", evaluation.get("delta_e"))
+                    if metric_value is None:
+                        continue
+                    if winner is None or float(metric_value) < winner["metric_value"]:
+                        winner = {
+                            "label": label,
+                            "granule_label": granule_label,
+                            "granule_lab": np.asarray(candidate, dtype=float),
+                            "delta_e": float(metric_value),
+                            "metric_value": float(metric_value),
+                            "class_label": evaluation.get("class_label", "Unavailable"),
+                            "class_order": evaluation.get("class_order", 9),
+                            "status": evaluation.get("status", "unavailable"),
+                            "detail": evaluation.get("detail", ""),
+                        }
+                except Exception:
                     continue
-                ranking.append({
-                    "label": label,
-                    "delta_e": float(metric_value),       # Retained for existing ranking plots.
-                    "metric_value": float(metric_value),
-                    "class_label": evaluation.get("class_label", "Unavailable"),
-                    "class_order": evaluation.get("class_order", 9),
-                    "status": evaluation.get("status", "unavailable"),
-                    "detail": evaluation.get("detail", ""),
-                })
-            except Exception:
-                continue
+            if winner is not None:
+                ranking.append(winner)
         ranking.sort(key=lambda item: item["metric_value"])
         return ranking[:top_n]
     

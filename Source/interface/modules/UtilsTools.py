@@ -7,6 +7,7 @@ from skimage import color as skcolor
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import colorsys
+from PIL import Image, ImageTk
 
 # Project modules
 from Source.input_output.Input import Input
@@ -17,6 +18,44 @@ from Source.colorspace.ReferenceDomain import ReferenceDomain
 # Shared Constants
 
 MAX_COLOR_NAME_CHARS = 24
+
+
+def check_granule_site(label, lab, existing_sites=(), *,
+                       max_name_length=MAX_COLOR_NAME_CHARS):
+    """Validate user-entered granule data without raising an exception.
+
+    ``existing_sites`` contains ``(category_label, granule_label, lab)``
+    tuples, excluding the site currently being edited. This is the shared
+    validation rule for Palette Creation and Add Color Category.
+
+    Returns ``(clean_name, lab_tuple, error_message)``. A normal validation
+    failure returns a message, not ValueError, keeping Tk callbacks safe.
+    """
+    clean_name = str(label or "").strip()
+    if not clean_name or len(clean_name) > max_name_length:
+        return None, None, (
+            f"Granule name must contain 1 to {max_name_length} characters."
+        )
+
+    try:
+        point = np.asarray(lab, dtype=float).reshape(-1)
+        if (point.size != 3 or not np.all(np.isfinite(point))
+                or not is_valid_lab(point)):
+            return None, None, "Enter valid LAB coordinates."
+        for category, other_name, other_lab in existing_sites:
+            if other_name == clean_name:
+                return None, None, f"Granule name '{clean_name}' is already in use."
+            other = np.asarray(other_lab, dtype=float).reshape(-1)
+            if other.size == 3 and np.all(np.isfinite(other)):
+                if np.linalg.norm(point - other) <= Voronoi.DEFAULT_MERGE_EPS:
+                    where = f" in '{category}'" if category else ""
+                    return None, None, (
+                        f"LAB coordinates coincide with '{other_name}'{where}."
+                    )
+    except (TypeError, ValueError, OverflowError, FloatingPointError):
+        return None, None, "Enter valid LAB coordinates."
+    return clean_name, tuple(float(x) for x in point), None
+
 
 
 def validate_color_space_name(value):
@@ -2398,3 +2437,1566 @@ class FCSCreationDialog(tk.Toplevel):
                 pass
             self._initial_focus_id = None
         super().destroy()
+
+
+
+# Shared, precise color picker used by both Color Evaluation and palette
+# granule creation/editing. The app provides only positioning, warnings and
+# legacy callbacks; all widgets and their event state live here.
+
+class _AccentSlider(tk.Canvas):
+    """Compact, theme-independent channel slider with keyboard support.
+
+    This deliberately uses Canvas instead of the platform-native
+    ttk.Scale: Windows themes render the latter with a bulky trough
+    and a gray handle that clash with the rest of PyFCS.
+    """
+
+    def __init__(self, master, command):
+        super().__init__(
+            master, width=175, height=24, bg="#FFFFFF",
+            highlightthickness=0, bd=0, takefocus=1, cursor="hand2"
+        )
+        self._command = command
+        self._minimum = 0.0
+        self._maximum = 255.0
+        self._step = 1.0
+        self._value = 0.0
+        self.bind("<Configure>", self._paint)
+        self.bind("<Button-1>", self._mouse)
+        self.bind("<B1-Motion>", self._mouse)
+        self.bind("<Left>", lambda _e: self._move(-1))
+        self.bind("<Right>", lambda _e: self._move(1))
+        self.bind("<Home>", lambda _e: self._change(self._minimum))
+        self.bind("<End>", lambda _e: self._change(self._maximum))
+
+    def set_range(self, minimum, maximum, step):
+        self._minimum = float(minimum)
+        self._maximum = float(maximum)
+        self._step = float(step)
+        self.set(self._value)
+
+    def set(self, value):
+        self._value = max(
+            self._minimum, min(self._maximum, float(value))
+        )
+        self._paint()
+
+    def _paint(self, _event=None):
+        w = max(25, self.winfo_width())
+        h = max(20, self.winfo_height())
+        left, right, cy = 10, w - 10, h / 2
+        ratio = ((self._value - self._minimum) /
+                 max(1e-12, self._maximum - self._minimum))
+        x = left + ratio * (right - left)
+        self.delete("all")
+        self.create_line(left, cy, right, cy, fill="#E4E7ED",
+                         width=5, capstyle="round")
+        if x > left + 0.5:
+            self.create_line(left, cy, x, cy, fill=UI_ACCENT,
+                             width=5, capstyle="round")
+        self.create_oval(x - 7, cy - 7, x + 7, cy + 7,
+                         fill="#FFFFFF", outline=UI_ACCENT, width=2)
+
+    def _change(self, value):
+        value = max(self._minimum, min(self._maximum, float(value)))
+        if self._step > 0:
+            value = (self._minimum + round(
+                (value - self._minimum) / self._step
+            ) * self._step)
+            value = max(self._minimum, min(self._maximum, value))
+        if abs(value - self._value) < 1e-10:
+            return "break"
+        self.set(value)
+        self._command(value)
+        return "break"
+
+    def _mouse(self, event):
+        self.focus_set()
+        right = max(11, self.winfo_width() - 10)
+        ratio = max(0.0, min(1.0, (event.x - 10) / (right - 10)))
+        return self._change(
+            self._minimum + ratio * (self._maximum - self._minimum)
+        )
+
+    def _move(self, direction):
+        return self._change(self._value + direction * self._step)
+
+
+
+def open_square_color_picker(
+    app, parent, initial_rgb=(217, 217, 217), on_apply=None,
+    *, initial_lab=None, granule_name=None, on_granule_submit=None,
+    submit_text=None, title=None,
+):
+    """Open the shared visual/numeric picker, optionally editing a granule.
+
+    Normal mode retains the old ``on_apply(rgb, hex)`` contract.
+    Granule mode adds a name and calls
+    ``on_granule_submit(name, lab, rgb, hex, dialog, status_var)``.
+    Return ``False`` from that callback to keep the dialog open after a
+    validation error; all other return values mean success.
+
+    LAB inputs remain exact while the user only changes the name or view
+    mode. RGB/HSV/HSL/HEX edits intentionally create a new sRGB-derived LAB.
+    """
+    from tkinter import ttk
+    import re
+
+    ui = sys.modules[__name__]
+    bg, card, soft = "#F5F6F8", "#FFFFFF", "#F6F7FA"
+    text_color, muted, line_color = "#253044", "#667085", "#DBDFE6"
+    accent, accent_soft = ui.UI_ACCENT, ui.UI_ACCENT_SOFT
+
+    # Restore the previous modal grab when this picker closes, since it
+    # is often opened inside Add/Edit granule (itself modal).
+    try:
+        previous_grab = parent.grab_current()
+    except tk.TclError:
+        previous_grab = None
+    popup = tk.Toplevel(parent)
+    popup.withdraw()
+    granule_mode = callable(on_granule_submit)
+    display_title = title or ("Color Picker" if not granule_mode else "Edit Granule")
+    # Normalize legacy callers without changing their public signature.
+    for old_title, new_title in (("Add granule", "Add Granule"),
+                                 ("Edit granule", "Edit Granule")):
+        if display_title.startswith(old_title):
+            display_title = new_title + display_title[len(old_title):]
+            break
+    popup.title(display_title)
+    popup.configure(bg=bg)
+    popup.resizable(False, False)
+    popup.transient(parent)
+    win_w, win_h = 866, 590 if granule_mode else 540
+    try:
+        app.center_popup_to_parent(popup, win_w, win_h, parent=parent)
+    except Exception:
+        app.center_popup(popup, win_w, win_h)
+
+    try:
+        initial = tuple(ui.safe_rgb_tuple(initial_rgb))
+    except (TypeError, ValueError):
+        initial = (217, 217, 217)
+    exact_initial_lab = None
+    if initial_lab is not None:
+        try:
+            candidate = np.asarray(initial_lab, dtype=float).reshape(3)
+            if np.all(np.isfinite(candidate)) and ui.is_valid_lab(candidate):
+                exact_initial_lab = tuple(float(x) for x in candidate)
+                initial = tuple(ui.safe_rgb_tuple(ui.lab_to_rgb(exact_initial_lab)))
+        except (TypeError, ValueError):
+            pass
+    h, s, v = colorsys.rgb_to_hsv(*(x / 255.0 for x in initial))
+    state = {
+        "rgb": initial, "h": h, "s": s, "v": v,
+        "exact_lab": exact_initial_lab,
+        "sv_image": None, "hue_image": None, "updating": False,
+        "last_image_hue": None, "display_mode": "RGB", "dirty": False,
+    }
+
+    sv_w, sv_h, hue_h = 382, 233, 18
+    hue_w = sv_w
+    root = tk.Frame(popup, bg=bg)
+    root.pack(fill="both", expand=True, padx=15, pady=12)
+
+    top = tk.Frame(root, bg=card, highlightbackground=line_color, highlightthickness=1)
+    top.pack(fill="x", pady=(0, 10))
+    tk.Label(top, text=display_title, bg=card, fg=text_color,
+             font=("Segoe UI", 14, "bold"), anchor="w").pack(
+                 side="left", padx=15, pady=11)
+    tk.Label(top, text="Visual selection and precise adjustments", bg=card,
+             fg=muted, font=("Segoe UI", 9), anchor="e").pack(
+                 side="right", padx=15)
+
+    content = tk.Frame(root, bg=bg)
+    content.pack(fill="both", expand=True)
+    content.grid_columnconfigure(0, weight=1, minsize=414)
+    content.grid_columnconfigure(1, weight=1, minsize=370)
+    content.grid_rowconfigure(0, weight=1)
+
+    visual_card = tk.Frame(content, bg=card, highlightbackground=line_color,
+                           highlightthickness=1)
+    visual_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+    editor_card = tk.Frame(content, bg=card, highlightbackground=line_color,
+                           highlightthickness=1)
+    editor_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+
+    tk.Label(visual_card, text="Visual selection", bg=card, fg=text_color,
+             font=("Segoe UI", 10, "bold"), anchor="center").pack(
+                 fill="x", padx=13, pady=(12, 8))
+
+    sv_canvas = tk.Canvas(visual_card, width=sv_w, height=sv_h,
+                          bg="#1f2430", bd=0, highlightthickness=1,
+                          highlightbackground=line_color, cursor="crosshair")
+    sv_canvas.pack(padx=13)
+    hue_canvas = tk.Canvas(visual_card, width=hue_w, height=hue_h,
+                           bg=soft, bd=0, highlightthickness=1,
+                           highlightbackground=line_color, cursor="hand2")
+    hue_canvas.pack(padx=13, pady=(12, 10))
+
+    tk.Label(visual_card, text="Quick colors", bg=card, fg=muted,
+             font=("Segoe UI", 9, "bold"), anchor="center").pack(
+                 fill="x", padx=13, pady=(0, 6))
+    preset_row = tk.Frame(visual_card, bg=card)
+    preset_row.pack(anchor="center")
+    # Neutrals first, then rainbow order (red through violet and pink).
+    preset_colors = (
+        ("Black", (0, 0, 0)), ("Gray", (128, 128, 128)),
+        ("White", (255, 255, 255)), ("Red", (230, 45, 58)),
+        ("Orange", (248, 141, 38)), ("Yellow", (250, 211, 24)),
+        ("Green", (39, 172, 108)), ("Cyan", (46, 191, 200)),
+        ("Blue", (50, 108, 220)), ("Violet", (144, 77, 181)),
+        ("Magenta", (205, 55, 179)), ("Pink", (244, 152, 186)),
+    )
+
+    # Right side: optional granule name + editable channel controls.
+    granule_name_var = tk.StringVar(value=str(granule_name or ""))
+    if granule_mode:
+        name_row = tk.Frame(editor_card, bg=card)
+        name_row.pack(fill="x", padx=13, pady=(13, 2))
+        tk.Label(name_row, text="Granule name", bg=card, fg=text_color,
+                 font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 10))
+        name_entry = tk.Entry(name_row, textvariable=granule_name_var,
+                              font=("Segoe UI", 10), relief="solid", bd=1)
+        name_entry.pack(side="left", fill="x", expand=True)
+        name_entry.configure(
+            validate="key",
+            validatecommand=(popup.register(
+                lambda proposed: len(proposed) <= ui.MAX_COLOR_NAME_CHARS), "%P"),
+        )
+
+    controls_heading = tk.Frame(editor_card, bg=card)
+    controls_heading.pack(fill="x", padx=13, pady=(12, 8))
+    tk.Label(controls_heading, text="Fine adjustments", bg=card,
+             fg=text_color, font=("Segoe UI", 10, "bold")).pack(side="left")
+    mode_var = tk.StringVar(value="RGB")
+    mode_choice = ttk.Combobox(
+        controls_heading, textvariable=mode_var, state="readonly",
+        values=("RGB", "HSV", "HSL", "LAB", "HEX"), width=7)
+    mode_choice.pack(side="right")
+
+    mode_hint = tk.StringVar(value="Channels 0–255 · exact integers")
+    tk.Label(editor_card, textvariable=mode_hint, bg=card, fg=muted,
+             font=("Segoe UI", 9), anchor="w").pack(
+                 fill="x", padx=13, pady=(0, 7))
+
+    # Keep both numeric and HEX controls in one fixed layout position.
+    # Otherwise calling pack() for HEX after the preview has been created
+    # places the entry below the preview instead of under Fine adjustments.
+    channel_slot = tk.Frame(editor_card, bg=card)
+    channel_slot.pack(fill="x", padx=13)
+    numeric_area = tk.Frame(channel_slot, bg=card)
+    numeric_area.pack(fill="x")
+    numeric_vars = [tk.StringVar() for _ in range(3)]
+    numeric_labels = []
+    numeric_scales = []
+    numeric_spins = []
+
+    for i in range(3):
+        row = tk.Frame(numeric_area, bg=card)
+        row.pack(fill="x", pady=7)
+        label = tk.Label(row, text=("R", "G", "B")[i], bg=card,
+                         fg=text_color, font=("Segoe UI", 10, "bold"),
+                         width=4, anchor="w")
+        label.pack(side="left", padx=(0, 5))
+        spin = tk.Spinbox(row, textvariable=numeric_vars[i], from_=0, to=255,
+                          increment=1, width=7, justify="center",
+                          font=("Segoe UI", 10), relief="solid", bd=1)
+        # Reserve the numeric field first; the flexible Canvas slider
+        # then consumes the remaining width instead of hiding Spinbox.
+        spin.pack(side="right")
+        scale = _AccentSlider(
+            row, command=lambda value, ix=i: _on_scale(ix, value)
+        )
+        scale.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        numeric_labels.append(label)
+        numeric_scales.append(scale)
+        numeric_spins.append(spin)
+
+    hex_area = tk.Frame(channel_slot, bg=card)
+    hex_input_var = tk.StringVar()
+
+    def _mark_dirty(*_args):
+        if not state["updating"]:
+            state["dirty"] = True
+
+    for variable in (*numeric_vars, hex_input_var):
+        variable.trace_add("write", _mark_dirty)
+
+    tk.Label(hex_area, text="HEX", bg=card, fg=text_color,
+             font=("Segoe UI", 10, "bold"), width=5, anchor="w").pack(side="left")
+    hex_entry = tk.Entry(hex_area, textvariable=hex_input_var,
+                         font=("Consolas", 12), relief="solid", bd=1)
+    hex_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
+    tk.Label(editor_card, text="Type a value or adjust the sliders.",
+             bg=card, fg=muted, font=("Segoe UI", 9), anchor="w").pack(
+                 fill="x", padx=13, pady=(8, 12))
+
+    # An achromatic, neutral gray surround lets the two patches be compared
+    # without the subtle blue cast of the surrounding application panels.
+    # The swatches themselves always share this exact surround.
+    comparison_bg = "#EDEDED"
+    comparison_border = "#C8C8C8"
+    preview_info = tk.Frame(editor_card, bg=comparison_bg,
+                            highlightbackground=comparison_border,
+                            highlightthickness=1)
+    preview_info.pack(fill="x", padx=13, pady=(0, 12))
+    tk.Label(preview_info, text="Color preview", bg=comparison_bg,
+             fg=text_color, font=("Segoe UI", 10, "bold"),
+             anchor="center").pack(fill="x", padx=11, pady=(9, 6))
+    before_after = tk.Frame(preview_info, bg=comparison_bg)
+    before_after.pack(fill="x", padx=11)
+
+    if exact_initial_lab is not None:
+        # Original and edited patches are equally sized and vertically
+        # aligned; otherwise their differing widths bias the comparison.
+        for column in (0, 1):
+            before_after.grid_columnconfigure(
+                column, weight=1, uniform="color_comparison")
+        original_group = tk.Frame(before_after, bg=comparison_bg)
+        original_group.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        tk.Label(original_group, text="Original", bg=comparison_bg,
+                 fg=muted, font=("Segoe UI", 8)).pack(
+                     fill="x", pady=(0, 4))
+        original_swatch = tk.Frame(
+            original_group, bg=ui.rgb_to_hex(initial), height=42,
+            highlightbackground=comparison_border, highlightthickness=1)
+        original_swatch.pack(fill="x")
+        original_swatch.pack_propagate(False)
+
+        current_group = tk.Frame(before_after, bg=comparison_bg)
+        current_group.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        tk.Label(current_group, text="Current", bg=comparison_bg,
+                 fg=muted, font=("Segoe UI", 8)).pack(
+                     fill="x", pady=(0, 4))
+        current_swatch = tk.Frame(
+            current_group, bg=ui.rgb_to_hex(initial), height=42,
+            highlightbackground=comparison_border, highlightthickness=1)
+        current_swatch.pack(fill="x")
+        current_swatch.pack_propagate(False)
+    else:
+        current_swatch = tk.Frame(
+            before_after, bg=ui.rgb_to_hex(initial), height=42,
+            highlightbackground=comparison_border, highlightthickness=1)
+        current_swatch.pack(fill="x")
+        current_swatch.pack_propagate(False)
+
+    info_hex_var = tk.StringVar()
+    info_rgb_var = tk.StringVar()
+    info_lab_var = tk.StringVar()
+    # Three compact rows avoid clipping long CIELAB values and keep
+    # captions together with their values on smaller Windows DPI settings.
+    info_grid = tk.Frame(preview_info, bg=comparison_bg)
+    info_grid.pack(anchor="center", pady=(8, 10))
+    for row_idx, (caption, variable) in enumerate((
+        ("HEX", info_hex_var),
+        ("RGB", info_rgb_var),
+        ("CIELAB", info_lab_var),
+    )):
+        tk.Label(info_grid, text=caption, bg=comparison_bg, fg=muted,
+                 font=("Segoe UI", 9, "bold"), width=7, anchor="e").grid(
+                     row=row_idx, column=0, padx=(0, 9), pady=2)
+        tk.Label(info_grid, textvariable=variable, bg=comparison_bg, fg=text_color,
+                 font=("Consolas", 9), width=22, anchor="w").grid(
+                     row=row_idx, column=1, pady=2)
+
+    status_var = tk.StringVar(value="Adjust the color visually or enter exact values.")
+    footer = tk.Frame(root, bg=bg)
+    footer.pack(fill="x", pady=(10, 0))
+    tk.Label(footer, textvariable=status_var, bg=bg, fg=muted,
+             font=("Segoe UI", 9), anchor="w").pack(
+                 side="left", fill="x", expand=True)
+
+    # Image generation: the hue bar stays cached; the SV image is only
+    # rebuilt when its hue really changes (never on SV dragging).
+    def _hue_image():
+        line = np.empty((hue_w, 3), dtype=np.uint8)
+        for x in range(hue_w):
+            rr, gg, bb = colorsys.hsv_to_rgb(x / (hue_w - 1), 1, 1)
+            line[x] = (int(round(255 * rr)), int(round(255 * gg)),
+                       int(round(255 * bb)))
+        pixels = np.tile(line[np.newaxis, :, :], (hue_h, 1, 1))
+        return ImageTk.PhotoImage(Image.fromarray(pixels, "RGB"))
+
+    def _sv_image(hue):
+        ss = np.linspace(0, 1, sv_w, dtype=np.float32)[None, :]
+        vv = np.linspace(1, 0, sv_h, dtype=np.float32)[:, None]
+        position = (hue % 1.0) * 6
+        sector = int(position) % 6
+        fraction = position - int(position)
+        # Broadcast both dimensions for every HSV component.
+        val = np.broadcast_to(vv, (sv_h, sv_w))
+        low = val * (1 - ss)
+        down = val * (1 - fraction * ss)
+        up = val * (1 - (1 - fraction) * ss)
+        channels = (
+            (val, up, low), (down, val, low),
+            (low, val, up), (low, down, val),
+            (up, low, val), (val, low, down),
+        )[sector]
+        pixels = np.stack(channels, axis=-1)
+        pixels = np.clip(pixels * 255, 0, 255).astype(np.uint8)
+        return ImageTk.PhotoImage(Image.fromarray(pixels, "RGB"))
+
+    state["hue_image"] = _hue_image()
+    hue_canvas.create_image(0, 0, anchor="nw", image=state["hue_image"])
+    state["sv_image"] = _sv_image(state["h"])
+    image_id = sv_canvas.create_image(0, 0, anchor="nw", image=state["sv_image"])
+    state["last_image_hue"] = state["h"]
+    sv_shadow = sv_canvas.create_oval(0, 0, 0, 0, outline="#242835", width=4)
+    sv_marker = sv_canvas.create_oval(0, 0, 0, 0, outline="white", width=2)
+    hue_marker = hue_canvas.create_rectangle(0, 0, 0, hue_h,
+                                              outline="white", width=2)
+
+    def _current_hex():
+        return "#{:02X}{:02X}{:02X}".format(*state["rgb"])
+
+    def _normal_values(mode):
+        rgb = state["rgb"]
+        if mode == "RGB":
+            return (("R", "G", "B"), (0, 0, 0), (255, 255, 255), rgb, (1, 1, 1))
+        if mode == "HSV":
+            return (("H°", "S%", "V%"), (0, 0, 0), (360, 100, 100),
+                    (state["h"] * 360, state["s"] * 100, state["v"] * 100),
+                    (1, 1, 1))
+        if mode == "HSL":
+            hh, ll, ss = colorsys.rgb_to_hls(*(v / 255.0 for v in rgb))
+            if ss <= 0.000001:
+                hh = state["h"]
+            return (("H°", "S%", "L%"), (0, 0, 0), (360, 100, 100),
+                    (hh * 360, ss * 100, ll * 100), (1, 1, 1))
+        lab = (state["exact_lab"] if state["exact_lab"] is not None
+               else ui.rgb_to_lab(rgb))
+        return (("L*", "a*", "b*"), (0, -128, -128), (100, 128, 128),
+                tuple(float(x) for x in lab[:3]), (0.1, 0.1, 0.1))
+
+    def _format_number(number, mode):
+        if mode in ("RGB", "HSV", "HSL"):
+            return str(int(round(number)))
+        # Preserve original precision in LAB; do not silently quantize
+        # prototypes on a name-only edit or a change of display mode.
+        return f"{float(number):.15g}"
+
+    def _sync_numeric():
+        mode = mode_var.get()
+        state["updating"] = True
+        state["display_mode"] = mode
+        try:
+            if mode == "HEX":
+                numeric_area.pack_forget()
+                hex_area.pack(fill="x", pady=7)
+                hex_input_var.set(_current_hex())
+                mode_hint.set("Hexadecimal: #RRGGBB")
+            else:
+                hex_area.pack_forget()
+                numeric_area.pack(fill="x")
+                labels, lo, hi, values, increments = _normal_values(mode)
+                mode_hint.set({
+                    "RGB": "Channels 0–255 · exact integers",
+                    "HSV": "Hue 0–360° · saturation and value 0–100%",
+                    "HSL": "Hue 0–360° · saturation and lightness 0–100%",
+                    "LAB": "CIELAB · values displayed in sRGB preview",
+                }[mode])
+                for i in range(3):
+                    numeric_labels[i].configure(text=labels[i])
+                    numeric_scales[i].set_range(
+                        lo[i], hi[i], increments[i]
+                    )
+                    numeric_scales[i].set(values[i])
+                    numeric_spins[i].configure(from_=lo[i], to=hi[i],
+                                               increment=increments[i])
+                    numeric_vars[i].set(_format_number(values[i], mode))
+        finally:
+            state["updating"] = False
+            state["dirty"] = False
+
+    def _redraw(regenerate=False):
+        # Drawing is local: do not reconstruct widgets when a color changes.
+        if regenerate or abs(state["last_image_hue"] - state["h"]) > 1e-7:
+            state["sv_image"] = _sv_image(state["h"])
+            sv_canvas.itemconfigure(image_id, image=state["sv_image"])
+            state["last_image_hue"] = state["h"]
+        mx = state["s"] * (sv_w - 1)
+        my = (1 - state["v"]) * (sv_h - 1)
+        sv_canvas.coords(sv_shadow, mx - 7, my - 7, mx + 7, my + 7)
+        sv_canvas.coords(sv_marker, mx - 5, my - 5, mx + 5, my + 5)
+        hx = (state["h"] % 1.0) * (hue_w - 1)
+        hue_canvas.coords(hue_marker, hx - 3, 0, hx + 3, hue_h)
+        current_swatch.configure(bg=_current_hex())
+        info_hex_var.set(_current_hex())
+        info_rgb_var.set(", ".join(str(int(c)) for c in state["rgb"]))
+        lab = (state["exact_lab"] if state["exact_lab"] is not None
+               else ui.rgb_to_lab(state["rgb"]))
+        info_lab_var.set(", ".join(f"{float(x):.1f}" for x in lab[:3]))
+        _sync_numeric()
+
+    def _apply_rgb(rgb):
+        try:
+            color = tuple(max(0, min(255, int(round(float(c))))) for c in rgb)
+            if len(color) != 3:
+                return
+        except (TypeError, ValueError):
+            return
+        h_, s_, v_ = colorsys.rgb_to_hsv(*(c / 255.0 for c in color))
+        if s_ <= 1e-9:
+            h_ = state["h"]  # keep previous hue for an achromatic color
+        state.update(rgb=color, h=h_, s=s_, v=v_, exact_lab=None)
+        _redraw()
+        status_var.set("Color updated.")
+
+    def _apply_hsv(hue, saturation, value):
+        hh, ss, vv = (hue % 1.0), min(1, max(0, saturation)), min(1, max(0, value))
+        r, g, b = colorsys.hsv_to_rgb(hh, ss, vv)
+        state.update(h=hh, s=ss, v=vv, exact_lab=None,
+                     rgb=tuple(max(0, min(255, int(round(c * 255)))) for c in (r, g, b)))
+        _redraw()
+        status_var.set("Color updated.")
+
+    def _apply_channel_values(values, mode):
+        """Apply a fully validated channel tuple as one atomic change."""
+        if mode == "RGB":
+            _apply_rgb(values)
+        elif mode == "HSV":
+            _apply_hsv(values[0] / 360.0, values[1] / 100.0,
+                       values[2] / 100.0)
+        elif mode == "HSL":
+            rr, gg, bb = colorsys.hls_to_rgb(
+                values[0] / 360.0, values[2] / 100.0,
+                values[1] / 100.0
+            )
+            _apply_rgb((255.0 * rr, 255.0 * gg, 255.0 * bb))
+        elif mode == "LAB":
+            rgb = ui.lab_to_rgb(values)
+            _apply_rgb(ui.safe_rgb_tuple(rgb))
+            # Preserve the exact user-entered LAB even if the displayed
+            # sRGB color has been clipped or rounded to 8 bits.
+            state["exact_lab"] = tuple(float(x) for x in values)
+            _redraw()
+            status_var.set(
+                "Exact LAB retained; sRGB preview may clip out-of-gamut colors."
+            )
+
+    def _read_channels(mode_override=None):
+        """Commit only valid values; never raise from a Tk callback."""
+        if not state["dirty"]:
+            return True
+        mode = mode_override or state.get("display_mode", mode_var.get())
+        try:
+            if mode == "HEX":
+                entered = hex_input_var.get().strip()
+                if re.fullmatch(r"#?[0-9a-fA-F]{6}", entered) is None:
+                    status_var.set("HEX must contain exactly 6 hexadecimal digits.")
+                    return False
+                value = entered.lstrip("#")
+                _apply_rgb(tuple(
+                    int(value[i:i + 2], 16) for i in (0, 2, 4)
+                ))
+                return True
+
+            labels, minimum, maximum, _, _ = _normal_values(mode)
+            # In RGB do not accept decimal values, exponent syntax,
+            # NaN, infinity or whitespace as integer channel inputs.
+            raw = tuple(var.get().strip() for var in numeric_vars)
+            if mode == "RGB":
+                if any(re.fullmatch(r"[0-9]+", part) is None
+                       for part in raw):
+                    status_var.set("RGB channels must be whole numbers from 0 to 255.")
+                    return False
+                values = tuple(float(part) for part in raw)
+            else:
+                values = tuple(float(part) for part in raw)
+            if any(not np.isfinite(x) for x in values):
+                status_var.set("Use finite numeric values only.")
+                return False
+            for label, value, lower, upper in zip(
+                labels, values, minimum, maximum
+            ):
+                if not lower <= value <= upper:
+                    status_var.set(
+                        f"{label} must be between {lower:g} and {upper:g}."
+                    )
+                    return False
+            _apply_channel_values(values, mode)
+            return True
+        except (ValueError, TypeError, OverflowError, FloatingPointError):
+            status_var.set("Invalid input. Check the channel values.")
+            return False
+
+    def _commit_channels(_event=None):
+        """Revert invalid edits without affecting the accepted color."""
+        if not state["dirty"]:
+            return "break"
+        if not _read_channels():
+            reason = status_var.get()
+            _sync_numeric()  # Restore the last accepted, precise value.
+            status_var.set(f"{reason} Previous color restored.")
+        return "break"
+
+    def _on_scale(index, value):
+        """Sliders always start from the last *valid* color.
+
+        In particular, an invalid or half-entered Spinbox value cannot
+        block dragging a slider or sneak into the next color update.
+        """
+        if state["updating"]:
+            return
+        mode = mode_var.get()
+        if mode == "HEX":
+            return
+        try:
+            _, minimum, maximum, accepted, increments = _normal_values(mode)
+            values = list(accepted)
+            step = increments[index]
+            changed = max(minimum[index], min(maximum[index], float(value)))
+            if step >= 1:
+                changed = float(round(changed))
+            else:
+                changed = round(changed / step) * step
+            values[index] = changed
+            _apply_channel_values(tuple(values), mode)
+        except (ValueError, TypeError, OverflowError, FloatingPointError):
+            _sync_numeric()
+            status_var.set("Could not apply slider value; previous color retained.")
+
+    # All widget callbacks are guarded. Invalid text is never allowed to
+    # propagate ValueError through Tkinter's event loop.
+    for spin in numeric_spins:
+        spin.configure(command=_commit_channels)
+        spin.bind("<Return>", _commit_channels)
+        spin.bind("<FocusOut>", _commit_channels)
+    hex_entry.bind("<Return>", _commit_channels)
+    hex_entry.bind("<FocusOut>", _commit_channels)
+
+    def _on_mode_change(_event=None):
+        previous = state.get("display_mode", "RGB")
+        valid = True
+        if previous != mode_var.get() and state["dirty"]:
+            # Display-only mode changes must not roundtrip exact LAB.
+            valid = _read_channels(previous)
+        reason = status_var.get() if not valid else ""
+        _sync_numeric()
+        status_var.set(
+            f"{reason} Previous color restored." if not valid
+            else "Enter a value or adjust the sliders."
+        )
+
+    mode_choice.bind("<<ComboboxSelected>>", _on_mode_change)
+
+    def _on_sv(event):
+        x = max(0, min(sv_w - 1, event.x))
+        y = max(0, min(sv_h - 1, event.y))
+        _apply_hsv(state["h"], x / (sv_w - 1), 1 - y / (sv_h - 1))
+
+    def _on_hue(event):
+        x = max(0, min(hue_w - 1, event.x))
+        _apply_hsv(x / (hue_w - 1), state["s"], state["v"])
+
+    for name, callback in (("<Button-1>", _on_sv), ("<B1-Motion>", _on_sv)):
+        sv_canvas.bind(name, callback)
+    for name, callback in (("<Button-1>", _on_hue), ("<B1-Motion>", _on_hue)):
+        hue_canvas.bind(name, callback)
+
+    for label, rgb in preset_colors:
+        color_hex = ui.rgb_to_hex(rgb)
+        btn = tk.Button(
+            preset_row, width=2, height=1, bg=color_hex,
+            activebackground=color_hex, bd=1, relief="solid",
+            padx=0, pady=0, highlightthickness=0,
+            font=("Segoe UI", 9), cursor="hand2",
+            command=lambda color=rgb: _apply_rgb(color))
+        btn.pack(side="left", padx=2)
+        # A short label on hover; no additional tooltip dependencies.
+        btn.bind("<Enter>", lambda _e, text=label: status_var.set(text))
+        btn.bind("<Leave>", lambda _e: status_var.set("Adjust the color visually or enter values."))
+
+    def _close_picker():
+        try:
+            if popup.grab_current() == popup:
+                popup.grab_release()
+        except tk.TclError:
+            pass
+        popup.destroy()
+        try:
+            if previous_grab is not None and previous_grab.winfo_exists():
+                previous_grab.grab_set()
+                previous_grab.focus_set()
+        except tk.TclError:
+            pass
+
+    def _validation_warning(message):
+        """Report recoverable validation errors without closing the picker."""
+        message = str(message or "Please check the granule information.")
+        status_var.set(message)
+        try:
+            app.custom_warning("Invalid Granule", message, parent=popup)
+        except (AttributeError, tk.TclError):
+            # Keep the inline status usable even in minimal/embedded UIs.
+            pass
+
+    def _select():
+        # A display-only mode switch must not quantize the chosen color.
+        if state["dirty"] and not _read_channels():
+            if granule_mode:
+                _validation_warning(status_var.get())
+            return
+        selected = tuple(state["rgb"])
+        if granule_mode:
+            name = granule_name_var.get().strip()
+            if not name:
+                _validation_warning("Enter a granule name.")
+                return
+            if len(name) > ui.MAX_COLOR_NAME_CHARS:
+                _validation_warning("Granule name is too long.")
+                return
+            lab = (state["exact_lab"] if state["exact_lab"] is not None
+                   else tuple(float(v) for v in ui.rgb_to_lab(selected)))
+            try:
+                accepted = on_granule_submit(
+                    name, lab, selected, _current_hex(), popup, status_var)
+            except Exception as exc:
+                # Never leak callback failures through the Tk event loop.
+                # Ordinary user validation takes the non-exceptional False path.
+                import logging
+                logging.getLogger(__name__).exception("Granule save failed")
+                _validation_warning(f"Could not save granule: {exc}")
+                return
+            if accepted is False:
+                _validation_warning(status_var.get())
+                return
+        elif callable(on_apply):
+            try:
+                on_apply(selected, _current_hex())
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).exception("Color selection callback failed")
+                status_var.set(f"Could not apply color: {exc}")
+                return
+        _close_picker()
+
+    tk.Button(
+        footer, text="Cancel", font=("Segoe UI", 10), bg="#ECEEF2",
+        fg=text_color, relief="flat", bd=0, padx=17, pady=8,
+        command=_close_picker).pack(side="right", padx=(9, 0))
+    tk.Button(
+        footer, text=(submit_text or ("Save changes" if granule_mode else "Select color")),
+        font=("Segoe UI", 10, "bold"),
+        bg=accent, fg="white", activebackground=ui.UI_ACCENT_DARK,
+        activeforeground="white", relief="flat", bd=0, padx=18,
+        pady=8, command=_select).pack(side="right")
+
+    popup.protocol("WM_DELETE_WINDOW", _close_picker)
+    popup.bind("<Escape>", lambda _event: _close_picker())
+    _redraw()
+    if granule_mode and exact_initial_lab is not None:
+        # Open existing prototypes in LAB mode without changing their
+        # original coordinates by an unnecessary roundtrip.
+        mode_var.set("LAB")
+        _sync_numeric()
+    popup.deiconify()
+    popup.grab_set()
+    return popup
+
+
+
+# Palette creation: a category starts with a color; further granules are optional.
+# Kept with the shared interface utilities to avoid another UI module.
+
+class CustomCategoryDialog:
+    """Build a palette category by adding one or more positive granules.
+
+    The input panel is always the same, whether the category ends up atomic or
+    granular. Colors are appended explicitly, and the category is committed
+    only when the user presses Create Category. LAB input is never roundtripped
+    through an 8-bit RGB preview.
+    """
+
+    def __init__(self, palette):
+        self.palette = palette
+        self.app = palette.app
+        self.granules = []  # All granules; no special, implicit first color.
+        self._suspend = False
+        self._cached_lab = None
+        self._cached_rgb = None
+        self._pending_refresh = None
+        self.name_var = tk.StringVar(value="")
+        # Only the suggested default is derived from the category name.
+        # The user can give every granule an independent label.
+        self.granule_name_var = tk.StringVar(value="")
+        self._suggested_granule_name = ""
+        self.mode_var = tk.StringVar(value="RGB")
+        self.channel_vars = [tk.StringVar(value="") for _ in range(3)]
+        self.hex_input_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(value="Enter a name and add the first granule.")
+        self.count_var = tk.StringVar(value="0 added")
+        self.hex_preview_var = tk.StringVar(value="—")
+        self.rgb_preview_var = tk.StringVar(value="—")
+        self.lab_preview_var = tk.StringVar(value="—")
+        self.guide_var = tk.StringVar(value="RGB channels: integers from 0 to 255")
+
+        self.win = tk.Toplevel(palette.win)
+        self.win.withdraw()
+        self.win.title("Add Color Category")
+        self.win.configure(bg=palette.BG)
+        self.win.resizable(True, True)
+        self.win.minsize(760, 625)
+        self.win.transient(palette.win)
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+        try:
+            self.app.center_popup_to_parent(self.win, 830, 715, parent=palette.win)
+        except Exception:
+            self.win.geometry("830x715")
+        self._build_ui()
+        self.name_var.trace_add("write", self._on_name_change)
+        self.granule_name_var.trace_add(
+            "write", lambda *_args: self._update_create_state())
+        for variable in (*self.channel_vars, self.hex_input_var):
+            variable.trace_add("write", self._on_input_change)
+        self.win.bind("<Escape>", lambda _event: self.close())
+        self._refresh_mode()
+        self._render_granules()
+        self.win.deiconify()
+        self.win.grab_set()
+        self.name_entry.focus_set()
+
+    def close(self):
+        if self._pending_refresh is not None:
+            try:
+                self.win.after_cancel(self._pending_refresh)
+            except tk.TclError:
+                pass
+            self._pending_refresh = None
+        try:
+            self.win.destroy()
+        except tk.TclError:
+            pass
+
+    @staticmethod
+    def _configure_granule_columns(container):
+        """Use the same responsive grid for headers and scrollable rows."""
+        widths = (35, 145, 115, 89, 153, 114)
+        weights = (0, 3, 2, 1, 3, 1)
+        for column, (width, weight) in enumerate(zip(widths, weights)):
+            container.grid_columnconfigure(column, minsize=width, weight=weight)
+
+    def _build_ui(self):
+        p = self.palette
+        root = tk.Frame(self.win, bg=p.BG)
+        root.pack(fill="both", expand=True, padx=13, pady=10)
+
+        # Footer is anchored, leaving the lower table free to grow vertically.
+        bottom = tk.Frame(root, bg=p.BG)
+        bottom.pack(side="bottom", fill="x", pady=(9, 0))
+        tk.Label(bottom, textvariable=self.status_var, font=p.FONT_SMALL,
+                 fg=p.MUTED, bg=p.BG, anchor="w", justify="left",
+                 wraplength=470).pack(side="left", fill="x", expand=True)
+        tk.Button(bottom, text="Cancel", command=self.close,
+                  font=p.FONT, relief="solid", bd=1,
+                  padx=12, pady=7).pack(side="right", padx=(9, 0))
+        self.create_button = tk.Button(
+            bottom, text="Create Category", command=self.create,
+            font=p.FONT_BOLD, relief="flat", bd=0, padx=16, pady=8,
+            bg=p.BLUE, fg="white", activebackground=UI_ACCENT_DARK,
+            activeforeground="white", cursor="hand2", state="disabled"
+        )
+        self.create_button.pack(side="right")
+        self.create_button.configure(bg=p.PANEL, disabledforeground=p.MUTED)
+
+        header = tk.Frame(root, bg=p.CARD, highlightbackground=p.BORDER,
+                          highlightthickness=1)
+        header.pack(fill="x", pady=(0, 8))
+        tk.Label(header, text="Add Color Category", font=("Segoe UI", 14, "bold"),
+                 bg=p.CARD, fg=p.TEXT, anchor="w").pack(
+                     fill="x", padx=16, pady=(10, 1))
+        tk.Label(header, text="Define the color and add one or more granules.",
+                 font=p.FONT_SMALL, fg=p.MUTED, bg=p.CARD, anchor="w").pack(
+                     fill="x", padx=16, pady=(0, 10))
+
+        # One compact card for the category name and the color input.
+        card = tk.Frame(root, bg=p.CARD, highlightbackground=p.BORDER,
+                        highlightthickness=1)
+        card.pack(fill="x", pady=(0, 8))
+        name_row = tk.Frame(card, bg=p.CARD)
+        name_row.pack(fill="x", padx=15, pady=(10, 8))
+        tk.Label(name_row, text="Category name", font=p.FONT_BOLD, bg=p.CARD,
+                 fg=p.TEXT, width=15, anchor="w").pack(side="left")
+        self.name_entry = tk.Entry(name_row, textvariable=self.name_var,
+                                   font=("Segoe UI", 10), bd=1, relief="solid")
+        self.name_entry.pack(side="left", fill="x", expand=True)
+
+        tk.Frame(card, height=1, bg=p.BORDER).pack(fill="x", padx=15, pady=(0, 7))
+        color_heading = tk.Frame(card, bg=p.CARD)
+        color_heading.pack(fill="x", padx=15, pady=(0, 6))
+        tk.Label(color_heading, text="New granule", bg=p.CARD, fg=p.TEXT,
+                 font=p.FONT_SECTION).pack(side="left")
+        tk.Label(color_heading, text="RGB, LAB or HEX", bg=p.CARD,
+                 fg=p.MUTED, font=p.FONT_SMALL).pack(side="left", padx=(10, 0))
+
+        # Swatch and conversions on the left, editable fields and actions
+        # on the right. The preview remains visually separated from the input.
+        two_cols = tk.Frame(card, bg=p.CARD)
+        two_cols.pack(fill="x", padx=15, pady=(0, 5))
+        two_cols.grid_columnconfigure(0, weight=1, uniform="granule_input")
+        two_cols.grid_columnconfigure(1, weight=1, uniform="granule_input")
+        preview_panel = tk.Frame(
+            two_cols, bg=p.PANEL, highlightbackground=p.BORDER,
+            highlightthickness=1)
+        preview_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 9))
+        input_panel = tk.Frame(two_cols, bg=p.CARD)
+        input_panel.grid(row=0, column=1, sticky="nsew", padx=(9, 0))
+
+        tk.Label(preview_panel, text="Color preview", font=p.FONT_BOLD,
+                 bg=p.PANEL, fg=p.TEXT).pack(
+                     anchor="w", padx=11, pady=(7, 4))
+        self.preview = tk.Canvas(
+            preview_panel, width=250, height=52, bg=p.PANEL,
+            bd=0, highlightthickness=0)
+        self.preview.pack(fill="x", padx=11, pady=(0, 5))
+        self.preview_rect = self.preview.create_rectangle(
+            1, 1, 249, 51, fill="#E5E7EB", outline=p.BORDER)
+        self.preview.bind("<Configure>", self._resize_preview)
+
+        for caption, variable in (
+            ("HEX", self.hex_preview_var),
+            ("RGB", self.rgb_preview_var),
+            ("LAB", self.lab_preview_var),
+        ):
+            # The whole caption/value pair is centered under the swatch.
+            value_row = tk.Frame(preview_panel, bg=p.PANEL)
+            value_row.pack(anchor="center", pady=1)
+            tk.Label(value_row, text=caption, bg=p.PANEL, fg=p.MUTED,
+                     font=p.FONT_SMALL_BOLD, width=5,
+                     anchor="e").pack(side="left", padx=(0, 9))
+            tk.Label(value_row, textvariable=variable, bg=p.PANEL, fg=p.TEXT,
+                     font=("Consolas", 9), width=21, anchor="w").pack(
+                         side="left")
+        tk.Frame(preview_panel, height=5, bg=p.PANEL).pack()
+
+        granule_name_row = tk.Frame(input_panel, bg=p.CARD)
+        granule_name_row.pack(fill="x", pady=(0, 7))
+        tk.Label(granule_name_row, text="Granule name", bg=p.CARD,
+                 fg=p.TEXT, font=p.FONT_BOLD).pack(side="left", padx=(0, 8))
+        self.granule_name_entry = tk.Entry(
+            granule_name_row, textvariable=self.granule_name_var,
+            font=("Segoe UI", 10), bd=1, relief="solid")
+        self.granule_name_entry.pack(side="left", fill="x", expand=True)
+
+        mode_row = tk.Frame(input_panel, bg=p.CARD)
+        mode_row.pack(fill="x", pady=(0, 5))
+        tk.Label(mode_row, text="Input mode", bg=p.CARD, fg=p.TEXT,
+                 font=p.FONT_BOLD).pack(side="left", padx=(0, 9))
+        self.mode_combo = ttk.Combobox(
+            mode_row, textvariable=self.mode_var,
+            state="readonly", width=7, values=("RGB", "LAB", "HEX"))
+        self.mode_combo.pack(side="left")
+        self.mode_combo.bind("<<ComboboxSelected>>", self._refresh_mode)
+        tk.Button(mode_row, text="Pick color...", command=self._pick_color,
+                  font=p.FONT_SMALL_BOLD, bg=p.BLUE_SOFT, fg=p.BLUE,
+                  relief="flat", bd=0, padx=8, pady=3,
+                  cursor="hand2").pack(side="right")
+
+        entry_area = tk.Frame(input_panel, bg=p.CARD)
+        entry_area.pack(fill="x")
+        self.entry_rows = []
+        self.entry_widgets = []
+        for i in range(3):
+            line = tk.Frame(entry_area, bg=p.CARD)
+            line.pack(fill="x", pady=2)
+            title = tk.Label(line, width=6, text=("R", "G", "B")[i],
+                             font=p.FONT_BOLD, bg=p.CARD, fg=p.MUTED,
+                             anchor="w")
+            title.pack(side="left")
+            entry = tk.Entry(line, textvariable=self.channel_vars[i],
+                             font=("Segoe UI", 10), bd=1, relief="solid")
+            entry.pack(side="left", fill="x", expand=True)
+            self.entry_rows.append((line, title))
+            self.entry_widgets.append(entry)
+        self.hex_row = tk.Frame(entry_area, bg=p.CARD)
+        tk.Label(self.hex_row, text="HEX", width=6, bg=p.CARD, fg=p.MUTED,
+                 font=p.FONT_BOLD, anchor="w").pack(side="left")
+        self.hex_entry = tk.Entry(
+            self.hex_row, textvariable=self.hex_input_var,
+            font=("Segoe UI", 10), bd=1, relief="solid")
+        self.hex_entry.pack(side="left", fill="x", expand=True)
+        tk.Label(input_panel, textvariable=self.guide_var, bg=p.CARD,
+                 fg=p.MUTED, font=p.FONT_SMALL, anchor="center",
+                 wraplength=340, justify="center").pack(fill="x", pady=(5, 0))
+
+        action = tk.Frame(card, bg=p.CARD)
+        action.pack(fill="x", padx=15, pady=(0, 9))
+        self.add_button = tk.Button(
+            action, text="+ Add granule", command=self.add,
+            font=p.FONT_SMALL_BOLD, relief="flat", bd=0,
+            padx=13, pady=6, bg=p.BLUE, fg="white",
+            disabledforeground=p.MUTED,
+            activebackground=UI_ACCENT_DARK, activeforeground="white",
+            cursor="hand2", state="disabled")
+        self.add_button.pack(side="right")
+
+        # The lower panel receives the available vertical space and scrolls.
+        extras = tk.Frame(root, bg=p.CARD, highlightbackground=p.BORDER,
+                          highlightthickness=1)
+        extras.pack(fill="both", expand=True)
+        bar = tk.Frame(extras, bg=p.CARD)
+        bar.pack(fill="x", padx=12, pady=(8, 6))
+        tk.Label(bar, text="Positive granules", bg=p.CARD, fg=p.TEXT,
+                 font=p.FONT_SECTION).pack(side="left")
+        tk.Label(bar, textvariable=self.count_var, bg=p.CARD, fg=p.MUTED,
+                 font=p.FONT_SMALL).pack(side="left", padx=(9, 0))
+        tk.Label(bar, text="Scroll to see all added colors", bg=p.CARD,
+                 fg=p.MUTED, font=p.FONT_SMALL).pack(side="right")
+
+        headings = tk.Frame(extras, bg=p.PANEL, height=27)
+        headings.pack(fill="x", padx=(11, 28))
+        headings.pack_propagate(False)
+        self._configure_granule_columns(headings)
+        for col, text, colspan in (
+            (0, "GRANULE", 2), (2, "RGB", 1), (3, "HEX", 1),
+            (4, "LAB", 1), (5, "ACTIONS", 1),
+        ):
+            tk.Label(headings, text=text, font=p.FONT_SMALL_BOLD,
+                     bg=p.PANEL, fg=p.MUTED,
+                     anchor="w" if col == 0 else "center").grid(
+                         row=0, column=col, columnspan=colspan,
+                         sticky="nsew", padx=(11, 0) if col == 0 else 0)
+        headings.grid_rowconfigure(0, weight=1)
+
+        host = tk.Frame(extras, bg=p.CARD)
+        host.pack(fill="both", expand=True, padx=(11, 11), pady=(0, 10))
+        self.canvas = tk.Canvas(host, bg=p.CARD, highlightthickness=0, bd=0)
+        self.yscroll = tk.Scrollbar(host, orient="vertical",
+                                     command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.yscroll.set)
+        self.yscroll.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.rows = tk.Frame(self.canvas, bg=p.CARD)
+        self.rows_id = self.canvas.create_window((0, 0), window=self.rows,
+                                                  anchor="nw")
+        self.rows.bind("<Configure>", lambda _e: self.canvas.configure(
+            scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(
+            self.rows_id, width=max(1, e.width)))
+        self._bind_granule_scroll(self.canvas)
+
+    def _on_granule_scroll(self, event):
+        """Scroll only the category dialog's granule list (Windows/Linux)."""
+        if getattr(event, "num", None) == 4:
+            steps = -1
+        elif getattr(event, "num", None) == 5:
+            steps = 1
+        else:
+            delta = getattr(event, "delta", 0)
+            steps = -int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
+        self.canvas.yview_scroll(steps, "units")
+        return "break"
+
+    def _bind_granule_scroll(self, widget):
+        widget.bind("<MouseWheel>", self._on_granule_scroll, add="+")
+        widget.bind("<Button-4>", self._on_granule_scroll, add="+")
+        widget.bind("<Button-5>", self._on_granule_scroll, add="+")
+        for child in widget.winfo_children():
+            self._bind_granule_scroll(child)
+
+    def _resize_preview(self, event):
+        self.preview.coords(self.preview_rect, 1, 1, max(2, event.width - 2),
+                            max(2, event.height - 2))
+
+    def _read_primary(self):
+        return self.app._normalize_custom_color_input(
+            input_mode=self.mode_var.get(),
+            value_1=self.channel_vars[0].get(),
+            value_2=self.channel_vars[1].get(),
+            value_3=self.channel_vars[2].get(),
+            hex_value=self.hex_input_var.get(),
+        )
+
+    def _on_input_change(self, *_args):
+        if self._suspend:
+            return
+        ok, message, lab, rgb, _hex = self._read_primary()
+        self._cached_lab = tuple(float(value) for value in lab) if ok else None
+        self._cached_rgb = tuple(safe_rgb_tuple(rgb)) if ok else None
+        if ok:
+            hx = rgb_to_hex(self._cached_rgb).upper()
+            self.preview.itemconfigure(self.preview_rect, fill=hx)
+            self.hex_preview_var.set(hx)
+            self.rgb_preview_var.set(", ".join(map(str, self._cached_rgb)))
+            self.lab_preview_var.set(", ".join(f"{v:.2f}" for v in self._cached_lab))
+        else:
+            self.preview.itemconfigure(self.preview_rect, fill="#E5E7EB")
+            self.hex_preview_var.set("—")
+            self.rgb_preview_var.set("—")
+            self.lab_preview_var.set("—")
+        self._update_create_state(message)
+
+    def _update_create_state(self, hint=""):
+        name = self._current_name()
+        valid_name = bool(name) and len(name) <= MAX_COLOR_NAME_CHARS
+        unique_name = valid_name and name not in self.palette.colors
+
+        # The buttons have independent semantics: Add needs valid input,
+        # Create needs at least one previously added granule.
+        granule_name = self.granule_name_var.get().strip()
+        valid_granule_name = (
+            bool(granule_name) and
+            len(granule_name) <= MAX_COLOR_NAME_CHARS and
+            granule_name not in self.palette._used_granule_labels() and
+            all(g["label"] != granule_name for g in self.granules)
+        )
+        duplicate_color = self._duplicate_color_label(self._cached_lab)
+        can_add = (
+            unique_name and valid_granule_name and
+            self._cached_lab is not None and duplicate_color is None
+        )
+        can_create = unique_name and bool(self.granules)
+        self.add_button.configure(
+            state="normal" if can_add else "disabled",
+            bg=self.palette.BLUE if can_add else self.palette.PANEL,
+        )
+        self.create_button.configure(
+            state="normal" if can_create else "disabled",
+            bg=self.palette.BLUE if can_create else self.palette.PANEL,
+        )
+        if not valid_name:
+            self.status_var.set(
+                f"Enter a category name (maximum {MAX_COLOR_NAME_CHARS} characters).")
+        elif not unique_name:
+            self.status_var.set("This category name is already used.")
+        elif self._cached_lab is not None and duplicate_color is not None:
+            self.status_var.set(
+                f"Color matches '{duplicate_color}'. Change at least one "
+                "coordinate before adding another granule.")
+        elif not valid_granule_name:
+            self.status_var.set("Enter a unique granule name.")
+        elif can_create:
+            count = len(self.granules)
+            self.status_var.set(
+                f"{count} granule{'s' if count != 1 else ''} added. "
+                "Add another color or create the category.")
+        elif self._cached_lab is None:
+            self.status_var.set(hint or "Enter a color and press Add granule.")
+        else:
+            self.status_var.set("Press Add granule to include this color.")
+
+    def _refresh_mode(self, _event=None):
+        old_lab = self._cached_lab
+        old_rgb = self._cached_rgb
+        mode = self.mode_var.get().upper()
+        self._suspend = True
+        try:
+            for line, _label in self.entry_rows:
+                line.pack_forget()
+            self.hex_row.pack_forget()
+            for var in self.channel_vars:
+                var.set("")
+            self.hex_input_var.set("")
+            if mode == "HEX":
+                self.hex_row.pack(fill="x", pady=3)
+                self.guide_var.set("HEX: six hexadecimal digits, e.g. #E8A0A9")
+                if old_rgb is not None:
+                    self.hex_input_var.set(rgb_to_hex(old_rgb).upper())
+                self.hex_entry.focus_set()
+            else:
+                names = ("R", "G", "B") if mode == "RGB" else ("L*", "a*", "b*")
+                self.guide_var.set(
+                    "RGB: whole numbers in [0, 255]" if mode == "RGB"
+                    else "CIELAB: L* in [0,100], a* and b* in [-128, 128]"
+                )
+                for (line, title), label in zip(self.entry_rows, names):
+                    title.configure(text=label)
+                    line.pack(fill="x", pady=3)
+                if old_lab is not None and old_rgb is not None:
+                    values = old_rgb if mode == "RGB" else old_lab
+                    for var, val in zip(self.channel_vars, values):
+                        var.set(str(int(val)) if mode == "RGB" else f"{float(val):.15g}")
+                self.entry_widgets[0].focus_set()
+        finally:
+            self._suspend = False
+        self._on_input_change()
+
+    def _set_rgb_from_picker(self, rgb, _hex=None):
+        rgb = tuple(safe_rgb_tuple(rgb))
+        self._suspend = True
+        try:
+            mode = self.mode_var.get().upper()
+            if mode == "HEX":
+                self.hex_input_var.set(rgb_to_hex(rgb).upper())
+            else:
+                vals = rgb if mode == "RGB" else rgb_to_lab(rgb)
+                for var, val in zip(self.channel_vars, vals):
+                    var.set(str(val) if mode == "RGB" else f"{float(val):.15g}")
+        finally:
+            self._suspend = False
+        self._on_input_change()
+        self._restore_grab()
+
+    def _pick_color(self):
+        try:
+            self.app._open_square_color_picker(
+                parent=self.win, initial_rgb=self._cached_rgb or (217, 217, 217),
+                on_apply=self._set_rgb_from_picker,
+            )
+        except Exception as exc:
+            self.status_var.set(f"Unable to open picker: {exc}")
+
+    def _restore_grab(self):
+        try:
+            if self.win.winfo_exists():
+                self.win.after_idle(self.win.grab_set)
+        except tk.TclError:
+            pass
+
+    def _current_name(self):
+        return self.name_var.get().strip()
+
+    @staticmethod
+    def _automatic_label(category, number):
+        suffix = f"-g{number}"
+        return f"{category[:MAX_COLOR_NAME_CHARS - len(suffix)]}{suffix}"
+
+    def _next_label(self):
+        """Suggest a unique name while keeping monotonic gN numbering.
+
+        A manually named granule still occupies its position (number). That
+        position is not recycled by a subsequent custom name.
+        """
+        name = self._current_name() or "Color"
+        used = self.palette._used_granule_labels()
+        used.update(item["label"] for item in self.granules)
+        if not self.granules:
+            return name, 1
+        number = max(2, max(g.get("number", 0) for g in self.granules) + 1)
+        while self._automatic_label(name, number) in used:
+            number += 1
+        return self._automatic_label(name, number), number
+
+    def _sync_suggested_granule_name(self, force=False):
+        """Refresh a default label without overwriting custom input."""
+        current = self.granule_name_var.get().strip()
+        proposed, _serial = self._next_label()
+        if force or not current or current == self._suggested_granule_name:
+            self.granule_name_var.set(proposed)
+        self._suggested_granule_name = proposed
+
+    def _on_name_change(self, *_args):
+        name = self._current_name()
+        for item in self.granules:
+            if item.get("automatic_label") and name:
+                item["label"] = (name if item["number"] == 1 else
+                                 self._automatic_label(name, item["number"]))
+        self._sync_suggested_granule_name()
+        if self._pending_refresh is not None:
+            try:
+                self.win.after_cancel(self._pending_refresh)
+            except tk.TclError:
+                pass
+        self._pending_refresh = self.win.after(130, self._render_granules)
+        self._update_create_state()
+
+    def _duplicate_color_label(self, lab):
+        if lab is None:
+            return None
+        target = np.asarray(lab, dtype=float)
+        for item in self.granules:
+            if np.linalg.norm(target - np.asarray(item["lab"], dtype=float)) <= Voronoi.DEFAULT_MERGE_EPS:
+                return item["label"]
+        for data in self.palette.colors.values():
+            for item in data.get("granules", []):
+                if np.linalg.norm(target - np.asarray(item["lab"], dtype=float)) <= Voronoi.DEFAULT_MERGE_EPS:
+                    return item["label"]
+        return None
+
+    def _check_site(self, label, lab, exclude_index=None):
+        """Safely validate pending and already-loaded granules."""
+        existing = [
+            (category, item["label"], item["lab"])
+            for category, data in self.palette.colors.items()
+            for item in data.get("granules", [])
+        ]
+        existing.extend(
+            ("", item["label"], item["lab"])
+            for i, item in enumerate(self.granules) if i != exclude_index
+        )
+        return check_granule_site(label, lab, existing)
+
+    def _validate_site(self, label, lab, exclude_index=None):
+        """Compatibility validator; the UI calls _check_site instead."""
+        label, point, error = self._check_site(label, lab, exclude_index)
+        if error:
+            raise ValueError(error)
+        return label, point
+
+    def _clear_color_fields(self):
+        """Reset only the current color, preserving name and input mode."""
+        self._suspend = True
+        try:
+            for variable in self.channel_vars:
+                variable.set("")
+            self.hex_input_var.set("")
+            self._cached_lab = None
+            self._cached_rgb = None
+        finally:
+            self._suspend = False
+        self._on_input_change()
+        if self.mode_var.get().upper() == "HEX":
+            self.hex_entry.focus_set()
+        else:
+            self.entry_widgets[0].focus_set()
+
+    def add(self):
+        """Append the current RGB/LAB/HEX color to the pending granule list."""
+        name = self._current_name()
+        if not name or len(name) > MAX_COLOR_NAME_CHARS:
+            self.status_var.set("Enter a valid category name first.")
+            return
+        if name in self.palette.colors:
+            self.status_var.set(f"Category '{name}' already exists.")
+            return
+        ok, message, lab, _rgb, _hex = self._read_primary()
+        if not ok:
+            self.status_var.set(message or "Enter a valid color.")
+            return
+        try:
+            suggested, number = self._next_label()
+            requested = self.granule_name_var.get().strip()
+            label, point, error = self._check_site(requested, lab)
+        except (TypeError, ValueError) as exc:
+            # The color parser is already checked, but keep this callback safe.
+            self.status_var.set(str(exc))
+            return
+        if error:
+            self.status_var.set(error)
+            return
+        self.granules.append({
+            "label": label, "lab": point, "number": number,
+            "automatic_label": (label == suggested),
+        })
+        self._render_granules()
+        self.canvas.after_idle(lambda: self.canvas.yview_moveto(1.0))
+        self._sync_suggested_granule_name(force=True)
+        self._clear_color_fields()
+
+    def _open_extra_dialog(self, index):
+        """Edit a pending granule in the shared precise Color Picker."""
+        if not 0 <= index < len(self.granules):
+            return
+        item = self.granules[index]
+        original_label, number, original_lab = (
+            item["label"], item["number"], item["lab"])
+
+        def submit(name, lab, _rgb, _hex, _dialog, status_var):
+            try:
+                clean_name, point, error = self._check_site(
+                    name, lab, exclude_index=index)
+            except (ValueError, TypeError) as exc:
+                status_var.set(str(exc))
+                return False
+            if error:
+                status_var.set(error)
+                return False
+            self.granules[index] = dict(
+                label=clean_name, lab=point, number=number,
+                automatic_label=(
+                    clean_name == original_label and
+                    item.get("automatic_label", False)
+                ),
+            )
+            self._render_granules()
+            self._update_create_state()
+            return True
+
+        dialog = self.app._open_square_color_picker(
+            parent=self.win, title="Edit granule",
+            granule_name=original_label,
+            initial_lab=original_lab,
+            submit_text="Save changes",
+            on_granule_submit=submit,
+        )
+        if dialog is not None:
+            dialog.bind(
+                "<Destroy>",
+                lambda e, target=dialog: self._restore_grab()
+                if e.widget is target else None, add="+")
+
+    def use_as_base(self, index):
+        """Copy a granule to the editor, without creating a duplicate.
+
+        LAB mode preserves its exact stored coordinates. RGB/HEX display is
+        still available through the mode selector afterwards.
+        """
+        if not 0 <= index < len(self.granules):
+            return
+        source = self.granules[index]
+        lab = tuple(float(v) for v in source["lab"])
+        self._suspend = True
+        try:
+            self.mode_var.set("LAB")
+            # Set the current controls through the existing mode-change logic
+            # while suspended to avoid intermediate, invalid previews.
+            for line, _title in self.entry_rows:
+                line.pack_forget()
+            self.hex_row.pack_forget()
+            for (line, title), text in zip(self.entry_rows, ("L*", "a*", "b*")):
+                title.configure(text=text)
+                line.pack(fill="x", pady=3)
+            self.guide_var.set("CIELAB: L* in [0,100], a* and b* in [-128, 128]")
+            self.hex_input_var.set("")
+            for variable, value in zip(self.channel_vars, lab):
+                variable.set(repr(value))
+            self._cached_lab = lab
+            self._cached_rgb = tuple(safe_rgb_tuple(lab_to_rgb(lab)))
+        finally:
+            self._suspend = False
+        self._sync_suggested_granule_name(force=True)
+        self._on_input_change()
+        self.status_var.set(
+            f"Loaded '{source['label']}' as a starting point. "
+            "Adjust its LAB values before adding a new granule.")
+        self.entry_widgets[0].focus_set()
+        self.entry_widgets[0].selection_range(0, tk.END)
+
+    def edit(self, index):
+        self._open_extra_dialog(index)
+
+    def remove(self, index):
+        if 0 <= index < len(self.granules):
+            self.granules.pop(index)
+            self._sync_suggested_granule_name()
+            self._render_granules()
+            self._update_create_state()
+
+    def _render_granules(self):
+        """Redraw only the lower list after add/edit/remove or a rename."""
+        if self._pending_refresh is not None:
+            try:
+                self.win.after_cancel(self._pending_refresh)
+            except tk.TclError:
+                pass
+            self._pending_refresh = None
+        try:
+            if not self.win.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        previous_position = self.canvas.yview()[0]
+        for child in self.rows.winfo_children():
+            child.destroy()
+        self.count_var.set(f"{len(self.granules)} added")
+        p = self.palette
+        if not self.granules:
+            empty = tk.Label(
+                self.rows,
+                text="No granules yet. Enter a color above and press + Add granule.",
+                font=p.FONT_SMALL, bg=p.CARD, fg=p.MUTED, anchor="center",
+                pady=18,
+            )
+            empty.pack(fill="x")
+            self._bind_granule_scroll(empty)
+            self.canvas.yview_moveto(0.0)
+            return
+
+        for i, item in enumerate(self.granules):
+            bg = p.PANEL if i % 2 == 0 else p.CARD
+            row = tk.Frame(self.rows, bg=bg, height=39)
+            row.pack(fill="x", pady=1)
+            row.pack_propagate(False)
+            self._configure_granule_columns(row)
+            row.grid_rowconfigure(0, weight=1)
+
+            rgb = tuple(safe_rgb_tuple(lab_to_rgb(item["lab"])))
+            hx = rgb_to_hex(rgb).upper()
+            swatch = tk.Canvas(row, width=23, height=23, bg=bg,
+                               highlightthickness=0)
+            swatch.grid(row=0, column=0, padx=(8, 2), sticky="w")
+            swatch.create_rectangle(1, 1, 22, 22, fill=hx, outline=p.BORDER)
+            tk.Label(row, text=item["label"], font=p.FONT_BOLD, bg=bg,
+                     fg=p.TEXT, anchor="w").grid(
+                         row=0, column=1, sticky="nsew", padx=(1, 5))
+            for col, text in (
+                (2, ", ".join(str(v) for v in rgb)),
+                (3, hx),
+                (4, ", ".join(f"{x:.2f}" for x in item["lab"])),
+            ):
+                tk.Label(row, text=text, font=p.FONT_SMALL,
+                         fg=p.MUTED, bg=bg, anchor="center").grid(
+                             row=0, column=col, sticky="nsew", padx=2)
+            actions = tk.Frame(row, bg=bg)
+            actions.grid(row=0, column=5, sticky="nsew")
+            # Keep the three action controls grouped and centered in the cell.
+            actions_group = tk.Frame(actions, bg=bg)
+            actions_group.pack(expand=True, anchor="center")
+            copy_button = tk.Button(
+                actions_group, text="↑", command=lambda ix=i: self.use_as_base(ix),
+                font=p.FONT_BOLD, fg=p.BLUE, bg=bg,
+                relief="flat", bd=0, cursor="hand2", padx=2)
+            copy_button.pack(side="left", padx=(0, 3))
+            copy_button.bind(
+                "<Enter>", lambda _e: self.status_var.set(
+                    "↑ Use this granule's LAB color as a base for a new one."))
+            copy_button.bind(
+                "<Leave>", lambda _e: self._update_create_state())
+            tk.Button(actions_group, text="Edit", command=lambda ix=i: self.edit(ix),
+                      font=p.FONT_SMALL_BOLD, fg=p.BLUE, bg=bg,
+                      relief="flat", bd=0, cursor="hand2").pack(
+                          side="left", padx=(2, 5))
+            tk.Button(actions_group, text="×", command=lambda ix=i: self.remove(ix),
+                      font=p.FONT_BOLD, fg=p.MUTED, bg=bg,
+                      relief="flat", bd=0, cursor="hand2").pack(side="left")
+            self._bind_granule_scroll(row)
+
+        self.canvas.after_idle(
+            lambda: self.canvas.yview_moveto(previous_position)
+            if self.canvas.winfo_exists() else None
+        )
+
+    def create(self):
+        """Commit exactly the granules the user explicitly added."""
+        name = self._current_name()
+        if not name or len(name) > MAX_COLOR_NAME_CHARS:
+            self.status_var.set("Enter a valid category name.")
+            return
+        if name in self.palette.colors:
+            self.status_var.set(f"Category '{name}' already exists.")
+            return
+        if not self.granules:
+            self.status_var.set("Add at least one granule before creating the category.")
+            return
+        # Preserve all visible labels. The first default is the category
+        # name, even when the category has several granules.
+        packed = []
+        for item in self.granules:
+            label = item["label"]
+            packed.append({
+                "label": label,
+                "lab": tuple(float(v) for v in item["lab"]),
+                "enabled": True,
+            })
+        for i, item in enumerate(packed):
+            label, point, error = self._check_site(
+                item["label"], item["lab"], exclude_index=i
+            )
+            if error:
+                self.status_var.set(error)
+                return
+            item["lab"] = point
+
+        first = packed[0]["lab"]
+        rgb = tuple(safe_rgb_tuple(lab_to_rgb(first)))
+        self.palette.colors[name] = dict(
+            rgb=rgb, lab=first, hex=rgb_to_hex(rgb).upper(),
+            granules=packed, custom=True,
+        )
+        self.palette.color_checks[name] = dict(
+            var=tk.BooleanVar(value=True), lab=first, rgb=rgb,
+        )
+        if len(packed) > 1:
+            self.palette._expanded_categories.add(name)
+        self.close()
+        if (self.palette.search_var.get().strip()
+                and not self.palette._matches_search(name)):
+            self.palette.search_var.set("")
+            self.palette.win.after(60, self.palette._scroll_to_bottom)
+        else:
+            self.palette._append_color_rows([name])
+            self.palette.win.after_idle(self.palette._scroll_to_bottom)
