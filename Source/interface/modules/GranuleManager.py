@@ -32,19 +32,43 @@ class GranuleManager:
             number += 1
 
     def _check(self, label, lab, exclude_index=None):
-        """Non-throwing user validation shared with Add Color Category.
+        """Return a recoverable validation result for a prospective site.
 
-        On failure return ``(None, None, message)`` and keep the picker open.
-        The repository may contain imported sites whose labels differ from
-        their category name, so always check actual granule identifiers.
+        A name-only edit of an imported site must not be blocked because that
+        site already shares its LAB with a different imported category.
         """
-        existing = (
+        same_category = [
             (category, item["label"], item["lab"])
             for category, data in self.palette.colors.items()
+            if category == self.category_label
             for index, item in enumerate(data.get("granules", []))
-            if not (category == self.category_label and index == exclude_index)
+            if index != exclude_index
+        ]
+        cleaned, point, error = UtilsTools.check_granule_site(
+            label, lab, same_category,
         )
-        return UtilsTools.check_granule_site(label, lab, existing)
+        if error:
+            return cleaned, point, error
+
+        others = [
+            (category, item["label"], item["lab"])
+            for category, data in self.palette.colors.items()
+            if category != self.category_label
+            for item in data.get("granules", [])
+        ]
+        if any(other_name == cleaned for _, other_name, _ in others):
+            return None, None, f"Granule name '{cleaned}' is already in use."
+
+        # Preserve a pre-existing imported overlap on a label-only edit.
+        if exclude_index is not None and 0 <= exclude_index < len(self.granules):
+            old_lab = tuple(float(v) for v in self.granules[exclude_index]["lab"])
+            if point == old_lab:
+                return cleaned, point, None
+
+        _, _, error = UtilsTools.check_granule_site(cleaned, point, others)
+        if error:
+            return None, None, error
+        return cleaned, point, None
 
     def _validate(self, label, lab, exclude_index=None):
         """Compatibility validator for non-UI code; UI uses ``_check``."""
@@ -65,7 +89,10 @@ class GranuleManager:
                     return False
                 entries = [dict(item) for item in self.granules]
                 entries.append({"label": label, "lab": point, "enabled": True})
-                self.palette._set_category_granules(self.category_label, entries)
+                ok, error = self.palette._set_category_granules(self.category_label, entries)
+                if not ok:
+                    status_var.set(error)
+                    return False
             except (ValueError, TypeError) as exc:
                 status_var.set(str(exc))
                 return False
@@ -99,7 +126,10 @@ class GranuleManager:
                     "lab": point,
                     "enabled": item.get("enabled", True),
                 }
-                self.palette._set_category_granules(self.category_label, entries)
+                ok, error = self.palette._set_category_granules(self.category_label, entries)
+                if not ok:
+                    status_var.set(error)
+                    return False
             except (ValueError, TypeError) as exc:
                 status_var.set(str(exc))
                 return False
@@ -135,6 +165,7 @@ class GranuleManager:
                 "Invalid Granule Name", error, parent=self.palette.win)
             return shown
         current["label"] = label
+        self.palette.colors[self.category_label].pop("_search_key_cache", None)
         return label
 
     def remove(self, index):
@@ -156,8 +187,7 @@ class GranuleManager:
         ):
             return
         entries = [dict(g) for i, g in enumerate(self.granules) if i != index]
-        try:
-            self.palette._set_category_granules(self.category_label, entries)
-        except ValueError as exc:
+        ok, error = self.palette._set_category_granules(self.category_label, entries)
+        if not ok:
             self.palette.app.custom_warning(
-                "Cannot Remove Granule", str(exc), parent=self.palette.win)
+                "Cannot Remove Granule", error, parent=self.palette.win)

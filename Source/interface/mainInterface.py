@@ -43,6 +43,7 @@ from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManag
 from Source.interface.modules.ImageInspectionManager import ImageInspectionManager
 from Source.interface.modules.ImageBasedCreationManager import ImageBasedCreationManager
 from Source.interface.modules.PaletteBasedCreationManager import PaletteBasedCreationManager
+import Source.interface.modules.DataManager as DataManager
 
 import Source.interface.modules.UtilsTools as UtilsTools
 
@@ -303,27 +304,20 @@ class PyFCSApp:
             sep.pack(side="left", fill="y", padx=8, pady=6)
             return sep
 
-        def create_action_button(parent, text, command, bg, fg, active_bg, side="left", padx=(0, 10)):
-            """
-            Create a styled action button for the Data tab footer.
-            """
+        def create_action_button(parent, text, command, bg, fg, active_bg):
+            """Subtle Data action button; placement is handled by the footer."""
             btn = tk.Button(
-                parent,
-                text=text,
-                command=command,
-                font=FONT_BOLD,
-                bg=bg,
-                fg=fg,
-                activebackground=active_bg,
-                activeforeground=fg,
-                relief="solid",
-                bd=1,
-                padx=14,
-                pady=7,
-                cursor="hand2",
-                highlightthickness=0
+                parent, text=text, command=command,
+                font=FONT, bg=bg, fg=fg,
+                activebackground=active_bg, activeforeground=fg,
+                relief="solid", bd=1, padx=10, pady=6,
+                cursor="hand2", highlightthickness=0,
+                disabledforeground=MUTED,
             )
-            btn.pack(side=side, padx=padx)
+            # Hover applies to normal Tk buttons on Windows and X11; on macOS
+            # the platform may draw native controls differently.
+            btn.bind("<Enter>", lambda _e: btn.configure(bg=active_bg))
+            btn.bind("<Leave>", lambda _e: btn.configure(bg=bg))
             return btn
 
         def bind_vertical_mousewheel(canvas):
@@ -930,7 +924,7 @@ class PyFCSApp:
 
         self.data_header_title = tk.Label(
             header_left,
-            text="Color Space Data (0)",
+            text="No Fuzzy Color Space Loaded",
             font=("Segoe UI", 13, "bold"),
             bg=SOFT_BG,
             fg=TEXT,
@@ -964,6 +958,7 @@ class PyFCSApp:
             font=FONT,
             width=28,
             justify="center",
+            takefocus=0,  # Read-only metadata must not receive keyboard focus.
             relief="solid",
             bd=1,
             bg=CARD_BG,
@@ -975,9 +970,31 @@ class PyFCSApp:
         self.file_name_entry.pack(side="left")
         self.file_name_entry.insert(0, "")
 
+        # The read-only name is informational. When Data is opened, Tk may
+        # otherwise leave its text selected in blue from an earlier focus.
+        def clear_data_name_focus(_event=None):
+            try:
+                if self.notebook.select() != str(data_tab):
+                    return
+                name_entry = self.file_name_entry
+                if name_entry.winfo_exists():
+                    name_entry.selection_clear()
+                    name_entry.icursor(tk.END)
+                    # Focus on the tab container, not on a read-only Entry.
+                    if self.root.focus_get() is name_entry:
+                        self.notebook.focus_set()
+            except tk.TclError:
+                pass
+
+        self.notebook.bind(
+            "<<NotebookTabChanged>>",
+            lambda _event: self.root.after_idle(clear_data_name_focus),
+            add="+",
+        )
+
         # Canvas area directly inside the main panel
         canvas_area = tk.Frame(data_panel, bg=CARD_BG)
-        canvas_area.pack(fill="both", expand=True, padx=16, pady=(16, 8))
+        canvas_area.pack(fill="both", expand=True, padx=8, pady=(5, 6))
 
         canvas_area.rowconfigure(0, weight=1)
         canvas_area.columnconfigure(0, weight=1)
@@ -1004,17 +1021,9 @@ class PyFCSApp:
         )
         self.data_scrollbar_v.grid(row=0, column=1, sticky="ns")
 
-        self.data_scrollbar_h = tk.Scrollbar(
-            canvas_area,
-            orient="horizontal",
-            command=self.data_window.xview
-        )
-        self.data_scrollbar_h.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-
-        self.data_window.configure(
-            yscrollcommand=self.data_scrollbar_v.set,
-            xscrollcommand=self.data_scrollbar_h.set
-        )
+        # The Data table adapts to the available width; horizontal scrolling
+        # adds no value here. Keep only the vertical scrollbar.
+        self.data_window.configure(yscrollcommand=self.data_scrollbar_v.set)
 
         # SCROLL FIX (cross-platform)
         self.data_window.bind(
@@ -1054,66 +1063,63 @@ class PyFCSApp:
             lambda event: self.on_mouse_wheel(event, self.data_window)
         )
 
-        # Footer buttons
+        # Footer: a quiet divider separates the table from its actions.
+        # Keep the buttons together on the right; stack them only if the
+        # notebook is too narrow. Both operations remain independent.
         bottom_bar = tk.Frame(data_panel, bg=CARD_BG)
-        bottom_bar.pack(fill="x", padx=16, pady=(0, 14))
+        bottom_bar.pack(fill="x", padx=11, pady=(0, 11))
 
-        left_actions = tk.Frame(bottom_bar, bg=CARD_BG)
-        left_actions.pack(side="left")
-
-        right_actions = tk.Frame(bottom_bar, bg=CARD_BG)
-        right_actions.pack(side="right")
-
-        add_button = create_action_button(
-            left_actions,
-            text="+ Add New Color",
-            command=self.addColor_data_window,
-            bg=GREEN_BG,
-            fg=GREEN,
-            active_bg=GREEN_BG_ACTIVE,
-            side="left",
-            padx=(0, 10)
+        tk.Frame(bottom_bar, bg=BORDER, height=1).pack(
+            fill="x", pady=(0, 9)
         )
 
-        # Geometric conversion is an explicit Data action, not a display switch.
-        self.change_model_button = create_action_button(
-            left_actions,
-            text="Change Color Space",
-            command=self.change_model_color_space,
-            bg="#f1f3f6",
-            fg=TEXT,
-            active_bg="#e5e7eb",
-            side="left",
-            padx=(0, 10)
-        )
-        # Compact footer buttons so all four actions remain fully visible at
-        # the application's minimum width and with typical Windows scaling.
-        add_button.configure(padx=9)
-        self.change_model_button.configure(padx=7, state=tk.DISABLED)
+        actions_row = tk.Frame(bottom_bar, bg=CARD_BG, height=34)
+        actions_row.pack(fill="x")
+        actions_row.pack_propagate(False)
 
-        apply_button = create_action_button(
-            left_actions,
-            text="Apply Changes",
-            command=self.apply_changes,
-            bg=BLUE_BG,
-            fg=BLUE,
-            active_bg=BLUE_BG_ACTIVE,
-            side="left",
-            padx=(0, 10)
-        )
+        actions_group = tk.Frame(actions_row, bg=CARD_BG)
+        actions_group.pack(side="right")
 
+        self.modify_fcs_button = create_action_button(
+            actions_group,
+            text="Edit Fuzzy Color Space",
+            command=self.open_modify_fcs,
+            bg="#F3EEF8", fg=TEXT, active_bg="#E9DDF1",
+        )
         delete_button = create_action_button(
-            right_actions,
+            actions_group,
             text="Delete Color Space",
             command=self.delete_color_space,
-            bg=RED_BG,
-            fg=RED,
-            active_bg=RED_BG_ACTIVE,
-            side="right",
-            padx=(0, 0)
+            bg="#FBEDEE", fg=TEXT, active_bg="#F4DFE1",
         )
-        apply_button.configure(padx=9)
-        delete_button.configure(padx=9)
+
+        footer_mode = {"narrow": None}
+
+        def _layout_data_actions(event=None):
+            if event is None:
+                return
+            needed = (
+                self.modify_fcs_button.winfo_reqwidth()
+                + delete_button.winfo_reqwidth() + 9
+            )
+            narrow = event.width < needed
+            if footer_mode["narrow"] == narrow:
+                return
+            footer_mode["narrow"] = narrow
+            self.modify_fcs_button.grid_forget()
+            delete_button.grid_forget()
+            if narrow:
+                actions_row.configure(height=76)
+                self.modify_fcs_button.grid(
+                    row=0, column=0, sticky="e", pady=(0, 7)
+                )
+                delete_button.grid(row=1, column=0, sticky="e")
+            else:
+                actions_row.configure(height=34)
+                self.modify_fcs_button.grid(row=0, column=0, sticky="e")
+                delete_button.grid(row=0, column=1, sticky="e", padx=(9, 0))
+
+        actions_row.bind("<Configure>", _layout_data_actions)
 
         # Internal status variable
         self.status_var = tk.StringVar(value="Ready")
@@ -1152,19 +1158,37 @@ class PyFCSApp:
         return getattr(self, "root", None)
 
 
+    
     def toggle_fullscreen(self, event=None):
-        """
-        Toggle between fullscreen and windowed mode.
-        If the current state is fullscreen, switch to windowed mode, and vice versa.
-        """
+        """Toggle between fullscreen and maximized window mode."""
         try:
-            current_state = self.root.attributes("-fullscreen")
-            self.root.attributes("-fullscreen", not current_state)
+            is_fullscreen = bool(self.root.attributes("-fullscreen"))
+
+            if is_fullscreen:
+                # Leave fullscreen mode.
+                self.root.attributes("-fullscreen", False)
+
+                def maximize_window():
+                    try:
+                        if platform.system() == "Windows":
+                            self.root.state("zoomed")
+                        else:
+                            self.root.attributes("-zoomed", True)
+                    except tk.TclError:
+                        # Keep a normal window if maximizing is unsupported.
+                        pass
+
+                self.root.after_idle(maximize_window)
+
+            else:
+                # Return to fullscreen mode.
+                self.root.attributes("-fullscreen", True)
+
         except tk.TclError:
-            # Fallback: resize manually if fullscreen fails
-            screen_width = self.root.winfo_screenwidth()
-            screen_height = self.root.winfo_screenheight()
-            self.root.geometry(f"{screen_width}x{screen_height}+0+0")
+            pass
+
+        return "break"
+
 
 
     def switch_tab(self, notebook, forward=True):
@@ -2720,6 +2744,9 @@ class PyFCSApp:
 
     def _commit_color_space_load(self, filename, prepared):
         """Update the GUI and active workspace on Tk's main thread only."""
+        editor = getattr(self, "_modify_fcs_dialog", None)
+        if editor is not None:
+            editor.close()  # A new FCS invalidates the old editing snapshot.
         new_color_data = prepared["color_data"]
         new_fuzzy_color_space = prepared["space"]
         source_type = prepared["source_type"]
@@ -2731,6 +2758,7 @@ class PyFCSApp:
 
         self.file_path = filename
         self.file_base_name = os.path.splitext(os.path.basename(filename))[0]
+        self._data_expanded_categories = set()
         self.color_data = new_color_data
         self.edit_color_data = copy.deepcopy(new_color_data)
         self._pending_granules = {}
@@ -3072,6 +3100,18 @@ class PyFCSApp:
                 ]
                 row["positive_prototype"] = labs[0].copy()
                 row["Color"] = labs[0].tolist()
+        else:
+            # After a model conversion, the actual saved representative may
+            # differ infinitesimally from the input LAB because of the
+            # conversion. Make all downstream consumers use the saved model.
+            for prototype in fuzzy_color_space.prototypes:
+                lab = np.asarray(
+                    fuzzy_color_space.lab_from_model(prototype.positive),
+                    dtype=float,
+                )
+                row = self.color_data[prototype.label]
+                row["positive_prototype"] = lab.copy()
+                row["Color"] = lab.tolist()
         self.edit_color_data = copy.deepcopy(self.color_data)
         self._pending_granules = {}
         self._pending_granular_tconorm = None
@@ -3178,7 +3218,32 @@ class PyFCSApp:
                 save_options = dict(options or {})
                 granular_categories = save_options.pop("_granular_categories", None)
                 prebuilt_space = save_options.pop("_granular_prebuilt_space", None)
-                if prebuilt_space is not None:
+                target_for_modify = save_options.pop("_target_model_for_modify", None)
+                modified_draft = save_options.pop("_modified_draft", None)
+                original_model = save_options.pop("_original_model", None)
+                save_options.pop("_from_modify_fcs", None)
+                if modified_draft is not None:
+                    prepared = DataManager.build_model_from_draft(
+                        name, modified_draft, original_model, target_for_modify,
+                    )
+                    result = writer.save_space(
+                        prepared, name=name, progress_callback=update_progress,
+                        return_fuzzy_space=apply_after_save,
+                    )
+                elif target_for_modify is not None:
+                    # Prepare the full edited model in the worker and only then
+                    # save it; never write an intermediate model or mutate the
+                    # active FCS before the JSON write completes.
+                    prepared = DataManager.prepare_modified_model(
+                        name, color_dict, save_options, target_for_modify,
+                        prebuilt=prebuilt_space,
+                        granular_categories=granular_categories,
+                    )
+                    result = writer.save_space(
+                        prepared, name=name, progress_callback=update_progress,
+                        return_fuzzy_space=apply_after_save,
+                    )
+                elif prebuilt_space is not None:
                     # Runtime-only t-conorm may have changed in the editor;
                     # this is not part of the serialized JSON geometry.
                     operator = save_options.get("tconorm", "bounded_sum")
@@ -3208,10 +3273,16 @@ class PyFCSApp:
             def finalize():
                 self._processing_job_running = False
                 self.hide_loading()
+                editor = getattr(self, "_modify_fcs_dialog", None)
+                editing_from_modify = bool((options or {}).get("_from_modify_fcs"))
                 if error is not None:
+                    if editing_from_modify and editor is not None:
+                        editor.on_save_failure(str(error))
                     self.custom_warning("Error", f"An error occurred while saving: {error}")
                 elif apply_after_save:
                     file_path, space = result
+                    if editing_from_modify and editor is not None:
+                        editor.on_save_success()
                     self._on_apply_changes_saved_success(
                         name, file_path, saved_color_data, space
                     )
@@ -3603,10 +3674,20 @@ class PyFCSApp:
         if model is None or not getattr(self, "COLOR_SPACE", False):
             label.configure(text="No color space loaded")
             return
-        pieces = [str(model.typology_description), f"{model.color_space} model"]
+        try:
+            n_granules = (sum(len(cat.prototypes) for cat in model.categories)
+                          if isinstance(model, GranularFuzzyColorSpace)
+                          else len(model.prototypes))
+            n_categories = (len(model.categories)
+                            if isinstance(model, GranularFuzzyColorSpace)
+                            else len(model.prototypes))
+            counts = f"{n_categories} categories · {n_granules} granules"
+        except (AttributeError, TypeError):
+            counts = ""
+        pieces = [counts, f"{model.color_space} model"]
         if getattr(self, "_model_space_unsaved", False):
             pieces.append("Unsaved")
-        label.configure(text="  ·  ".join(pieces))
+        label.configure(text="  ·  ".join(piece for piece in pieces if piece))
 
     def _has_pending_model_data_edits(self):
         """Do not silently discard Data edits when changing the geometry."""
@@ -4167,565 +4248,31 @@ class PyFCSApp:
     #  FUNCTIONS DATA
     # ============================================================================================================================================================
     def display_data_window(self):
-        """
-        Displays the color data in a visually improved scrollable table within the canvas.
-        Updates the table with LAB values, editable labels and color previews.
-        """
-        # Update the name entry only when a different color space is loaded.
-        # This avoids overwriting a name currently being edited by the user.
-        if hasattr(self, "file_name_entry"):
-            loaded_name = str(getattr(self, "file_base_name", "")).strip()
-            previous_loaded_name = getattr(self, "_data_name_source", None)
+        """Read-only, granular-aware Data table (owned by DataManager)."""
+        DataManager.render_data(self)
 
-            if previous_loaded_name != loaded_name:
-                self.file_name_entry.delete(0, tk.END)
-                self.file_name_entry.insert(0, loaded_name)
-                self._data_name_source = loaded_name
 
-        # Destroy previous embedded widgets, such as editable label entries
-        try:
-            for child in self.data_window.winfo_children():
-                child.destroy()
-        except Exception:
-            pass
-
-        self.data_window.delete("all")
-        self.data_window.update_idletasks()
-
-        data_source = getattr(self, "edit_color_data", {})
-
-        self.color_matrix = []
-        self.hex_color = {}
-
-        # Keep references to the visible label editors so pending text
-        # can be committed immediately when Apply Changes is pressed.
-        self._data_label_editors = []
-
-        # Keep the title readable even for spaces with long topology names.
-        if hasattr(self, "data_header_title"):
-            self.data_header_title.config(text=f"Color Space Data ({len(data_source)})")
-        self._update_data_model_summary()
-
-        # Tooltip management
-        if hasattr(self, "_data_info_tooltip") and self._data_info_tooltip is not None:
-            try:
-                self._data_info_tooltip.destroy()
-            except Exception:
-                pass
-            self._data_info_tooltip = None
-
-        def _hide_info_tooltip(event=None):
-            if hasattr(self, "_data_info_tooltip") and self._data_info_tooltip is not None:
-                try:
-                    self._data_info_tooltip.destroy()
-                except Exception:
-                    pass
-                self._data_info_tooltip = None
-
-            try:
-                self.data_window.config(cursor="")
-            except Exception:
-                pass
-
-        def _show_info_tooltip(event, rgb_text, hex_text):
-            _hide_info_tooltip()
-
-            try:
-                tooltip = tk.Toplevel(self.data_window)
-                tooltip.withdraw()
-                tooltip.wm_overrideredirect(True)
-                tooltip.configure(bg="#fefefe", bd=1, relief="solid")
-
-                x_root = event.x_root + 14
-                y_root = event.y_root + 10
-                tooltip.geometry(f"+{x_root}+{y_root}")
-
-                tk.Label(
-                    tooltip,
-                    text=f"HEX: {hex_text.upper()}\nRGB: {rgb_text}",
-                    justify="left",
-                    anchor="w",
-                    bg="#fefefe",
-                    fg="#222222",
-                    font=("Sans", 9),
-                    padx=10,
-                    pady=6
-                ).pack()
-                tooltip.deiconify()
-
-                self._data_info_tooltip = tooltip
-                self.data_window.config(cursor="hand2")
-
-            except Exception:
-                self._data_info_tooltip = None
-
-        if not data_source:
-            if hasattr(self, "data_header_title"):
-                self.data_header_title.config(text="Color Space Data (0)")
-            self._update_data_model_summary()
-            self.data_window.configure(scrollregion=(0, 0, 0, 0))
+    def open_modify_fcs(self):
+        """Edit a private draft; the loaded model is committed after JSON save."""
+        if not getattr(self, "COLOR_SPACE", False) or getattr(self, "fuzzy_color_space", None) is None:
+            self.custom_warning("Edit Fuzzy Color Space", "Load a Fuzzy Color Space first.")
             return
-
-        canvas_width = self.data_window.winfo_width()
-        if canvas_width <= 1:
-            canvas_width = 760
-
-        # Data continues to store LAB internally for ΔE, while displaying
-        # coordinates in the FCS's actual geometric color space.
-        space = getattr(self, "fuzzy_color_space", None)
-        display_rgb = bool(space and space.color_space == "RGB")
-        axis_names = ["R", "G", "B"] if display_rgb else ["L", "a", "b"]
-        col_widths = {axis_names[0]: 70, axis_names[1]: 70, axis_names[2]: 70,
-            "Label": 200,
-            "Color": 100,
-            "Action": 105,
-        }
-
-        table_width = sum(col_widths.values())
-        x_start = max((canvas_width - table_width) // 2, 24)
-
-        y = 12
-
-        header_height = 36
-        row_height = 58
-        row_gap = 6
-
-        border_color = "#d0d0d0"
-        header_bg = "#f2f2f2"
-
-        # Header row
-        self.data_window.create_rectangle(
-            x_start,
-            y,
-            x_start + table_width,
-            y + header_height,
-            fill=header_bg,
-            outline=border_color
-        )
-
-        headers = axis_names + ["Label", "Color", "Action"]
-
-        current_x = x_start
-
-        for header in headers:
-            width = col_widths[header]
-
-            self.data_window.create_text(
-                current_x + width / 2,
-                y + header_height / 2,
-                text=header,
-                anchor="center",
-                font=("Sans", 10, "bold"),
-                fill="#222222"
-            )
-
-            if header != headers[-1]:
-                self.data_window.create_line(
-                    current_x + width,
-                    y + 8,
-                    current_x + width,
-                    y + header_height - 8,
-                    fill="#d7d7d7"
-                )
-
-            current_x += width
-
-        y += header_height + row_gap
-
-        # Editable label helpers
-        MAX_LABEL_CHARS = 24
-
-        def _rename_color_label(old_name, requested_name, entry_var=None):
-            """Rename a color key in edit_color_data while preserving the current order."""
-            old_name = str(old_name).strip()
-            new_name = str(requested_name).strip()
-
-            if len(new_name) > MAX_LABEL_CHARS:
-                new_name = new_name[:MAX_LABEL_CHARS]
-
-            if not new_name:
-                if entry_var is not None:
-                    entry_var.set(old_name[:MAX_LABEL_CHARS])
-
-                self.custom_warning(
-                    "Invalid Color Name",
-                    "Color name cannot be empty.",
-                    parent=getattr(self, "root", None)
-                )
-                return False
-
-            if new_name == old_name:
-                if entry_var is not None:
-                    entry_var.set(old_name[:MAX_LABEL_CHARS])
-                return False
-
-            # The rename may already have been committed directly by
-            # Apply Changes before a delayed FocusOut event is processed.
-            if old_name not in self.edit_color_data:
-                if new_name in self.edit_color_data:
-                    if entry_var is not None:
-                        entry_var.set(new_name[:MAX_LABEL_CHARS])
-                    return False
-
-                if entry_var is not None:
-                    entry_var.set(old_name[:MAX_LABEL_CHARS])
-                return False
-
-            if new_name in self.edit_color_data:
-                if entry_var is not None:
-                    entry_var.set(old_name[:MAX_LABEL_CHARS])
-
-                self.custom_warning(
-                    "Duplicated Color Name",
-                    f"The color '{new_name}' already exists.",
-                    parent=getattr(self, "root", None)
-                )
-                return False
-
-            # Rebuild dict to preserve row order
-            renamed_data = {}
-
-            for key, value in self.edit_color_data.items():
-                if key == old_name:
-                    renamed_data[new_name] = value
-                else:
-                    renamed_data[key] = value
-
-            self.edit_color_data = renamed_data
-
-            # Keep related selection/edit references coherent if they exist
-            if getattr(self, "selected_color_name", None) == old_name:
-                self.selected_color_name = new_name
-
-            if getattr(self, "current_color_to_edit", None) == old_name:
-                self.current_color_to_edit = new_name
-
-            self.display_data_window()
-            return True
-
-        # Data rows
-        for i, (color_name, color_value) in enumerate(data_source.items()):
-
-            if "positive_prototype" in color_value:
-                lab = np.array(color_value["positive_prototype"], dtype=float)
-            elif "Color" in color_value:
-                lab = np.array(color_value["Color"], dtype=float)
-            else:
-                continue
-
-            if len(lab) < 3:
-                continue
-
-            if display_rgb:
-                try:
-                    vals = VisualManager.reproject_points(lab, "LAB", "RGB")
-                except (ValueError, RuntimeError) as exc:
-                    self.custom_warning("Invalid Color", f"Cannot display '{color_name}' in RGB: {exc}")
-                    continue
-            else:
-                vals = lab
-            L, A, B = float(vals[0]), float(vals[1]), float(vals[2])
-
-            self.color_matrix.append(color_name)
-
-            row_bg = "#ffffff" if i % 2 == 0 else "#fbfbfb"
-            row_top = y
-            row_bottom = y + row_height
-
-            self.data_window.create_rectangle(
-                x_start,
-                row_top,
-                x_start + table_width,
-                row_bottom,
-                fill=row_bg,
-                outline="#dddddd"
-            )
-
-            current_x = x_start
-
-            # Geometry coordinates in the selected construction space.
-            for value, header in zip([L, A, B], axis_names):
-                width = col_widths[header]
-
-                self.data_window.create_text(
-                    current_x + width / 2,
-                    row_top + row_height / 2,
-                    text=f"{value:.2f}",
-                    anchor="center",
-                    font=("Consolas", 10),
-                    fill="#333333"
-                )
-
-                self.data_window.create_line(
-                    current_x + width,
-                    row_top + 10,
-                    current_x + width,
-                    row_bottom - 10,
-                    fill="#eeeeee"
-                )
-
-                current_x += width
-
-            # Editable Label cell
-            label_width = col_widths["Label"]
-
-            label_var = tk.StringVar(value=str(color_name)[:MAX_LABEL_CHARS])
-
-            # Mutable state shared by the Entry callbacks and Apply Changes.
-            # Updating old_name here prevents a delayed FocusOut event from
-            # trying to apply the same rename a second time.
-            editor_state = {
-                "old_name": color_name,
-                "variable": label_var
-            }
-            self._data_label_editors.append(editor_state)
-
-            def _validate_label_text(proposed_text):
-                try:
-                    return len(proposed_text) <= MAX_LABEL_CHARS
-                except Exception:
-                    return False
-
-            vcmd = (self.data_window.register(_validate_label_text), "%P")
-
-            label_entry = tk.Entry(
-                self.data_window,
-                textvariable=label_var,
-                font=("Sans", 10, "bold"),
-                fg="#222222",
-                bg=row_bg,
-                relief="solid",
-                bd=1,
-                justify="left",
-                validate="key",
-                validatecommand=vcmd,
-                insertbackground="#222222"
-            )
-
-            def _commit_label_change(event=None, state=editor_state):
-                old_name = str(state["old_name"])
-                requested_name = str(state["variable"].get()).strip()
-
-                renamed = _rename_color_label(
-                    old_name,
-                    requested_name,
-                    entry_var=state["variable"]
-                )
-
-                if renamed:
-                    state["old_name"] = requested_name[:MAX_LABEL_CHARS]
-
-            label_entry.bind("<Return>", _commit_label_change)
-            label_entry.bind("<FocusOut>", _commit_label_change)
-
-            # Pressing Escape restores the last committed name
-            label_entry.bind(
-                "<Escape>",
-                lambda event, state=editor_state: state["variable"].set(
-                    str(state["old_name"])[:MAX_LABEL_CHARS]
-                )
-            )
-
-            entry_w = label_width - 24
-            entry_h = 26
-
-            self.data_window.create_window(
-                current_x + 12,
-                row_top + row_height / 2,
-                window=label_entry,
-                width=entry_w,
-                height=entry_h,
-                anchor="w"
-            )
-
-            self.data_window.create_line(
-                current_x + label_width,
-                row_top + 10,
-                current_x + label_width,
-                row_bottom - 10,
-                fill="#eeeeee"
-            )
-
-            current_x += label_width
-
-            # Color preview cell
-            color_width = col_widths["Color"]
-
+        if self._has_any_active_job():
+            self.custom_warning("Process Running", "Finish or cancel the active process first.")
+            return
+        previous = getattr(self, "_modify_fcs_dialog", None)
+        if previous is not None:
             try:
-                rgb_data = UtilsTools.lab_to_rgb(lab)
-                hex_color = UtilsTools.rgb_to_hex(rgb_data)
-            except Exception:
-                rgb_data = (217, 217, 217)
-                hex_color = "#d9d9d9"
-
-            self.hex_color[hex_color] = lab
-
-            swatch_w = 86
-            swatch_h = 30
-
-            swatch_x = current_x + (color_width - swatch_w) / 2
-            swatch_y = row_top + (row_height - swatch_h) / 2
-
-            self.data_window.create_rectangle(
-                swatch_x - 2,
-                swatch_y - 2,
-                swatch_x + swatch_w + 2,
-                swatch_y + swatch_h + 2,
-                fill="#e6e6e6",
-                outline="#d0d0d0"
-            )
-
-            self.data_window.create_rectangle(
-                swatch_x,
-                swatch_y,
-                swatch_x + swatch_w,
-                swatch_y + swatch_h,
-                fill=hex_color,
-                outline="#444444"
-            )
-
-            self.data_window.create_line(
-                current_x + color_width,
-                row_top + 10,
-                current_x + color_width,
-                row_bottom - 10,
-                fill="#eeeeee"
-            )
-
-            current_x += color_width
-
-            # Action cell
-            action_width = col_widths["Action"]
-
-            info_tag = f"info_{i}"
-            delete_tag = f"delete_{i}"
-
-            btn_w = 30
-            btn_h = 26
-            btn_gap = 10
-
-            total_btns_width = btn_w * 2 + btn_gap
-            start_btn_x = current_x + (action_width - total_btns_width) / 2
-            btn_y = row_top + (row_height - btn_h) / 2
-
-            # Info button, left
-            info_x = start_btn_x
-
-            self.data_window.create_rectangle(
-                info_x,
-                btn_y,
-                info_x + btn_w,
-                btn_y + btn_h,
-                fill="#f1f7ff",
-                outline="#9bbce3",
-                tags=(info_tag,)
-            )
-
-            self.data_window.create_text(
-                info_x + btn_w / 2,
-                btn_y + btn_h / 2,
-                text="ⓘ",
-                fill="#1f5fa8",
-                font=("Sans", 12, "bold"),
-                anchor="center",
-                tags=(info_tag,)
-            )
-
-            rgb_text = f"{rgb_data[0]}, {rgb_data[1]}, {rgb_data[2]}"
-            hex_text = hex_color
-
-            self.data_window.tag_bind(
-                info_tag,
-                "<Enter>",
-                lambda event, rgb_text=rgb_text, hex_text=hex_text: _show_info_tooltip(event, rgb_text, hex_text)
-            )
-
-            self.data_window.tag_bind(
-                info_tag,
-                "<Motion>",
-                lambda event, rgb_text=rgb_text, hex_text=hex_text: _show_info_tooltip(event, rgb_text, hex_text)
-            )
-
-            self.data_window.tag_bind(
-                info_tag,
-                "<Leave>",
-                _hide_info_tooltip
-            )
-
-            # Delete button, right
-            del_x = info_x + btn_w + btn_gap
-
-            self.data_window.create_rectangle(
-                del_x,
-                btn_y,
-                del_x + btn_w,
-                btn_y + btn_h,
-                fill="#fff5f5",
-                outline="#d8b0b0",
-                tags=(delete_tag,)
-            )
-
-            self.data_window.create_text(
-                del_x + btn_w / 2,
-                btn_y + btn_h / 2,
-                text="✕",
-                fill="#8a1f1f",
-                font=("Sans", 11, "bold"),
-                anchor="center",
-                tags=(delete_tag,)
-            )
-
-            self.data_window.tag_bind(
-                delete_tag,
-                "<Button-1>",
-                lambda event, idx=i: self.remove_color(idx)
-            )
-
-            self.data_window.tag_bind(
-                delete_tag,
-                "<Enter>",
-                lambda event: self.data_window.config(cursor="hand2")
-            )
-
-            self.data_window.tag_bind(
-                delete_tag,
-                "<Leave>",
-                _hide_info_tooltip
-            )
-
-            y += row_height + row_gap
-
-        y += 20
-
-        # Keep horizontal scroll useful when the available area is narrower than the table
-        scroll_width = max(canvas_width, x_start + table_width + 24)
-
-        self.data_window.configure(scrollregion=(0, 0, scroll_width, y))
-
-        # Store the geometry required to center the table
-        self._data_scroll_width = scroll_width
-        self._data_table_center_x = x_start + table_width / 2
-
-        if not getattr(self, "_data_window_configure_bound", False):
-            self.data_window.bind(
-                "<Configure>",
-                lambda event: self.display_data_window()
-            )
-            self._data_window_configure_bound = True
-
-        # Center the horizontal view whenever the Data tab becomes visible
-        if not getattr(self, "_data_window_map_bound", False):
-            self.data_window.bind(
-                "<Map>",
-                lambda event: self.data_window.after_idle(
-                    self._center_data_horizontal_scroll
-                ),
-                add="+"
-            )
-            self._data_window_map_bound = True
-
-        # Also center it after the current table redraw
-        self.data_window.after_idle(self._center_data_horizontal_scroll)
+                if previous.win.winfo_exists():
+                    previous.win.lift()
+                    previous.win.focus_force()
+                    return
+            except tk.TclError:
+                pass
+        try:
+            self._modify_fcs_dialog = DataManager.ModifyFCSDialog(self)
+        except (ValueError, RuntimeError, tk.TclError) as exc:
+            self.custom_warning("Edit Fuzzy Color Space", str(exc))
 
 
     def remove_color(self, index):
@@ -4860,6 +4407,8 @@ class PyFCSApp:
             self._data_info_tooltip = None
 
         if hasattr(self, "data_window"):
+            for child in self.data_window.winfo_children():
+                child.destroy()
             self.data_window.delete("all")
             self.data_window.configure(scrollregion=(0, 0, 0, 0))
             try:
@@ -4868,10 +4417,15 @@ class PyFCSApp:
                 pass
 
         if hasattr(self, "file_name_entry"):
-            self.file_name_entry.delete(0, tk.END)
+            try:
+                self.file_name_entry.configure(state="normal")
+                self.file_name_entry.delete(0, tk.END)
+                self.file_name_entry.configure(state="readonly")
+            except tk.TclError:
+                pass
 
         if hasattr(self, "data_header_title"):
-            self.data_header_title.config(text="Color Space Data (0)")
+            self.data_header_title.config(text="No Fuzzy Color Space Loaded")
         self._update_data_model_summary()
 
         self.file_base_name = ""
@@ -4879,6 +4433,7 @@ class PyFCSApp:
         self.hex_color = {}
 
         self._data_name_source = None
+        self._data_expanded_categories = set()
         self._data_scroll_width = 0
         self._data_table_center_x = 0
         self._data_label_editors = []
@@ -5100,6 +4655,9 @@ class PyFCSApp:
         if not confirm:
             return
 
+        editor = getattr(self, "_modify_fcs_dialog", None)
+        if editor is not None:
+            editor.close()
         self._reset_image_inspection_state()
 
         try:
@@ -10539,16 +10097,16 @@ class PyFCSApp:
         if full_right <= full_left or full_bottom <= full_top:
             return "break"
 
-        # Compute mean RGB inside the selected rectangle
+        # Compute the mean directly in CIELAB, converting each pixel first.
         crop = pil.crop((full_left, full_top, full_right, full_bottom))
-        arr = np.asarray(crop, dtype=np.float32)
-        mean_rgb = arr.reshape(-1, 3).mean(axis=0)
-
-        r = int(round(mean_rgb[0]))
-        g = int(round(mean_rgb[1]))
-        b = int(round(mean_rgb[2]))
-
-        pixel_lab = UtilsTools.rgb_to_lab((r, g, b))
+        pixel_lab, _used = UtilsTools.mean_lab_with_filters(
+            np.asarray(crop.convert("RGB"), dtype=np.uint8),
+        )
+        if pixel_lab is None:
+            return "break"
+        pixel_lab = tuple(float(v) for v in pixel_lab)
+        # RGB represents the LAB mean for screen display only.
+        r, g, b = UtilsTools.lab_to_rgb(pixel_lab)
 
         # Representative coordinates = rectangle center
         cx = (full_left + full_right) // 2
@@ -13733,10 +13291,10 @@ class PyFCSApp:
             """Linux wheel down zoom."""
             return _apply_preview_zoom(factor=1 / 1.15, event=event)
 
-        def _set_sample_rgb(rgb, source_text="image sample"):
+        def _set_sample_rgb(rgb, source_text="image sample", lab_override=None):
             try:
                 rgb = UtilsTools.safe_rgb_tuple(rgb)
-                lab = UtilsTools.rgb_to_lab(rgb)
+                lab = UtilsTools.rgb_to_lab(rgb) if lab_override is None else lab_override
                 lab = UtilsTools.safe_lab_tuple(lab)
                 hex_color = UtilsTools.rgb_to_hex(rgb)
 
@@ -13893,16 +13451,14 @@ class PyFCSApp:
                 return
 
             crop = state["pil_img"].crop((left, top, right + 1, bottom + 1))
-            arr = np.array(crop, dtype=float)
-
-            if arr.ndim == 2:
-                mean_value = int(round(float(np.mean(arr))))
-                rgb = (mean_value, mean_value, mean_value)
-            else:
-                mean_rgb = np.mean(arr.reshape(-1, arr.shape[-1])[:, :3], axis=0)
-                rgb = tuple(int(round(v)) for v in mean_rgb)
-
-            _set_sample_rgb(rgb, source_text="image ROI average")
+            mean_lab, count = UtilsTools.mean_lab_with_filters(
+                np.asarray(crop.convert("RGB"), dtype=np.uint8)
+            )
+            if not count:
+                return
+            rgb = tuple(UtilsTools.lab_to_rgb(mean_lab))
+            _set_sample_rgb(rgb, source_text="image ROI LAB average",
+                            lab_override=mean_lab)
 
         def _on_mouse_down(event):
             if state["pil_img"] is None:

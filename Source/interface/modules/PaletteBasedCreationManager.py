@@ -77,6 +77,8 @@ class PaletteBasedCreationManager:
         self._name_editors = []
         # Avoid reentrant Return/FocusOut commits while a warning is modal.
         self._granule_name_commits_in_progress = set()
+        # A modal warning must not trigger the same removal twice.
+        self._removing_categories = False
 
         self.win = tk.Toplevel(self.root)
         self.win.withdraw()
@@ -187,27 +189,12 @@ class PaletteBasedCreationManager:
         return re.sub(r"[\s_\-]+", "", stem).casefold()
 
     def _make_unique_color_name(self, requested_name, ignore_name=None):
-        """
-        Return a color name that is unique inside this creation workspace.
-
-        Imported collisions are differentiated automatically:
-            Red -> Red (2) -> Red (3) ...
-
-        ``ignore_name`` is used when editing an existing row so keeping its
-        current name does not count as a collision.
-        """
-        base = str(requested_name or "Color").strip() or "Color"
-        existing = set(self.colors.keys())
+        """Allocate a unique category name within the 20-character UI limit."""
+        existing = set(self.colors)
         if ignore_name is not None:
             existing.discard(ignore_name)
-
-        if base not in existing:
-            return base
-
-        index = 2
-        while f"{base} ({index})" in existing:
-            index += 1
-        return f"{base} ({index})"
+        return UtilsTools.unique_import_label(
+            requested_name, existing, UtilsTools.MAX_CATEGORY_NAME_CHARS)
 
     def _used_granule_labels(self, excluding_category=None):
         return {
@@ -218,16 +205,11 @@ class PaletteBasedCreationManager:
 
     @staticmethod
     def _reserve_granule_label(requested, used):
-        base = str(requested or "Granule").strip() or "Granule"
-        if base not in used:
-            used.add(base)
-            return base
-        number = 2
-        while f"{base} ({number})" in used:
-            number += 1
-        result = f"{base} ({number})"
-        used.add(result)
-        return result
+        """Reserve a unique granule name of at most 24 characters."""
+        name = UtilsTools.unique_import_label(
+            requested, used, UtilsTools.MAX_COLOR_NAME_CHARS)
+        used.add(name)
+        return name
 
     @staticmethod
     def _auto_granule_label(category, index):
@@ -250,47 +232,80 @@ class PaletteBasedCreationManager:
         rgb = tuple(max(0, min(255, int(round(float(v)))))
                     for v in UtilsTools.lab_to_rgb(lab))
         data.update(lab=lab, rgb=rgb, hex=UtilsTools.rgb_to_hex(rgb).upper())
+        data.pop("_search_key_cache", None)
         check = self.color_checks[category]
         check.update(lab=lab, rgb=rgb)
 
     def _set_category_granules(self, category, entries):
-        """Commit an edit locally, preserving each granule's inclusion state."""
+        """Validate first, then commit an edit without raising on user mistakes.
+
+        Returns ``(success, error_message)``. Imported palettes may contain
+        coincident LAB sites in *different* categories; those unchanged sites
+        are allowed to remain editable. New/modified sites must not introduce
+        duplicates. Final Create Color Space checks all selected sites.
+        """
         if category not in self.colors or not entries:
-            raise ValueError("A palette category must contain at least one granule.")
+            return False, "A palette category must contain at least one granule."
+
         prior = self.colors[category].get("granules", [])
         old_flags = {g["label"]: g.get("enabled", True) for g in prior}
-        occupied = [
+        prior_coordinates = {
+            tuple(float(v) for v in g["lab"])
+            for g in prior
+        }
+        external = [
             (other, g["label"], g["lab"])
             for other, data in self.colors.items() if other != category
             for g in data.get("granules", [])
         ]
+        other_names = {g[1] for g in external}
+        local_occupied = []
         validated = []
+
         for entry in entries:
+            if not isinstance(entry, dict):
+                return False, "Invalid granule data."
+            # Always enforce valid color coordinates and no duplicate sites
+            # within the edited category, even when other palettes have
+            # deliberately been imported with overlapping prototypes.
             label, point, error = UtilsTools.check_granule_site(
-                entry.get("label"), entry.get("lab"), occupied,
-                max_name_length=64  # Existing imported identifiers may be longer.
+                entry.get("label"), entry.get("lab"), local_occupied,
+                max_name_length=64,  # Previously imported identifiers.
             )
             if error:
-                raise ValueError(error)
-            occupied.append((category, label, point))
+                return False, error
+            if label in other_names:
+                return False, f"Granule name '{label}' is already in use."
+
+            # A candidate imported from another source can share its LAB with
+            # another category. Do not invalidate it when editing *elsewhere*.
+            # But prevent a new/changed granule from introducing that overlap.
+            if point not in prior_coordinates:
+                _, _, error = UtilsTools.check_granule_site(
+                    label, point, external, max_name_length=64,
+                )
+                if error:
+                    return False, error
+
+            local_occupied.append((category, label, point))
             validated.append({
                 "label": label,
                 "lab": point,
                 "enabled": bool(entry.get("enabled", old_flags.get(label, True))),
             })
-        # All validation succeeds before mutating data or refreshing widgets.
+
+        # Nothing is changed until the full validation succeeds.
         data = self.colors[category]
         data["granules"] = validated
-        # If editing removes all active granules, the category is deselected.
+        data.pop("_search_key_cache", None)
         if not any(g["enabled"] for g in validated):
             self.color_checks[category]["var"].set(False)
         self._sync_representative(category)
-        if not hasattr(self, "_expanded_categories"):
-            self._expanded_categories = set()
         self._expanded_categories.add(category)
         self._rebuild_category_granules(category)
         self._refresh_category_summary(category)
         self._update_selection_counter()
+        return True, None
 
     def _open_granules(self, row_data):
         # Resolve by identity: a category may have been renamed by the user.
@@ -418,20 +433,20 @@ class PaletteBasedCreationManager:
         that nested FocusOut event can show the same warning a second time.
         """
         if getattr(self, "_suspend_granule_name_commit", False):
-            return
+            return True
         granules = self.colors.get(category, {}).get("granules", [])
         if not 0 <= index < len(granules):
-            return
+            return False
 
         current_name = self._granule_display_label(category, granules[index], index)
         requested = variable.get().strip()
         if requested == current_name:
-            return
+            return True
 
         pending = self._granule_name_commits_in_progress
         key = id(variable)
         if key in pending:
-            return
+            return False
         pending.add(key)
         try:
             # Keep the original name visible before a modal warning steals
@@ -440,10 +455,12 @@ class PaletteBasedCreationManager:
             manager = GranuleManager(self, category)
             display = manager.rename(index, requested)
             variable.set(display)
+            return display == requested
         except (ValueError, TypeError) as exc:
             variable.set(current_name)
             self.app.custom_warning(
                 "Invalid Granule Name", str(exc), parent=self.win)
+            return False
         finally:
             pending.discard(key)
 
@@ -456,82 +473,58 @@ class PaletteBasedCreationManager:
             self.source_name_var.set(f"{count} sources loaded")
 
     def _add_source_colors(self, loaded_colors, source_name, source_path=None):
-        """
-        Add a .cns/.fcs source without deleting colors already in the table.
+        """Import validated palette categories without touching existing rows.
 
-        Existing selections, custom colors and renamed colors are preserved.
-        New imported colors start unselected. If a loaded color has the same
-        name as an existing one, it receives a safe unique name such as
-        ``Red (2)``. Repeated source names are handled by the caller, which
-        asks the user whether the source should be loaded again.
-
-        Returns
-        -------
-        list[str]
-            Names of the colors actually added, in insertion order.
+        Only new source entries receive shortened/suffixed names. Importing
+        coincident LAB candidates is allowed; Create Color Space checks the
+        final selected sites. A batch is staged before modifying table state.
         """
         source_key = self._source_key(source_path)
-        additions = []
-
-        # Track reserved names across the entire import.
-        existing_names = set(self.colors.keys())
+        used_categories = set(self.colors)
         used_granules = self._used_granule_labels()
-
-        def reserve_unique_name(requested_name):
-            base = str(requested_name or "Color").strip() or "Color"
-
-            if base not in existing_names:
-                existing_names.add(base)
-                return base
-
-            index = 2
-            candidate = f"{base} ({index})"
-            while candidate in existing_names:
-                index += 1
-                candidate = f"{base} ({index})"
-
-            existing_names.add(candidate)
-            return candidate
-
+        additions = []
         for raw_name, data in (loaded_colors or {}).items():
             normalized = self._normalize_color_data(data)
             if normalized is None:
                 continue
-
+            requested = str(raw_name or "Color").strip() or "Color"
+            category = UtilsTools.unique_import_label(
+                requested, used_categories, UtilsTools.MAX_CATEGORY_NAME_CHARS)
+            used_categories.add(category)
+            original_granules = normalized["granules"]
+            imported = []
+            for index, item in enumerate(original_granules):
+                raw_label = str(item.get("label") or "").strip()
+                if not raw_label or (index == 0 and raw_label == requested):
+                    raw_label = category
+                elif raw_label.startswith(requested + "-g") and raw_label[len(requested)+2:].isdigit():
+                    # Preserve the automatic granule's number under a suffixed
+                    # category name, even if the category stem was shortened.
+                    suffix = raw_label[len(requested):]
+                    raw_label = category[:max(1, UtilsTools.MAX_COLOR_NAME_CHARS-len(suffix))] + suffix
+                label = self._reserve_granule_label(raw_label, used_granules)
+                imported.append({"label": label, "lab": item["lab"], "enabled": True})
             normalized["custom"] = False
-            unique_name = reserve_unique_name(raw_name)
-            # Imported granular JSON categories retain all their positive sites.
-            # Labels from a second source must not collide with existing sites.
-            originals = normalized["granules"]
-            normalized["granules"] = [
-                {"label": self._reserve_granule_label(
-                    (unique_name if len(originals) == 1 and i == 0 and
-                     item["label"] in (None, str(raw_name)) else item["label"]),
-                    used_granules),
-                 "lab": item["lab"], "enabled": True}
-                for i, item in enumerate(originals)
-            ]
-            additions.append((unique_name, normalized))
-
-            self.colors[unique_name] = normalized
-            self.color_checks[unique_name] = {
-                "var": tk.BooleanVar(value=False),
-                "lab": normalized["lab"],
-                "rgb": normalized["rgb"],
-            }
+            normalized["granules"] = imported
+            additions.append((category, normalized))
 
         if not additions:
             raise ValueError("The selected source does not contain valid colors.")
 
+        # All normalization/naming work is complete; only now commit the batch.
+        for category, normalized in additions:
+            self.colors[category] = normalized
+            self.color_checks[category] = {
+                "var": tk.BooleanVar(master=self.win, value=False),
+                "lab": normalized["lab"],
+                "rgb": normalized["rgb"],
+            }
         if source_key:
             self.loaded_sources.setdefault(source_key, []).append(
-                str(source_name or "Color Source")
-            )
-
+                str(source_name or "Color Source"))
         self.current_source_name = str(source_name or "Color Source")
         self.current_source_path = source_path
         self._update_source_summary()
-
         return [name for name, _data in additions]
 
     def _rename_color(self, old_name, requested_name):
@@ -544,15 +537,19 @@ class PaletteBasedCreationManager:
         if old_name not in self.colors:
             return old_name
 
-        requested = str(requested_name or "").strip()[:40]
-        if not requested:
+        requested = str(requested_name or "").strip()
+        if not requested or len(requested) > UtilsTools.MAX_CATEGORY_NAME_CHARS:
             return old_name
 
         new_name = self._make_unique_color_name(requested, ignore_name=old_name)
+        if len(new_name) > UtilsTools.MAX_CATEGORY_NAME_CHARS:
+            # Reject rather than silently truncate or create colliding IDs.
+            return old_name
         if new_name == old_name:
             return old_name
 
         original = self.colors[old_name]
+        original.pop("_search_key_cache", None)
         granules = original.get("granules", [])
         # Reserve manually named granules before assigning automatic names,
         # so renaming a category can never silently duplicate a sibling label.
@@ -574,7 +571,7 @@ class PaletteBasedCreationManager:
         for granule, suffix in zip(granules, auto_suffixes):
             if suffix is not None:
                 requested_label = (new_name if suffix == 0 else
-                                   f"{new_name}-g{suffix}")
+                                   self._auto_granule_label(new_name, suffix - 1))
                 granule["label"] = self._reserve_granule_label(
                     requested_label, reserved)
 
@@ -864,6 +861,13 @@ class PaletteBasedCreationManager:
             font=self.FONT, relief="solid", bd=1, padx=10, pady=3,
             cursor="hand2",
         ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            actions, text="Remove", command=self._remove_selected_colors,
+            font=self.FONT, bg="#FBEDEE", fg="#8F3439",
+            activebackground="#F5DCDF", activeforeground="#8F3439",
+            relief="solid", bd=1, padx=10, pady=3,
+            cursor="hand2",
+        ).pack(side="left", padx=(8, 0))
 
         counters = tk.Frame(bottom, bg=self.CARD)
         counters.grid(row=0, column=2, sticky="e")
@@ -992,9 +996,10 @@ class PaletteBasedCreationManager:
             text="+ Add Color Category",
             command=self._add_custom_color,
             font=self.FONT_BOLD,
-            bg="#f8fafc",
-            fg=self.TEXT,
-            activebackground="#eef2f7",
+            bg=UtilsTools.UI_ADD_CATEGORY_BG,
+            fg=UtilsTools.UI_ADD_CATEGORY_FG,
+            activebackground=UtilsTools.UI_ADD_CATEGORY_HOVER,
+            activeforeground=UtilsTools.UI_ADD_CATEGORY_FG,
             relief="solid",
             bd=1,
             padx=12,
@@ -1007,9 +1012,10 @@ class PaletteBasedCreationManager:
             text="+ Add Color Source...",
             command=self._open_color_source,
             font=self.FONT_BOLD,
-            bg="#f8fafc",
-            fg=self.TEXT,
-            activebackground="#eef2f7",
+            bg=UtilsTools.UI_ADD_SOURCE_BG,
+            fg=UtilsTools.UI_ADD_SOURCE_FG,
+            activebackground=UtilsTools.UI_ADD_SOURCE_HOVER,
+            activeforeground=UtilsTools.UI_ADD_SOURCE_FG,
             relief="solid",
             bd=1,
             padx=12,
@@ -1078,40 +1084,36 @@ class PaletteBasedCreationManager:
             return True
 
         data = self.colors.get(name, {})
+        searchable = data.get("_search_key_cache")
+        if searchable is None:
+            # RGB conversions are relatively expensive: compute the searchable
+            # representation once per category, not on every keystroke or
+            # Select All/Deselect All during a filtered search.
+            rgb = data.get("rgb", ())
+            lab = data.get("lab", ())
+            try:
+                rgb_values = [str(int(round(float(v)))) for v in list(rgb)[:3]]
+            except (TypeError, ValueError, OverflowError):
+                rgb_values = []
+            try:
+                lab_values = [f"{float(v):.2f}" for v in list(lab)[:3]]
+            except (TypeError, ValueError, OverflowError):
+                lab_values = []
+            color_hex = str(data.get("hex", "") or "").lower()
+            granule_values = []
+            for index, g in enumerate(data.get("granules", [])):
+                granule_values.extend((
+                    self._granule_display_label(name, g, index),
+                    " ".join(f"{float(v):.2f}" for v in g["lab"]),
+                    UtilsTools.rgb_to_hex(UtilsTools.lab_to_rgb(g["lab"])),
+                ))
+            searchable = " ".join((
+                str(name), color_hex, color_hex.lstrip("#"),
+                " ".join(rgb_values), " ".join(lab_values),
+                " ".join(granule_values),
+            )).lower()
+            data["_search_key_cache"] = searchable
 
-        rgb = data.get("rgb", ())
-        try:
-            rgb_values = [str(int(round(float(v)))) for v in list(rgb)[:3]]
-        except Exception:
-            rgb_values = []
-
-        lab = data.get("lab", ())
-        try:
-            lab_values = [f"{float(v):.2f}" for v in list(lab)[:3]]
-        except Exception:
-            lab_values = []
-
-        color_hex = str(data.get("hex", "") or "").lower()
-        hex_without_hash = color_hex.lstrip("#")
-
-        searchable = " ".join(
-            [
-                str(name).lower(),
-                color_hex,
-                hex_without_hash,
-                " ".join(rgb_values),
-                " ".join(lab_values),
-                " ".join(
-                    f"{self._granule_display_label(name, g, index)} "
-                    f"{' '.join(f'{float(v):.2f}' for v in g['lab'])} "
-                    f"{UtilsTools.rgb_to_hex(UtilsTools.lab_to_rgb(g['lab']))}"
-                    for index, g in enumerate(data.get("granules", []))
-                ),
-            ]
-        )
-
-        # All written tokens must be present. This makes multi-part searches
-        # useful without requiring exact punctuation or spacing.
         return all(token in searchable for token in query_tokens)
 
     def _toggle_category_details(self, row_data):
@@ -1178,15 +1180,29 @@ class PaletteBasedCreationManager:
                             self._commit_granule_name(key, ix, v))
             name_entry.bind("<FocusOut>", lambda _e, key=category, ix=i, v=name_var:
                             self._commit_granule_name(key, ix, v))
-            tk.Button(cell, text="Edit", font=self.FONT_SMALL,
-                      bg=row_bg, fg=self.BLUE, relief="flat", bd=0, padx=5,
-                      cursor="hand2", command=lambda key=category, ix=i:
-                      GranuleManager(self, key).edit(ix)).pack(side="right")
+            # Pack from the right in reverse order: Edit · Move · ×.
             if len(data["granules"]) > 1:
-                tk.Button(cell, text="×", font=self.FONT,
-                          bg=row_bg, fg=self.MUTED, relief="flat", bd=0, padx=4,
-                          cursor="hand2", command=lambda key=category, ix=i:
-                          GranuleManager(self, key).remove(ix)).pack(side="right")
+                tk.Button(
+                    cell, text="×", font=self.FONT_BOLD,
+                    bg=row_bg, fg="#B4474C", activeforeground="#B4474C",
+                    relief="flat", bd=0, padx=3, cursor="hand2",
+                    command=lambda key=category, ix=i:
+                        GranuleManager(self, key).remove(ix),
+                ).pack(side="right")
+            move_button = tk.Button(
+                cell, text="Move", font=self.FONT_SMALL,
+                bg=row_bg, fg=self.BLUE, relief="flat", bd=0, padx=3,
+                cursor="hand2",
+            )
+            move_button.configure(command=lambda key=category, ix=i, btn=move_button:
+                                  self._open_granule_move_menu(key, ix, btn))
+            move_button.pack(side="right")
+            tk.Button(
+                cell, text="Edit", font=self.FONT_SMALL,
+                bg=row_bg, fg=self.BLUE, relief="flat", bd=0, padx=3,
+                cursor="hand2", command=lambda key=category, ix=i:
+                    GranuleManager(self, key).edit(ix),
+            ).pack(side="right")
             tk.Label(row, text=f"{rgb[0]}, {rgb[1]}, {rgb[2]}",
                      bg=row_bg, fg=self.MUTED, font=self.FONT_SMALL,
                      anchor="center").grid(row=0, column=1, sticky="nsew", padx=6)
@@ -1241,10 +1257,23 @@ class PaletteBasedCreationManager:
         name_entry = tk.Entry(name_frame, textvariable=name_var,
                               font=self.FONT_BOLD, bg=self.CARD, fg=self.TEXT,
                               relief="solid", bd=1, highlightthickness=0)
+        name_entry.configure(
+            validate="key",
+            validatecommand=(self.win.register(
+                lambda proposed: len(proposed) <= UtilsTools.MAX_CATEGORY_NAME_CHARS
+            ), "%P"),
+        )
         name_entry.pack(side="left", fill="x", expand=True)
 
         count = len(data.get("granules", []))
         expanded = name in self._expanded_categories
+        # Remove one category, including its granules; do not change others.
+        tk.Button(
+            name_frame, text="×", font=self.FONT_BOLD,
+            bg=row_bg, fg="#B4474C", activeforeground="#B4474C",
+            relief="flat", bd=0, padx=3, cursor="hand2",
+            command=lambda key=name: self._remove_category(key),
+        ).pack(side="right", padx=(2, 0))
         tk.Button(
             name_frame, text="+ Add granule",
             command=lambda key=name: GranuleManager(self, key).add(),
@@ -1392,28 +1421,39 @@ class PaletteBasedCreationManager:
         else:
             self.visible_count_var.set("")
 
+    def _bulk_selection_targets(self):
+        """Use only current search matches, or the complete palette if unfiltered."""
+        search = getattr(self, "search_var", None)
+        if search is None:
+            return list(self.colors)
+        try:
+            if not search.get().strip():
+                return list(self.colors)
+            return [name for name in self.colors if self._matches_search(name)]
+        except tk.TclError:
+            return list(self.colors)
+
     def _select_all_colors(self):
-        for item in self.color_checks.values():
-            try:
-                item["var"].set(True)
-            except Exception:
-                pass
-        for name, data in self.colors.items():
-            for granule in data["granules"]:
+        """Select only categories matching the current palette search.
+
+        Without a search this still selects every category. Hidden categories
+        retain their prior selection state, including their granule flags.
+        """
+        matching = self._bulk_selection_targets()
+        for name in matching:
+            self.color_checks[name]["var"].set(True)
+            for granule in self.colors[name]["granules"]:
                 granule["enabled"] = True
             self._sync_representative(name)
-        for name in self.colors:
             self._refresh_category_controls(name)
             self._refresh_category_summary(name)
         self._update_selection_counter()
 
     def _deselect_all_colors(self):
-        for item in self.color_checks.values():
-            try:
-                item["var"].set(False)
-            except Exception:
-                pass
-        for name in self.colors:
+        """Deselect matching categories, leaving hidden ones unchanged."""
+        matching = self._bulk_selection_targets()
+        for name in matching:
+            self.color_checks[name]["var"].set(False)
             self._refresh_category_controls(name)
             self._refresh_category_summary(name)
         self._update_selection_counter()
@@ -1427,35 +1467,207 @@ class PaletteBasedCreationManager:
         UtilsTools.CustomCategoryDialog(self)
 
     def _commit_pending_color_names(self):
-        """Commit every visible name editor before validation/creation."""
+        """Commit inline category names; abort an action on an invalid edit."""
         pending = list(getattr(self, "_name_editors", []))
         changed = False
-
         for old_name, name_var in pending:
             if old_name not in self.colors:
                 continue
-
             requested = name_var.get().strip()
-            if not requested:
-                name_var.set(old_name)
+            if requested == old_name:
                 continue
-
+            if not requested or len(requested) > UtilsTools.MAX_CATEGORY_NAME_CHARS:
+                name_var.set(old_name)
+                self.app.custom_warning(
+                    "Invalid Category Name",
+                    f"Category names must contain 1 to {UtilsTools.MAX_CATEGORY_NAME_CHARS} characters.",
+                    parent=self.win)
+                return False
             new_name = self._rename_color(old_name, requested)
-            if new_name != old_name:
-                changed = True
-
+            name_var.set(new_name)
+            if new_name == old_name:
+                self.app.custom_warning(
+                    "Invalid Category Name",
+                    f"Unable to rename '{old_name}' to '{requested}'. Check the granule labels.",
+                    parent=self.win)
+                return False
+            changed = True
         if changed:
             self._refresh_color_list()
+        return True
 
     def _commit_pending_granule_names(self):
-        """Commit names even when the Create button doesn't move keyboard focus."""
+        """Commit all visible child edits; stop when a name is rejected."""
         for category, info in list(self._row_details.items()):
             for index, variable in list(info.get("granule_name_vars", [])):
                 items = self.colors.get(category, {}).get("granules", [])
                 if 0 <= index < len(items):
                     shown = self._granule_display_label(category, items[index], index)
                     if variable.get().strip() != shown:
-                        self._commit_granule_name(category, index, variable)
+                        if not self._commit_granule_name(category, index, variable):
+                            return False
+        return True
+
+    def _remove_categories(self, names):
+        """Remove palette-local categories, leaving other selections intact.
+
+        This is deliberately a structural update, unlike the lightweight
+        checkbox updates in Select All/Deselect All.
+        """
+        if self._removing_categories:
+            return
+        names = [name for name in names if name in self.colors]
+        if not names:
+            self.app.custom_warning(
+                "No Categories Selected", "Select at least one category to remove.",
+                parent=self.win,
+            )
+            return
+        plural = len(names) != 1
+        description = (f"Remove {len(names)} selected categories and all their granules?"
+                       if plural else f"Remove category '{names[0]}' and all its granules?")
+        self._removing_categories = True
+        try:
+            if not messagebox.askyesno(
+                "Remove Color Categories" if plural else "Remove Color Category",
+                description + "\nThis only changes the temporary palette.",
+                icon="warning", parent=self.win,
+            ):
+                return
+            for name in names:
+                self.colors.pop(name, None)
+                self.color_checks.pop(name, None)
+                self._expanded_categories.discard(name)
+                # Drop the old widget without rebuilding every other category.
+                widget = self._row_widgets.pop(name, None)
+                self._row_details.pop(name, None)
+                if widget is not None:
+                    widget.destroy()
+            self._name_editors = [entry for entry in self._name_editors
+                                  if entry[0] not in names]
+            if not self._row_widgets:
+                self._refresh_color_list()  # Display the empty/search hint.
+            else:
+                self._update_selection_counter()
+            self.colors_canvas.configure(scrollregion=self.colors_canvas.bbox("all"))
+        finally:
+            self._removing_categories = False
+
+    def _remove_category(self, category):
+        """Remove a category using the red × next to its name."""
+        self._remove_categories([category])
+
+    def _remove_selected_colors(self):
+        """Remove only selected categories matching the current search."""
+        names = [name for name in self._bulk_selection_targets()
+                 if self.color_checks[name]["var"].get()]
+        self._remove_categories(names)
+
+    def _open_granule_move_menu(self, category, index, widget):
+        """Offer all other categories without creating a new dialog."""
+        if category not in self.colors or not 0 <= index < len(self.colors[category]["granules"]):
+            return
+        destinations = [name for name in self.colors if name != category]
+        if not destinations:
+            self.app.custom_warning(
+                "Cannot Move Granule", "Create another color category first.",
+                parent=self.win,
+            )
+            return
+        menu = tk.Menu(self.win, tearoff=False)
+        for destination in destinations:
+            menu.add_command(
+                label=destination,
+                command=lambda target=destination:
+                    self._move_granule(category, index, target),
+            )
+        try:
+            menu.tk_popup(widget.winfo_rootx(),
+                          widget.winfo_rooty() + widget.winfo_height())
+        finally:
+            menu.grab_release()
+
+    def _move_granule(self, source, index, destination):
+        """Move a complete prototype without changing its exact LAB or label.
+
+        The target inherits the source site's *effective* selection state.
+        Moving the final site deletes the empty source category after consent.
+        The final Create validator remains responsible for duplicate-LAB
+        candidates, including imports from repeated color sources.
+        """
+        if source == destination or source not in self.colors or destination not in self.colors:
+            return False
+        source_items = self.colors[source]["granules"]
+        if not 0 <= index < len(source_items):
+            return False
+        moving = dict(source_items[index])
+        if any(item["label"] == moving["label"]
+               for item in self.colors[destination]["granules"]):
+            self.app.custom_warning(
+                "Cannot Move Granule",
+                f"Granule '{moving['label']}' already exists in '{destination}'.",
+                parent=self.win,
+            )
+            return False
+        if len(source_items) == 1:
+            if not messagebox.askyesno(
+                "Move Last Granule",
+                f"Moving '{moving['label']}' will remove the empty category '{source}'.\n"
+                f"Move it to '{destination}'?",
+                icon="warning", parent=self.win,
+            ):
+                return False
+        # Commit pending inline renames *before* moving. Otherwise old Tk
+        # FocusOut callbacks could be applied to the wrong prototype later.
+        if not self._commit_pending_granule_names():
+            return False
+        if not self._commit_pending_color_names():
+            return False
+        if source not in self.colors or destination not in self.colors:
+            return False
+        source_items = self.colors[source]["granules"]
+        if not 0 <= index < len(source_items) or source_items[index]["label"] != moving["label"]:
+            return False
+
+        source_was_selected = bool(self.color_checks[source]["var"].get())
+        destination_was_selected = bool(self.color_checks[destination]["var"].get())
+        moved_selected = source_was_selected and bool(moving.get("enabled", True))
+
+        # Prevent activation of unrelated destination sites when moving a
+        # selected prototype into a previously deselected category.
+        if moved_selected and not destination_was_selected:
+            for item in self.colors[destination]["granules"]:
+                item["enabled"] = False
+        elif destination_was_selected and not moved_selected:
+            moving["enabled"] = False
+
+        self.colors[destination]["granules"].append(moving)
+        self.colors[destination].pop("_search_key_cache", None)
+        if moved_selected:
+            self.color_checks[destination]["var"].set(True)
+
+        if len(source_items) == 1:
+            del self.colors[source]
+            del self.color_checks[source]
+            self._expanded_categories.discard(source)
+        else:
+            del source_items[index]
+            if source_was_selected:
+                self.color_checks[source]["var"].set(any(
+                    item.get("enabled", True) for item in source_items))
+            self._sync_representative(source)
+        self._sync_representative(destination)
+        self._expanded_categories.add(destination)
+        # Moving changes two category structures. Rebuild here (not on each
+        # selection change), preserving search, open rows and scroll position.
+        previous_scroll = self.colors_canvas.yview()[0]
+        if self.search_var.get().strip():
+            self.search_var.set("")
+        self._refresh_color_list()
+        self.colors_canvas.after_idle(
+            lambda: self.colors_canvas.yview_moveto(previous_scroll)
+            if self.colors_canvas.winfo_exists() else None)
+        return True
 
     def _selected_category_granules(self):
         """Return only active granules of selected categories."""
@@ -1474,8 +1686,10 @@ class PaletteBasedCreationManager:
 
     def _create_color_space(self):
         # Commit both child and parent names before validation / construction.
-        self._commit_pending_granule_names()
-        self._commit_pending_color_names()
+        if not self._commit_pending_granule_names():
+            return
+        if not self._commit_pending_color_names():
+            return
         selected = self._selected_category_granules()
         if len(selected) < 2:
             self.app.custom_warning(
@@ -1525,47 +1739,9 @@ class PaletteBasedCreationManager:
                            for category, granules in selected.items()}
 
         def on_create(name, options):
-            mode = options["color_space"]
-            domain = options["reference_domain"]
-
-            def convert(lab):
-                point = np.asarray(lab, dtype=float).reshape(1, 3)
-                if mode == "LAB":
-                    return point[0]
-                return lab_to_rgb_model_checked(point)[0]
-
-            categories_native = {
-                category: {glabel: convert(lab) for glabel, lab in granules.items()}
-                for category, granules in selected.items()
-            }
-            all_prototypes = np.asarray([point for group in categories_native.values()
-                                         for point in group.values()], dtype=float)
-            Voronoi._validate_points_in_domain(all_prototypes, domain, Voronoi.DEFAULT_EPS)
-            Voronoi._validate_no_duplicate_points(all_prototypes, Voronoi.DEFAULT_MERGE_EPS)
-
-            saved_options = dict(options)
-            configured_negatives = saved_options.get("negative_prototypes") or {}
-            if saved_options["disjoint"]:
-                saved_options["negative_prototypes"] = None
-            else:
-                # The shared creation dialog selects negative CATEGORIES. Each
-                # chosen category contributes ALL its positive granules.
-                negatives_native = {}
-                for owner, negative_labels in configured_negatives.items():
-                    sites_for_owner = []
-                    for candidate in negative_labels:
-                        if isinstance(candidate, str):
-                            if candidate not in categories_native:
-                                raise ValueError(f"Unknown negative category '{candidate}'.")
-                            if candidate == owner:
-                                raise ValueError("A category cannot negate itself.")
-                            sites_for_owner.extend(categories_native[candidate].values())
-                        else:
-                            sites_for_owner.append(convert(candidate))
-                    negatives_native[owner] = sites_for_owner
-                saved_options["negative_prototypes"] = negatives_native
-            saved_options["_granular_categories"] = categories_native
-            # The default t-conorm lives in the engine; never in JSON.
+            saved_options = UtilsTools.prepare_granular_creation_options(
+                selected, options
+            )
             return self.app.save_cs(name, representatives, options=saved_options)
 
         dialog = UtilsTools.FCSCreationDialog(

@@ -305,7 +305,8 @@ class ImageManager:
         min_samples=160,
         max_pixels=80000,
         max_side=650,
-        lab_quantization=1.0
+        lab_quantization=1.0,
+        max_unique_bins=18000,
     ):
         """
         Detect the main colors in an image using DBSCAN clustering in LAB space.
@@ -331,6 +332,10 @@ class ImageManager:
         lab_quantization:
             LAB quantization step. Higher values are faster and more compact.
             Recommended: 0.5 to 2.0. Default 1.0 is a good balance.
+        max_unique_bins:
+            Upper bound on distinct LAB bins passed to DBSCAN. Only when the
+            bound is exceeded is LAB quantization coarsened adaptively. This
+            preserves the old result for normal-sized detection problems.
         """
         if image is None:
             return []
@@ -421,6 +426,18 @@ class ImageManager:
             return_counts=True
         )
 
+        # DBSCAN neighborhood search can still become expensive when nearly
+        # every quantized LAB point is distinct. Bound the input size by
+        # adaptively coarsening quantization; small images are unaffected.
+        if max_unique_bins is not None and max_unique_bins > 0:
+            for _attempt in range(12):
+                if len(unique_lab_q) <= int(max_unique_bins):
+                    break
+                q *= 1.5
+                lab_q = np.round(pixels / q).astype(np.int32)
+                unique_lab_q, counts = np.unique(
+                    lab_q, axis=0, return_counts=True
+                )
         unique_pixels = unique_lab_q.astype(np.float32) * q
 
         if unique_pixels.shape[0] == 0:

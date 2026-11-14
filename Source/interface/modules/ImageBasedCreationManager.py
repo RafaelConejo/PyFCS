@@ -1,4 +1,5 @@
 import os
+import queue
 import platform
 import re
 import threading
@@ -17,8 +18,9 @@ class ImageBasedCreationManager:
 
     The workspace keeps image browsing, manual sampling, automatic color
     detection, imported color sources and the selected-color list in one
-    persistent window. Imported .cns/.fcs files contribute representatives
-    only; their original files and saved FCS geometry remain unchanged.
+    persistent window. Imported .cns/.fcs files contribute representatives; granular JSON
+    files preserve all positive granules. The original files and saved FCS
+    geometry remain unchanged.
     """
 
     BG = "#f5f6f8"
@@ -71,6 +73,10 @@ class ImageBasedCreationManager:
 
         # Image rendering / interaction state.
         self._canvas_photo = None
+        self._detection_queue = queue.Queue()
+        self._detection_poll_id = None
+        self._startup_after_ids = []
+        self._idle_after_ids = set()
         self._render_transform = None
         self._pan_state = None
         self._drag_start_source = None
@@ -78,10 +84,13 @@ class ImageBasedCreationManager:
         self._drag_start_canvas = None
         self._current_sample = None
 
-        # Selected colors for the new color space.
+        # Categories, each containing at least one positive granule.
         self.colors = {}
         self.color_checks = {}
         self._name_editors = []
+        self._row_details = {}
+        self._expanded_categories = set()
+        self._granule_name_commits_in_progress = set()
         self.loaded_color_sources = {}
 
         # Automatic detection state.
@@ -95,7 +104,7 @@ class ImageBasedCreationManager:
 
         # Open a private image picker if the creation workspace starts empty.
         if open_image_on_start and not self._source_order:
-            self.win.after(120, self._open_workspace_image)
+            self._startup_after_ids.append(self.win.after(120, self._open_workspace_image))
 
         # Register the active creation window with the main application.
         try:
@@ -104,32 +113,56 @@ class ImageBasedCreationManager:
             pass
 
         self.win.bind("<Escape>", lambda _e: self.close())
-        self.win.after(80, self._render_image)
+        self._startup_after_ids.append(self.win.after(80, self._render_image))
         self.win.deiconify()
         self.win.focus_set()
 
     # Window / State
     def _configure_window_size(self):
-        """Open the creation workspace as a normal centered window."""
-        width = 1200
-        height = 700
-
+        """Center the workspace slightly above the parent (screen-safe)."""
+        width, height = 1200, 700
         try:
-            self.win.update_idletasks()
+            self.root.update_idletasks()
             self.app.center_popup(self.win, width, height)
-        except Exception:
-            try:
-                sw = self.win.winfo_screenwidth()
-                sh = self.win.winfo_screenheight()
-                x = max(0, (sw - width) // 2)
-                y = max(0, (sh - height) // 2)
-                self.win.geometry(f"{width}x{height}+{x}+{y}")
-            except Exception:
-                self.win.geometry(f"{width}x{height}")
+            # Preserve the application's positioning logic where possible.
+            match = re.fullmatch(r"\d+x\d+([+-]\d+)([+-]\d+)", self.win.geometry())
+            if match:
+                x, y = int(match.group(1)), int(match.group(2))
+            else:
+                x = self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2
+                y = self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2
+            screen_h = self.win.winfo_screenheight()
+            y = max(10, min(y - 45, max(10, screen_h - height - 35)))
+            self.win.geometry(f"{width}x{height}{x:+d}{y:+d}")
+        except (tk.TclError, ValueError, AttributeError):
+            screen_w, screen_h = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
+            x = max(0, (screen_w - width) // 2)
+            y = max(10, (screen_h - height) // 2 - 45)
+            self.win.geometry(f"{width}x{height}+{x}+{y}")
 
     def close(self):
-        if self._detection_running:
-            return
+        # A worker can finish after the window is closed; it only writes to a
+        # queue, and pending Tk polls are cancelled before destruction.
+        self._detection_running = False
+        self._stop_detection_spinner()
+        for callback_id in self._startup_after_ids:
+            try:
+                self.win.after_cancel(callback_id)
+            except tk.TclError:
+                pass
+        self._startup_after_ids.clear()
+        for callback_id in tuple(self._idle_after_ids):
+            try:
+                self.win.after_cancel(callback_id)
+            except tk.TclError:
+                pass
+        self._idle_after_ids.clear()
+        if self._detection_poll_id is not None:
+            try:
+                self.win.after_cancel(self._detection_poll_id)
+            except tk.TclError:
+                pass
+            self._detection_poll_id = None
 
         try:
             if self.win.winfo_exists():
@@ -143,11 +176,29 @@ class ImageBasedCreationManager:
         except Exception:
             pass
 
+    def _schedule_idle(self, callback):
+        """Run a UI task only while this creation window still exists."""
+        holder = {}
+        def run():
+            self._idle_after_ids.discard(holder.get('id'))
+            try:
+                if self.win.winfo_exists():
+                    callback()
+            except tk.TclError:
+                pass
+        holder['id'] = self.win.after_idle(run)
+        self._idle_after_ids.add(holder['id'])
+        return holder['id']
+
+    def _used_granule_labels(self):
+        """Adapter required by the shared CustomCategoryDialog."""
+        return self._all_granule_labels()
+
     def _create_variables(self):
         self.source_var = tk.StringVar(value="")
         self.mode_var = tk.StringVar(value="Manual")
         self.help_var = tk.StringVar(
-            value="Click: pixel · Drag: filtered mean · Right-drag: move · Wheel: zoom"
+            value="Click: pixel · Drag: mean · Right-drag: move · Wheel: zoom"
         )
         self.zoom_var = tk.StringVar(value="Fit")
 
@@ -160,6 +211,11 @@ class ImageBasedCreationManager:
 
         self.selected_count_var = tk.StringVar(value="0 of 0 selected")
         self.color_source_status_var = tk.StringVar(value="")
+        self.search_var = tk.StringVar(value="")  # shared CustomCategoryDialog adapter
+        self.sample_destination_var = tk.StringVar(value="New category")
+        self.sample_action_hint_var = tk.StringVar(
+            value="Choose a destination to add the sample as a granule."
+        )
 
         self.threshold_var = tk.DoubleVar(value=0.50)
         self.min_samples_var = tk.IntVar(value=160)
@@ -218,8 +274,8 @@ class ImageBasedCreationManager:
 
         left = tk.Frame(paned, bg=self.BG)
         right = tk.Frame(paned, bg=self.BG)
-        paned.add(left, stretch="always", minsize=700)
-        paned.add(right, stretch="always", minsize=390)
+        paned.add(left, stretch="always", minsize=580)
+        paned.add(right, stretch="always", minsize=450)
 
         self._build_image_workspace(left)
         self._build_selected_colors_panel(right)
@@ -228,11 +284,11 @@ class ImageBasedCreationManager:
             try:
                 total = paned.winfo_width()
                 if total > 1:
-                    paned.sash_place(0, int(total * 0.70), 1)
+                    paned.sash_place(0, int(total * 0.60), 1)
             except Exception:
                 pass
 
-        self.win.after(150, _initial_sash)
+        self._startup_after_ids.append(self.win.after(150, _initial_sash))
 
     def _build_header(self, parent):
         header = tk.Frame(parent, bg=self.CARD, bd=1, relief="solid")
@@ -444,87 +500,142 @@ class ImageBasedCreationManager:
         self.manual_card = self._card(image_card, "Manual Sample", padx=9, pady=8)
         self.manual_card.pack(fill="x", pady=(8, 0))
         self._build_manual_card(self.manual_card)
+        # A pixel and a large ROI may have differently sized descriptions.
+        # Keep the inspector stable so the image canvas never jumps in height.
+        self.manual_card.configure(height=169)
+        self.manual_card.pack_propagate(False)
 
         self.auto_card = self._card(image_card, "Automatic Detection", padx=9, pady=8)
         self._build_auto_card(self.auto_card)
 
+    def _quiet_button(self, parent, text, command, *, danger=False,
+                      strong=False, **kwargs):
+        """Subtle secondary actions; purple is reserved for the main action."""
+        background = "#FBEDEE" if danger else "#F5F6F8"
+        hover = "#F5DEE1" if danger else "#E9ECF1"
+        return tk.Button(
+            parent, text=text, command=command,
+            font=self.FONT_BOLD if strong else self.FONT,
+            bg=background, fg=self.TEXT,
+            activebackground=hover, activeforeground=self.TEXT,
+            relief="solid", bd=1, highlightthickness=0,
+            padx=9, pady=4, cursor="hand2", **kwargs
+        )
+
+    def _add_action_button(self, parent, text, command, *, role="category", **kwargs):
+        """Subtle purpose-colored add actions shared across Image-Based UI.
+
+        The final Create Color Space action retains the principal purple.
+        """
+        styles = {
+            # A granule is an action inside an existing category, so it uses
+            # the same unboxed purple text as the Palette-Based workspace.
+            "granule": (self.CARD, self.BLUE, self.CARD),
+            # New category and imported source are distinct secondary actions.
+            "category": (UtilsTools.UI_ADD_CATEGORY_BG,
+                         UtilsTools.UI_ADD_CATEGORY_FG,
+                         UtilsTools.UI_ADD_CATEGORY_HOVER),
+            "source": (UtilsTools.UI_ADD_SOURCE_BG,
+                       UtilsTools.UI_ADD_SOURCE_FG,
+                       UtilsTools.UI_ADD_SOURCE_HOVER),
+        }
+        bg, fg, hover = styles.get(role, styles["category"])
+        return tk.Button(
+            parent, text=text, command=command,
+            font=self.FONT_BOLD, bg=bg, fg=fg,
+            activebackground=hover, activeforeground=fg,
+            disabledforeground="#8A9097",
+            relief="flat", bd=0, highlightthickness=0,
+            padx=7 if role == "granule" else 11,
+            pady=5, cursor="hand2", **kwargs,
+        )
+
     def _build_manual_card(self, card):
-        row = tk.Frame(card, bg=self.CARD)
-        row.pack(fill="x")
-        row.columnconfigure(1, weight=1)
+        """Stable-height sample inspection and clearly grouped add actions."""
+        details = tk.Frame(card, bg=self.CARD, height=69)
+        details.pack(fill="x", pady=(0, 4))
+        details.grid_propagate(False)
+        details.grid_rowconfigure(0, weight=1)
+        details.grid_columnconfigure(1, weight=1, minsize=210)
 
         self.sample_swatch = tk.Canvas(
-            row,
-            width=58,
-            height=58,
-            bg=self.CARD,
-            highlightthickness=0,
+            details, width=86, height=54, bg=self.CARD,
+            highlightthickness=0, bd=0,
         )
-        self.sample_swatch.grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 10))
+        self.sample_swatch.grid(row=0, column=0, sticky="w", padx=(1, 12))
         self.sample_swatch_rect = self.sample_swatch.create_rectangle(
-            4, 4, 54, 54, fill="#d9dde3", outline="#707070", width=1
+            3, 3, 83, 51, fill="#D9DDE3", outline="#979CA6", width=1,
         )
 
-        info = tk.Frame(row, bg=self.CARD)
-        info.grid(row=0, column=1, sticky="nsew")
-
+        # The context is allowed to change from Pixel to ROI without changing
+        # the height of the card. Reserve two lines for ROI dimensions.
+        description = tk.Frame(details, bg=self.CARD)
+        description.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
         tk.Label(
-            info,
-            textvariable=self.sample_title_var,
-            font=self.FONT_BOLD,
-            bg=self.CARD,
-            fg=self.TEXT,
+            description, textvariable=self.sample_title_var,
+            font=self.FONT_BOLD, bg=self.CARD, fg=self.TEXT,
             anchor="w",
         ).pack(fill="x")
-
         tk.Label(
-            info,
-            textvariable=self.sample_position_var,
-            font=self.FONT_SMALL,
-            bg=self.CARD,
-            fg=self.MUTED,
-            anchor="w",
+            description, textvariable=self.sample_position_var,
+            font=self.FONT_SMALL, bg=self.CARD, fg=self.MUTED,
+            anchor="w", justify="left", height=2, wraplength=245,
         ).pack(fill="x", pady=(2, 0))
-
         tk.Label(
-            info,
-            textvariable=self.sample_filters_var,
-            font=("Segoe UI", 8, "italic"),
-            bg=self.CARD,
-            fg=self.MUTED,
-            anchor="w",
-        ).pack(fill="x", pady=(2, 0))
+            description, textvariable=self.sample_filters_var,
+            font=("Segoe UI", 8, "italic"), bg=self.CARD, fg=self.MUTED,
+            anchor="w", justify="left", height=1,
+        ).pack(fill="x", pady=(1, 0))
 
-        values = tk.Frame(row, bg=self.CARD)
-        values.grid(row=0, column=2, sticky="ne", padx=(12, 12))
-
-        for var in (self.sample_rgb_var, self.sample_lab_var, self.sample_hex_var):
+        # Plain neutral background: no gray inset around RGB/HEX/LAB values.
+        values = tk.Frame(details, bg=self.CARD)
+        values.grid(row=0, column=2, sticky="e", padx=(5, 1))
+        for var in (self.sample_rgb_var, self.sample_hex_var, self.sample_lab_var):
             tk.Label(
-                values,
-                textvariable=var,
-                font=self.FONT,
-                bg=self.CARD,
-                fg=self.TEXT,
-                anchor="e",
-            ).pack(anchor="e")
+                values, textvariable=var, font=self.FONT_SMALL,
+                bg=self.CARD, fg=self.TEXT, anchor="e", justify="right",
+            ).pack(anchor="e", pady=1)
 
-        self.add_sample_button = tk.Button(
-            row,
-            text="Add Color",
-            command=self._add_current_sample,
-            font=self.FONT_BOLD,
-            bg=self.GREEN_SOFT,
-            fg=self.GREEN,
-            activebackground="#cfeadb",
-            activeforeground=self.GREEN,
-            relief="solid",
-            bd=1,
-            padx=14,
-            pady=5,
-            cursor="hand2",
-            state="disabled",
+        tk.Frame(card, bg=self.BORDER, height=1).pack(fill="x", pady=(2, 7))
+
+        actions = tk.Frame(card, bg=self.CARD, height=31)
+        actions.pack(fill="x")
+        actions.pack_propagate(False)
+
+        destination = tk.Frame(actions, bg=self.CARD)
+        destination.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            destination, text="Add sample to:",
+            bg=self.CARD, fg=self.MUTED, font=self.FONT_SMALL,
+        ).pack(side="left", padx=(0, 6))
+        self.sample_destination_combo = ttk.Combobox(
+            destination, textvariable=self.sample_destination_var,
+            values=["New category"], state="readonly", width=14,
         )
-        self.add_sample_button.grid(row=0, column=3, rowspan=2, sticky="e")
+        self.sample_destination_combo.pack(side="left", fill="x", expand=True)
+        self.sample_destination_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._refresh_sample_destinations()
+        )
+
+        # Explicit destinations: new category versus new positive granule.
+        # Pack from the right so both actions remain grouped at the far edge.
+        self.add_sample_button = self._add_action_button(
+            actions, "Add as Category", self._add_current_sample,
+            role="category", state="disabled",
+        )
+        self.add_sample_button.pack(side="right", padx=(7, 0))
+
+        self.add_sample_to_category_button = self._add_action_button(
+            actions, "Add as Granule", self._add_sample_to_category,
+            role="granule", state="disabled",
+        )
+        self.add_sample_to_category_button.pack(side="right")
+
+        tk.Label(
+            card, textvariable=self.sample_action_hint_var,
+            bg=self.CARD, fg=self.MUTED, font=self.FONT_SMALL,
+            anchor="center", justify="center",
+        ).pack(fill="x", pady=(4, 0))
 
     def _build_auto_card(self, card):
         top = tk.Frame(card, bg=self.CARD)
@@ -622,32 +733,21 @@ class ImageBasedCreationManager:
         outer = tk.Frame(parent, bg=self.BG)
         outer.pack(fill="both", expand=True, padx=(8, 0))
 
-        card = self._card(outer, "Selected Colors", padx=9, pady=8)
+        card = self._card(outer, "Color Categories", padx=9, pady=8)
         card.pack(fill="both", expand=True)
 
         toolbar = tk.Frame(card, bg=self.CARD)
         toolbar.pack(fill="x", pady=(0, 8))
 
-        tk.Button(
-            toolbar,
-            text="Select All",
-            command=self._select_all_colors,
-            font=self.FONT_SMALL,
+        self._quiet_button(
+            toolbar, "Select All", self._select_all_colors,
         ).pack(side="left")
-
-        tk.Button(
-            toolbar,
-            text="Deselect All",
-            command=self._deselect_all_colors,
-            font=self.FONT_SMALL,
-        ).pack(side="left", padx=5)
-
-        tk.Button(
-            toolbar,
-            text="Remove",
-            command=self._remove_selected_colors,
-            font=self.FONT_SMALL,
-        ).pack(side="left")
+        self._quiet_button(
+            toolbar, "Deselect All", self._deselect_all_colors,
+        ).pack(side="left", padx=(5, 0))
+        self._quiet_button(
+            toolbar, "Remove", self._remove_selected_colors, danger=True,
+        ).pack(side="left", padx=(5, 0))
 
         tk.Label(
             toolbar,
@@ -694,8 +794,8 @@ class ImageBasedCreationManager:
             ),
         )
 
-        self.colors_canvas.bind("<MouseWheel>", self._on_colors_mousewheel)
-        self.colors_inner.bind("<MouseWheel>", self._on_colors_mousewheel)
+        for sequence in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+            self.win.bind(sequence, self._dispatch_colors_mousewheel, add='+')
 
         footer_sep = tk.Frame(card, bg=self.BORDER, height=1)
         footer_sep.pack(fill="x", pady=(10, 8))
@@ -703,37 +803,26 @@ class ImageBasedCreationManager:
         footer = tk.Frame(card, bg=self.CARD)
         footer.pack(fill="x")
 
-        # Keep color inputs together, with FCS creation on its own row.
+        # Secondary input actions stay together. The explanatory status has
+        # its own centered space and never competes with these buttons.
         source_buttons = tk.Frame(footer, bg=self.CARD)
         source_buttons.pack(fill="x")
-
-        tk.Button(
-            source_buttons,
-            text="+ Add Custom Color",
-            command=self._add_custom_color,
-            font=self.FONT_BOLD,
-            relief="solid",
-            bd=1,
-            padx=8,
-            pady=5,
-            cursor="hand2",
+        input_group = tk.Frame(source_buttons, bg=self.CARD)
+        input_group.pack(side="right")
+        self._add_action_button(
+            input_group, "+ Add Color Category", self._add_custom_color,
+            role="category",
         ).pack(side="left")
-
-        self.add_color_source_button = tk.Button(
-            source_buttons,
-            text="+ Add Color Source...",
-            command=self._open_color_source,
-            font=self.FONT_BOLD,
-            relief="solid",
-            bd=1,
-            padx=8,
-            pady=5,
-            cursor="hand2",
+        self.add_color_source_button = self._add_action_button(
+            input_group, "+ Add Color Source...", self._open_color_source,
+            role="source",
         )
-        self.add_color_source_button.pack(side="right")
+        self.add_color_source_button.pack(side="left", padx=(7, 0))
 
         create_row = tk.Frame(footer, bg=self.CARD)
         create_row.pack(fill="x", pady=(8, 0))
+        create_row.grid_columnconfigure(0, weight=1)
+        create_row.grid_columnconfigure(1, weight=0)
 
         tk.Label(
             create_row,
@@ -741,26 +830,23 @@ class ImageBasedCreationManager:
             bg=self.CARD,
             fg=self.MUTED,
             font=self.FONT_SMALL,
-            anchor="w",
-            wraplength=180,
-            justify="left",
-        ).pack(side="left", fill="x", expand=True)
+            anchor="center", justify="center",
+            wraplength=340,
+        ).grid(row=0, column=0, sticky="nsew", padx=(4, 8))
 
         tk.Button(
             create_row,
             text="Create Color Space",
             command=self._create_color_space,
             font=self.FONT_BOLD,
-            bg=self.BLUE_SOFT,
-            fg=self.BLUE,
-            activebackground=UtilsTools.UI_ACCENT_HOVER,
-            activeforeground=self.BLUE,
-            relief="solid",
-            bd=1,
-            padx=12,
-            pady=5,
+            bg=self.BLUE,
+            fg=self.CARD,
+            activebackground=UtilsTools.UI_ACCENT_DARK,
+            activeforeground=self.CARD,
+            relief="flat", bd=0,
+            padx=12, pady=6,
             cursor="hand2",
-        ).pack(side="right")
+        ).grid(row=0, column=1, sticky="e")
 
         self._refresh_color_list()
 
@@ -1176,7 +1262,7 @@ class ImageBasedCreationManager:
 
         else:
             self.help_var.set(
-                "Click: pixel · Drag: filtered mean · Right-drag: move · Wheel: zoom"
+                "Click: pixel · Drag: mean · Right-drag: move · Wheel: zoom"
             )
             self.auto_card.pack_forget()
             self.manual_card.pack(fill="x", pady=(8, 0))
@@ -1219,7 +1305,7 @@ class ImageBasedCreationManager:
         start_canvas = self._drag_start_canvas
         if start_canvas is not None:
             if abs(event.x - start_canvas[0]) >= 4 or abs(event.y - start_canvas[1]) >= 4:
-                self._render_image()
+                self._redraw_selection_overlay()
         return "break"
 
     def _on_left_release(self, event):
@@ -1258,8 +1344,11 @@ class ImageBasedCreationManager:
         if pil is None:
             return
 
-        rgba = pil.convert("RGBA").getpixel((int(x), int(y)))
-        r, g, b, a = rgba
+        rgba = pil.getpixel((int(x), int(y)))
+        if not isinstance(rgba, (tuple, list)) or len(rgba) < 3:
+            rgba = pil.convert('RGB').getpixel((int(x), int(y)))
+        r, g, b = rgba[:3]
+        a = rgba[3] if len(rgba) >= 4 else 255
         if a == 0:
             return
 
@@ -1290,24 +1379,16 @@ class ImageBasedCreationManager:
             self._sample_pixel(left, top)
             return
 
-        rgba = np.asarray(
-            pil.convert("RGBA").crop((left, top, right + 1, bottom + 1)),
-            dtype=np.uint8,
+        # Evaluate large ROIs in bounded strips to avoid materializing a
+        # full-resolution RGB+LAB copy in memory.
+        mean_lab_arr, used_count, total_count = UtilsTools.mean_lab_of_pil_roi(
+            pil, (left, top, right + 1, bottom + 1),
+            self._active_detection_filters()
         )
-        if rgba.size == 0:
+        if total_count <= 0:
             return
 
-        visible = rgba[..., 3] > 0
-        total_count = int(np.count_nonzero(visible))
-        if total_count == 0:
-            return
-
-        rgb_pixels = rgba[..., :3][visible].astype(np.float32)
-
-        # Apply LAB limits to individual pixels before averaging the ROI.
-        mean_rgb_arr, used_count = self._mean_rgb_with_active_lab_filters(rgb_pixels)
-
-        if used_count <= 0 or mean_rgb_arr is None:
+        if used_count <= 0 or mean_lab_arr is None:
             self.app.custom_warning(
                 "No Valid Pixels",
                 "No pixels in the selected area satisfy the active LAB filters.",
@@ -1318,9 +1399,10 @@ class ImageBasedCreationManager:
             self._render_image()
             return
 
-        mean_rgb = tuple(int(round(v)) for v in mean_rgb_arr[:3])
-        lab = UtilsTools.rgb_to_lab(mean_rgb)
-        lab = tuple(float(v) for v in np.asarray(lab, dtype=float).reshape(-1)[:3])
+        lab = tuple(float(v) for v in mean_lab_arr[:3])
+        # Display-only sRGB approximation; the saved prototype is the
+        # unrounded LAB mean, which can lie outside the display gamut.
+        mean_rgb = tuple(UtilsTools.lab_to_rgb(lab))
 
         filters_active = bool(self._active_detection_filters())
 
@@ -1354,6 +1436,7 @@ class ImageBasedCreationManager:
         try:
             self.sample_swatch.itemconfig(self.sample_swatch_rect, fill="#d9dde3")
             self.add_sample_button.configure(state="disabled")
+            self.add_sample_to_category_button.configure(state="disabled")
         except Exception:
             pass
 
@@ -1400,8 +1483,18 @@ class ImageBasedCreationManager:
         try:
             self.sample_swatch.itemconfig(self.sample_swatch_rect, fill=sample["hex"])
             self.add_sample_button.configure(state="normal")
+            self._refresh_sample_destinations()
         except Exception:
             pass
+
+    def _redraw_selection_overlay(self):
+        """Refresh only transient markers; never resize the full photograph."""
+        if not hasattr(self, 'image_canvas') or self._render_transform is None:
+            return
+        self.image_canvas.delete('sample_marker')
+        self.image_canvas.delete('drag_marker')
+        self._draw_current_sample()
+        self._draw_drag_preview()
 
     def _draw_current_sample(self):
         sample = self._current_sample
@@ -1422,9 +1515,9 @@ class ImageBasedCreationManager:
         if p is None:
             return
         x, y = p
-        self.image_canvas.create_line(x - 9, y, x + 9, y, fill="#d62728", width=2)
-        self.image_canvas.create_line(x, y - 9, x, y + 9, fill="#d62728", width=2)
-        self.image_canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="white", width=1)
+        self.image_canvas.create_line(x - 9, y, x + 9, y, fill="#d62728", width=2, tags=('sample_marker',))
+        self.image_canvas.create_line(x, y - 9, x, y + 9, fill="#d62728", width=2, tags=('sample_marker',))
+        self.image_canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="white", width=1, tags=('sample_marker',))
 
     def _draw_drag_preview(self):
         if self._drag_start_source is None or self._drag_current_source is None:
@@ -1443,25 +1536,104 @@ class ImageBasedCreationManager:
 
         self.image_canvas.create_rectangle(
             p1[0], p1[1], p2[0], p2[1],
-            outline="#d97706", width=2, dash=(5, 3),
+            outline="#d97706", width=2, dash=(5, 3), tags=('drag_marker',),
         )
 
     def _add_current_sample(self):
+        """A manual pixel/ROI becomes a new one-granule category."""
         sample = self._current_sample
         if not sample:
             return
-
-        name = self._next_unique_name("Image Color")
         source = self._sources.get(self.current_source_key, {})
-
-        self._add_color(
-            name=name,
-            rgb=sample["rgb"],
-            lab=sample["lab"],
+        name = self._next_unique_name("Image Color")
+        existing = [
+            (key, g["label"], g["lab"])
+            for key, data in self.colors.items()
+            for g in data["granules"]
+        ]
+        _, _, error = UtilsTools.check_granule_site(name, sample["lab"], existing)
+        if error:
+            self.sample_action_hint_var.set(error)
+            self.app.custom_warning("Cannot Add Sample", error, parent=self.win)
+            return
+        added = self._add_color(
+            name, sample["rgb"], sample["lab"],
             source=source.get("name", "Image"),
         )
+        if added is None:
+            error = self._last_add_color_error or "The selected color could not be added."
+            self.sample_action_hint_var.set(error)
+            self.app.custom_warning("Cannot Add Sample", error, parent=self.win)
+            return
+        self.color_source_status_var.set("Category added from image · selected")
+        self.sample_action_hint_var.set("New category created from the sample.")
 
-        self.color_source_status_var.set("Color added from image · selected")
+    def _refresh_sample_destinations(self):
+        if not hasattr(self, "sample_destination_combo"):
+            return
+        choices = ["New category"] + list(self.colors)
+        self.sample_destination_combo.configure(values=choices)
+        if self.sample_destination_var.get() not in choices:
+            self.sample_destination_var.set("New category")
+        category = self.sample_destination_var.get()
+        sample = self._current_sample
+        can_add = sample is not None and category in self.colors
+        if can_add:
+            # Warn before the click: a duplicate sample cannot become a new site.
+            # Existing labels need not be considered here (a fresh one is made).
+            from Source.geometry.Voronoi import Voronoi
+            xyz = np.asarray(sample["lab"], dtype=float).reshape(3)
+            for key, data in self.colors.items():
+                for granule in data["granules"]:
+                    other = np.asarray(granule["lab"], dtype=float).reshape(3)
+                    if np.linalg.norm(xyz - other) <= Voronoi.DEFAULT_MERGE_EPS:
+                        can_add = False
+                        self.sample_action_hint_var.set(
+                            f"This sample already matches '{granule['label']}' in '{key}'."
+                        )
+                        break
+                if not can_add:
+                    break
+            else:
+                self.sample_action_hint_var.set(
+                    f"Add the current sample as a new granule in '{category}'."
+                )
+        elif sample is not None:
+            self.sample_action_hint_var.set(
+                "Create a category, or choose an existing one for a new granule."
+            )
+        else:
+            self.sample_action_hint_var.set("Click a pixel or drag an area to sample.")
+        self.add_sample_to_category_button.configure(
+            state="normal" if can_add else "disabled"
+        )
+
+    def _add_sample_to_category(self):
+        """Insert the exact LAB sample into an existing category, without UI errors."""
+        sample = self._current_sample
+        category = self.sample_destination_var.get()
+        if not sample or category not in self.colors:
+            return
+        used = self._all_granule_labels()
+        number = len(self.colors[category]["granules"]) + 1
+        while True:
+            suffix = f"-g{number}"
+            candidate = category[:UtilsTools.MAX_COLOR_NAME_CHARS-len(suffix)] + suffix
+            if candidate not in used:
+                break
+            number += 1
+        entries = [dict(g) for g in self.colors[category]["granules"]]
+        entries.append({"label": candidate, "lab": sample["lab"], "enabled": True})
+        error = self._set_category_granules(category, entries)
+        if error:
+            self.sample_action_hint_var.set(error)
+            self.app.custom_warning("Cannot Add Granule", error, parent=self.win)
+            self._refresh_sample_destinations()
+            return
+        self.color_checks[category]["var"].set(True)
+        self.color_source_status_var.set(f"Sample added to '{category}'")
+        self._refresh_sample_destinations()
+
 
     # Automatic Detection
     def _update_threshold_label(self):
@@ -1692,12 +1864,6 @@ class ImageBasedCreationManager:
         except Exception:
             pass
 
-    def _mean_rgb_with_active_lab_filters(self, rgb_pixels):
-        return UtilsTools.mean_rgb_with_lab_filters(
-            rgb_pixels,
-            self._active_detection_filters(),
-        )
-
     def _passes_detection_filters(self, lab):
         return UtilsTools.lab_passes_filters(
             lab,
@@ -1739,12 +1905,29 @@ class ImageBasedCreationManager:
                     max_side=800,
                     lab_quantization=0.75,
                 )
-                self.win.after(0, lambda: self._finish_detection(detected, source_name))
+                self._detection_queue.put(('ok', detected, source_name))
             except Exception as exc:
                 msg = str(exc)
-                self.win.after(0, lambda m=msg: self._finish_detection_error(m))
+                self._detection_queue.put(('error', msg, source_name))
 
         threading.Thread(target=worker, daemon=True).start()
+        self._poll_detection_queue()
+
+    def _poll_detection_queue(self):
+        """Only Tk's main thread reads worker results and changes widgets."""
+        self._detection_poll_id = None
+        if not self._detection_running or not self.win.winfo_exists():
+            return
+        try:
+            result, payload, source_name = self._detection_queue.get_nowait()
+        except queue.Empty:
+            self._detection_poll_id = self.win.after(90, self._poll_detection_queue)
+            return
+        if result == 'ok':
+            self._finish_detection(payload, source_name)
+        else:
+            self._finish_detection_error(payload)
+
 
     def _finish_detection(self, detected_colors, source_name):
         added = 0
@@ -1782,18 +1965,19 @@ class ImageBasedCreationManager:
                 requested_name = item.get("name") or "Detected Color"
                 added_name = self._add_color(
                     str(requested_name).strip() or "Detected Color",
-                    rgb,
-                    lab,
-                    source=source_name,
-                    refresh=False,
+                    rgb, lab, source=source_name, refresh=False,
                 )
+                if added_name is None:
+                    filtered += 1
+                    continue
                 added_names.append(added_name)
                 added += 1
 
             if added_names:
                 self._append_color_rows(added_names)
                 self._update_selected_count()
-                self.win.after_idle(self._scroll_colors_to_bottom)
+                self._refresh_sample_destinations()
+                self._schedule_idle(self._scroll_colors_to_bottom)
 
         finally:
             status = f"✓ {added} color{'s' if added != 1 else ''} added"
@@ -1824,35 +2008,213 @@ class ImageBasedCreationManager:
     def _next_unique_name(self, base):
         return UtilsTools.make_unique_color_name(base, self.colors.keys())
 
-    def _add_color(self, name, rgb, lab, source=None, selected=True, refresh=True):
-        """
-        Add one color to the local creation state.
+    @staticmethod
+    def _unique_import_label(base, occupied, max_length, additional=()):
+        """Use the shared bounded naming policy for imported candidates."""
+        return UtilsTools.unique_import_label(
+            base, occupied, max_length, additional=additional)
 
-        Normal additions update the visible list incrementally. ``refresh=False``
-        is used by batch operations such as automatic detection so all new rows
-        can be appended together once the batch has finished.
-        """
-        name = self._next_unique_name(name)
-        rgb = tuple(int(v) for v in rgb[:3])
-        lab = tuple(float(v) for v in np.asarray(lab, dtype=float).reshape(-1)[:3])
+    def _all_granule_labels(self, exclude_category=None):
+        return {g['label'] for key, data in self.colors.items()
+                if key != exclude_category for g in data.get('granules', [])}
 
+    def _sync_representative(self, category):
+        data = self.colors[category]
+        items = data['granules']
+        first = next((g for g in items if g.get('enabled', True)), items[0])
+        lab = tuple(first['lab'])
+        rgb = tuple(UtilsTools.lab_to_rgb(lab))
+        data.update(lab=lab, rgb=rgb, hex=UtilsTools.rgb_to_hex(rgb).upper())
+        self.color_checks[category].update(lab=lab, rgb=rgb)
+
+    def _set_category_granules(self, category, entries):
+        """Update granules atomically; never re-reject unchanged imported sites.
+
+        A source may have deliberately imported an overlapping LAB site as an
+        *unselected candidate*. Editing or renaming another granule in that
+        category must remain possible. Only a newly changed LAB coordinate is
+        checked for collisions here; all selected sites are checked at create.
+        """
+        if category not in self.colors:
+            return "The selected color category is no longer available."
+        if not entries:
+            return "Every category must contain at least one granule."
+
+        occupied = [
+            (key, g['label'], g['lab'])
+            for key, data in self.colors.items() if key != category
+            for g in data['granules']
+        ]
+        originals = self.colors[category]['granules']
+        validated = []
+        for index, entry in enumerate(entries):
+            label = str(entry.get('label') or '').strip()
+            try:
+                point = np.asarray(entry.get('lab'), dtype=float).reshape(-1)
+                if (point.size != 3 or not np.all(np.isfinite(point))
+                        or not UtilsTools.is_valid_lab(point)):
+                    return 'Enter valid LAB coordinates.'
+                lab = tuple(float(v) for v in point)
+            except (TypeError, ValueError, OverflowError):
+                return 'Enter valid LAB coordinates.'
+            if not label or len(label) > UtilsTools.MAX_COLOR_NAME_CHARS:
+                return f'Granule name must contain 1 to {UtilsTools.MAX_COLOR_NAME_CHARS} characters.'
+
+            # Comparing with the site at the same index supports label-only
+            # edits. Checking an existing label+point pair also supports a
+            # removal that shifted its sibling indices.
+            unchanged = (
+                (index < len(originals) and
+                 np.array_equal(point, np.asarray(originals[index]['lab'], dtype=float)))
+                or any(g['label'] == label and
+                       np.array_equal(point, np.asarray(g['lab'], dtype=float))
+                       for g in originals)
+            )
+            if unchanged:
+                if any(other_name == label for _key, other_name, _lab in occupied):
+                    return f"Granule name '{label}' is already in use."
+            else:
+                _clean, _point, error = UtilsTools.check_granule_site(
+                    label, lab, occupied,
+                    max_name_length=UtilsTools.MAX_COLOR_NAME_CHARS,
+                )
+                if error:
+                    return error
+            validated.append({
+                'label': label, 'lab': lab,
+                'enabled': bool(entry.get('enabled', True)),
+            })
+            occupied.append((category, label, lab))
+
+        # Commit only after all checks pass; no partial edit on error.
+        self.colors[category]['granules'] = validated
+        self.color_checks[category]['var'].set(any(g['enabled'] for g in validated))
+        self._sync_representative(category)
+        self._expanded_categories.add(category)
+        self._rebuild_one_category(category)
+        self._update_selected_count()
+        return None
+
+    def _add_color(self, name, rgb, lab, source=None, selected=True,
+                   refresh=True, granules=None, *, import_mode=False,
+                   reserved_categories=None, reserved_labels=None):
+        """Append a category transactionally, returning its label or None.
+
+        Manually sampled/detected colors are validated against every current
+        LAB site, as before. Imported sources may contain alternative copies
+        of a prototype: for imports, validate domain and unique *names* only.
+        Final FCS construction always validates selected LAB sites globally.
+        """
+        self._last_add_color_error = None
+        requested = str(name or 'Image Color').strip() or 'Image Color'
+
+        # These sets are passed across a batch import to avoid O(n**2)
+        # name scans. For ordinary manual/detection additions, keep the
+        # established naming and immediate LAB validation behavior.
+        if import_mode:
+            categories = (reserved_categories if reserved_categories is not None
+                          else set(self.colors))
+            labels = (reserved_labels if reserved_labels is not None
+                      else self._all_granule_labels())
+            name = self._unique_import_label(
+                requested, categories, UtilsTools.MAX_CATEGORY_NAME_CHARS)
+            if name is None:
+                self._last_add_color_error = 'Cannot allocate a unique category name.'
+                return None
+            candidate_labels = set()  # Reserve only this category's new labels.
+        else:
+            name = self._next_unique_name(requested)
+            occupied = [
+                (key, g['label'], g['lab'])
+                for key, data in self.colors.items()
+                for g in data['granules']
+            ]
+
+        try:
+            first_lab = tuple(float(v) for v in np.asarray(lab, dtype=float).reshape(3))
+            items = granules if granules is not None else [
+                {'label': name, 'lab': first_lab}
+            ]
+            validated = []
+            for idx, item in enumerate(items):
+                if not isinstance(item, dict):
+                    self._last_add_color_error = 'Invalid granule data.'
+                    return None
+                original = item.get('label') or (name if idx == 0 else f'{name}-g{idx + 1}')
+                label = str(original).strip()
+                if idx == 0 and label == requested:
+                    label = name
+                elif import_mode and name != requested and label.startswith(requested + '-g'):
+                    # Imported automatic labels follow the renamed category.
+                    tail = label[len(requested):]
+                    if tail[2:].isdigit():
+                        label = name + tail
+
+                coords = item.get('lab', item.get('prototype'))
+                if import_mode:
+                    # Only reject malformed/out-of-domain LAB input, not a
+                    # duplicate of a site in another imported source.
+                    point = np.asarray(coords, dtype=float).reshape(-1)
+                    if (point.size != 3 or not np.all(np.isfinite(point))
+                            or not UtilsTools.is_valid_lab(point)):
+                        self._last_add_color_error = 'Enter valid LAB coordinates.'
+                        return None
+                    unique_label = self._unique_import_label(
+                        label, labels, UtilsTools.MAX_COLOR_NAME_CHARS,
+                        additional=candidate_labels)
+                    if unique_label is None:
+                        self._last_add_color_error = 'Cannot allocate a unique granule name.'
+                        return None
+                    site = tuple(float(v) for v in point)
+                    clean = unique_label
+                    candidate_labels.add(clean)
+                else:
+                    if any(label == entry[1] for entry in occupied):
+                        base, suffix = label, 2
+                        while any(f'{base} ({suffix})' == entry[1] for entry in occupied):
+                            suffix += 1
+                        label = f'{base} ({suffix})'
+                    clean, site, error = UtilsTools.check_granule_site(
+                        label, coords, occupied, max_name_length=64,
+                    )
+                    if error:
+                        self._last_add_color_error = error
+                        return None
+                    occupied.append((name, clean, site))
+                validated.append({
+                    'label': clean, 'lab': site,
+                    'enabled': bool(item.get('enabled', True)),
+                })
+
+            if not validated:
+                self._last_add_color_error = 'A category requires at least one valid granule.'
+                return None
+            chosen = next((g for g in validated if g['enabled']), validated[0])['lab']
+            preview_rgb = tuple(UtilsTools.lab_to_rgb(chosen))
+        except (TypeError, ValueError, OverflowError, FloatingPointError) as exc:
+            self._last_add_color_error = f'Invalid color data: {exc}'
+            return None
+
+        # Commit only after the entire category has passed its checks.
         self.colors[name] = {
-            "rgb": rgb,
-            "lab": lab,
-            "hex": UtilsTools.rgb_to_hex(rgb).upper(),
-            "source": source,
+            'rgb': preview_rgb, 'lab': chosen,
+            'hex': UtilsTools.rgb_to_hex(preview_rgb).upper(),
+            'granules': validated, 'source': source,
         }
         self.color_checks[name] = {
-            "var": tk.BooleanVar(value=bool(selected)),
-            "lab": lab,
-            "rgb": rgb,
+            'var': tk.BooleanVar(value=bool(selected)),
+            'lab': chosen, 'rgb': preview_rgb,
         }
-
+        if import_mode:
+            categories.add(name)
+            labels.update(candidate_labels)
+        if len(validated) > 1:
+            self._expanded_categories.add(name)
         if refresh:
             self._append_color_rows([name])
             self._update_selected_count()
-            self.win.after_idle(self._scroll_colors_to_bottom)
-
+            self._refresh_sample_destinations()
+            self._schedule_idle(self._scroll_colors_to_bottom)
         return name
 
     @staticmethod
@@ -1905,29 +2267,69 @@ class ImageBasedCreationManager:
             return None
 
     def _add_color_source_data(self, raw_colors, source_name):
-        """Append source representatives, preserving all current color selections."""
+        """Import palette candidates without comparing LAB to existing sites.
+
+        Repeated names receive an available suffix. Existing categories remain
+        untouched and imported categories start unselected; coincident LAB
+        prototypes are rejected only if selected together during FCS creation.
+        Malformed categories are still skipped atomically.
+        """
         prepared = []
-        for name, data in (raw_colors or {}).items():
+        skipped = []
+        for raw_name, data in (raw_colors or {}).items():
+            name = str(raw_name).strip() or 'Color'
             normalized = self._normalize_source_color(data)
-            if normalized is not None:
-                prepared.append((str(name).strip() or "Color", *normalized))
+            if normalized is None:
+                skipped.append((name, 'Invalid or missing color coordinates'))
+                continue
+            rgb, lab = normalized
+            granules = None
+            if isinstance(data, dict) and data.get('granules'):
+                granules = []
+                try:
+                    for index, item in enumerate(data['granules']):
+                        if not isinstance(item, dict):
+                            raise ValueError('Invalid granule record')
+                        coords = item.get('prototype', item.get('lab'))
+                        if coords is None:
+                            raise ValueError('Missing granule prototype')
+                        xyz = np.asarray(coords, dtype=float).reshape(3)
+                        granules.append({
+                            'label': item.get('label') or f'{name}-g{index+1}',
+                            'lab': xyz,
+                        })
+                except (ValueError, TypeError, KeyError) as exc:
+                    skipped.append((name, str(exc)))
+                    continue
+            prepared.append((name, rgb, lab, granules))
 
-        if not prepared:
-            raise ValueError("The selected source does not contain valid colors.")
-
-        added_names = []
-        for name, rgb, lab in prepared:
-            added_names.append(
-                self._add_color(
-                    name, rgb, lab, source=source_name,
-                    selected=False, refresh=False,
-                )
+        added = []
+        used_categories = set(self.colors)
+        used_granules = self._all_granule_labels()
+        for name, rgb, lab, granules in prepared:
+            # For imported candidates, only uniqueness of the displayed IDs
+            # is checked here. The final creator validates LAB coincidences.
+            added_name = self._add_color(
+                name, rgb, lab, source=source_name,
+                selected=False, refresh=False, granules=granules,
+                import_mode=True, reserved_categories=used_categories,
+                reserved_labels=used_granules,
             )
+            if added_name is None:
+                skipped.append((name, self._last_add_color_error or 'Invalid category'))
+                continue
+            added.append(added_name)
 
-        self._append_color_rows(added_names)
-        self._update_selected_count()
-        self.win.after_idle(self._scroll_colors_to_bottom)
-        return added_names
+        self._last_source_import_report = {
+            'added': tuple(added),
+            'skipped': tuple(skipped),
+        }
+        if added:
+            self._append_color_rows(added)
+            self._update_selected_count()
+            self._refresh_sample_destinations()
+            self._schedule_idle(self._scroll_colors_to_bottom)
+        return added
 
     def _open_color_source(self):
         """Import CNS/FCS representatives without replacing image samples or geometry."""
@@ -1973,180 +2375,518 @@ class ImageBasedCreationManager:
             added = self._add_color_source_data(
                 loaded.get("color_data", {}), source_name
             )
-            self.loaded_color_sources.setdefault(source_key, []).append(source_name)
-            self.color_source_status_var.set(
-                f"{len(added)} imported · select to include"
-            )
+            skipped = list(getattr(self, '_last_source_import_report', {})
+                           .get('skipped', ()))
+            if added:
+                self.loaded_color_sources.setdefault(source_key, []).append(source_name)
+            summary = f"{len(added)} imported"
+            if skipped:
+                summary += f" · {len(skipped)} skipped"
+            if added:
+                summary += " · select to include"
+            self.color_source_status_var.set(summary)
+            if skipped:
+                # A single message for the whole source, never one modal
+                # warning per duplicate. Include representative reasons.
+                details = '\n'.join(
+                    f"• {name}: {reason}" for name, reason in skipped[:5]
+                )
+                if len(skipped) > 5:
+                    details += f"\n... and {len(skipped)-5} more."
+                self.app.custom_warning(
+                    "Some Colors Were Skipped" if added else "No Colors Imported",
+                    f"{len(skipped)} categor{'y' if len(skipped)==1 else 'ies'} "
+                    f"could not be imported.\n\n{details}\n\n"
+                    "Existing colors were preserved.",
+                    parent=self.win,
+                )
+            elif not added:
+                self.app.custom_warning(
+                    "No Colors Imported",
+                    "The selected source contains no valid color categories.",
+                    parent=self.win,
+                )
         except Exception as exc:
+            message = f"The selected color source could not be loaded:\n{exc}"
+            self.color_source_status_var.set("Import failed · no changes to existing colors")
+            self.app.custom_warning("Color Source Error", message, parent=self.win)
+
+    def _matches_search(self, _name):
+        # Shared CustomCategoryDialog adapter; Image-Based has no text search.
+        return True
+
+    def _scroll_to_bottom(self):
+        self._scroll_colors_to_bottom()
+
+    def _update_visible_selection(self, name, *, color_changed=False):
+        """Update an existing row without destroying/recreating Tk widgets.
+
+        Used by Select All / Deselect All and individual checkboxes. Expanded
+        children retain their keyboard focus, widget identity and scroll
+        position. Unrelated rows are not touched.
+        """
+        info = self._row_details.get(name)
+        if not info:
+            return
+        data = self.colors[name]
+        active = bool(self.color_checks[name]['var'].get())
+        granules = data['granules']
+        total = len(granules)
+        selected = sum(bool(g.get('enabled', True)) for g in granules) if active else 0
+        counter = info.get('count_label')
+        if counter is not None:
+            counter.configure(text=f'{selected}/{total}')
+        for index, variable in info.get('granule_check_vars', ()):
+            if index < total:
+                variable.set(active and bool(granules[index].get('enabled', True)))
+
+        if color_changed and info.get('value_labels'):
+            lab = data['lab']
+            rgb = tuple(int(v) for v in UtilsTools.lab_to_rgb(lab))
+            values = (
+                f'RGB  {rgb[0]}, {rgb[1]}, {rgb[2]}',
+                f'HEX  {UtilsTools.rgb_to_hex(rgb).upper()}',
+                f'LAB  {lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}',
+            )
+            for label, value in zip(info['value_labels'], values):
+                label.configure(text=value)
+            swatch = info.get('swatch')
+            if swatch is not None:
+                canvas, rectangle = swatch
+                canvas.itemconfigure(rectangle, fill=data['hex'])
+
+    def _category_toggle(self, name):
+        enabled = bool(self.color_checks[name]['var'].get())
+        if enabled:
+            for granule in self.colors[name]['granules']:
+                granule['enabled'] = True
+        previous_lab = self.colors[name]['lab']
+        self._sync_representative(name)
+        changed = previous_lab != self.colors[name]['lab']
+        self._update_visible_selection(name, color_changed=changed)
+        self._update_selected_count()
+
+    def _granule_toggle(self, name, index, value):
+        granules = self.colors[name]['granules']
+        if not 0 <= index < len(granules):
+            return
+        if value and not self.color_checks[name]['var'].get():
+            for granule in granules:
+                granule['enabled'] = False
+        granules[index]['enabled'] = bool(value)
+        any_enabled = any(g['enabled'] for g in granules)
+        self.color_checks[name]['var'].set(any_enabled)
+        previous_lab = self.colors[name]['lab']
+        self._sync_representative(name)
+        changed = previous_lab != self.colors[name]['lab']
+        self._update_visible_selection(name, color_changed=changed)
+        self._update_selected_count()
+
+    def _toggle_details(self, name):
+        if name in self._expanded_categories:
+            self._expanded_categories.discard(name)
+        else:
+            self._expanded_categories.add(name)
+        self._rebuild_one_category(name)
+
+    def _rebuild_one_category(self, name):
+        """Replace only the changed category; preserve all other Tk rows."""
+        info = self._row_details.get(name)
+        if not info:
+            self._refresh_color_list()
+            return
+        old_wrapper = info['wrapper']
+        if not old_wrapper.winfo_exists():
+            return
+        siblings = self.colors_inner.pack_slaves()
+        try:
+            pos = siblings.index(old_wrapper)
+            next_widget = siblings[pos + 1] if pos + 1 < len(siblings) else None
+        except ValueError:
+            next_widget = None
+        self._name_editors = [(key, variable) for key, variable in self._name_editors
+                              if key != name]
+        old_wrapper.destroy()
+        self._row_details.pop(name, None)
+        self._create_color_row(name)
+        fresh = self._row_details[name]['wrapper']
+        if next_widget is not None and next_widget.winfo_exists():
+            fresh.pack_configure(before=next_widget)
+        self.colors_canvas.configure(scrollregion=self.colors_canvas.bbox('all'))
+
+    def _open_granule_picker(self, category, index=None):
+        if category not in self.colors:
+            return
+        granules = self.colors[category]['granules']
+        item = dict(granules[index]) if index is not None else None
+        used = self._all_granule_labels()
+        if item is not None:
+            suggested = item['label']
+        else:
+            number = len(granules) + 1
+            while True:
+                suffix = f'-g{number}'
+                suggested = category[:UtilsTools.MAX_COLOR_NAME_CHARS-len(suffix)] + suffix
+                if suggested not in used:
+                    break
+                number += 1
+
+        def submit(name, lab, _rgb, _hex, _dialog, status):
+            try:
+                entries = [dict(g) for g in self.colors[category]['granules']]
+                new = {'label': name, 'lab': lab,
+                       'enabled': item.get('enabled', True) if item else True}
+                if index is None:
+                    entries.append(new)
+                else:
+                    entries[index] = new
+                error = self._set_category_granules(category, entries)
+                if error:
+                    status.set(error)
+                    return False
+                return True
+            except (ValueError, TypeError, KeyError, tk.TclError) as exc:
+                status.set(str(exc))
+                return False
+
+        self.app._open_square_color_picker(
+            parent=self.win,
+            title=f'{"Edit" if item else "Add"} Granule — {category}',
+            granule_name=suggested,
+            initial_lab=item['lab'] if item else None,
+            submit_text='Save changes' if item else 'Add granule',
+            on_granule_submit=submit)
+
+    def _remove_granule(self, category, index):
+        items = self.colors[category]['granules']
+        if len(items) <= 1:
+            self.app.custom_warning('Cannot Remove',
+                'Every category needs at least one granule. Remove the category instead.', parent=self.win)
+            return
+        if messagebox.askyesno('Remove Granule',
+                f"Remove '{items[index]['label']}'?", parent=self.win):
+            error = self._set_category_granules(
+                category, [dict(g) for j, g in enumerate(items) if j != index]
+            )
+            if error:
+                self.app.custom_warning('Cannot Remove Granule', error, parent=self.win)
+
+    def _remove_category(self, category):
+        """Remove only this category, after confirmation, without affecting others."""
+        if category not in self.colors:
+            return
+        if not messagebox.askyesno(
+            "Remove Color Category",
+            f"Remove category '{category}' and all its granules?",
+            icon="warning", parent=self.win,
+        ):
+            return
+        self.colors.pop(category, None)
+        self.color_checks.pop(category, None)
+        self._expanded_categories.discard(category)
+        if self.sample_destination_var.get() == category:
+            self.sample_destination_var.set("New category")
+        self.color_source_status_var.set(f"Removed category '{category}'.")
+        self._refresh_color_list()
+
+    def _move_granule(self, category, index, destination):
+        """Move one granule without unexpectedly enabling other prototypes.
+
+        An empty source category is removed only after confirmation. Imported
+        alternative LAB copies remain permissible until the final FCS build.
+        """
+        if category == destination or category not in self.colors or destination not in self.colors:
+            return False
+        if not 0 <= index < len(self.colors[category].get('granules', [])):
+            return False
+        if not self._commit_pending_color_names():
+            return False
+        # A pending inline rename may have changed the menu's category keys.
+        if category not in self.colors or destination not in self.colors:
+            return False
+        source_items = self.colors[category]['granules']
+        if not 0 <= index < len(source_items):
+            return False
+        moving = dict(source_items[index])
+        if any(item['label'] == moving['label']
+               for item in self.colors[destination]['granules']):
             self.app.custom_warning(
-                "Color Source Error",
-                f"The selected color source could not be loaded:\n{exc}",
+                'Cannot Move Granule',
+                f"Granule '{moving['label']}' already exists in '{destination}'.",
                 parent=self.win,
             )
+            return False
+
+        is_last = len(source_items) == 1
+        if is_last and not messagebox.askyesno(
+            'Move Last Granule',
+            f"Moving '{moving['label']}' to '{destination}' will remove "
+            f"the empty category '{category}'.\n\nContinue?",
+            icon='warning', parent=self.win,
+        ):
+            return False
+
+        source_selected = bool(self.color_checks[category]['var'].get())
+        destination_selected = bool(self.color_checks[destination]['var'].get())
+        moving_selected = source_selected and bool(moving.get('enabled', True))
+        if moving_selected and not destination_selected:
+            for other in self.colors[destination]['granules']:
+                other['enabled'] = False
+        elif not moving_selected:
+            moving['enabled'] = False
+
+        # The move is now confirmed; no additional UI callback or geometry
+        # computation can modify the draft before the following assignments.
+        self.colors[destination]['granules'].append(moving)
+        if moving_selected:
+            self.color_checks[destination]['var'].set(True)
+
+        if is_last:
+            self.colors.pop(category, None)
+            self.color_checks.pop(category, None)
+            self._expanded_categories.discard(category)
+            if self.sample_destination_var.get() == category:
+                self.sample_destination_var.set('New category')
+        else:
+            del source_items[index]
+            self.color_checks[category]['var'].set(source_selected and any(
+                item.get('enabled', True) for item in source_items))
+            self._sync_representative(category)
+
+        self._sync_representative(destination)
+        self._expanded_categories.add(destination)
+        self.color_source_status_var.set(
+            f"Granule '{moving['label']}' moved to '{destination}'.")
+        self._refresh_color_list()
+        self._refresh_sample_destinations()
+        return True
+
+    def _move_menu(self, category, index, widget):
+        menu = tk.Menu(self.win, tearoff=0)
+        for dest in self.colors:
+            if dest != category:
+                menu.add_command(label=dest, command=lambda d=dest:
+                                 self._move_granule(category, index, d))
+        if menu.index('end') is None:
+            return
+        try:
+            menu.tk_popup(widget.winfo_rootx(),
+                          widget.winfo_rooty() + widget.winfo_height())
+        finally:
+            menu.grab_release()
 
     def _create_color_row(self, name):
-        """Create only the Tk widgets required for one color row."""
+        """Two-line category rows and expanded, individually selectable granules.
+
+        RGB and CIELAB are shown on the representative only while collapsed;
+        expanding shows those values for each positive granule instead.
+        """
         if name not in self.colors or name not in self.color_checks:
             return
-
         data = self.colors[name]
-        check_data = self.color_checks[name]
-        var = check_data["var"]
+        active = self.color_checks[name]['var']
+        items = data['granules']
+        expanded = name in self._expanded_categories
 
-        row = tk.Frame(self.colors_inner, bg=self.CARD, bd=0)
-        row.pack(fill="x", padx=6, pady=4)
+        wrapper = tk.Frame(self.colors_inner, bg=self.CARD)
+        wrapper.pack(fill='x', padx=4, pady=3)
+        self._row_details[name] = {
+            'wrapper': wrapper, 'granule_check_vars': [],
+            'count_label': None, 'swatch': None, 'value_labels': [],
+        }
 
-        check = tk.Checkbutton(
-            row,
-            variable=var,
-            bg=self.CARD,
-            activebackground=self.CARD,
-            selectcolor=self.CARD,
-            command=self._update_selected_count,
+        background = self.PANEL
+        row = tk.Frame(wrapper, bg=background, height=57 if not expanded else 35)
+        row.pack(fill='x')
+        row.pack_propagate(False)
+        top = tk.Frame(row, bg=background, height=33)
+        top.pack(fill='x')
+        top.pack_propagate(False)
+        tk.Checkbutton(
+            top, variable=active, bg=background, activebackground=background,
+            selectcolor=background, cursor='hand2',
+            command=lambda key=name: self._category_toggle(key),
+            highlightthickness=0, bd=0,
+        ).pack(side='left', padx=(2, 1))
+
+        toggle = tk.Label(
+            top, text='▾' if expanded else '▸', bg=background, fg=self.BLUE,
+            font=self.FONT_BOLD, width=2, anchor='center', cursor='hand2',
         )
-        check.pack(side="left", padx=(0, 4))
+        toggle.pack(side='left')
+        toggle.bind('<Button-1>', lambda _e, key=name: self._toggle_details(key))
 
-        swatch = tk.Canvas(
-            row,
-            width=26,
-            height=26,
-            bg=self.CARD,
-            highlightthickness=0,
-        )
-        swatch.pack(side="left", padx=(0, 8))
-        swatch.create_rectangle(
-            2,
-            2,
-            24,
-            24,
-            fill=data["hex"],
-            outline="#707070",
-        )
+        if not expanded:
+            swatch = tk.Canvas(top, width=26, height=26, bg=background,
+                               highlightthickness=0, bd=0)
+            swatch.pack(side='left', padx=(2, 7))
+            swatch_rectangle = swatch.create_rectangle(
+                1, 1, 25, 25, fill=data['hex'], outline='#979ca6')
+            self._row_details[name]['swatch'] = (swatch, swatch_rectangle)
 
-        text_area = tk.Frame(row, bg=self.CARD)
-        text_area.pack(side="left", fill="x", expand=True)
+        # Right-side controls are packed before the expanding name field,
+        # so they stay visible even when the category name is long.
+        tk.Button(
+            top, text='×', font=self.FONT_BOLD,
+            fg=self.RED, bg=background, activebackground=background,
+            relief='flat', bd=0, highlightthickness=0, cursor='hand2',
+            command=lambda key=name: self._remove_category(key),
+        ).pack(side='right', padx=(1, 4))
+        tk.Button(
+            top, text='+', font=self.FONT_BOLD, fg=self.BLUE,
+            bg=background, activebackground=background,
+            relief='flat', bd=0, highlightthickness=0, cursor='hand2',
+            command=lambda key=name: self._open_granule_picker(key),
+        ).pack(side='right', padx=(1, 2))
+
+        n_selected = sum(bool(g.get('enabled', True)) for g in items) if active.get() else 0
+        n_total = len(items)
+        count_label = tk.Label(
+            top, text=f'{n_selected}/{n_total}', font=self.FONT_SMALL_BOLD,
+            fg=self.BLUE if n_total > 1 else self.MUTED,
+            bg=self.BLUE_SOFT if n_total > 1 else self.SOFT,
+            padx=5, cursor='hand2',
+        )
+        count_label.pack(side='right', padx=(1, 3))
+        self._row_details[name]['count_label'] = count_label
+        count_label.bind('<Button-1>', lambda _e, key=name: self._toggle_details(key))
 
         name_var = tk.StringVar(value=name)
-        entry = tk.Entry(
-            text_area,
-            textvariable=name_var,
-            font=self.FONT_BOLD,
-            relief="flat",
-            bg="#f8fafc",
-            fg=self.TEXT,
-            highlightthickness=1,
-            highlightbackground=self.BORDER,
-            highlightcolor=self.BLUE,
-        )
-        entry.pack(fill="x")
-
-        lab = data["lab"]
-        source_text = f" · {data['source']}" if data.get("source") else ""
-        tk.Label(
-            text_area,
-            text=f"LAB {lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}{source_text}",
-            bg=self.CARD,
-            fg=self.MUTED,
-            font=self.FONT_SMALL,
-            anchor="w",
-        ).pack(fill="x", pady=(2, 0))
-
-        entry.bind(
-            "<Return>",
-            lambda _e, old=name, nv=name_var: self._commit_color_name(old, nv),
-        )
-        entry.bind(
-            "<FocusOut>",
-            lambda _e, old=name, nv=name_var: self._commit_color_name(old, nv),
-        )
+        entry = tk.Entry(top, textvariable=name_var, font=self.FONT_BOLD,
+                         relief='solid', bd=1, width=10)
+        entry.pack(side='left', fill='x', expand=True, padx=(1, 2))
+        entry.bind('<Return>', lambda _e, old=name, v=name_var: self._commit_color_name(old, v))
+        entry.bind('<FocusOut>', lambda _e, old=name, v=name_var: self._commit_color_name(old, v))
         self._name_editors.append((name, name_var))
 
+        def color_values(parent, lab, *, indent=28, bg=background):
+            """Show RGB / HEX / LAB in three aligned columns, on one line."""
+            rgb = tuple(int(v) for v in UtilsTools.lab_to_rgb(lab))
+            hex_value = UtilsTools.rgb_to_hex(rgb).upper()
+            l, a, b = lab
+            value_row = tk.Frame(parent, bg=bg, height=20)
+            value_row.pack(fill='x', padx=(indent, 3))
+            value_row.pack_propagate(False)
+            fields = (
+                f'RGB  {rgb[0]}, {rgb[1]}, {rgb[2]}',
+                f'HEX  {hex_value}',
+                f'LAB  {l:.2f}, {a:.2f}, {b:.2f}',
+            )
+            labels = []
+            for col, (text, minimum, weight) in enumerate(zip(
+                fields, (102, 80, 145), (3, 2, 4)
+            )):
+                value_row.grid_columnconfigure(col, weight=weight, minsize=minimum)
+                label = tk.Label(
+                    value_row, text=text,
+                    font=self.FONT_SMALL, bg=bg, fg=self.MUTED,
+                    anchor='center', justify='center',
+                )
+                label.grid(row=0, column=col, sticky='nsew')
+                labels.append(label)
+            return labels
+
+        if not expanded:
+            self._row_details[name]['value_labels'] = color_values(
+                row, data['lab'], indent=52)
+            return
+
+        for i, g in enumerate(items):
+            bg = self.CARD if i % 2 else self.PANEL
+            child = tk.Frame(wrapper, bg=bg, height=57)
+            child.pack(fill='x', padx=(13, 0))
+            child.pack_propagate(False)
+
+            first_line = tk.Frame(child, bg=bg, height=35)
+            first_line.pack(fill='x')
+            first_line.pack_propagate(False)
+            gv = tk.BooleanVar(value=bool(active.get() and g.get('enabled', True)))
+            self._row_details[name]['granule_check_vars'].append((i, gv))
+            tk.Checkbutton(
+                first_line, variable=gv, bg=bg, activebackground=bg,
+                selectcolor=bg, bd=0, highlightthickness=0, cursor='hand2',
+                command=lambda key=name, ix=i, v=gv: self._granule_toggle(key, ix, v.get()),
+            ).pack(side='left', padx=(2, 2))
+            swatch = tk.Canvas(first_line, width=22, height=22, bg=bg,
+                               highlightthickness=0, bd=0)
+            swatch.pack(side='left', padx=(0, 6))
+            rgb = tuple(int(v) for v in UtilsTools.lab_to_rgb(g['lab']))
+            swatch.create_rectangle(1, 1, 21, 21,
+                                    fill=UtilsTools.rgb_to_hex(rgb), outline='#979ca6')
+
+            # Draw actions before the expanding name so they never disappear.
+            tk.Button(
+                first_line, text='×', font=self.FONT_SMALL_BOLD, fg=self.RED,
+                bg=bg, relief='flat', bd=0, highlightthickness=0, cursor='hand2',
+                command=lambda key=name, ix=i: self._remove_granule(key, ix),
+            ).pack(side='right', padx=(1, 4))
+            if len(self.colors) > 1:
+                move = tk.Button(first_line, text='Move', font=self.FONT_SMALL,
+                                 bg=bg, fg=self.BLUE, relief='flat', bd=0,
+                                 highlightthickness=0, cursor='hand2')
+                move.configure(command=lambda key=name, ix=i, b=move:
+                               self._move_menu(key, ix, b))
+                move.pack(side='right', padx=(1, 3))
+            tk.Button(
+                first_line, text='Edit', font=self.FONT_SMALL,
+                bg=bg, fg=self.BLUE, relief='flat', bd=0, highlightthickness=0, cursor='hand2',
+                command=lambda key=name, ix=i: self._open_granule_picker(key, ix),
+            ).pack(side='right', padx=(1, 3))
+            tk.Label(
+                first_line, text=g['label'], font=self.FONT_SMALL,
+                bg=bg, fg=self.TEXT, anchor='w',
+            ).pack(side='left', fill='x', expand=True)
+            color_values(child, g['lab'], indent=39, bg=bg)
+
     def _append_color_rows(self, names):
-        """
-        Append only newly added colors to the visible list.
-
-        If the list still contains the initial empty-state message, remove it
-        once before creating the first real row.
-        """
-        if not hasattr(self, "colors_inner"):
+        if not hasattr(self, 'colors_inner'):
             return
-
-        valid_names = [
-            name
-            for name in names
-            if name in self.colors and name in self.color_checks
-        ]
-        if not valid_names:
+        # CustomCategoryDialog calls this after committing its private list.
+        # Confirm this creation in the same status area as image samples and
+        # imported color sources; ordinary imports/detections use their own
+        # final summaries and therefore do not match `custom=True`.
+        new_custom = [name for name in names
+                      if name in self.colors and self.colors[name].get('custom')]
+        if new_custom:
+            name = new_custom[-1]
+            count = len(self.colors[name].get('granules', []))
+            self.color_source_status_var.set(
+                f"Category '{name}' added · {count} granule{'s' if count != 1 else ''}"
+            )
+        # The Move action first becomes available when a second category is
+        # created. Refresh that one transition so pre-existing granule rows
+        # also expose the action; ordinary additions remain append-only.
+        if len(self.colors) > 1 and len(self.colors) - len(names) == 1:
+            self._refresh_color_list()
             return
-
-        # When the first color is added, the only child is the empty-state label.
-        if len(self.colors) == len(valid_names):
+        if len(self.colors) == len(names):
             for child in self.colors_inner.winfo_children():
                 child.destroy()
             self._name_editors = []
-
-        for name in valid_names:
+            self._row_details = {}
+        for name in names:
             self._create_color_row(name)
+        self._refresh_sample_destinations()
 
     def _refresh_color_list(self):
-        """
-        Rebuild the complete list only when existing rows structurally change.
-
-        This path is intentionally kept for rename/remove operations. Normal
-        additions use ``_append_color_rows`` and do not recreate existing rows.
-        """
-        if not hasattr(self, "colors_inner"):
+        if not hasattr(self, 'colors_inner'):
             return
-
-        selected_state = {}
-        for name, item in self.color_checks.items():
-            try:
-                selected_state[name] = bool(item["var"].get())
-            except Exception:
-                selected_state[name] = True
-
-        for child in self.colors_inner.winfo_children():
-            child.destroy()
-
+        top = self.colors_canvas.yview()[0]
+        for widget in self.colors_inner.winfo_children():
+            widget.destroy()
         self._name_editors = []
-
+        self._row_details = {}
         if not self.colors:
-            tk.Label(
-                self.colors_inner,
-                text="No colors added yet.\nSample manually, run automatic detection, \nor add a custom color.",
-                bg=self.CARD,
-                fg=self.MUTED,
-                font=self.FONT,
-                justify="center",
-                pady=22,
-            ).pack(fill="x")
-            self.color_checks = {}
-            self._update_selected_count()
-            return
-
-        rebuilt_checks = {}
-        for name, data in self.colors.items():
-            old_check = self.color_checks.get(name, {})
-            try:
-                var = old_check.get("var")
-                if var is None:
-                    raise ValueError
-                var.set(selected_state.get(name, True))
-            except Exception:
-                var = tk.BooleanVar(value=selected_state.get(name, True))
-
-            rebuilt_checks[name] = {
-                "var": var,
-                "lab": data["lab"],
-                "rgb": data["rgb"],
-            }
-
-        self.color_checks = rebuilt_checks
-
+            tk.Label(self.colors_inner,
+                     text='No categories yet.\nSample an image, detect colors or add a category.',
+                     bg=self.CARD, fg=self.MUTED, font=self.FONT,
+                     justify='center', pady=20).pack(fill='x')
         for name in self.colors:
             self._create_color_row(name)
-
         self._update_selected_count()
+        self._refresh_sample_destinations()
+        self._schedule_idle(lambda: self.colors_canvas.yview_moveto(top)
+                            if self.colors_canvas.winfo_exists() else None)
 
     def _scroll_colors_to_bottom(self):
         """Move the Selected Colors viewport to the most recently added rows."""
@@ -2161,224 +2901,198 @@ class ImageBasedCreationManager:
 
     def _commit_color_name(self, old_name, name_var):
         if old_name not in self.colors:
-            return
-
-        requested = str(name_var.get()).strip()[:UtilsTools.MAX_COLOR_NAME_CHARS]
-        if not requested:
-            name_var.set(old_name)
-            self.app.custom_warning(
-                "Invalid Color Name",
-                "Color name cannot be empty.",
-                parent=self.win,
-            )
-            return
-
+            return True
+        requested = name_var.get().strip()
         if requested == old_name:
-            return
-
+            return True
+        name_var.set(old_name)  # Prevent duplicate FocusOut warning on modal.
+        if not requested or len(requested) > UtilsTools.MAX_CATEGORY_NAME_CHARS:
+            self.app.custom_warning('Invalid Category Name',
+                f'Category name must contain 1 to {UtilsTools.MAX_CATEGORY_NAME_CHARS} characters.',
+                parent=self.win)
+            return False
         if requested in self.colors:
-            name_var.set(old_name)
-            self.app.custom_warning(
-                "Duplicated Color Name",
-                f"The color '{requested}' already exists.",
-                parent=self.win,
-            )
-            return
-
-        new_colors = {}
-        for key, value in self.colors.items():
-            new_colors[requested if key == old_name else key] = value
-        self.colors = new_colors
-
-        if old_name in self.color_checks:
-            check_data = self.color_checks.pop(old_name)
-            new_checks = {}
-            for key in self.colors.keys():
-                if key == requested:
-                    new_checks[key] = check_data
-                elif key in self.color_checks:
-                    new_checks[key] = self.color_checks[key]
-            self.color_checks = new_checks
-
-        # Redraw so callbacks capture the new stable key.
-        self.win.after_idle(self._refresh_color_list)
+            self.app.custom_warning('Duplicate Category',
+                f"Category '{requested}' already exists.", parent=self.win)
+            return False
+        old_data = self.colors[old_name]
+        candidate = [dict(g) for g in old_data['granules']]
+        for item in candidate:
+            label = item['label']
+            if label == old_name:
+                item['label'] = requested
+            elif label.startswith(old_name+'-g') and label[len(old_name)+2:].isdigit():
+                suffix = label[len(old_name):]
+                item['label'] = requested[:UtilsTools.MAX_COLOR_NAME_CHARS-len(suffix)] + suffix
+        # A category rename does not change geometry. Validate unique labels
+        # only; imported alternative copies may deliberately share LAB with
+        # other categories until the final FCS selection is validated.
+        occupied_labels = self._all_granule_labels(exclude_category=old_name)
+        for g in candidate:
+            label = str(g['label']).strip()
+            if not label or len(label) > UtilsTools.MAX_COLOR_NAME_CHARS:
+                self.app.custom_warning('Invalid Category Name',
+                    f'Granule names must contain 1 to {UtilsTools.MAX_COLOR_NAME_CHARS} characters.',
+                    parent=self.win)
+                return False
+            if label in occupied_labels:
+                self.app.custom_warning('Invalid Category Name',
+                    f"Granule name '{label}' is already in use.", parent=self.win)
+                return False
+            occupied_labels.add(label)
+        self.colors = {requested if key == old_name else key: data
+                       for key, data in self.colors.items()}
+        self.color_checks = {requested if key == old_name else key: data
+                             for key, data in self.color_checks.items()}
+        self.colors[requested]['granules'] = candidate
+        if old_name in self._expanded_categories:
+            self._expanded_categories.remove(old_name)
+            self._expanded_categories.add(requested)
+        self._sync_representative(requested)
+        self._refresh_color_list()
+        return True
 
     def _update_selected_count(self):
         total = len(self.color_checks)
-        selected = 0
-        for item in self.color_checks.values():
-            try:
-                if item["var"].get():
-                    selected += 1
-            except Exception:
-                pass
-        self.selected_count_var.set(f"{selected} of {total} selected")
+        selected = sum(bool(ch['var'].get()) for ch in self.color_checks.values())
+        granules = sum(sum(g.get('enabled', True) for g in data['granules'])
+                       for name, data in self.colors.items()
+                       if self.color_checks[name]['var'].get())
+        self.selected_count_var.set(f'{selected}/{total} categories · {granules} granules')
 
     def _select_all_colors(self):
-        for item in self.color_checks.values():
-            try:
-                item["var"].set(True)
-            except Exception:
-                pass
+        """Select in O(N) without recreating any category/granule widgets."""
+        for name, check in self.color_checks.items():
+            check['var'].set(True)
+            for granule in self.colors[name]['granules']:
+                granule['enabled'] = True
+            old_lab = self.colors[name]['lab']
+            self._sync_representative(name)
+            self._update_visible_selection(
+                name, color_changed=(old_lab != self.colors[name]['lab']))
         self._update_selected_count()
 
     def _deselect_all_colors(self):
-        for item in self.color_checks.values():
-            try:
-                item["var"].set(False)
-            except Exception:
-                pass
+        """Deselect in place; preserve granule flags for later reactivation."""
+        for name, check in self.color_checks.items():
+            check['var'].set(False)
+            self._update_visible_selection(name)
         self._update_selected_count()
 
     def _remove_selected_colors(self):
-        names = []
-        for name, item in self.color_checks.items():
-            try:
-                if item["var"].get():
-                    names.append(name)
-            except Exception:
-                pass
-
+        names = [name for name, check in self.color_checks.items() if check['var'].get()]
         if not names:
-            self.app.custom_warning(
-                "No Color Selected",
-                "Select at least one color to remove.",
-                parent=self.win,
-            )
+            self.app.custom_warning('No Category Selected',
+                                    'Select at least one category to remove.', parent=self.win)
             return
-
         for name in names:
-            self.colors.pop(name, None)
-            self.color_checks.pop(name, None)
+            del self.colors[name]
+            del self.color_checks[name]
+            self._expanded_categories.discard(name)
         self._refresh_color_list()
 
     def _add_custom_color(self):
-        default_name = self._next_unique_name("Custom Color")
-
-        def on_submit(color_name, sample_lab, sample_rgb, sample_hex, dialog, input_vars):
-            clean_name = str(color_name).strip()[:UtilsTools.MAX_COLOR_NAME_CHARS]
-            if not clean_name:
-                input_vars["status_var"].set("Enter a color name.")
-                return
-            if clean_name in self.colors:
-                input_vars["status_var"].set("A color with this name already exists.")
-                return
-
-            self._add_color(clean_name, sample_rgb, sample_lab, source="Custom")
-            self.color_source_status_var.set("1 custom color added · selected")
-            dialog.destroy()
-
-        self.app._open_custom_color_dialog(
-            parent=self.win,
-            title="Add Custom Color",
-            subtitle="Create a color from RGB, LAB or HEX",
-            submit_text="Add Color",
-            require_name=True,
-            default_name=default_name,
-            on_submit=on_submit,
-        )
+        """Re-use the same full granular category dialog as Palette Creation."""
+        UtilsTools.CustomCategoryDialog(self)
 
     def _commit_pending_color_names(self):
-        """Commit every visible editable name before validating/creating the FCS."""
-        pending = list(getattr(self, "_name_editors", []))
-        changed = False
-
-        for old_name, name_var in pending:
+        for old_name, name_var in list(self._name_editors):
             if old_name not in self.colors:
                 continue
-
-            requested = str(name_var.get()).strip()[:UtilsTools.MAX_COLOR_NAME_CHARS]
-            if not requested:
-                name_var.set(old_name)
-                self.app.custom_warning(
-                    "Invalid Color Name",
-                    "Color name cannot be empty.",
-                    parent=self.win,
-                )
-                return False
-
-            if requested == old_name:
-                continue
-
-            if requested in self.colors:
-                name_var.set(old_name)
-                self.app.custom_warning(
-                    "Duplicated Color Name",
-                    f"The color '{requested}' already exists.",
-                    parent=self.win,
-                )
-                return False
-
-            new_colors = {}
-            for key, value in self.colors.items():
-                new_colors[requested if key == old_name else key] = value
-            self.colors = new_colors
-
-            if old_name in self.color_checks:
-                check_data = self.color_checks.pop(old_name)
-                rebuilt_checks = {}
-                for key in self.colors.keys():
-                    if key == requested:
-                        rebuilt_checks[key] = check_data
-                    elif key in self.color_checks:
-                        rebuilt_checks[key] = self.color_checks[key]
-                self.color_checks = rebuilt_checks
-
-            changed = True
-
-        if changed:
-            self._refresh_color_list()
-
+            proposed = name_var.get().strip()
+            if proposed != old_name:
+                if not self._commit_color_name(old_name, name_var):
+                    return False
         return True
 
+    def _selected_category_granules(self):
+        selected = {}
+        for name, check in self.color_checks.items():
+            if not check['var'].get():
+                continue
+            active = {g['label']: np.asarray(g['lab'], dtype=float)
+                      for g in self.colors[name]['granules'] if g.get('enabled', True)}
+            if active:
+                selected[name] = active
+        return selected
 
     def _create_color_space(self):
-        # Commit pending name edits before constructing the FCS.
         if not self._commit_pending_color_names():
             return
-
-        selected = []
-        for name, item in self.color_checks.items():
-            try:
-                if item["var"].get():
-                    selected.append(name)
-            except Exception:
-                pass
-
+        selected = self._selected_category_granules()
         if len(selected) < 2:
-            self.app.custom_warning(
-                "Not Enough Colors",
-                "At least two colors must be selected to create the Color Space.",
-                parent=self.win,
-            )
+            self.app.custom_warning('Not Enough Categories',
+                'Select at least two categories to build a color space.', parent=self.win)
             return
+        occupied = []
+        for category, granules in selected.items():
+            for label, lab in granules.items():
+                _, _, error = UtilsTools.check_granule_site(label, lab, occupied,
+                                                            max_name_length=64)
+                if error:
+                    self.app.custom_warning('Invalid Granule', error, parent=self.win)
+                    return
+                occupied.append((category, label, lab))
+        granular = any(len(g) > 1 or next(iter(g)) != cat
+                       for cat, g in selected.items())
+        if not granular:
+            previous = getattr(self.app, 'color_checks', None)
+            self.app.color_checks = self.color_checks
+            try:
+                started = self.app.create_color_space(parent=self.win)
+            finally:
+                if previous is None:
+                    try: delattr(self.app, 'color_checks')
+                    except AttributeError: pass
+                else:
+                    self.app.color_checks = previous
+            if started:
+                self.close()
+            return
+        representatives = {cat: next(iter(g.values())) for cat, g in selected.items()}
 
-        previous_checks = getattr(self.app, "color_checks", None)
-        self.app.color_checks = self.color_checks
-
+        def on_create(name, options):
+            saved_options = UtilsTools.prepare_granular_creation_options(
+                selected, options
+            )
+            return self.app.save_cs(name, representatives, options=saved_options)
         try:
-            result = self.app.create_color_space(parent=self.win)
-        finally:
-            if previous_checks is None:
-                try:
-                    delattr(self.app, "color_checks")
-                except Exception:
-                    pass
-            else:
-                self.app.color_checks = previous_checks
+            dialog = UtilsTools.FCSCreationDialog(
+                self.win, representatives, on_accept=on_create,
+                warn=self.app.custom_warning)
+            dialog.transient(self.win)
+            dialog.grab_set()
+            dialog.wait_window()
+            if dialog.result:
+                self.close()
+        except (ValueError, TypeError, RuntimeError, tk.TclError) as exc:
+            self.app.custom_warning('Cannot Build Space', str(exc), parent=self.win)
 
-        if result:
-            self.close()
+    def _dispatch_colors_mousewheel(self, event):
+        """Scroll over any child of the category list, not other controls."""
+        try:
+            x = self.win.winfo_pointerx()
+            y = self.win.winfo_pointery()
+            cx, cy = self.colors_canvas.winfo_rootx(), self.colors_canvas.winfo_rooty()
+            if not (cx <= x < cx + self.colors_canvas.winfo_width() and
+                    cy <= y < cy + self.colors_canvas.winfo_height()):
+                return None
+        except tk.TclError:
+            return None
+        return self._on_colors_mousewheel(event)
 
     def _on_colors_mousewheel(self, event):
         try:
-            if platform.system() == "Darwin":
-                step = -1 if event.delta > 0 else 1
+            if getattr(event, 'num', None) == 4:
+                step = -1
+            elif getattr(event, 'num', None) == 5:
+                step = 1
+            elif getattr(event, 'delta', 0):
+                delta = event.delta
+                step = -int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
             else:
-                step = int(-1 * (event.delta / 120))
-                if step == 0:
-                    step = -1 if event.delta > 0 else 1
-            self.colors_canvas.yview_scroll(step, "units")
-        except Exception:
+                return 'break'
+            self.colors_canvas.yview_scroll(step, 'units')
+        except tk.TclError:
             pass
-        return "break"
+        return 'break'

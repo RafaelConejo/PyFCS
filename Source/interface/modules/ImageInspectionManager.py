@@ -1529,26 +1529,14 @@ class ImageInspectionManager:
             self._inspect_pixel(left, top, show_tooltip=True)
             return
 
-        rgba = np.asarray(
-            pil.convert("RGBA").crop((left, top, right + 1, bottom + 1)),
-            dtype=np.uint8,
-        )
-        if rgba.size == 0:
-            return
-
-        visible = rgba[..., 3] > 0
-        total_count = int(np.count_nonzero(visible))
-        if total_count == 0:
-            return
-
-        rgb_pixels = rgba[..., :3][visible].astype(np.float32)
         filters = self._active_lab_filters()
-        mean_rgb_arr, used_count = UtilsTools.mean_rgb_with_lab_filters(
-            rgb_pixels,
-            filters,
+        mean_lab_arr, used_count, total_count = UtilsTools.mean_lab_of_pil_roi(
+            pil, (left, top, right + 1, bottom + 1), filters
         )
+        if total_count <= 0:
+            return
 
-        if used_count <= 0 or mean_rgb_arr is None:
+        if used_count <= 0 or mean_lab_arr is None:
             self.app.custom_warning(
                 "No Valid Pixels",
                 "No pixels in the selected area satisfy the active LAB filters.",
@@ -1560,8 +1548,10 @@ class ImageInspectionManager:
             self._render_image()
             return
 
-        mean_rgb = tuple(int(round(v)) for v in mean_rgb_arr[:3])
-        mean_lab = tuple(float(v) for v in UtilsTools.rgb_to_lab(mean_rgb))
+        # Scientific result is the mean of individual CIELAB pixels.
+        mean_lab = tuple(float(v) for v in mean_lab_arr[:3])
+        # sRGB is only a display approximation, never the source for LAB.
+        mean_rgb = tuple(UtilsTools.lab_to_rgb(mean_lab))
 
         width = right - left + 1
         height = bottom - top + 1
