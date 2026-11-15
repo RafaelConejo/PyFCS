@@ -1014,10 +1014,17 @@ class ColorEvaluationManager:
             text = str(value).strip()
             return text if text else default
 
+        granular_ranking = any(
+            item.get("granule_label") and item.get("granule_label") != item.get("label")
+            for item in ranking
+        )
+        label_header = "Category / nearest granule" if granular_ranking else "Prototype"
         rows = []
 
         for index, item in enumerate(ranking, start=1):
             label = _safe_text(item.get("label", "-"))
+            if granular_ranking:
+                label = f"{label} / {_safe_text(item.get('granule_label', label))}"
             metric_value = item.get("metric_value", item.get("delta_e"))
             metric_text = _format_value(metric_value, metric_name)
             status = _safe_text(item.get("class_label", item.get("status", "-")))
@@ -1031,8 +1038,8 @@ class ColorEvaluationManager:
 
         index_w = max(len("#"), len(str(len(rows))))
         prototype_w = max(
-            len("Prototype"),
-            min(max(len(row["label"]) for row in rows), 26)
+            len(label_header),
+            min(max(len(row["label"]) for row in rows), 36)
         )
         metric_w = max(
             len(metric_name),
@@ -1056,11 +1063,13 @@ class ColorEvaluationManager:
 
             return text[:width - 1] + "…"
 
-        title = f"{len(rows)} closest prototypes by {metric_name}:"
+        title = (f"{len(rows)} closest categories (nearest real granule) by {metric_name}:"
+                 if granular_ranking else
+                 f"{len(rows)} closest prototypes by {metric_name}:")
 
         header = (
             f"{'#':>{index_w}}  "
-            f"{'Prototype':<{prototype_w}}  "
+            f"{label_header:<{prototype_w}}  "
             f"{metric_name:>{metric_w}}  "
             f"{'Status':<{status_w}}"
         )
@@ -1339,43 +1348,36 @@ class ColorEvaluationManager:
 
     @staticmethod
     def get_active_color_evaluation_sample(vars_dict):
-        """
-        Return the most relevant color sample for global analysis modes.
+        """Return a real sample for graphs and membership-based analysis.
 
-        Priority:
-        1. Custom comparison color, if available.
-        2. Selected prototype.
+        Prefer an external image/custom sample on B, then one on A; fall back
+        to the selected real row.  Neither category averages nor synthetic
+        representatives are introduced by this selection.
         """
         try:
-            if (
-                vars_dict.get("secondary_mode") == "custom"
-                and vars_dict.get("secondary_custom_lab") is not None
-                and vars_dict.get("secondary_custom_rgb") is not None
-            ):
-                return {
-                    "name": vars_dict.get("secondary_custom_name", "Custom Color"),
-                    "lab": vars_dict.get("secondary_custom_lab"),
-                    "rgb": vars_dict.get("secondary_custom_rgb"),
-                    "hex": vars_dict.get("secondary_custom_hex"),
-                    "source": "custom",
-                }
-
+            for prefix in ("secondary", "primary"):
+                if (vars_dict.get(prefix + "_mode") == "custom"
+                        and vars_dict.get(prefix + "_custom_lab") is not None
+                        and vars_dict.get(prefix + "_custom_rgb") is not None):
+                    return {
+                        "name": vars_dict.get(prefix + "_custom_name", "Sample"),
+                        "lab": vars_dict[prefix + "_custom_lab"],
+                        "rgb": vars_dict[prefix + "_custom_rgb"],
+                        "hex": vars_dict.get(prefix + "_custom_hex"),
+                        "source": vars_dict.get(prefix + "_custom_source", "custom"),
+                    }
             primary_label = vars_dict.get("primary_label")
-            refs_map = vars_dict.get("color_row_refs", {})
-            primary_refs = refs_map.get(primary_label)
-
-            if primary_refs:
+            refs = vars_dict.get("color_row_refs", {}).get(primary_label)
+            if refs is not None:
                 return {
                     "name": primary_label,
-                    "lab": primary_refs.get("lab"),
-                    "rgb": primary_refs.get("rgb"),
-                    "hex": primary_refs.get("hex"),
-                    "source": "prototype",
+                    "lab": refs.get("lab"),
+                    "rgb": refs.get("rgb"),
+                    "hex": refs.get("hex"),
+                    "source": "granule" if refs.get("category") else "prototype",
                 }
-
-        except Exception:
+        except (TypeError, ValueError, KeyError):
             pass
-
         return None
 
     @staticmethod

@@ -6,6 +6,7 @@ import plotly.express as px
 
 # Project modules
 from Source.geometry.Point import Point
+from Source.interface.modules import UtilsTools
 
 
 """
@@ -43,6 +44,22 @@ class VisualManager:
     SHOW_LEGENDS = True
 
     # Geometry / Color Helpers
+
+    @staticmethod
+    def _fallback_model_hex(xyz, source_space):
+        """Display a real site's color when HEX-keyed palettes are ambiguous.
+
+        Different LAB representatives may quantize to the same 8-bit RGB/HEX.
+        A palette dictionary indexed by HEX then represents only the last
+        site, but the other site should not appear black in the 3D view.
+        """
+        try:
+            if str(source_space).upper() == "RGB":
+                return UtilsTools.rgb_to_hex(
+                    UtilsTools.safe_rgb_tuple(np.asarray(xyz, dtype=float)))
+            return UtilsTools.lab_to_hex(xyz)
+        except (ValueError, TypeError, OverflowError):
+            return "#000000"
 
     @staticmethod
     def clip_face_to_volume(vertices, volume_limits):
@@ -449,7 +466,8 @@ class VisualManager:
                 lab_array = to_display(np.asarray(lab_values, dtype=float))
 
                 colors = [
-                    inverse_hex_color.get(lab_to_key(lab), "#000000")
+                    inverse_hex_color.get(lab_to_key(lab))
+                    or VisualManager._fallback_model_hex(lab, color_space)
                     for lab in lab_values
                 ]
 
@@ -492,8 +510,9 @@ class VisualManager:
             # otherwise the domain-bounded volumes appear open or triangular.
             # Their rendering never changes the functional membership faces.
             for prototype in prototypes:
-                color = inverse_hex_color.get(
-                    lab_to_key(prototype.positive), "#000000")
+                color = (inverse_hex_color.get(lab_to_key(prototype.positive))
+                         or VisualManager._fallback_model_hex(
+                             prototype.positive, color_space))
                 valid_faces = VisualManager._cached_projected_display_faces(
                     prototype, volume_limits, color_space, display_color_space)
                 # The same material is applied to every polygon of a given
@@ -554,82 +573,107 @@ class VisualManager:
         except Exception:
             pass
 
-        fig = ax.get_figure()
-        if str(display_color_space).upper() == "LAB":
-            VisualManager.draw_orientation_inset(fig, ax)
-        else:
-            for existing_ax in list(fig.axes):
-                if hasattr(existing_ax, "_is_orientation_inset"):
-                    fig.delaxes(existing_ax)
+        VisualManager.draw_orientation_inset(
+            ax.get_figure(), ax, display_color_space)
 
 
     @staticmethod
-    def draw_orientation_inset(fig, ax_main=None):
+    def get_orientation_inset(fig):
+        """Return the 2D orientation control if the figure owns one."""
+        if fig is None:
+            return None
+        return next((a for a in fig.axes
+                     if getattr(a, "_is_orientation_inset", False)), None)
+
+    @staticmethod
+    def draw_orientation_inset(fig, ax_main=None, color_space="LAB"):
+        """Draw the original fixed 3D axis glyph, also supporting RGB.
+
+        This is a static orientation reference, not a second camera. Clicking
+        it is handled by the Tk host and resets the main camera. Unlike an
+        orientation compass it does not follow the main camera rotation.
         """
-        Draw a fixed-position 3D orientation inset with a fixed camera,
-        independent from the main axes.
-        """
-        # The inset has a fixed camera and fixed labels; it is independent
-        # of the currently displayed fuzzy geometry. Reuse it across option
-        # changes instead of deleting and redrawing six 3D arrows each time.
-        for existing_ax in fig.axes:
-            if hasattr(existing_ax, "_is_orientation_inset"):
-                return existing_ax
+        color_space = str(color_space).upper()
+        if color_space not in ("LAB", "RGB"):
+            color_space = "LAB"
+        inset = VisualManager.get_orientation_inset(fig)
+        if inset is not None:
+            if getattr(inset, "_orientation_color_space", None) == color_space:
+                return inset
+            fig.delaxes(inset)
 
-        ax_inset = fig.add_axes([0.02, 0.02, 0.18, 0.30], projection="3d")
-        ax_inset._is_orientation_inset = True
-
-        ax_inset.set_facecolor((1, 1, 1, 0))
-        ax_inset.patch.set_alpha(0)
-
-        ax_inset.view_init(elev=30, azim=-60)
-
-        lim = 1.2
-        ax_inset.set_xlim(-lim, lim)
-        ax_inset.set_ylim(-lim, lim)
-        ax_inset.set_zlim(-lim, lim)
-
-        ax_inset.set_xticks([])
-        ax_inset.set_yticks([])
-        ax_inset.set_zticks([])
-        ax_inset.set_xlabel("")
-        ax_inset.set_ylabel("")
-        ax_inset.set_zlabel("")
-        ax_inset.set_axis_off()
-
+        # Restore the original dimensions, elevation and quiver rendering.
+        # Lower-left corner, close to the plot frame.  Keep the original
+        # quiver/text glyph but avoid the oversized empty 3D inset box.
+        inset = fig.add_axes([0.0, -0.06, 0.16, 0.21], projection="3d")
+        inset._is_orientation_inset = True
+        inset._orientation_color_space = color_space
+        inset.set_zorder(10)
+        inset.set_facecolor((1, 1, 1, 0))
+        inset.patch.set_alpha(0)
+        inset.view_init(elev=30, azim=-60)
+        inset.set_xlim(-1.2, 1.2)
+        inset.set_ylim(-1.2, 1.2)
+        inset.set_zlim(-1.2, 1.2)
+        inset.set_xticks([])
+        inset.set_yticks([])
+        inset.set_zticks([])
+        inset.set_xlabel("")
+        inset.set_ylabel("")
+        inset.set_zlabel("")
+        inset.set_axis_off()
+        # Disabling navigation alone is not sufficient on every Matplotlib
+        # version: disable the Axes3D mouse-rotation handlers as well.
+        inset.set_navigate(False)
+        if hasattr(inset, "disable_mouse_rotation"):
+            inset.disable_mouse_rotation()
+        else:
+            try:
+                inset.mouse_init(rotate_btn=[], zoom_btn=[], pan_btn=[])
+            except TypeError:
+                inset.mouse_init(rotate_btn=[])
         try:
-            ax_inset.xaxis.pane.fill = False
-            ax_inset.yaxis.pane.fill = False
-            ax_inset.zaxis.pane.fill = False
-
-            ax_inset.xaxis.pane.set_edgecolor((1, 1, 1, 0))
-            ax_inset.yaxis.pane.set_edgecolor((1, 1, 1, 0))
-            ax_inset.zaxis.pane.set_edgecolor((1, 1, 1, 0))
-        except Exception:
+            for axis in (inset.xaxis, inset.yaxis, inset.zaxis):
+                axis.pane.fill = False
+                axis.pane.set_edgecolor((1, 1, 1, 0))
+        except (AttributeError, TypeError):
             pass
 
-        # a*: Green <-> Red
-        ax_inset.quiver(0, 0, 0, 1, 0, 0, color="red", arrow_length_ratio=0.2)
-        ax_inset.quiver(0, 0, 0, -1, 0, 0, color="green", arrow_length_ratio=0.2)
+        if color_space == "RGB":
+            # PyFCS plots RGB with x=G, y=B, z=R.
+            directions = (
+                (0, 0, 1, "red"),
+                (1, 0, 0, "green"),
+                (0, 1, 0, "blue"),
+            )
+            for dx, dy, dz, color in directions:
+                inset.quiver(0, 0, 0, dx, dy, dz, color=color,
+                             arrow_length_ratio=0.20)
+            inset.text(0.03, -0.02, 1.19, "R", fontsize=8, color="red")
+            inset.text(1.19, -0.05, 0, "G", fontsize=8, color="green")
+            inset.text(0.06, 1.19, 0, "B", fontsize=8, color="blue")
+        else:
+            # Original CIELAB glyph: x=a*, y=b*, z=L*.
+            directions = (
+                (1, 0, 0, "red"), (-1, 0, 0, "green"),
+                (0, 1, 0, "gold"), (0, -1, 0, "blue"),
+                (0, 0, 1, "gray"), (0, 0, -1, "black"),
+            )
+            for dx, dy, dz, color in directions:
+                inset.quiver(0, 0, 0, dx, dy, dz, color=color,
+                             arrow_length_ratio=0.20)
+            inset.text(1.18, -0.05, 0, "+a*", fontsize=8)
+            inset.text(-1.32, 0.02, 0.02, "-a*", fontsize=8)
+            inset.text(0.06, 1.18, 0.02, "+b*", fontsize=8)
+            inset.text(-0.10, -1.34, -0.08, "-b*", fontsize=8)
+            inset.text(0.02, 0.02, 1.18, "+L*", fontsize=8)
+            inset.text(0.04, -0.08, -1.34, "-L*", fontsize=8)
+        return inset
 
-        # b*: Blue <-> Yellow
-        ax_inset.quiver(0, 0, 0, 0, 1, 0, color="gold", arrow_length_ratio=0.2)
-        ax_inset.quiver(0, 0, 0, 0, -1, 0, color="blue", arrow_length_ratio=0.2)
-
-        # L*: Dark <-> Light
-        ax_inset.quiver(0, 0, 0, 0, 0, 1, color="gray", arrow_length_ratio=0.2)
-        ax_inset.quiver(0, 0, 0, 0, 0, -1, color="black", arrow_length_ratio=0.2)
-
-        ax_inset.text(1.18, -0.05, 0.00, "+a*", fontsize=8)
-        ax_inset.text(-1.32, 0.02, 0.02, "-a*", fontsize=8)
-
-        ax_inset.text(0.06, 1.18, 0.02, "+b*", fontsize=8)
-        ax_inset.text(-0.10, -1.34, -0.08, "-b*", fontsize=8)
-
-        ax_inset.text(0.02, 0.02, 1.18, "+L*", fontsize=8)
-        ax_inset.text(0.04, -0.08, -1.34, "-L*", fontsize=8)
-
-        return ax_inset
+    @staticmethod
+    def update_orientation_inset(inset, ax_main=None, force=False):
+        """Compatibility hook: the static inset must never track the camera."""
+        return inset
 
 
     # General Interactive Plotly 3D Model
@@ -652,6 +696,7 @@ class VisualManager:
         closest_hex="#000000",
         color_space="LAB",
         display_color_space=None,
+        granule_categories=None,
     ):
         """
         Generate a unified interactive Plotly 3D figure.
@@ -815,7 +860,8 @@ class VisualManager:
                     continue
 
         def _prototype_hex_from_lab(lab):
-            return hex_lookup.get(VisualManager._lab_key(lab), "#000000")
+            return (hex_lookup.get(VisualManager._lab_key(lab))
+                    or VisualManager._fallback_model_hex(lab, color_space))
 
         def _safe_label(value):
             try:
@@ -826,7 +872,7 @@ class VisualManager:
         def _initial_opacity(layer_name):
             return layer_opacity[layer_name] if layer_name in selected_options else 0.0
 
-        def _add_legend_anchor(label, proto_hex, rank):
+        def _add_legend_anchor(label, proto_hex, rank, group_label=None):
             """
             Add one visible legend item per prototype.
 
@@ -834,6 +880,7 @@ class VisualManager:
             share the same legendgroup but do not appear separately in the legend.
             """
             label = _safe_label(label)
+            group_label = str(group_label) if group_label is not None else label
 
             if label in legend_labels_added:
                 return
@@ -852,7 +899,7 @@ class VisualManager:
                     opacity=1.0,
                     visible=True,
                     name=label,
-                    legendgroup=label,
+                    legendgroup=group_label,
                     showlegend=True,
                     legendrank=rank,
                     hoverinfo="skip",
@@ -871,7 +918,9 @@ class VisualManager:
                 continue
 
             proto_hex = _prototype_hex_from_lab(lab)
-            _add_legend_anchor(label, proto_hex, rank)
+            category = (granule_categories or {}).get(label)
+            legend_name = f"{category} · {label}" if category else label
+            _add_legend_anchor(legend_name, proto_hex, rank, group_label=label)
 
         # Representative points.
         for label, value in color_data.items():
@@ -884,6 +933,7 @@ class VisualManager:
             proto_hex = _prototype_hex_from_lab(lab)
 
             is_closest = closest_label is not None and label == str(closest_label)
+            category = (granule_categories or {}).get(label)
             shown = to_display(lab)
 
             fig.add_trace(
@@ -907,6 +957,7 @@ class VisualManager:
                     showlegend=False,
                     hovertemplate=(
                         f"<b>{label}</b><br>"
+                        + (f"Category: {category}<br>" if category else "")
                         + ("R: %{z:.2f}<br>G: %{x:.2f}<br>B: %{y:.2f}<extra></extra>"
                            if display_color_space == "RGB" else
                            "L*: %{z:.3f}<br>a*: %{x:.3f}<br>b*: %{y:.3f}<extra></extra>")

@@ -8,6 +8,50 @@ import numpy as np
 from PIL import Image, ImageTk, ImageOps
 
 import Source.interface.modules.UtilsTools as UtilsTools
+from Source.fuzzy.GranularFuzzyColor import GranularFuzzyColor
+
+
+def inspection_membership_snapshot(space, lab, manager):
+    """Evaluate an inspection point once, preserving atomic legacy semantics.
+
+    For granular FCS, use raw atomic granule degrees and aggregate by the
+    runtime t-conorm. For atomic FCS, use its existing (possibly normalized)
+    category membership API. Zero entries are retained for the UI filter.
+    """
+    if space is None:
+        return {"memberships": [], "categories": {}, "winner_label": None,
+                "winner_mu": 0.0}
+    if getattr(space, "is_granular", False):
+        raw = space.calculate_granule_memberships(lab, input_space="LAB",
+                                                   include_zeros=True)
+        values = {}
+        for category in space.categories:
+            members = raw.get(category.label, {})
+            values[category.label] = {
+                "degree": float(GranularFuzzyColor.aggregate(
+                    members.values(), space.tconorm)),
+                "granules": {p.label: float(members.get(p.label, 0.0))
+                             for p in category.prototypes},
+            }
+    else:
+        # Atomic partition memberships may be normalized by the existing engine.
+        result = dict(manager.calculate_memberships(space, lab))
+        values = {p.label: {"degree": float(result.get(p.label, 0.0)),
+                            "granules": {p.label: float(result.get(p.label, 0.0))}}
+                  for p in space.prototypes}
+    ordered = sorted(((name, data["degree"]) for name, data in values.items()),
+                     key=lambda item: item[1], reverse=True)
+    positive = [(name, degree) for name, degree in ordered if degree > 0.0]
+    winner = positive[0][0] if positive else None
+    # The granular engine explicitly defines a nearest-granule tie break.
+    if winner is not None and getattr(space, "is_granular", False):
+        if len(positive) > 1 and abs(positive[0][1] - positive[1][1]) <= 1e-12:
+            winner_idx = space.best_prototype_index(lab, input_space="LAB")
+            if winner_idx >= 0:
+                winner = space.categories[winner_idx].label
+    return {"memberships": ordered, "categories": values,
+            "winner_label": winner,
+            "winner_mu": values[winner]["degree"] if winner is not None else 0.0}
 
 
 class ImageInspectionManager:
@@ -77,7 +121,18 @@ class ImageInspectionManager:
         self._view_state = {}       # key -> {zoom, cx, cy}
         self._last_sample = {}      # key -> sample dict
         self._current_sample = None
-        self._selected_proto_label = None
+        self._selected_proto_label = None  # Always a REAL granule label.
+        self._selected_category_label = None
+        self._reference_locked = False
+        self._category_locked = False
+        self._expanded_membership_categories = set()
+        self._reference_space_id = None
+        self._reference_categories = {}
+        self._reference_labels = {}
+        # Compute display RGB/HEX once per reference instead of converting LAB
+        # repeatedly for each inspected pixel in Live mode.
+        self._reference_rgb_cache = {}
+        self._reference_hex_cache = {}
         self._membership_rows = {}
         # Reuse these row widgets as the sampled pixel changes in Live mode.
         self._membership_controls = {}
@@ -132,6 +187,16 @@ class ImageInspectionManager:
                 pass
             self._live_after_id = None
 
+        # This binding tag is private to the inspector; release its handlers
+        # when the window closes so the main GUI never inherits them.
+        tag = getattr(self, "_right_wheel_tag", None)
+        if tag:
+            for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                try:
+                    self.win.unbind_class(tag, sequence)
+                except tk.TclError:
+                    pass
+
         try:
             if self.win.winfo_exists():
                 self.win.destroy()
@@ -183,8 +248,12 @@ class ImageInspectionManager:
         self.filter_b_min_var = tk.StringVar(value="-128.0")
         self.filter_b_max_var = tk.StringVar(value="128.0")
 
-        self.winner_summary_var = tk.StringVar(value="Close Prototype: —")
-        self.proto_title_var = tk.StringVar(value="Close Prototype")
+        self.winner_summary_var = tk.StringVar(value="Best-matching Category: —")
+        space = getattr(self.app, "fuzzy_color_space", None)
+        self.tconorm_var = tk.StringVar(value=getattr(space, "tconorm", "bounded_sum").upper())
+        self.show_zero_memberships_var = tk.BooleanVar(value=False)
+        self.proto_category_var = tk.StringVar(value="Category: —")
+        self.proto_title_var = tk.StringVar(value="Reference Granule")
         self.proto_name_var = tk.StringVar(value="—")
         self.proto_lab_var = tk.StringVar(value="LAB: —")
         self.proto_rgb_var = tk.StringVar(value="RGB: —")
@@ -245,8 +314,10 @@ class ImageInspectionManager:
 
         left = tk.Frame(paned, bg=self.BG)
         right = tk.Frame(paned, bg=self.BG)
-        paned.add(left, stretch="always", minsize=700)
-        paned.add(right, stretch="always", minsize=360)
+        # Give the inspection controls more space when the window first opens.
+        # The sash remains freely adjustable afterwards.
+        paned.add(left, stretch="always", minsize=600)
+        paned.add(right, stretch="always", minsize=410)
 
         self._build_left_image_panel(left)
         self._build_right_scroll_panel(right)
@@ -255,7 +326,7 @@ class ImageInspectionManager:
             try:
                 total = paned.winfo_width()
                 if total > 1:
-                    paned.sash_place(0, int(total * 0.70), 1)
+                    paned.sash_place(0, int(total * 0.63), 1)
             except Exception:
                 pass
 
@@ -506,7 +577,7 @@ class ImageInspectionManager:
         )
         self.pin_tree.heading("image", text="Image")
         self.pin_tree.heading("position", text="Position")
-        self.pin_tree.heading("prototype", text="Close Prototype")
+        self.pin_tree.heading("prototype", text="Best Category")
         self.pin_tree.heading("membership", text="μ")
         self.pin_tree.column("image", width=190, anchor="w")
         self.pin_tree.column("position", width=130, anchor="center")
@@ -540,10 +611,7 @@ class ImageInspectionManager:
         self.right_inner = tk.Frame(self.right_canvas, bg=self.BG)
         self.right_window_id = self.right_canvas.create_window((0, 0), window=self.right_inner, anchor="nw")
 
-        self.right_inner.bind(
-            "<Configure>",
-            lambda _e: self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all"))
-        )
+        self.right_inner.bind("<Configure>", self._on_right_inner_configure)
         self.right_canvas.bind(
             "<Configure>",
             lambda e: self.right_canvas.itemconfigure(self.right_window_id, width=max(1, e.width - 4))
@@ -553,6 +621,88 @@ class ImageInspectionManager:
         self._build_membership_card(self.right_inner)
         self._build_comparison_settings_card(self.right_inner)
         self._build_prototype_card(self.right_inner)
+
+        # A private bindtag makes wheel scrolling work over labels, cards,
+        # buttons and editable settings without affecting the image zoom or
+        # other PyFCS windows. Newly created controls receive it on resize.
+        self._right_wheel_tag = f"PyFCSRightWheel_{id(self)}"
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.win.bind_class(self._right_wheel_tag, sequence,
+                                self._on_right_panel_wheel)
+        self._install_right_wheel_bindtags()
+
+    def _on_right_inner_configure(self, _event=None):
+        try:
+            self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all"))
+            # Membership rows and threshold controls can be rebuilt at runtime.
+            self._install_right_wheel_bindtags()
+        except tk.TclError:
+            pass
+
+    def _install_right_wheel_bindtags(self):
+        """Attach a wheel dispatcher before Tk class bindings in this pane."""
+        tag = getattr(self, "_right_wheel_tag", None)
+        if not tag:
+            return
+        widgets = [self.right_canvas]
+        while widgets:
+            widget = widgets.pop()
+            try:
+                tags = widget.bindtags()
+                if tag not in tags:
+                    widget.bindtags((tags[0], tag) + tags[1:])
+                widgets.extend(widget.winfo_children())
+            except tk.TclError:
+                # A dynamic control might be destroyed during a refresh.
+                pass
+
+    @staticmethod
+    def _wheel_units(event):
+        if getattr(event, "num", None) == 4:
+            return -1
+        if getattr(event, "num", None) == 5:
+            return 1
+        delta = getattr(event, "delta", 0)
+        if not delta:
+            return 0
+        units = max(1, int(abs(delta) / 120))
+        return -units if delta > 0 else units
+
+    @staticmethod
+    def _canvas_can_scroll(canvas, units):
+        first, last = canvas.yview()
+        if units < 0:
+            return first > 1e-4
+        if units > 0:
+            return last < 1 - 1e-4
+        return False
+
+    def _on_right_panel_wheel(self, event):
+        """Scroll the right pane anywhere, keeping nested memberships usable.
+
+        The membership list consumes the wheel while it can scroll in that
+        direction; at its limits, scrolling continues in the outer pane.
+        """
+        units = self._wheel_units(event)
+        if not units:
+            return "break"
+        try:
+            widget = event.widget
+            is_membership = False
+            holder = getattr(self, "membership_scroll_holder", None)
+            while holder is not None and widget is not None:
+                if widget == holder:
+                    is_membership = True
+                    break
+                widget = getattr(widget, "master", None)
+            if (is_membership and
+                    self._canvas_can_scroll(self.membership_canvas, units)):
+                self.membership_canvas.yview_scroll(units, "units")
+            elif self._canvas_can_scroll(self.right_canvas, units):
+                self.right_canvas.yview_scroll(units, "units")
+        except tk.TclError:
+            pass
+        return "break"
 
     def _build_sample_card(self, parent):
         card = self._card(parent, "Selected Sample", padx=9, pady=7)
@@ -724,19 +874,61 @@ class ImageInspectionManager:
         self.threshold_mode_combo.bind("<<ComboboxSelected>>", lambda _e: self._threshold_mode_changed())
 
     def _build_membership_card(self, parent):
-        card = self._card(parent, "Membership Degree")
+        card = self._card(parent, "Membership Degrees")
         card.pack(fill="x", pady=(0, 8))
 
-        tk.Label(
-            card,
-            textvariable=self.winner_summary_var,
-            bg=self.CARD,
-            fg=self.BLUE,
-            font=self.FONT_BOLD,
-            anchor="w",
-        ).pack(fill="x", pady=(0, 6))
+        top = tk.Frame(card, bg=self.CARD)
+        top.pack(fill="x", pady=(0, 5))
+        winner_label = tk.Label(
+            top, textvariable=self.winner_summary_var,
+            bg=self.CARD, fg=self.BLUE, font=self.FONT_BOLD,
+            anchor="center", justify="center", wraplength=390,
+        )
+        winner_label.pack(fill="x")
+        top.bind("<Configure>", lambda e: winner_label.configure(
+            wraplength=max(160, e.width - 12)))
 
-        holder = tk.Frame(card, bg=self.CARD, height=115)
+        space = getattr(self.app, "fuzzy_color_space", None)
+        granular = bool(getattr(space, "is_granular", False))
+        self.tconorm_combo = None  # Preserve compatibility with external callers.
+        self.tconorm_buttons = {}
+
+        # Show T-conorm in every space so the card keeps the same layout.
+        # An atomic category has nothing to aggregate: its buttons remain
+        # visible but disabled, rather than suggesting a change to its μ.
+        aggregation = tk.Frame(card, bg=self.CARD)
+        aggregation.pack(fill="x", pady=(0, 4))
+        aggregation_controls = tk.Frame(aggregation, bg=self.CARD)
+        aggregation_controls.pack(anchor="center")
+        tk.Label(aggregation_controls, text="T-conorm", font=self.FONT_SMALL_BOLD,
+                 bg=self.CARD, fg=self.MUTED).pack(side="left", padx=(0, 8))
+        for mode, caption in (("BOUNDED_SUM", "Bounded Sum"), ("MAX", "Max")):
+            button = tk.Button(
+                aggregation_controls, text=caption, font=self.FONT_SMALL_BOLD,
+                relief="flat", bd=0, highlightthickness=0, takefocus=0,
+                cursor="hand2" if granular else "arrow", padx=8, pady=3,
+                state="normal" if granular else "disabled",
+                command=lambda selected=mode: self._set_tconorm_choice(selected),
+            )
+            button.pack(side="left", padx=(0, 4))
+            self.tconorm_buttons[mode] = button
+        self._sync_tconorm_buttons()
+
+        # Keep the zero-membership switch beneath the aggregation choice.
+        options = tk.Frame(card, bg=self.CARD)
+        options.pack(fill="x", pady=(0, 5))
+        tk.Checkbutton(
+            options, text="Show zero memberships",
+            variable=self.show_zero_memberships_var,
+            command=self._populate_memberships,
+            bg=self.CARD, activebackground=self.CARD,
+            fg=self.MUTED, font=self.FONT_SMALL, bd=0,
+            highlightthickness=0, cursor="hand2",
+        ).pack(anchor="center")
+
+        # Compact but independently scrollable: large spaces remain usable.
+        holder = tk.Frame(card, bg=self.CARD, height=164 if granular else 132)
+        self.membership_scroll_holder = holder
         holder.pack(fill="x")
         holder.pack_propagate(False)
 
@@ -745,105 +937,180 @@ class ImageInspectionManager:
         self.membership_canvas.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.membership_canvas.pack(side="left", fill="both", expand=True)
-
         self.membership_inner = tk.Frame(self.membership_canvas, bg=self.CARD)
-        self.membership_window_id = self.membership_canvas.create_window((0, 0), window=self.membership_inner, anchor="nw")
+        self.membership_window_id = self.membership_canvas.create_window(
+            (0, 0), window=self.membership_inner, anchor="nw")
         self.membership_inner.bind(
-            "<Configure>",
-            lambda _e: self.membership_canvas.configure(scrollregion=self.membership_canvas.bbox("all"))
-        )
+            "<Configure>", lambda _e: self.membership_canvas.configure(
+                scrollregion=self.membership_canvas.bbox("all")))
         self.membership_canvas.bind(
-            "<Configure>",
-            lambda e: self.membership_canvas.itemconfigure(self.membership_window_id, width=max(1, e.width - 3))
-        )
+            "<Configure>", lambda e: self.membership_canvas.itemconfigure(
+                self.membership_window_id, width=max(1, e.width - 3)))
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.membership_canvas.bind(sequence, self._on_membership_wheel)
+
+    def _sync_tconorm_buttons(self):
+        """Indicate exactly one active t-conorm operator."""
+        current = self.tconorm_var.get().strip().upper()
+        for mode, button in getattr(self, "tconorm_buttons", {}).items():
+            active = mode == current
+            button.configure(
+                bg=self.BLUE_SOFT if active else self.SOFT,
+                fg=self.BLUE if active else self.MUTED,
+                activebackground=self.BLUE_SOFT if active else self.SOFT,
+                activeforeground=self.BLUE if active else self.TEXT,
+                font=self.FONT_SMALL_BOLD if active else self.FONT_SMALL,
+            )
+
+    def _set_tconorm_choice(self, mode):
+        if self.tconorm_var.get().upper() == mode:
+            return
+        self.tconorm_var.set(mode)
+        self._on_tconorm_changed()
+        self._sync_tconorm_buttons()
+
+    def _on_membership_wheel(self, event):
+        # Existing row bindings stay compatible; the shared dispatcher also
+        # lets the outer pane continue scrolling at the list boundaries.
+        return self._on_right_panel_wheel(event)
 
     def _build_prototype_card(self, parent):
-        self.prototype_card = self._card(parent, "Prototype Details")
+        self.prototype_card = self._card(parent, "Color Match")
         self.prototype_card.pack(fill="x", pady=(0, 8))
 
-        title_row = tk.Frame(self.prototype_card, bg=self.CARD)
-        title_row.pack(fill="x")
-
-        title_left = tk.Frame(title_row, bg=self.CARD)
-        title_left.pack(side="left", fill="x", expand=True)
-
+        # Keep the automatic reference action separate from the visual pair.
+        reference_header = tk.Frame(self.prototype_card, bg=self.CARD)
+        reference_header.pack(fill="x", pady=(0, 6))
         tk.Label(
-            title_left,
-            textvariable=self.proto_title_var,
-            bg=self.CARD,
-            fg=self.TEXT,
-            font=self.FONT_BOLD,
+            reference_header, textvariable=self.proto_title_var,
+            bg=self.CARD, fg=self.MUTED, font=self.FONT_SMALL_BOLD,
             anchor="w",
-        ).pack(fill="x")
-        tk.Label(
-            title_left,
-            textvariable=self.proto_name_var,
-            bg=self.CARD,
-            fg=self.BLUE,
-            font=("Segoe UI", 12, "bold"),
-            anchor="w",
-        ).pack(fill="x", pady=(2, 0))
-
+        ).pack(side="left", fill="x", expand=True)
         self.use_winner_button = tk.Button(
-            title_row,
-            text="Use close prototype",
+            reference_header,
+            text="↺ Best match",
             command=self._select_winner_prototype,
-            font=self.FONT_SMALL,
-            relief="solid",
-            bd=1,
-            cursor="hand2",
+            font=self.FONT_SMALL_BOLD,
+            bg=self.BLUE_SOFT, fg=self.BLUE,
+            activebackground=self.BLUE_SOFT, activeforeground=self.BLUE,
+            relief="flat", bd=0, highlightthickness=0,
+            padx=8, pady=3, cursor="hand2",
         )
 
-        body = tk.Frame(self.prototype_card, bg=self.CARD)
-        body.pack(fill="x", pady=(7, 0))
+        # Balanced, centered columns: large swatches can be compared directly,
+        # even at the minimum permitted inspector width. The name/category
+        # stay below the reference swatch instead of pushing it off-center.
+        color_strip = tk.Frame(
+            self.prototype_card, bg=self.PANEL,
+            highlightthickness=1, highlightbackground=self.BORDER,
+        )
+        color_strip.pack(fill="x")
+        pair = tk.Frame(color_strip, bg=self.PANEL)
+        pair.pack(anchor="center", padx=8, pady=(9, 10))
+        pair.columnconfigure(0, minsize=132)
+        pair.columnconfigure(2, minsize=148)
 
-        self.proto_swatch = tk.Canvas(body, width=54, height=54, bg=self.CARD, highlightthickness=0)
-        self.proto_swatch.pack(side="left", padx=(0, 10), anchor="n")
-        self.proto_swatch_rect = self.proto_swatch.create_rectangle(4, 4, 50, 50, fill="#d9dde3", outline="#707070")
+        sample_column = tk.Frame(pair, bg=self.PANEL)
+        sample_column.grid(row=0, column=0, sticky="n")
+        tk.Label(
+            sample_column, text="Sample", bg=self.PANEL, fg=self.MUTED,
+            font=self.FONT_SMALL_BOLD, anchor="center",
+        ).pack(fill="x", pady=(0, 5))
+        self.comparison_sample_swatch = tk.Canvas(
+            sample_column, width=72, height=72, bg=self.PANEL,
+            highlightthickness=0, bd=0,
+        )
+        self.comparison_sample_swatch.pack(anchor="center")
+        self.comparison_sample_rect = self.comparison_sample_swatch.create_rectangle(
+            3, 3, 69, 69, fill="#d9dde3", outline="#9ca3af")
+        tk.Label(
+            sample_column, text="Inspected color", bg=self.PANEL,
+            fg=self.MUTED, font=self.FONT_SMALL,
+        ).pack(pady=(5, 0))
 
-        values = tk.Frame(body, bg=self.CARD)
-        values.pack(side="left", fill="x", expand=True)
-        tk.Label(values, textvariable=self.proto_lab_var, bg=self.CARD, fg=self.TEXT, font=self.FONT, anchor="w").pack(fill="x")
-        tk.Label(values, textvariable=self.proto_rgb_var, bg=self.CARD, fg=self.TEXT, font=self.FONT, anchor="w").pack(fill="x")
-        tk.Label(values, textvariable=self.proto_hex_var, bg=self.CARD, fg=self.TEXT, font=self.FONT, anchor="w").pack(fill="x")
+        tk.Label(
+            pair, text="→", bg=self.PANEL, fg=self.MUTED,
+            font=("Segoe UI", 15),
+        ).grid(row=0, column=1, sticky="n", padx=(8, 8), pady=(36, 0))
 
+        reference_column = tk.Frame(pair, bg=self.PANEL)
+        reference_column.grid(row=0, column=2, sticky="n")
+        tk.Label(
+            reference_column, text="Reference", bg=self.PANEL,
+            fg=self.MUTED, font=self.FONT_SMALL_BOLD, anchor="center",
+        ).pack(fill="x", pady=(0, 5))
+        self.proto_swatch = tk.Canvas(
+            reference_column, width=72, height=72, bg=self.PANEL,
+            highlightthickness=0, bd=0,
+        )
+        self.proto_swatch.pack(anchor="center")
+        self.proto_swatch_rect = self.proto_swatch.create_rectangle(
+            3, 3, 69, 69, fill="#d9dde3", outline="#9ca3af")
+        tk.Label(
+            reference_column, textvariable=self.proto_name_var,
+            bg=self.PANEL, fg=self.TEXT, font=self.FONT_BOLD,
+            anchor="center", justify="center", wraplength=145,
+        ).pack(fill="x", pady=(5, 0))
+        if getattr(self.app.fuzzy_color_space, "is_granular", False):
+            tk.Label(
+                reference_column, textvariable=self.proto_category_var,
+                bg=self.PANEL, fg=self.MUTED, font=self.FONT_SMALL,
+                anchor="center", justify="center", wraplength=145,
+            ).pack(fill="x", pady=(2, 0))
+
+        # The numeric fields describe the reference (as in the previous UI).
+        # Center them as a compact group rather than pinning them to edges.
+        values = tk.Frame(self.prototype_card, bg=self.CARD)
+        values.pack(fill="x", pady=(8, 0))
+        tk.Label(
+            values, textvariable=self.proto_lab_var, bg=self.CARD,
+            fg=self.TEXT, font=self.FONT_SMALL, anchor="center",
+        ).pack(fill="x")
+        compact = tk.Frame(values, bg=self.CARD)
+        compact.pack(anchor="center", pady=(3, 0))
+        tk.Label(
+            compact, textvariable=self.proto_rgb_var, bg=self.CARD,
+            fg=self.TEXT, font=self.FONT_SMALL,
+        ).pack(side="left", padx=(0, 16))
+        tk.Label(
+            compact, textvariable=self.proto_hex_var, bg=self.CARD,
+            fg=self.MUTED, font=self.FONT_SMALL,
+        ).pack(side="left")
+
+        # One status row makes the outcome readable without an oversized
+        # colored box or a redundant second line.
         self.result_card = tk.Frame(
-            self.prototype_card,
-            bg=self.SOFT,
-            bd=1,
-            relief="solid",
-            highlightthickness=1,
-            highlightbackground=self.BORDER,
+            self.prototype_card, bg=self.SOFT,
+            highlightthickness=1, highlightbackground=self.BORDER,
         )
         self.result_card.pack(fill="x", pady=(10, 0))
-
-        self.result_header = tk.Frame(self.result_card, bg=self.SOFT)
-        self.result_header.pack(fill="x")
-        self.result_dot = tk.Canvas(self.result_header, width=18, height=18, bg=self.SOFT, highlightthickness=0, bd=0)
-        self.result_dot.pack(side="left", padx=(9, 5), pady=7)
-        self.result_dot_oval = self.result_dot.create_oval(3, 3, 15, 15, fill="#9ca3af", outline="#9ca3af")
-
-        tk.Label(
-            self.result_header,
-            textvariable=self.comparison_status_var,
-            bg=self.SOFT,
-            fg=self.TEXT,
-            font=self.FONT_BOLD,
-            anchor="w",
-        ).pack(side="left", fill="x", expand=True, padx=(0, 8), pady=7)
-
+        self.result_accent = tk.Frame(self.result_card, width=4, bg=self.MUTED)
+        self.result_accent.pack(side="left", fill="y")
+        self.result_accent.pack_propagate(False)
         self.result_body = tk.Frame(self.result_card, bg=self.SOFT)
-        self.result_body.pack(fill="x", padx=12, pady=(8, 9))
-        self.result_value_label = tk.Label(
-            self.result_body,
-            textvariable=self.comparison_value_var,
-            bg=self.SOFT,
-            fg=self.TEXT,
-            font=("Segoe UI", 10, "bold"),
-            anchor="w",
-            justify="left",
+        self.result_body.pack(side="left", fill="both", expand=True, padx=9, pady=9)
+        self.result_header = tk.Frame(self.result_body, bg=self.SOFT)
+        self.result_header.pack(fill="x")
+        self.result_header.columnconfigure(1, weight=1)
+        self.result_dot = tk.Canvas(
+            self.result_header, width=16, height=16,
+            bg=self.SOFT, highlightthickness=0, bd=0,
         )
-        self.result_value_label.pack(fill="x")
+        self.result_dot.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.result_dot_oval = self.result_dot.create_oval(
+            3, 3, 13, 13, fill="#9ca3af", outline="#9ca3af")
+        self.result_status_label = tk.Label(
+            self.result_header, textvariable=self.comparison_status_var,
+            bg=self.SOFT, fg=self.TEXT, font=self.FONT_BOLD,
+            anchor="w", justify="left",
+        )
+        self.result_status_label.grid(row=0, column=1, sticky="ew")
+        self.result_value_label = tk.Label(
+            self.result_header, textvariable=self.comparison_value_var,
+            bg=self.SOFT, fg=self.TEXT, font=self.FONT_BOLD,
+            anchor="e", justify="right", wraplength=190,
+        )
+        self.result_value_label.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
         self.details_button = tk.Button(
             self.prototype_card,
@@ -858,20 +1125,22 @@ class ImageInspectionManager:
             bd=0,
             cursor="hand2",
         )
-        self.details_button.pack(anchor="w", pady=(7, 0))
+        self.details_button.pack(anchor="center", pady=(7, 0))
 
-        self.details_frame = tk.Frame(self.prototype_card, bg="#fafafa", bd=1, relief="solid")
+        self.details_frame = tk.Frame(self.prototype_card, bg=self.PANEL, bd=1, relief="solid")
         self.details_label = tk.Label(
             self.details_frame,
             textvariable=self.details_text_var,
-            bg="#fafafa",
+            bg=self.PANEL,
             fg=self.TEXT,
             font=("Consolas", 8),
             anchor="w",
             justify="left",
-            wraplength=430,
+            wraplength=390,
         )
         self.details_label.pack(fill="x", padx=10, pady=9)
+        self.details_frame.bind("<Configure>", lambda e: self.details_label.configure(
+            wraplength=max(160, e.width - 24)))
 
     # Sources / Navigation
     def _load_workspace_sources(self):
@@ -1034,6 +1303,9 @@ class ImageInspectionManager:
         elif restore_sample:
             self._current_sample = None
             self._selected_proto_label = None
+            self._selected_category_label = None
+            self._reference_locked = False
+            self._category_locked = False
             self._clear_sample_ui()
 
         self._render_image()
@@ -1196,6 +1468,17 @@ class ImageInspectionManager:
         self.zoom_var.set("Fit" if abs(zoom - 1.0) < 1e-6 else f"{zoom * 100:.0f}%")
         self._draw_sample_marker()
         self._draw_roi_preview()
+
+    def _redraw_sample_overlay(self):
+        """Update markers without resizing/copying the underlying image."""
+        try:
+            self.image_canvas.delete("sample_marker")
+            self.image_canvas.delete("sample_tooltip")
+            self.image_canvas.delete("roi_preview")
+            self._draw_sample_marker()
+            self._draw_roi_preview()
+        except tk.TclError:
+            pass
 
     def _canvas_to_source(self, x, y):
         t = self._render_transform
@@ -1439,7 +1722,8 @@ class ImageInspectionManager:
             dx = abs(event.x - start_canvas[0])
             dy = abs(event.y - start_canvas[1])
             if dx >= 4 or dy >= 4:
-                self._render_image()
+                self.image_canvas.delete("roi_preview")
+                self._draw_roi_preview()
 
         return "break"
 
@@ -1456,7 +1740,7 @@ class ImageInspectionManager:
         self._inspect_drag_start_canvas = None
 
         if point is None or start is None:
-            self._render_image()
+            self._redraw_sample_overlay()
             return "break"
 
         # Canvas-distance thresholds remain consistent across zoom levels.
@@ -1494,13 +1778,34 @@ class ImageInspectionManager:
             return
         self._inspect_pixel(point[0], point[1], show_tooltip=False)
 
+    def _read_pixel_rgba(self, pil, x, y):
+        """Read one pixel without converting the entire image on every move.
+
+        RGB/RGBA are the common paths in Live mode. Other Pillow modes may
+        need a conversion to preserve palette/alpha semantics; reuse that
+        converted view for subsequent samples from the same source.
+        """
+        coords = (int(x), int(y))
+        if pil.mode == "RGB":
+            return (*pil.getpixel(coords), 255)
+        if pil.mode == "RGBA":
+            return pil.getpixel(coords)
+
+        source = self._sources.get(self.current_source_key)
+        if source is None:
+            return pil.convert("RGBA").getpixel(coords)
+        converted = source.get("_inspection_rgba")
+        if converted is None:
+            converted = pil.convert("RGBA")
+            source["_inspection_rgba"] = converted
+        return converted.getpixel(coords)
+
     def _inspect_pixel(self, x, y, show_tooltip=False):
         pil = self._current_pil()
         if pil is None or self.current_source_key is None:
             return
 
-        rgba = pil.convert("RGBA").getpixel((int(x), int(y)))
-        r, g, b, a = rgba
+        r, g, b, a = self._read_pixel_rgba(pil, x, y)
         if a == 0:
             return
 
@@ -1588,12 +1893,85 @@ class ImageInspectionManager:
         )
         self._set_current_sample(sample, remember=True, show_tooltip=False)
 
-    def _build_sample(self, source_key, x, y, rgb, lab, is_average=False, selection_info=None):
-        memberships = self.manager.calculate_memberships(self.app.fuzzy_color_space, lab)
-        winner_label = memberships[0][0] if memberships else None
-        winner_mu = float(memberships[0][1]) if memberships else 0.0
+    def _reference_index(self):
+        """Cache real color prototypes, not category representative proxies."""
+        space = getattr(self.app, "fuzzy_color_space", None)
+        if id(space) == self._reference_space_id:
+            return
+        self._reference_space_id = id(space)
+        self._reference_categories = {}
+        self._reference_labels = {}
+        self._reference_rgb_cache = {}
+        self._reference_hex_cache = {}
+        if space is None:
+            return
+        if getattr(space, "is_granular", False):
+            groups = ((cat.label, cat.prototypes) for cat in space.categories)
+        else:
+            groups = ((p.label, [p]) for p in space.prototypes)
+        for category, protos in groups:
+            references = []
+            for proto in protos:
+                xyz = np.asarray(space.lab_from_model(proto.positive), dtype=float).reshape(3)
+                lab = tuple(float(x) for x in xyz)
+                references.append((proto.label, lab))
+                self._reference_labels[proto.label] = (category, lab)
+            self._reference_categories[category] = references
 
-        return {
+    def _membership_snapshot(self, lab):
+        self._reference_index()
+        return inspection_membership_snapshot(
+            self.app.fuzzy_color_space, lab, self.manager)
+
+    def _refresh_sample_memberships(self, sample):
+        snapshot = self._membership_snapshot(sample["lab"])
+        sample.update(snapshot)
+        return sample
+
+    def _closest_granule(self, category, lab):
+        """Choose a REAL prototype by the currently active comparison metric."""
+        self._reference_index()
+        candidates = self._reference_categories.get(category, [])
+        metric = self.metric_var.get() if hasattr(self, "metric_var") else "CIEDE2000"
+        best = None
+        for label, candidate_lab in candidates:
+            try:
+                distance = float(self.manager.calculate_metric_value(
+                    lab, candidate_lab, metric))
+                if not np.isfinite(distance):
+                    continue
+            except (TypeError, ValueError, ArithmeticError):
+                continue
+            if best is None or distance < best[0]:
+                best = (distance, label)
+        return best[1] if best else (candidates[0][0] if candidates else None)
+
+    def _auto_select_reference(self, *, reset=False):
+        sample = self._current_sample
+        if sample is None:
+            self._selected_proto_label = None
+            self._selected_category_label = None
+            return
+        self._reference_index()
+        winner = sample.get("winner_label")
+        category = self._selected_category_label if self._category_locked else winner
+        if category not in self._reference_categories:
+            category = winner
+            self._category_locked = False
+        if reset:
+            self._category_locked = False
+            self._reference_locked = False
+            category = winner
+        self._selected_category_label = category
+        if not (self._reference_locked and
+                self._selected_proto_label in self._reference_labels and
+                self._reference_labels[self._selected_proto_label][0] == category):
+            self._reference_locked = False
+            self._selected_proto_label = (self._closest_granule(category, sample["lab"])
+                                          if category is not None else None)
+
+    def _build_sample(self, source_key, x, y, rgb, lab, is_average=False, selection_info=None):
+        result = {
             "source_key": source_key,
             "x": int(x),
             "y": int(y),
@@ -1602,26 +1980,29 @@ class ImageInspectionManager:
             "hex": UtilsTools.rgb_to_hex(rgb).upper(),
             "is_average": bool(is_average),
             "selection_info": selection_info,
-            "memberships": memberships,
-            "winner_label": winner_label,
-            "winner_mu": winner_mu,
         }
+        return self._refresh_sample_memberships(result)
 
     def _set_current_sample(self, sample, remember=True, show_tooltip=False):
+        # Pins/last-samples may contain stale degrees after an operator change.
+        self._refresh_sample_memberships(sample)
         self._current_sample = sample
         key = sample.get("source_key")
         if key in self._sources and key != self.current_source_key:
             self._switch_source(key, restore_sample=False)
-
         if remember and key:
             self._last_sample[key] = dict(sample)
-
         self._tooltip_enabled = bool(show_tooltip)
-        self._selected_proto_label = sample.get("winner_label")
+        self._auto_select_reference()
         self._update_sample_ui()
         self._populate_memberships()
         self._update_prototype_ui()
-        self._render_image()
+        # A new sample does not change the image crop, zoom or pan. Repaint
+        # only its marker, avoiding PIL resize + ImageTk.PhotoImage in Live mode.
+        if self._render_transform is not None and key == self.current_source_key:
+            self._redraw_sample_overlay()
+        else:
+            self._render_image()
 
     def _set_sample_filter_info(self, text):
         text = str(text or "").strip()
@@ -1648,11 +2029,14 @@ class ImageInspectionManager:
         self.sample_rgb_var.set("RGB: —")
         self.sample_hex_var.set("HEX: —")
         self.sample_swatch.itemconfig(self.sample_swatch_rect, fill="#d9dde3")
+        self.comparison_sample_swatch.itemconfig(
+            self.comparison_sample_rect, fill="#d9dde3")
 
-        self.winner_summary_var.set("Close Prototype: —")
+        self.winner_summary_var.set("Best-matching Category: —")
         self._clear_membership_rows()
 
-        self.proto_title_var.set("Close Prototype")
+        self.proto_title_var.set("Reference Granule")
+        self.proto_category_var.set("Category: —")
         self.proto_name_var.set("—")
         self.proto_lab_var.set("LAB: —")
         self.proto_rgb_var.set("RGB: —")
@@ -1708,13 +2092,15 @@ class ImageInspectionManager:
         self.sample_rgb_var.set(f"RGB: {rgb[0]}, {rgb[1]}, {rgb[2]}")
         self.sample_hex_var.set(f"HEX: {s['hex']}")
         self.sample_swatch.itemconfig(self.sample_swatch_rect, fill=s["hex"])
+        self.comparison_sample_swatch.itemconfig(
+            self.comparison_sample_rect, fill=s["hex"])
 
         if s.get("winner_label") is not None:
             self.winner_summary_var.set(
-                f"Close Prototype: {s['winner_label']}   ·   μ = {s['winner_mu']:.4f}"
+                f"Best-matching Category: {s['winner_label']} · μ = {s['winner_mu']:.4f}"
             )
         else:
-            self.winner_summary_var.set("Close Prototype: —")
+            self.winner_summary_var.set("Best-matching Category: — · no positive membership")
 
     def _draw_sample_marker(self):
         s = self._current_sample
@@ -1795,198 +2181,379 @@ class ImageInspectionManager:
             child.destroy()
         self._membership_rows.clear()
         self._membership_controls.clear()
+        self._membership_shape = None
+        self._membership_display_order = ()
+
+    def _make_membership_row(self, parent, label, *, category=None, nested=False):
+        """Build a reusable UI row; updated in place during live inspection."""
+        row = tk.Frame(parent, bg=self.CARD, cursor="hand2", height=31 if not nested else 26)
+        row.pack(fill="x", padx=(19 if nested else 2, 2), pady=1)
+        row.pack_propagate(False)
+        toggle = None
+        if not nested and getattr(self.app.fuzzy_color_space, "is_granular", False):
+            toggle = tk.Label(row, text="▸", bg=self.CARD, fg=self.BLUE,
+                              font=self.FONT_BOLD, width=2, cursor="hand2")
+            toggle.pack(side="left", padx=(0, 2))
+        elif nested:
+            tk.Label(row, text="↳", bg=self.CARD, fg="#aab1bd",
+                     font=self.FONT_SMALL).pack(side="left", padx=(0, 4))
+        swatch = tk.Canvas(row, width=18 if not nested else 16,
+                           height=18 if not nested else 16,
+                           bg=self.CARD, highlightthickness=0, bd=0)
+        swatch.pack(side="left", padx=(2, 7))
+        swatch_label = label
+        if not nested and label in self._reference_categories:
+            references = self._reference_categories[label]
+            if references:
+                swatch_label = references[0][0]
+        rectangle = swatch.create_rectangle(2, 2, 15 if not nested else 13,
+                                            15 if not nested else 13,
+                                            fill=self._proto_hex(swatch_label), outline="#9ca3af")
+        name = tk.Label(row, text=str(label), bg=self.CARD, fg=self.TEXT,
+                        font=self.FONT_BOLD if not nested else self.FONT_SMALL,
+                        anchor="center", justify="center", cursor="hand2")
+        name.pack(side="left", fill="x", expand=True)
+        value = tk.Label(row, text="μ = 0.0000", bg=self.CARD, fg=self.TEXT,
+                         font=self.FONT_SMALL, width=10, anchor="e")
+        value.pack(side="right", padx=(5, 4))
+        bar = ttk.Progressbar(row, orient="horizontal", mode="determinate",
+                              maximum=100, value=0, length=75 if nested else 90)
+        bar.pack(side="right", padx=(4, 0))
+        if nested:
+            callback = lambda _event, c=category, g=label: self._select_granule(c, g)
+        else:
+            callback = lambda _event, c=label: self._select_category(c)
+        for widget in (row, swatch, name, bar, value):
+            widget.bind("<Button-1>", callback)
+            widget.bind("<MouseWheel>", self._on_membership_wheel)
+            widget.bind("<Button-4>", self._on_membership_wheel)
+            widget.bind("<Button-5>", self._on_membership_wheel)
+        if toggle is not None:
+            toggle.bind("<Button-1>", lambda _event, c=label:
+                        self._toggle_membership_category(c))
+            for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                toggle.bind(sequence, self._on_membership_wheel)
+        return {"row": row, "bar": bar, "value": value,
+                "toggle": toggle, "swatch": swatch, "rectangle": rectangle,
+                "name": name, "visible": True}
+
+    def _ensure_membership_rows(self):
+        self._reference_index()
+        expected = tuple((cat, tuple(label for label, _lab in references))
+                         for cat, references in self._reference_categories.items())
+        if expected == getattr(self, "_membership_shape", None):
+            return
+        self._clear_membership_rows()
+        self._membership_shape = expected
+        granular = bool(getattr(self.app.fuzzy_color_space, "is_granular", False))
+        for category, refs in self._reference_categories.items():
+            control = self._make_membership_row(self.membership_inner, category)
+            self._membership_controls[category] = control
+            self._membership_rows[category] = control["row"]
+            if granular:
+                panel = tk.Frame(self.membership_inner, bg=self.CARD)
+                control["panel"] = panel
+                control["granules"] = {}
+                for granule_label, _lab in refs:
+                    control["granules"][granule_label] = self._make_membership_row(
+                        panel, granule_label, category=category, nested=True)
+                control["panel_visible"] = False
+
+    def _set_membership_visible(self, control, visible, *, parent=None):
+        if control["visible"] == bool(visible):
+            return
+        control["visible"] = bool(visible)
+        if visible:
+            control["row"].pack(fill="x", padx=(19 if parent else 2, 2), pady=1)
+        else:
+            control["row"].pack_forget()
+
+    def _rank_membership_rows(self, categories, winner, show_zeros):
+        """Keep higher membership first; respect the engine's winner on ties.
+
+        Only reorder the existing widgets when ranking or visibility changes.
+        Every expanded granule panel stays directly beneath its category row.
+        """
+        original = tuple(self._membership_controls)
+        indices = {name: index for index, name in enumerate(original)}
+        degrees = {name: float(categories.get(name, {}).get("degree", 0.0))
+                   for name in original}
+        ranking = tuple(sorted(
+            (name for name in original if show_zeros or degrees[name] > 0.0),
+            key=lambda name: (-degrees[name], name != winner, indices[name]),
+        ))
+        if ranking == getattr(self, "_membership_display_order", ()):
+            return
+
+        # No row widgets are created or destroyed during live inspection.
+        for control in self._membership_controls.values():
+            control["row"].pack_forget()
+            if "panel" in control:
+                control["panel"].pack_forget()
+
+        for name in ranking:
+            control = self._membership_controls[name]
+            control["row"].pack(fill="x", padx=(2, 2), pady=1)
+            if control.get("panel_visible", False):
+                control["panel"].pack(fill="x", pady=(0, 2))
+        self._membership_display_order = ranking
 
     def _populate_memberships(self):
-        s = self._current_sample
-        memberships = s.get("memberships", []) if s else []
-
-        if not memberships:
+        sample = self._current_sample
+        if not sample:
             self._clear_membership_rows()
-            tk.Label(
-                self.membership_inner,
-                text="No memberships available.",
-                bg=self.CARD,
-                fg=self.MUTED,
-                font=self.FONT,
-                anchor="w",
-            ).pack(fill="x", padx=5, pady=8)
+            self._membership_shape = None
             return
-
-        # Reuse membership rows during Live inspection to avoid rebuilding Tk widgets.
-        labels = [label for label, _mu in memberships]
-        if len(set(labels)) == len(labels) and set(labels) == set(self._membership_rows):
-            for label, mu in memberships:
-                row, bar, value = self._membership_controls[label]
-                bar.configure(value=max(0.0, min(1.0, float(mu))) * 100.0)
-                value.configure(text=f"μ = {float(mu):.4f}")
-                row.pack_forget()
-                row.pack(fill="x", pady=1, padx=2)
-            self._highlight_membership_selection()
-            return
-
-        self._clear_membership_rows()
-        for label, mu in memberships:
-            row = tk.Frame(self.membership_inner, bg=self.CARD, cursor="hand2")
-            row.pack(fill="x", pady=1, padx=2)
-            self._membership_rows[label] = row
-
-            proto_hex = self._proto_hex(label)
-            sw = tk.Canvas(row, width=18, height=18, bg=self.CARD, highlightthickness=0)
-            sw.pack(side="left", padx=(3, 6), pady=3)
-            sw.create_rectangle(2, 2, 16, 16, fill=proto_hex, outline="#707070")
-
-            name = tk.Label(row, text=str(label), bg=self.CARD, fg=self.TEXT, font=self.FONT, anchor="w")
-            name.pack(side="left", fill="x", expand=True)
-
-            bar = ttk.Progressbar(row, orient="horizontal", mode="determinate", maximum=100.0, value=max(0.0, min(1.0, float(mu))) * 100.0, length=105)
-            bar.pack(side="left", padx=(5, 8))
-
-            value = tk.Label(row, text=f"μ = {float(mu):.4f}", bg=self.CARD, fg=self.TEXT, font=self.FONT_SMALL, width=10, anchor="e")
-            value.pack(side="right", padx=(0, 5))
-            self._membership_controls[label] = (row, bar, value)
-
-            for widget in (row, sw, name, bar, value):
-                widget.bind("<Button-1>", lambda _e, lbl=label: self._select_prototype(lbl))
-
+        self._ensure_membership_rows()
+        categories = sample.get("categories", {})
+        show_zeros = bool(self.show_zero_memberships_var.get())
+        granular = bool(getattr(self.app.fuzzy_color_space, "is_granular", False))
+        for category, control in self._membership_controls.items():
+            data = categories.get(category, {})
+            degree = float(data.get("degree", 0.0))
+            control["bar"].configure(value=max(0.0, min(100.0, degree * 100)))
+            control["value"].configure(text=f"μ = {degree:.4f}")
+            self._set_membership_visible(control, show_zeros or degree > 0.0)
+            if granular:
+                expanded = category in self._expanded_membership_categories
+                control["toggle"].configure(text="▾" if expanded else "▸")
+                desired_panel = expanded and (show_zeros or degree > 0.0)
+                if desired_panel != control["panel_visible"]:
+                    control["panel_visible"] = desired_panel
+                    if desired_panel:
+                        control["panel"].pack(fill="x", pady=(0, 2), after=control["row"])
+                    else:
+                        control["panel"].pack_forget()
+                for label, child in control["granules"].items():
+                    mu = float(data.get("granules", {}).get(label, 0.0))
+                    child["bar"].configure(value=max(0.0, min(100.0, mu * 100)))
+                    child["value"].configure(text=f"μ = {mu:.4f}")
+                    self._set_membership_visible(child, show_zeros or mu > 0.0,
+                                                 parent=control["panel"])
+        # The membership snapshot is sorted already, but the source-space
+        # category ordering is not. Show the winner first on every sample.
+        self._rank_membership_rows(
+            categories, sample.get("winner_label"), show_zeros)
         self._highlight_membership_selection()
 
-    def _highlight_membership_selection(self):
-        for label, row in self._membership_rows.items():
-            bg = self.BLUE_SOFT if label == self._selected_proto_label else self.CARD
-            try:
-                row.configure(bg=bg)
-                for child in row.winfo_children():
-                    if isinstance(child, (tk.Label, tk.Canvas)):
-                        child.configure(bg=bg)
-            except Exception:
-                pass
+    def _toggle_membership_category(self, category):
+        if category in self._expanded_membership_categories:
+            self._expanded_membership_categories.discard(category)
+        else:
+            self._expanded_membership_categories.add(category)
+        self._populate_memberships()
 
-    def _select_prototype(self, label):
-        self._selected_proto_label = label
+    def _highlight_membership_selection(self):
+        selected = self._selected_proto_label
+        category = self._selected_category_label
+        for key, ctrl in self._membership_controls.items():
+            bg = self.BLUE_SOFT if key == category else self.CARD
+            self._highlight_row(ctrl["row"], bg)
+            for granule_label, child in ctrl.get("granules", {}).items():
+                self._highlight_row(child["row"],
+                                    self.BLUE_SOFT if granule_label == selected else self.CARD)
+
+    def _highlight_row(self, row, background):
+        try:
+            row.configure(bg=background)
+            for widget in row.winfo_children():
+                if isinstance(widget, (tk.Label, tk.Canvas)):
+                    widget.configure(bg=background)
+        except tk.TclError:
+            pass
+
+    def _select_category(self, label):
+        self._selected_category_label = label
+        self._category_locked = True
+        self._reference_locked = False
+        self._auto_select_reference()
         self._highlight_membership_selection()
         self._update_prototype_ui()
 
+    def _select_granule(self, category, label):
+        if label not in self._reference_labels:
+            return
+        self._selected_category_label = category
+        self._selected_proto_label = label
+        self._category_locked = True
+        self._reference_locked = True
+        self._highlight_membership_selection()
+        self._update_prototype_ui()
+
+    def _select_prototype(self, label):
+        """Preserve external callbacks; labels may be categories or granules."""
+        self._reference_index()
+        if label in self._reference_categories:
+            self._select_category(label)
+        elif label in self._reference_labels:
+            self._select_granule(self._reference_labels[label][0], label)
+
     def _select_winner_prototype(self):
-        if self._current_sample and self._current_sample.get("winner_label") is not None:
-            self._select_prototype(self._current_sample["winner_label"])
+        self._auto_select_reference(reset=True)
+        self._highlight_membership_selection()
+        self._update_prototype_ui()
 
     def _proto_lab(self, label):
-        try:
-            data = self.app.color_data[label]["positive_prototype"]
-            arr = np.asarray(data, dtype=float).reshape(-1)
-            return tuple(float(v) for v in arr[:3])
-        except Exception:
-            return None
+        self._reference_index()
+        found = self._reference_labels.get(label)
+        if found is not None:
+            return found[1]
+        return None
 
     def _proto_rgb(self, label):
-        lab = self._proto_lab(label)
-        if lab is None:
-            return (200, 200, 200)
-        try:
-            return tuple(int(v) for v in UtilsTools.lab_to_rgb(lab))
-        except Exception:
-            return (200, 200, 200)
+        self._reference_index()
+        cache = self._reference_rgb_cache
+        if label not in cache:
+            lab = self._proto_lab(label)
+            if lab is None:
+                rgb = (200, 200, 200)
+            else:
+                try:
+                    rgb = tuple(int(v) for v in UtilsTools.lab_to_rgb(lab))
+                except (ValueError, TypeError):
+                    rgb = (200, 200, 200)
+            cache[label] = rgb
+        return cache[label]
 
     def _proto_hex(self, label):
-        try:
-            return UtilsTools.rgb_to_hex(self._proto_rgb(label)).upper()
-        except Exception:
-            return "#CCCCCC"
+        self._reference_index()
+        cache = self._reference_hex_cache
+        if label not in cache:
+            cache[label] = UtilsTools.rgb_to_hex(self._proto_rgb(label)).upper()
+        return cache[label]
 
     def _update_prototype_ui(self):
-        s = self._current_sample
+        sample = self._current_sample
+        self._reference_index()
         label = self._selected_proto_label
-        if not s or label is None:
+        if not sample or not label or label not in self._reference_labels:
+            self.proto_category_var.set("Category: —")
             self.proto_name_var.set("—")
-            self.comparison_value_var.set("Select a sample to compare")
+            self.proto_lab_var.set("LAB: —")
+            self.proto_rgb_var.set("RGB: —")
+            self.proto_hex_var.set("HEX: —")
             self.comparison_status_var.set("")
+            self.comparison_value_var.set("No valid reference selected")
             self.details_text_var.set("")
+            self.use_winner_button.pack_forget()
             self._apply_result_style("unavailable")
             return
 
-        winner = s.get("winner_label")
-        is_winner = label == winner
-        self.proto_title_var.set("Close Prototype" if is_winner else "Selected Prototype")
-        self.proto_name_var.set(str(label))
-
-        if is_winner:
+        category, proto_lab = self._reference_labels[label]
+        winner = sample.get("winner_label")
+        is_winner = category == winner and not self._reference_locked
+        granular = bool(getattr(self.app.fuzzy_color_space, "is_granular", False))
+        if granular:
+            self.proto_title_var.set("Nearest Granule" if is_winner else "Selected Granule")
+        else:
+            self.proto_title_var.set("Close Prototype" if is_winner else "Selected Prototype")
+        self.proto_category_var.set(f"Category: {category}")
+        self.proto_name_var.set(label)
+        if self._category_locked or self._reference_locked:
+            if not self.use_winner_button.winfo_manager():
+                self.use_winner_button.pack(side="right", padx=(8, 0))
+        else:
             self.use_winner_button.pack_forget()
-        else:
-            self.use_winner_button.pack(side="right", padx=(8, 0))
-
-        proto_lab = self._proto_lab(label)
-        proto_rgb = self._proto_rgb(label)
-        proto_hex = self._proto_hex(label)
-
-        if proto_lab is None:
-            self.proto_lab_var.set("LAB: not available")
-        else:
-            self.proto_lab_var.set(f"LAB: {proto_lab[0]:.2f}, {proto_lab[1]:.2f}, {proto_lab[2]:.2f}")
-        self.proto_rgb_var.set(f"RGB: {proto_rgb[0]}, {proto_rgb[1]}, {proto_rgb[2]}")
-        self.proto_hex_var.set(f"HEX: {proto_hex}")
-        self.proto_swatch.itemconfig(self.proto_swatch_rect, fill=proto_hex)
-
+        rgb = self._proto_rgb(label)
+        self.proto_lab_var.set(f"LAB: {proto_lab[0]:.2f}, {proto_lab[1]:.2f}, {proto_lab[2]:.2f}")
+        self.proto_rgb_var.set(f"RGB: {rgb[0]}, {rgb[1]}, {rgb[2]}")
+        self.proto_hex_var.set(f"HEX: {self._proto_hex(label)}")
+        self.proto_swatch.itemconfig(self.proto_swatch_rect, fill=self._proto_hex(label))
         self._refresh_comparison_result()
 
     def _refresh_comparison_result(self):
-        s = self._current_sample
+        sample = self._current_sample
         label = self._selected_proto_label
         proto_lab = self._proto_lab(label) if label is not None else None
-        if not s or proto_lab is None:
+        if not sample or proto_lab is None:
             self.comparison_status_var.set("")
             self.comparison_value_var.set("Comparison unavailable")
             self.details_text_var.set("")
             self._apply_result_style("unavailable")
             return
-
         settings = self.app.threshold_settings
         metric = settings.get("metric", "CIEDE2000")
         evaluation = self.manager.evaluate_color_difference_threshold(
-            sample_lab=s["lab"],
-            prototype_lab=proto_lab,
-            metric=metric,
-            threshold_settings=settings,
-        )
-
+            sample_lab=sample["lab"], prototype_lab=proto_lab,
+            metric=metric, threshold_settings=settings)
         self.comparison_status_var.set(evaluation.get("evaluation", "Comparison"))
         self.comparison_value_var.set(evaluation.get("detail", "Metric not available"))
         self._apply_result_style(evaluation.get("status", "unavailable"))
-
         summary = str(evaluation.get("summary_visual", evaluation.get("summary", ""))).strip()
         if summary:
             lines = summary.splitlines()
-            # Omit the repeated status line from the detailed comparison.
             detail = "\n".join(lines[1:]).strip()
         else:
             detail = ""
-
         if not detail:
             try:
-                detail = self.manager.format_component_summary(s["lab"], proto_lab, metric).strip()
+                detail = self.manager.format_component_summary(
+                    sample["lab"], proto_lab, metric).strip()
             except Exception:
                 detail = "No detailed comparison available."
-
         self.details_text_var.set(detail)
+
+    def _on_tconorm_changed(self, _event=None):
+        self._sync_tconorm_buttons()
+        space = getattr(self.app, "fuzzy_color_space", None)
+        if not getattr(space, "is_granular", False):
+            return
+        operator = self.tconorm_var.get().strip().lower()
+        if operator == space.tconorm:
+            return
+        if getattr(self.app, "_has_any_active_job", lambda: False)():
+            self.tconorm_var.set(space.tconorm.upper())
+            self._sync_tconorm_buttons()
+            self.app.custom_warning("Process Running",
+                "Finish or cancel the active process before changing the T-conorm.",
+                parent=self.win)
+            return
+        try:
+            space.set_tconorm(operator)
+        except ValueError as exc:
+            self.tconorm_var.set(space.tconorm.upper())
+            self._sync_tconorm_buttons()
+            self.app.custom_warning("Invalid T-conorm", str(exc), parent=self.win)
+            return
+        # Existing image mappings were computed with the previous operator.
+        # Restore/lock those views using the same procedure as an FCS change.
+        prepare = getattr(self.app, "_prepare_open_images_for_color_space_change", None)
+        if callable(prepare):
+            prepare()
+        invalidate = getattr(self.app, "_invalidate_mapping_caches", None)
+        if callable(invalidate):
+            invalidate()
+        for sample in self._pinned_samples:
+            self._refresh_sample_memberships(sample)
+        for sample in self._last_sample.values():
+            self._refresh_sample_memberships(sample)
+        if self._current_sample:
+            self._refresh_sample_memberships(self._current_sample)
+            self._auto_select_reference()
+            self._update_sample_ui()
+            self._populate_memberships()
+            self._update_prototype_ui()
+        self._refresh_pin_tree()
 
     def _apply_result_style(self, status):
         if status in ("inside", "below_pt", "below_at", "below_custom", "below_lower", "within", "below"):
-            body, header, accent = self.GREEN_BG, "#dff0d8", self.GREEN
+            body, accent = self.GREEN_BG, self.GREEN
         elif status in ("warning", "between_pt_at", "between_custom", "between"):
-            body, header, accent = self.YELLOW_BG, "#ffe0b2", self.YELLOW
+            body, accent = self.YELLOW_BG, self.YELLOW
         elif status in ("outside", "above_pt", "above_at", "above_custom", "above_upper", "above"):
-            body, header, accent = self.RED_BG, "#f2dede", self.RED
+            body, accent = self.RED_BG, self.RED
         else:
-            body, header, accent = self.SOFT, "#eeeeee", "#6b7280"
+            body, accent = self.SOFT, self.MUTED
 
         try:
-            self.result_card.configure(bg=body, highlightbackground=accent, highlightcolor=accent)
-            self.result_header.configure(bg=header)
-            self.result_dot.configure(bg=header)
-            self.result_dot.itemconfig(self.result_dot_oval, fill=accent, outline=accent)
-            for child in self.result_header.winfo_children():
-                if isinstance(child, tk.Label):
-                    child.configure(bg=header)
+            self.result_card.configure(bg=body, highlightbackground=self.BORDER,
+                                       highlightcolor=self.BORDER)
+            self.result_accent.configure(bg=accent)
             self.result_body.configure(bg=body)
+            self.result_header.configure(bg=body)
+            self.result_dot.configure(bg=body)
+            self.result_dot.itemconfig(self.result_dot_oval, fill=accent, outline=accent)
+            self.result_status_label.configure(bg=body, fg=accent)
             self.result_value_label.configure(bg=body, fg=accent)
         except Exception:
             pass
@@ -2109,13 +2676,22 @@ class ImageInspectionManager:
         self.metric_family_var.set(normalized.get("metric_family", self.metric_family_var.get()))
         self.metric_var.set(normalized.get("metric", self.metric_var.get()))
         self.metric_help_var.set(self.manager.get_metric_description(self.metric_var.get()))
-        self._refresh_comparison_result()
+        if self._current_sample and not self._reference_locked:
+            self._auto_select_reference()
+            self._highlight_membership_selection()
+            self._update_prototype_ui()
+        else:
+            self._refresh_comparison_result()
 
     # Pinned Samples
     def _pin_current_sample(self):
         if not self._current_sample:
             return
         sample = copy.deepcopy(self._current_sample)
+        sample["reference_category"] = self._selected_category_label
+        sample["reference_granule"] = self._selected_proto_label
+        sample["reference_locked"] = self._reference_locked
+        sample["category_locked"] = self._category_locked
         self._pinned_samples.append(sample)
         self._refresh_pin_tree()
 
@@ -2156,7 +2732,15 @@ class ImageInspectionManager:
                 parent=self.win,
             )
             return
+        self._category_locked = False
+        self._reference_locked = False
         self._set_current_sample(sample, remember=True, show_tooltip=False)
+        ref_category = sample.get("reference_category")
+        ref_granule = sample.get("reference_granule")
+        if ref_granule in self._reference_labels and sample.get("reference_locked"):
+            self._select_granule(self._reference_labels[ref_granule][0], ref_granule)
+        elif ref_category in self._reference_categories and sample.get("category_locked"):
+            self._select_category(ref_category)
 
     def _remove_selected_pin(self):
         selected = self.pin_tree.selection()

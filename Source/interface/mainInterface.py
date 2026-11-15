@@ -724,9 +724,7 @@ class PyFCSApp:
         main_paned.add(notebook_container, weight=6)
 
         def set_initial_main_sash():
-            """
-            Set the initial split with a balanced layout.
-            """
+            """Set the initial main workspace proportions."""
             total_width = main_paned.winfo_width()
             if total_width > 1:
                 main_paned.sashpos(0, int(total_width * 0.42))
@@ -789,37 +787,44 @@ class PyFCSApp:
             width=760,
             highlightthickness=0
         )
-        paned.add(self.Canvas1, stretch="always", minsize=520)
+        paned.add(self.Canvas1, stretch="always", minsize=430)
 
         # Color button panel
         self.colors_frame = tk.Frame(
             paned,
             bg=CARD_BG,
-            width=155,
+            width=205,
             bd=1,
             relief="solid",
             highlightthickness=0
         )
-        paned.add(self.colors_frame, minsize=145)
+        paned.add(self.colors_frame, minsize=125)
+        self._model_3d_paned = paned
 
-        colors_header = tk.Frame(self.colors_frame, bg=CARD_BG)
-        colors_header.pack(fill="x", padx=8, pady=(9, 4))
+        self.colors_frame.configure(width=205)
 
-        tk.Label(
-            colors_header,
-            text="Colors",
-            font=FONT_SMALL_BOLD,
-            bg=CARD_BG,
-            fg=TEXT,
-            anchor="center"
-        ).pack(fill="x")
+        def _position_model_3d_sash(_event=None):
+            # Run only once after the pane acquires its real width. Repositioning
+            # on later resizes would override the user's manual sash movement.
+            if getattr(paned, "_pyfcs_sash_initialized", False):
+                return
+            try:
+                if paned.winfo_exists() and paned.winfo_width() > 590:
+                    paned.sash_place(0, paned.winfo_width() - 208, 1)
+                    paned._pyfcs_sash_initialized = True
+            except tk.TclError:
+                pass
+
+        paned.bind("<Configure>", _position_model_3d_sash, add="+")
+        self.root.after(140, _position_model_3d_sash)
+
 
         self.scrollable_canvas = tk.Canvas(
             self.colors_frame,
             bg=CARD_BG,
             highlightthickness=0,
             borderwidth=0,
-            width=145
+            width=132
         )
         self.scrollable_canvas.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=(0, 8))
 
@@ -852,7 +857,7 @@ class PyFCSApp:
             try:
                 self.scrollable_canvas.itemconfig(
                     self.colors_canvas_window_id,
-                    width=max(event.width - 4, 120)
+                    width=max(event.width - 4, 90)
                 )
             except Exception:
                 pass
@@ -896,6 +901,34 @@ class PyFCSApp:
         )
         if self.COLOR_SPACE:
             self.deselect_all_button.pack(fill="x", pady=(0, 4))
+
+        # Search only filters the sidebar; it never changes 3D selection.
+        self._model_3d_search_var = tk.StringVar(value="")
+
+        self._model_3d_search_frame = tk.Frame(self.inner_frame, bg=CARD_BG)
+
+        tk.Label(
+            self._model_3d_search_frame,
+            text="Search",
+            bg=CARD_BG,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+            anchor="center"
+        ).pack(fill="x", pady=(0, 3))
+
+        tk.Entry(
+            self._model_3d_search_frame,
+            textvariable=self._model_3d_search_var,
+            font=("Segoe UI", 8),
+            bg="#ffffff",
+            fg="#1f2937",
+            relief="solid",
+            bd=1,
+            width=15,
+        ).pack(fill="x")
+
+        self._model_3d_search_var.trace_add(
+            "write", lambda *_: self._filter_model_3d_colors())
 
         # Tab: Data
         data_tab = tk.Frame(self.notebook, bg=CARD_BG)
@@ -2449,6 +2482,12 @@ class PyFCSApp:
             self.selected_support = []
 
             self.COLOR_SPACE = False
+            self._clear_model_3d_color_controls(hide_buttons=True)
+
+            # Hide Search when no color space is loaded.
+            self._model_3d_search_frame.pack_forget()
+            self._model_3d_search_var.set("")
+
             self.CAN_APPLY_MAPPING = {key: False for key in self.CAN_APPLY_MAPPING}
 
             self._invalidate_mapping_caches()
@@ -2471,34 +2510,56 @@ class PyFCSApp:
         self.update_prototypes_info()
 
 
-    def _geometry_for_categories(self, selected_labels):
-        """3D visualization displays ALL real granules; image palettes stay per category."""
+    def _geometry_for_categories(self, selected_labels, granule_labels=None):
+        """Select real Voronoi/Core/Support objects without rebuilding geometry.
+
+        ``granule_labels=None`` retains the legacy all-granules semantics used
+        while loading a space; an explicit empty set selects no geometry.
+        """
         space = getattr(self, "fuzzy_color_space", None)
+        selected = set(selected_labels)
         if isinstance(space, GranularFuzzyColorSpace):
-            selected = set(selected_labels)
-            groups = [cat for cat in space.categories if cat.label in selected]
+            granules = None if granule_labels is None else set(granule_labels)
+            selected_entries = [
+                (cat, i) for cat in space.categories if cat.label in selected
+                for i, p in enumerate(cat.prototypes)
+                if granules is None or p.label in granules
+            ]
             return (
-                [p for cat in groups for p in cat.prototypes],
-                [p for cat in groups for p in cat.cores],
-                [p for cat in groups for p in cat.supports],
+                [cat.prototypes[i] for cat, i in selected_entries],
+                [cat.cores[i] for cat, i in selected_entries],
+                [cat.supports[i] for cat, i in selected_entries],
             )
         indices = [i for i, proto in enumerate(getattr(self, "prototypes", []))
-                   if proto.label in set(selected_labels)]
+                   if proto.label in selected]
         return ([self.prototypes[i] for i in indices],
                 [self.cores[i] for i in indices],
                 [self.supports[i] for i in indices])
 
+    def _selected_model_granules(self):
+        """Return visible granule names, defaulting to all before controls exist."""
+        space = getattr(self, "fuzzy_color_space", None)
+        if not isinstance(space, GranularFuzzyColorSpace):
+            return None
+        state = getattr(self, "selected_granules", None)
+        if not isinstance(state, dict):
+            return {p.label for cat in space.categories for p in cat.prototypes}
+        return {name for name, var in state.items() if var.get()}
+
     def _granular_visualization_data(self):
-        """Return one representative marker and color per selected *granule*."""
+        """Return markers for only the selected real granules in native geometry."""
         space = getattr(self, "fuzzy_color_space", None)
         selected = set(self.selected_centroids)
         color_data, hexes = {}, {}
         if not isinstance(space, GranularFuzzyColorSpace):
             return self.selected_centroids, self.hex_color
+        visible = self._selected_model_granules()
         for cat in space.categories:
             if cat.label not in selected:
                 continue
             for proto in cat.prototypes:
+                if proto.label not in visible:
+                    continue
                 xyz = np.asarray(proto.positive, dtype=float)
                 lab = space.lab_from_model(xyz)
                 color_data[proto.label] = {"positive_prototype": xyz}
@@ -2606,6 +2667,15 @@ class PyFCSApp:
     def update_prototypes_info(self):
         # Update 3D graph flags and application state variables
         self.COLOR_SPACE = True
+
+        # Show Search when a color space is loaded.
+        if not self._model_3d_search_frame.winfo_manager():
+            self._model_3d_search_frame.pack(
+                fill="x",
+                padx=5,
+                pady=(0, 5)
+            )
+
         locked = getattr(self, "mapping_locked_until_original", {}) or {}
         self.CAN_APPLY_MAPPING = {
             key: not bool(locked.get(key, False))
@@ -3551,9 +3621,23 @@ class PyFCSApp:
         self.graph_widget = FigureCanvasTkAgg(self.fig_3d, master=self.Canvas1)
         self.graph_widget.draw()
         self.graph_widget.get_tk_widget().pack(fill="both", expand=True)
+        self._model_3d_initial_view = None
+        self._model_3d_orientation_signature = None
+        self._model_3d_inset_refreshing = False
+        self._model_3d_mouse_click_id = self.graph_widget.mpl_connect(
+            "button_press_event", self._on_model_3d_inset_click)
 
+        # The axes3D renderer may draw a clipped tick/line into this corner
+        # for some spaces and window sizes. An opaque Tk overlay isolates the
+        # button from matplotlib artists without changing the 3D plot.
+        self._model_3d_action_host = tk.Frame(
+            self.Canvas1, bg="#ffffff", bd=0,
+            highlightthickness=0,
+        )
+        self._model_3d_action_host.place(
+            relx=1.0, rely=0.0, anchor="ne", width=126, height=65)
         self.add_button = tk.Button(
-            self.Canvas1,
+            self._model_3d_action_host,
             text="Interactive\nView ↗",
             font=("Segoe UI", 8, "bold"),
             justify="center",
@@ -3569,7 +3653,8 @@ class PyFCSApp:
             cursor="hand2",
             command=self._on_add_graph_current,
         )
-        self.add_button.place(relx=0.97, rely=0.018, anchor="ne")
+        self.add_button.pack(side="top", anchor="e", padx=(0, 13), pady=(10, 0))
+        self._model_3d_action_host.lift()
 
 
     def _on_add_graph_current(self):
@@ -3583,6 +3668,80 @@ class PyFCSApp:
 
         if selected_options:
             self.on_add_graph(selected_options)
+
+
+    @staticmethod
+    def _model_3d_view_snapshot(ax):
+        """Capture camera orientation and zoom/pan limits in plotting order."""
+        return {
+            "elev": float(ax.elev), "azim": float(ax.azim),
+            "roll": float(getattr(ax, "roll", 0)),
+            "xlim": tuple(ax.get_xlim()), "ylim": tuple(ax.get_ylim()),
+            "zlim": tuple(ax.get_zlim()),
+        }
+
+    @staticmethod
+    def _apply_model_3d_view(ax, state):
+        """Restore orientation and navigation limits after a model redraw."""
+        if not state:
+            return
+        try:
+            ax.view_init(elev=state["elev"], azim=state["azim"],
+                         roll=state.get("roll", 0))
+        except TypeError:  # Matplotlib 3.3–3.5 lack the roll parameter.
+            ax.view_init(elev=state["elev"], azim=state["azim"])
+        ax.set_xlim(state["xlim"])
+        ax.set_ylim(state["ylim"])
+        ax.set_zlim(state["zlim"])
+
+    def _on_model_3d_inset_click(self, event):
+        """The orientation marker is a reset button, not a second 3D camera."""
+        if event.button != 1 or not getattr(self, "COLOR_SPACE", False):
+            return
+        marker = VisualManager.get_orientation_inset(getattr(self, "fig_3d", None))
+        if marker is None or event.inaxes is not marker:
+            return
+        original = getattr(self, "_model_3d_initial_view", None)
+        ax = getattr(self, "ax_3d", None)
+        if original is None or ax is None:
+            return
+        self._apply_model_3d_view(ax, original)
+        self.graph_widget.draw_idle()
+
+    def _clear_model_3d_color_controls(self, hide_buttons=False):
+        """Discard old model rows and search when the active space changes.
+
+        The rows are ordinary Tk frames, separate from the Matplotlib canvas:
+        destroying the figure alone leaves obsolete category controls behind.
+        Clear callback references first so StringVar tracing cannot repack them.
+        """
+        rows = getattr(self, "_model_3d_rows_container", None)
+        self._model_3d_category_rows = {}
+        self._model_3d_category_counts = {}
+        self._model_3d_color_groups = {}
+        self._model_3d_rows_container = None
+        self._last_color_button_signature = None
+        self.selected_colors = {}
+        self.selected_granules = None
+        self.color_buttons = []
+        self._model_3d_expanded_categories = set()
+        if rows is not None:
+            try:
+                if rows.winfo_exists():
+                    rows.destroy()
+            except tk.TclError:
+                pass
+        search = getattr(self, "_model_3d_search_var", None)
+        if search is not None and search.get():
+            search.set("")
+        if hide_buttons:
+            for attr in ("select_all_button", "deselect_all_button"):
+                button = getattr(self, attr, None)
+                if button is not None:
+                    try:
+                        button.pack_forget()
+                    except tk.TclError:
+                        pass
 
 
     def _reset_3d_canvas(self):
@@ -3603,8 +3762,19 @@ class PyFCSApp:
                 pass
             self.add_button = None
 
+        host = getattr(self, "_model_3d_action_host", None)
+        if host is not None:
+            try:
+                host.destroy()
+            except tk.TclError:
+                pass
+            self._model_3d_action_host = None
+
         self.fig_3d = None
         self.ax_3d = None
+        self._model_3d_initial_view = None
+        self._model_3d_orientation_signature = None
+        self._clear_model_3d_color_controls()
 
 
     def _reset_3d_view_state(self):
@@ -3617,6 +3787,9 @@ class PyFCSApp:
         self._last_selected_options = None
         self._last_color_button_signature = None
         self._last_plot_signature = None
+        self.selected_granules = None
+        self._model_3d_expanded_categories = set()
+        self._model_3d_initial_view = None
 
         if hasattr(self, "filtered_points"):
             self.filtered_points = {}
@@ -3627,13 +3800,18 @@ class PyFCSApp:
             except Exception:
                 pass
             self.graph_widget = None
+            self.fig_3d = None
+            self.ax_3d = None
 
-        if hasattr(self, "_interactive_button") and self._interactive_button is not None:
+        # Do not leave an orphaned Interactive View overlay on redraw/reset.
+        action_host = getattr(self, "_model_3d_action_host", None)
+        if action_host is not None:
             try:
-                self._interactive_button.destroy()
-            except Exception:
+                action_host.destroy()
+            except tk.TclError:
                 pass
-            self._interactive_button = None
+            self._model_3d_action_host = None
+            self.add_button = None
 
 
     def _report_ui_callback_exception(self, exc_type, exc_value, exc_traceback):
@@ -3971,6 +4149,8 @@ class PyFCSApp:
                 v.get("positive_prototype",v.get("Color")))} for k,v in self.selected_centroids.items()}
         if isinstance(space, GranularFuzzyColorSpace):
             plot_centroids, plot_hex = self._granular_visualization_data()
+        previous_view = (self._model_3d_view_snapshot(self.ax_3d)
+                         if self._model_3d_initial_view is not None else None)
         VisualManager.plot_combined_3D(
             self.ax_3d, self.file_base_name, plot_centroids,
             self.selected_core, self.selected_alpha, self.selected_support,
@@ -4002,7 +4182,22 @@ class PyFCSApp:
                 ha="center", va="bottom",
             )
 
+        # Keep the right-hand z-axis title inside the figure with a 168px
+        # selector on the other side of the sash. No labels are cropped.
+        if self.Canvas1.winfo_width() < 555:
+            self.ax_3d.set_position([0.02, 0.10, 0.80, 0.79])
+            self.ax_3d.zaxis.labelpad = 3
+        else:
+            self.ax_3d.set_position([0.08, 0.10, 0.83, 0.79])
+
+        if self._model_3d_initial_view is None:
+            self._model_3d_initial_view = self._model_3d_view_snapshot(self.ax_3d)
+        elif previous_view is not None:
+            self._apply_model_3d_view(self.ax_3d, previous_view)
         self.graph_widget.draw()
+        action_host = getattr(self, "_model_3d_action_host", None)
+        if action_host is not None and action_host.winfo_exists():
+            action_host.lift()
 
         if hasattr(self, "lab_value_frame"):
             self.lab_value_frame.lift()
@@ -4018,13 +4213,18 @@ class PyFCSApp:
             except Exception:
                 pass
             self.graph_widget = None
+            self.fig_3d = None
+            self.ax_3d = None
 
-        if hasattr(self, "_interactive_button") and self._interactive_button is not None:
+        # Do not leave an orphaned Interactive View overlay on redraw/reset.
+        action_host = getattr(self, "_model_3d_action_host", None)
+        if action_host is not None:
             try:
-                self._interactive_button.destroy()
-            except Exception:
+                action_host.destroy()
+            except tk.TclError:
                 pass
-            self._interactive_button = None
+            self._model_3d_action_host = None
+            self.add_button = None
 
         self._last_plot_signature = None
 
@@ -4042,6 +4242,10 @@ class PyFCSApp:
                 v.get("positive_prototype",v.get("Color")))} for k,v in self.selected_centroids.items()}
         if isinstance(space, GranularFuzzyColorSpace):
             plot_centroids, plot_hex = self._granular_visualization_data()
+        granular_categories = (
+            {p.label: cat.label for cat in space.categories for p in cat.prototypes}
+            if isinstance(space, GranularFuzzyColorSpace) else None
+        )
         fig = VisualManager.plot_more_combined_3D(
             filename=self.file_base_name,
             color_data=plot_centroids,
@@ -4054,6 +4258,7 @@ class PyFCSApp:
             filtered_points=self.filtered_points,
             color_space=space.color_space if space else "LAB",
             display_color_space=space.color_space if space else "LAB",
+            granule_categories=granular_categories,
         )
 
         if hasattr(self, "lab_value_frame"):
@@ -4066,182 +4271,309 @@ class PyFCSApp:
 
 
     def select_all_color(self):
-        """
-        Select all available colors and refresh the 3D model only if needed.
-        """
+        """Show every atomic prototype or every real granule."""
         if not self.COLOR_SPACE:
             return
-
-        self.selected_centroids = self.color_data
-        self.selected_hex_color = self.hex_color
-        self.selected_alpha, self.selected_core, self.selected_support = (
-            self._geometry_for_categories(self.color_data)
-        )
-
-        for _, var in self.selected_colors.items():
+        for var in getattr(self, "selected_colors", {}).values():
             var.set(True)
-
-        self.on_option_select()
-
+        for var in (getattr(self, "selected_granules", None) or {}).values():
+            var.set(True)
+        self.select_color()
 
     def deselect_all_color(self):
-        """
-        Deselect all available colors and refresh the 3D model.
-        """
+        """Hide all model objects, preserving the category/granule layout."""
         if not self.COLOR_SPACE:
             return
-
-        self.selected_centroids = {}
-        self.selected_hex_color = {}
-        self.selected_alpha = []
-        self.selected_core = []
-        self.selected_support = []
-
-        for _, var in self.selected_colors.items():
+        for var in getattr(self, "selected_colors", {}).values():
             var.set(False)
+        for var in (getattr(self, "selected_granules", None) or {}).values():
+            var.set(False)
+        self.select_color()
 
-        self.on_option_select()
+    def _toggle_model_3d_category(self, category_label):
+        """Toggle all of a category's granules (one in atomic models)."""
+        category_var = getattr(self, "selected_colors", {}).get(category_label)
+        if category_var is None:
+            return
+        enabled = bool(category_var.get())
+        groups = getattr(self, "_model_3d_color_groups", {})
+        for name in groups.get(category_label, (category_label,)):
+            granule_var = (getattr(self, "selected_granules", None) or {}).get(name)
+            if granule_var is not None:
+                granule_var.set(enabled)
+        self.select_color()
 
+    def _toggle_model_3d_granule(self, _granule_label):
+        """Keep parent categories in sync when a granule is toggled."""
+        self.select_color()
+
+    def _sync_model_3d_category_counts(self):
+        """Synchronize one-granule and multi-granule categories identically."""
+        groups = getattr(self, "_model_3d_color_groups", {})
+        state = getattr(self, "selected_granules", None) or {}
+        counters = getattr(self, "_model_3d_category_counts", {})
+        for category, names in groups.items():
+            enabled = sum(bool(state.get(name) and state[name].get()) for name in names)
+            selected = getattr(self, "selected_colors", {}).get(category)
+            if selected is not None:
+                selected.set(enabled == len(names))
+            counter = counters.get(category)
+            if counter is not None:
+                counter.configure(
+                    text=f"{enabled}/{len(names)}" if len(names) > 1 else "",
+                    fg=(UtilsTools.UI_ACCENT if 0 < enabled < len(names)
+                        else "#6b7280"))
 
     def select_color(self):
-        """
-        Update the current color selection and refresh the 3D model.
-        """
+        """Update visible geometric objects; never recompute membership geometry."""
         selected_centroids = {}
-        selected_indices = []
-        color_keys = list(self.color_data.keys())
-        index_by_label = {name: i for i, name in enumerate(color_keys)}
-
-        for color_name, selected in self.selected_colors.items():
-            if selected.get() and color_name in index_by_label:
-                selected_centroids[color_name] = self.color_data[color_name]
-                selected_indices.append(index_by_label[color_name])
-
-        self.selected_centroids = selected_centroids
-
-        if selected_indices:
-            # Use exact LAB triples as keys instead of scanning the entire
-            # HEX palette once per selected color.
+        space = getattr(self, "fuzzy_color_space", None)
+        if isinstance(space, GranularFuzzyColorSpace):
+            self._sync_model_3d_category_counts()
+            active_granules = self._selected_model_granules()
+            selected_centroids = {
+                cat.label: self.color_data[cat.label]
+                for cat in space.categories if cat.label in self.color_data
+                and any(proto.label in active_granules for proto in cat.prototypes)
+            }
+            self.selected_centroids = selected_centroids
+            self.selected_alpha, self.selected_core, self.selected_support = (
+                self._geometry_for_categories(selected_centroids, active_granules))
+            self.selected_hex_color = {
+                UtilsTools.lab_to_hex(space.lab_from_model(proto.positive)):
+                    space.lab_from_model(proto.positive)
+                for cat in space.categories for proto in cat.prototypes
+                if proto.label in active_granules
+            }
+        else:
+            self._sync_model_3d_category_counts()
+            selected_centroids = {
+                color: self.color_data[color]
+                for color, var in getattr(self, "selected_colors", {}).items()
+                if var.get() and color in self.color_data
+            }
+            self.selected_centroids = selected_centroids
             selected_labs = {
-                tuple(np.asarray(self.color_data[color_keys[i]]["positive_prototype"]).reshape(-1))
-                for i in selected_indices
+                tuple(np.asarray(row["positive_prototype"]).reshape(-1))
+                for row in selected_centroids.values()
             }
             self.selected_hex_color = {
-                hex_color_key: lab_value
-                for hex_color_key, lab_value in self.hex_color.items()
-                if tuple(np.asarray(lab_value).reshape(-1)) in selected_labs
+                key: value for key, value in self.hex_color.items()
+                if tuple(np.asarray(value).reshape(-1)) in selected_labs
             }
             self.selected_alpha, self.selected_core, self.selected_support = (
-                self._geometry_for_categories(selected_centroids)
-            )
-        else:
-            self.selected_hex_color = {}
-            self.selected_alpha = []
-            self.selected_core = []
-            self.selected_support = []
-
+                self._geometry_for_categories(selected_centroids))
         self.on_option_select()
 
+    def _activate_model_3d_category_row(self, category_label, expandable):
+        """Handle clicks on row contents, leaving the checkbox independent.
+
+        A multi-granule row expands/collapses; a single-granule (or atomic)
+        row toggles the representative's visibility instead of creating an
+        unnecessary disclosure level.
+        """
+        if expandable:
+            self._toggle_model_3d_expanded(category_label)
+            return
+        selected = getattr(self, "selected_colors", {}).get(category_label)
+        if selected is None:
+            return
+        selected.set(not bool(selected.get()))
+        self._toggle_model_3d_category(category_label)
+
+
+    def _toggle_model_3d_expanded(self, label):
+        expanded = getattr(self, "_model_3d_expanded_categories", set())
+        if label in expanded:
+            expanded.remove(label)
+        else:
+            expanded.add(label)
+        self._model_3d_expanded_categories = expanded
+        self._filter_model_3d_colors()
+
+    def _filter_model_3d_colors(self):
+        """Filter the sidebar without changing the geometry or original row order."""
+        rows = getattr(self, "_model_3d_category_rows", None)
+        if not rows:
+            return
+        query_var = getattr(self, "_model_3d_search_var", None)
+        query = str(query_var.get()).strip().casefold() if query_var else ""
+        expanded = getattr(self, "_model_3d_expanded_categories", set())
+        # Repacking only these small sidebar rows keeps the source order stable
+        # when the search is cleared, without rebuilding controls or variables.
+        for entry in rows.values():
+            entry["row"].pack_forget()
+            entry["children"].pack_forget()
+            for child in entry["child_rows"].values():
+                child.pack_forget()
+        for label, entry in rows.items():
+            matches_parent = query in label.casefold()
+            matching = [name for name in entry["names"]
+                        if query in name.casefold()]
+            if query and not (matches_parent or matching):
+                continue
+            entry["row"].pack(fill="x", anchor="w", padx=2, pady=2)
+            show_children = bool(entry["names"]) and (
+                label in expanded or bool(query and not matches_parent))
+            if show_children:
+                entry["children"].pack(fill="x", padx=(15, 0), pady=(0, 2))
+                for name, child in entry["child_rows"].items():
+                    if not query or matches_parent or name in matching:
+                        child.pack(fill="x", anchor="w")
+            arrow = entry.get("arrow")
+            if arrow is not None:
+                arrow.configure(text="▾" if show_children else "▸")
+        try:
+            self.scrollable_canvas.configure(
+                scrollregion=self.scrollable_canvas.bbox("all"))
+        except tk.TclError:
+            pass
 
     def display_color_buttons(self, colors):
-        """
-        Display color selection checkboxes.
+        """Unified compact selector for atomic and granular color spaces.
 
-        Rebuild the button list only when the available color set changes.
-        Preserve previous selection states whenever possible.
+        Every category has at least one real color, including legacy atomic
+        colors and JSON granular categories with a single granule. Only groups
+        containing more than one granule receive a disclosure control.
         """
-        color_signature = tuple(colors)
-
-        if color_signature == getattr(self, "_last_color_button_signature", None):
+        space = getattr(self, "fuzzy_color_space", None)
+        granular = isinstance(space, GranularFuzzyColorSpace)
+        category_objects = ({cat.label: cat for cat in space.categories}
+                            if granular else {})
+        groups = ({label: tuple(p.label for p in category_objects[label].prototypes)
+                   for label in colors} if granular else
+                  {label: (label,) for label in colors})
+        signature = (id(space), tuple(colors), tuple(groups.items()))
+        if signature == getattr(self, "_last_color_button_signature", None):
             return
 
-        previous_selected_colors = {
-            color: var.get() for color, var in getattr(self, "selected_colors", {}).items()
-        } if hasattr(self, "selected_colors") else {}
-
-        if hasattr(self, "color_buttons"):
-            for button in self.color_buttons:
-                try:
-                    button.destroy()
-                except Exception:
-                    pass
-
+        old_categories = {k: bool(v.get()) for k, v in
+                          getattr(self, "selected_colors", {}).items()}
+        old_granules = getattr(self, "selected_granules", None)
+        old_granules = ({k: bool(v.get()) for k, v in old_granules.items()}
+                        if isinstance(old_granules, dict) else {})
+        old_rows = getattr(self, "_model_3d_rows_container", None)
+        if old_rows is not None:
+            old_rows.destroy()
         self.selected_colors = {}
+        self.selected_granules = {}
+        self._model_3d_color_groups = groups
+        self._model_3d_category_counts = {}
+        self._model_3d_category_rows = {}
         self.color_buttons = []
+        rows_holder = tk.Frame(self.inner_frame, bg="#ffffff")
+        rows_holder.pack(fill="x", padx=2)
+        self._model_3d_rows_container = rows_holder
 
-        CARD_BG = "#ffffff"
-        TEXT = "#1f2937"
-        MUTED = "#6b7280"
+        def color_hex(category, name):
+            try:
+                if granular:
+                    cat = category_objects[category]
+                    proto = next(p for p in cat.prototypes if p.label == name)
+                    lab = space.lab_from_model(proto.positive)
+                else:
+                    lab = self.color_data[category]["positive_prototype"]
+                return UtilsTools.lab_to_hex(lab)
+            except (KeyError, IndexError, ValueError, StopIteration, TypeError):
+                return "#b8bec8"
 
-        for color in colors:
-            is_selected = previous_selected_colors.get(color, True)
-            self.selected_colors[color] = tk.BooleanVar(value=is_selected)
+        def add_swatch(parent, palette, size=12):
+            """Borderless miniature with up to three equally sized color bands."""
+            thumbnail = tk.Canvas(parent, bg="#ffffff", width=size, height=size,
+                                  highlightthickness=0, bd=0, relief="flat")
+            thumbnail.pack(side="left", padx=(1, 4))
+            colors_to_draw = palette[:3] or ("#b8bec8",)
+            for i, hx in enumerate(colors_to_draw):
+                thumbnail.create_rectangle(
+                    i * size / len(colors_to_draw), 0,
+                    (i + 1) * size / len(colors_to_draw), size,
+                    fill=hx, outline="", width=0)
+            return thumbnail
 
-            row = tk.Frame(
-                self.inner_frame,
-                bg=CARD_BG,
-                bd=0,
-                relief="flat"
+        for category in colors:
+            names = groups.get(category, (category,))
+            enabled = old_categories.get(category, True)
+            self.selected_colors[category] = tk.BooleanVar(value=enabled)
+            for name in names:
+                self.selected_granules[name] = tk.BooleanVar(
+                    value=old_granules.get(name, enabled))
+            row = tk.Frame(rows_holder, bg="#ffffff")
+            row.pack(fill="x", anchor="w", padx=1, pady=2)
+            category_checkbox = tk.Checkbutton(
+                row, variable=self.selected_colors[category],
+                bg="#ffffff", activebackground="#ffffff",
+                selectcolor="#ffffff", onvalue=True, offvalue=False,
+                cursor="hand2", highlightthickness=0, bd=0, padx=0,
+                command=lambda cat=category: self._toggle_model_3d_category(cat),
             )
-            row.pack(fill="x", anchor="w", pady=2, padx=4)
-
-            button = tk.Checkbutton(
-                row,
-                text=color,
-                variable=self.selected_colors[color],
-                bg=CARD_BG,
-                fg=TEXT,
-                activebackground=CARD_BG,
-                activeforeground=TEXT,
-                selectcolor=CARD_BG,
-                font=("Segoe UI", 10),
-                onvalue=True,
-                offvalue=False,
-                command=self.select_color,
-                cursor="hand2",
-                bd=0,
-                highlightthickness=0,
-                anchor="w"
-            )
-            button.pack(fill="x", anchor="w", padx=4, pady=1)
-
+            category_checkbox.pack(side="left")
+            category_swatch = add_swatch(
+                row, [color_hex(category, name) for name in names])
+            label = tk.Label(
+                row, text=category, bg="#ffffff", fg="#1f2937",
+                font=("Segoe UI", 8), anchor="w", wraplength=83,
+                cursor="hand2", justify="left")
+            label.pack(side="left", fill="x", expand=True)
+            # Tk bindings do not bubble from children to their Frame. Bind
+            # the swatch/text/count separately, and leave the checkbox's
+            # native control and disclosure button to their own commands.
+            expand = len(names) > 1
+            click = lambda _event, cat=category, can_expand=expand: (
+                self._activate_model_3d_category_row(cat, can_expand))
+            for widget in (row, category_swatch, label):
+                widget.bind("<Button-1>", click)
+            count = None
+            arrow = None
+            child_rows = {}
+            child_holder = tk.Frame(rows_holder, bg="#ffffff")
+            if len(names) > 1:
+                count = tk.Label(row, text=f"{len(names)}/{len(names)}",
+                                 bg="#ffffff", fg="#6b7280",
+                                 font=("Segoe UI", 7), padx=0)
+                count.pack(side="right")
+                count.configure(cursor="hand2")
+                count.bind("<Button-1>", click)
+                arrow = tk.Button(
+                    row, text="▸", bg="#ffffff", fg=UtilsTools.UI_ACCENT,
+                    activebackground="#ffffff", relief="flat", bd=0,
+                    font=("Segoe UI", 9, "bold"), padx=0, cursor="hand2",
+                    command=lambda cat=category: self._toggle_model_3d_expanded(cat))
+                arrow.pack(side="right")
+                for name in names:
+                    child_row = tk.Frame(child_holder, bg="#ffffff")
+                    child_rows[name] = child_row
+                    tk.Checkbutton(
+                        child_row, variable=self.selected_granules[name],
+                        bg="#ffffff", selectcolor="#ffffff",
+                        activebackground="#ffffff", highlightthickness=0,
+                        bd=0, padx=0, cursor="hand2",
+                        command=lambda n=name: self._toggle_model_3d_granule(n),
+                    ).pack(side="left")
+                    child_swatch = add_swatch(
+                        child_row, [color_hex(category, name)], size=10)
+                    child_name = tk.Label(
+                        child_row, text=name, bg="#ffffff", fg="#4b5563",
+                        font=("Segoe UI", 8), anchor="w", wraplength=82,
+                        justify="left", cursor="hand2")
+                    child_name.pack(side="left", fill="x", expand=True)
+                    def select_child(_event, granule=name):
+                        state = self.selected_granules.get(granule)
+                        if state is None:
+                            return
+                        state.set(not state.get())
+                        self._toggle_model_3d_granule(granule)
+                    for widget in (child_row, child_swatch, child_name):
+                        widget.bind("<Button-1>", select_child)
+                self._model_3d_category_counts[category] = count
             self.color_buttons.append(row)
-
-        self.scrollable_canvas.update_idletasks()
-        self.scrollable_canvas.configure(scrollregion=self.scrollable_canvas.bbox("all"))
-        self._last_color_button_signature = color_signature
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            self._model_3d_category_rows[category] = {
+                "row": row, "children": child_holder,
+                "names": names if len(names) > 1 else (),
+                "arrow": arrow, "child_rows": child_rows,
+            }
+        self._sync_model_3d_category_counts()
+        self._filter_model_3d_colors()
+        self._last_color_button_signature = signature
 
 
     # ============================================================================================================================================================
@@ -9236,7 +9568,10 @@ class PyFCSApp:
             threshold_refs["result_header"].configure(bg=theme["header_bg"])
             threshold_refs["result_status_dot"].configure(bg=theme["header_bg"])
             threshold_refs["result_title_label"].configure(bg=theme["header_bg"])
-            threshold_refs["result_value_label"].configure(bg=theme["body_bg"], fg=theme["accent"])
+            threshold_refs["result_value_label"].configure(
+                bg=theme["header_bg"] if threshold_refs.get("value_in_header") else theme["body_bg"],
+                fg=theme["accent"]
+            )
             threshold_refs["result_separator"].configure(bg=theme["separator"])
             threshold_refs["result_summary_row"].configure(bg=theme["body_bg"])
             threshold_refs["result_summary_icon"].configure(bg=theme["body_bg"])
@@ -9292,11 +9627,11 @@ class PyFCSApp:
             anchor="w",
             bg="white",
             padx=12,
-            pady=10
+            pady=7 if variant == "summary" else 10
         ).pack(fill="x")
 
         threshold_body = tk.Frame(threshold_panel, bg="white")
-        threshold_body.pack(fill="x", padx=12, pady=(0, 10))
+        threshold_body.pack(fill="x", padx=12, pady=(0, 6 if variant == "summary" else 10))
 
         if variant == "result":
             selection_w = 280
@@ -10600,6 +10935,7 @@ class PyFCSApp:
         finally:
             self._color_evaluation_window = None
             self._color_evaluation_paned = None
+            self._color_evaluation_vars = None
 
 
     def _set_color_evaluation_initial_sash(self):
@@ -10615,7 +10951,7 @@ class PyFCSApp:
             if total_w <= 1:
                 return
 
-            sash_x = int(total_w * 0.48)  # compact table | wider analysis panel
+            sash_x = max(330, min(int(total_w * 0.41), total_w - 540))  # color explorer | analysis
             paned.sash_place(0, sash_x, 1)
         except Exception:
             pass
@@ -10624,6 +10960,7 @@ class PyFCSApp:
     def _build_color_evaluation_window(self, win):
         """Build the full Color Evaluation window."""
         vars_dict = self._create_color_evaluation_vars()
+        self._color_evaluation_vars = vars_dict
 
         main = tk.Frame(win, bg="#f2f2f2")
         main.pack(fill="both", expand=True, padx=10, pady=10)
@@ -10644,7 +10981,7 @@ class PyFCSApp:
         # file-loading actions stay together on the right. Only visual layout
         # changes here: both commands and their data flow are unchanged.
         header_container = tk.Frame(table_panel, bg="#f8fafc")
-        header_container.pack(fill="x", padx=10, pady=(8, 6))
+        header_container.pack(fill="x", padx=10, pady=(5, 4))
 
         space_identity = tk.Frame(header_container, bg="#f8fafc")
         space_identity.pack(side="left", fill="x", expand=True, padx=(8, 12))
@@ -10679,7 +11016,7 @@ class PyFCSApp:
 
         tk.Label(
             summary_row,
-            text="Prototypes:",
+            textvariable=vars_dict["space_items_label_var"],
             font=("Segoe UI", 9, "bold"),
             bg="#f8fafc",
             fg="#6b7280"
@@ -10701,10 +11038,10 @@ class PyFCSApp:
             text="Use loaded color space",
             command=lambda: self._load_current_color_space_for_evaluation(vars_dict),
             font=("Segoe UI", 9, "bold"),
-            bg="#ffffff",
-            fg="#1f2937",
-            activebackground=UtilsTools.UI_ACCENT_SOFT,
-            activeforeground=UtilsTools.UI_ACCENT,
+            bg=UtilsTools.UI_ADD_CATEGORY_BG,
+            fg=UtilsTools.UI_ADD_CATEGORY_FG,
+            activebackground=UtilsTools.UI_ADD_CATEGORY_HOVER,
+            activeforeground=UtilsTools.UI_ADD_CATEGORY_FG,
             relief="solid", bd=1, padx=11, pady=6,
             cursor="hand2",
         ).pack(side="left", padx=(0, 8))
@@ -10714,10 +11051,11 @@ class PyFCSApp:
             text="Load new color space",
             command=lambda: self._load_external_color_space_for_evaluation(vars_dict),
             font=("Segoe UI", 9, "bold"),
-            bg=UtilsTools.UI_ACCENT_SOFT,
-            fg=UtilsTools.UI_ACCENT,
-            activebackground=UtilsTools.UI_ACCENT_HOVER,
-            activeforeground=UtilsTools.UI_ACCENT_DARK,
+            # Palette-Based Creation's shared "Add Color Source" style.
+            bg=UtilsTools.UI_ADD_SOURCE_BG,
+            fg=UtilsTools.UI_ADD_SOURCE_FG,
+            activebackground=UtilsTools.UI_ADD_SOURCE_HOVER,
+            activeforeground=UtilsTools.UI_ADD_SOURCE_FG,
             relief="solid", bd=1, padx=11, pady=6,
             cursor="hand2",
         ).pack(side="left")
@@ -10740,135 +11078,86 @@ class PyFCSApp:
         left_panel = tk.Frame(paned, bg="white", bd=1, relief="solid")
         right_panel = tk.Frame(paned, bg="white", bd=1, relief="solid")
 
-        paned.add(left_panel, minsize=360)
+        paned.add(left_panel, minsize=315)
         paned.add(right_panel, minsize=520)
 
         self._color_evaluation_paned = paned
 
-        # Left panel
-        list_header = tk.Frame(left_panel, bg="#f6f8fb")
-        list_header.pack(fill="x", padx=1, pady=(1, 0))
-
-        list_header.grid_columnconfigure(0, minsize=110)
-        list_header.grid_columnconfigure(1, minsize=180)
-        list_header.grid_columnconfigure(2, minsize=245)
-        list_header.grid_columnconfigure(3, weight=1)
-
-        header_font = ("Segoe UI", 9, "bold")
-
-        tk.Label(
-            list_header,
-            text="",
-            bg="#f6f8fb",
-            font=header_font
-        ).grid(
-            row=0,
-            column=0,
-            sticky="w",
-            padx=(8, 4),
-            pady=5
-        )
-
-        tk.Label(
-            list_header,
-            text="Label",
-            bg="#f6f8fb",
-            font=header_font,
-            anchor="w"
-        ).grid(
-            row=0,
-            column=1,
-            sticky="w",
-            padx=(2, 2),
-            pady=5
-        )
-
-        value_header = tk.Frame(list_header, bg="#f6f8fb")
-        value_header.grid(
-            row=0,
-            column=2,
-            sticky="w",
-            padx=(2, 8),
-            pady=3
-        )
-
-        tk.Label(
-            value_header,
-            text="Value:",
-            bg="#f6f8fb",
-            font=header_font,
-            anchor="w"
-        ).pack(side="left", padx=(0, 6))
-
-        color_display_combo = ttk.Combobox(
-            value_header,
-            textvariable=vars_dict["color_display_mode_var"],
-            values=UtilsTools.get_supported_color_value_spaces(),
-            state="readonly",
-            width=12
-        )
-        color_display_combo.pack(side="left", padx=(0, 6))
-
-        tk.Button(
-            value_header,
-            text="Next",
-            width=6,
-            font=("Segoe UI", 9),
-            bg="#ffffff",
-            fg="#1f2937",
-            activebackground=UtilsTools.UI_ACCENT_SOFT,
-            relief="solid", bd=1, padx=3, pady=3,
+        # Left: searchable category/granule explorer.  All entries are real
+        # LAB colors; category headers never stand in for a fictitious centroid.
+        explorer_top = tk.Frame(left_panel, bg="#f6f8fb")
+        explorer_top.pack(fill="x", padx=1, pady=(1, 0))
+        tk.Label(explorer_top, text="Explore Colors", font=("Segoe UI", 11, "bold"),
+                 bg="#f6f8fb", fg="#1f2937").pack(side="left", padx=10, pady=9)
+        value_header = tk.Frame(explorer_top, bg="#f6f8fb")
+        value_header.pack(side="right", padx=8)
+        previous_mode_button = tk.Button(
+            value_header, text="◀", font=("Segoe UI", 9), width=2,
+            bg="white", fg="#1f2937", relief="solid", bd=1,
             cursor="hand2",
-            command=lambda: self._rotate_color_evaluation_table_display_mode(vars_dict)
-        ).pack(side="left")
-
-        color_display_combo.bind(
+            command=lambda: self._rotate_color_evaluation_table_display_mode(
+                vars_dict, direction=-1),
+        )
+        previous_mode_button.pack(side="left", padx=(0, 5))
+        display_mode_combo = ttk.Combobox(
+            value_header, textvariable=vars_dict["color_display_mode_var"],
+            values=UtilsTools.get_supported_color_value_spaces(),
+            state="readonly", width=12,
+        )
+        display_mode_combo.pack(side="left", padx=(0, 5))
+        next_mode_button = tk.Button(
+            value_header, text="▶", font=("Segoe UI", 9), width=2,
+            bg="white", fg="#1f2937", relief="solid", bd=1,
+            cursor="hand2",
+            command=lambda: self._rotate_color_evaluation_table_display_mode(
+                vars_dict, direction=1),
+        )
+        next_mode_button.pack(side="left")
+        display_mode_combo.bind(
             "<<ComboboxSelected>>",
             lambda e: self._refresh_color_evaluation_table_display_mode(vars_dict)
         )
+        vars_dict["color_display_navigation"] = (
+            previous_mode_button, display_mode_combo, next_mode_button)
 
-        tk.Frame(left_panel, bg="#d8d8d8", height=1).pack(fill="x", padx=1)
+        search_holder = tk.Frame(left_panel, bg="white")
+        search_holder.pack(fill="x", padx=9, pady=(6, 8))
+        tk.Label(search_holder, text="Search", bg="white", fg="#6b7280",
+                 font=("Segoe UI", 9)).pack(side="left", padx=(1, 8))
+        tk.Entry(search_holder, textvariable=vars_dict["color_search_var"],
+                 font=("Segoe UI", 10), relief="solid", bd=1,
+                 highlightthickness=0).pack(side="left", fill="x", expand=True)
 
-        rows_canvas = tk.Canvas(
-            left_panel,
-            bg="white",
-            highlightthickness=0,
-            bd=0
-        )
-
-        rows_scroll = ttk.Scrollbar(
-            left_panel,
-            orient="vertical",
-            command=rows_canvas.yview
-        )
-
+        tk.Frame(left_panel, bg="#e5e7eb", height=1).pack(fill="x")
+        rows_canvas = tk.Canvas(left_panel, bg="white", highlightthickness=0, bd=0)
+        rows_scroll = ttk.Scrollbar(left_panel, orient="vertical",
+                                    command=rows_canvas.yview)
         rows_inner = tk.Frame(rows_canvas, bg="white")
-
-        rows_inner.bind(
-            "<Configure>",
-            lambda e: rows_canvas.configure(scrollregion=rows_canvas.bbox("all"))
-        )
-
-        rows_canvas.create_window((0, 0), window=rows_inner, anchor="nw")
+        rows_inner.bind("<Configure>", lambda e: rows_canvas.configure(
+            scrollregion=rows_canvas.bbox("all")))
+        inner_window = rows_canvas.create_window((0, 0), window=rows_inner, anchor="nw")
+        rows_canvas.bind("<Configure>", lambda e: rows_canvas.itemconfigure(
+            inner_window, width=max(1, e.width)))
         rows_canvas.configure(yscrollcommand=rows_scroll.set)
-
         rows_canvas.pack(side="left", fill="both", expand=True)
         rows_scroll.pack(side="right", fill="y")
+        self._register_vertical_mousewheel_canvas(rows_canvas)
 
         # Right panel
         tk.Label(
             right_panel,
-            text="Threshold Analysis",
+            text="Color Comparison & Threshold Analysis",
             font=("Segoe UI", 11, "bold"),
-            anchor="w",
+            anchor="center",
+            justify="center",
             bg="white",
             fg="#1f2937",
             padx=12,
-            pady=9
+            pady=6
         ).pack(fill="x")
 
         analysis_actions = tk.Frame(right_panel, bg="white")
-        analysis_actions.pack(fill="x", padx=12, pady=(0, 6))
+        analysis_actions.pack(fill="x", padx=12, pady=(0, 4))
 
         def _run_analysis_action(action_key, callback):
             # Clear is a one-shot action, not a persistent analysis mode.
@@ -10879,9 +11168,9 @@ class PyFCSApp:
 
         btn_compare = tk.Button(
             analysis_actions,
-            text="Compare with another color",
+            text="Compare with Another Color",
             font=("Segoe UI", 9, "bold"),
-            relief="solid", bd=1, padx=8, pady=7,
+            relief="solid", bd=1, padx=8, pady=4,
             cursor="hand2",
             command=lambda: _run_analysis_action(
                 "compare",
@@ -10892,9 +11181,9 @@ class PyFCSApp:
 
         btn_custom = tk.Button(
             analysis_actions,
-            text="Evaluate custom color",
+            text="Evaluate Custom Color",
             font=("Segoe UI", 9, "bold"),
-            relief="solid", bd=1, padx=8, pady=7,
+            relief="solid", bd=1, padx=8, pady=4,
             cursor="hand2",
             command=lambda: _run_analysis_action(
                 "custom",
@@ -10905,9 +11194,9 @@ class PyFCSApp:
 
         btn_sample = tk.Button(
             analysis_actions,
-            text="Sample from image",
+            text="Sample from Image",
             font=("Segoe UI", 9, "bold"),
-            relief="solid", bd=1, padx=8, pady=7,
+            relief="solid", bd=1, padx=8, pady=4,
             cursor="hand2",
             command=lambda: _run_analysis_action(
                 "sample",
@@ -10917,13 +11206,13 @@ class PyFCSApp:
         btn_sample.pack(side="left", fill="x", expand=True)
 
         analysis_extra_actions = tk.Frame(right_panel, bg="white")
-        analysis_extra_actions.pack(fill="x", padx=12, pady=(0, 8))
+        analysis_extra_actions.pack(fill="x", padx=12, pady=(0, 5))
 
         btn_closest = tk.Button(
             analysis_extra_actions,
             text="Find closest prototype",
             font=("Segoe UI", 9, "bold"),
-            relief="solid", bd=1, padx=8, pady=7,
+            relief="solid", bd=1, padx=8, pady=4,
             cursor="hand2",
             command=lambda: _run_analysis_action(
                 "closest",
@@ -10934,9 +11223,9 @@ class PyFCSApp:
 
         btn_clear = tk.Button(
             analysis_extra_actions,
-            text="Clear comparison",
+            text="Clear Comparison",
             font=("Segoe UI", 9, "bold"),
-            relief="solid", bd=1, padx=8, pady=7,
+            relief="solid", bd=1, padx=8, pady=4,
             cursor="hand2",
             command=lambda: _run_analysis_action(
                 "clear",
@@ -10945,6 +11234,7 @@ class PyFCSApp:
         )
         btn_clear.pack(side="left", fill="x", expand=True)
 
+        vars_dict["closest_action_button"] = btn_closest
         vars_dict["analysis_action_buttons"] = {
             "compare": btn_compare,
             "custom": btn_custom,
@@ -10958,13 +11248,14 @@ class PyFCSApp:
         tk.Label(
             right_panel,
             textvariable=vars_dict["analysis_mode_var"],
-            anchor="w",
+            anchor="center",
+            justify="center",
             bg="#f5f5f5",
             fg="#555555",
             font=("Segoe UI", 9, "italic"),
             padx=10,
-            pady=5
-        ).pack(fill="x", padx=12, pady=(0, 8))
+            pady=3
+        ).pack(fill="x", padx=12, pady=(0, 5))
 
         # Scrollable analysis body
         analysis_scroll_container = tk.Frame(right_panel, bg="white")
@@ -11014,105 +11305,145 @@ class PyFCSApp:
 
         self._register_vertical_mousewheel_canvas(analysis_canvas)
 
-        # Both color previews use the same neutral surround.
-        preview_bg = "#f1f1f1"
-        preview_border = "#cfcfcf"
-        preview_text = "#262626"
-
+        # Side-by-side visual comparison. Color swatches share a neutral surround;
+        # selected/secondary labels and LAB readouts are driven by existing state.
+        preview_bg = "#f8fafc"
+        preview_border = "#d6dce5"
+        preview_text = "#1f2937"
         colors_row = tk.Frame(analysis_body, bg="white")
-        colors_row.pack(fill="x", pady=(0, 4))
+        colors_row.pack(fill="x", pady=(0, 5))
+        colors_row.grid_columnconfigure(0, weight=1, uniform="colors")
+        colors_row.grid_columnconfigure(1, weight=0)
+        colors_row.grid_columnconfigure(2, weight=1, uniform="colors")
 
-        selected_block = tk.Frame(
-            colors_row, bg=preview_bg, highlightthickness=1,
-            highlightbackground=preview_border, padx=9, pady=5
+        def _build_comparison_preview(column, heading, name_var, meta_var, lab_var,
+                                      initial_hex):
+            card = tk.Frame(colors_row, bg=preview_bg, highlightthickness=1,
+                            highlightbackground=preview_border)
+            card.grid(row=0, column=column, sticky="nsew", padx=3, pady=2)
+            tk.Label(card, text=heading, bg=preview_bg, fg="#6b7280",
+                     font=("Segoe UI", 9, "bold")).pack(pady=(4, 2))
+            swatch = tk.Canvas(card, width=74, height=70, bg=preview_bg,
+                               highlightthickness=0, bd=0)
+            swatch.pack(anchor="center")
+            rect = swatch.create_rectangle(3, 3, 71, 67, fill=initial_hex,
+                                            outline="#848b95", width=1)
+            tk.Label(card, textvariable=name_var, bg=preview_bg, fg=preview_text,
+                     font=("Segoe UI", 10, "bold"), wraplength=200,
+                     justify="center").pack(fill="x", padx=6, pady=(2, 0))
+            meta_label = tk.Label(
+                card, textvariable=meta_var, bg=preview_bg, fg="#687284",
+                font=("Segoe UI", 8), wraplength=200, justify="center")
+            lab_label = tk.Label(
+                card, textvariable=lab_var, bg=preview_bg, fg="#586174",
+                font=("Consolas", 8), wraplength=210, justify="center")
+            lab_label.pack(fill="x", padx=6, pady=(1, 4))
+
+            def _show_meta_when_available(*_args):
+                # An empty caption must not reserve a blank row in atomic spaces.
+                if meta_var.get().strip():
+                    if not meta_label.winfo_manager():
+                        meta_label.pack(before=lab_label, fill="x", padx=6)
+                elif meta_label.winfo_manager():
+                    meta_label.pack_forget()
+
+            meta_var.trace_add("write", _show_meta_when_available)
+            _show_meta_when_available()
+            swatch._pyfcs_meta_label = meta_label
+            return swatch, rect
+
+        primary_swatch, primary_rect = _build_comparison_preview(
+            0, "Selected color", vars_dict["primary_name_var"],
+            vars_dict["primary_meta_var"], vars_dict["primary_lab_var"], "#cccccc"
         )
-        selected_block.pack(side="left", fill="both", expand=True, padx=(0, 4))
-
-        comparison_block = tk.Frame(
-            colors_row, bg=preview_bg, highlightthickness=1,
-            highlightbackground=preview_border, padx=9, pady=5
+        btn_swap = tk.Button(
+            colors_row, text="⇄", font=("Segoe UI", 16, "bold"),
+            bg="white", fg=UtilsTools.UI_ACCENT, relief="flat",
+            activebackground=UtilsTools.UI_ACCENT_SOFT,
+            cursor="hand2", state="disabled",
+            command=lambda: self._swap_color_evaluation_rows(vars_dict)
         )
-        comparison_block.pack(side="left", fill="both", expand=True, padx=(4, 0))
-
-        # Title above; swatch and name alongside each other to save vertical
-        # space while retaining a reasonably large, easily compared sample.
-        tk.Label(
-            selected_block,
-            text="Selected color",
-            font=("Segoe UI", 9, "bold"),
-            fg=preview_text,
-            anchor="w",
-            bg=preview_bg
-        ).pack(fill="x", pady=(0, 2))
-
-        primary_body = tk.Frame(selected_block, bg=preview_bg)
-        primary_body.pack(fill="x")
-
-        primary_swatch = tk.Canvas(
-            primary_body,
-            width=94,
-            height=52,
-            bg=preview_bg,
-            highlightthickness=0,
-            bd=0
-        )
-        primary_swatch.pack(side="left", padx=(0, 11))
-
-        primary_rect = primary_swatch.create_rectangle(
-            3, 3, 91, 49,
-            fill="#cccccc",
-            outline="#666666",
-            width=1
-        )
-
-        tk.Label(
-            primary_body,
-            textvariable=vars_dict["primary_name_var"],
-            font=("Segoe UI", 10, "bold"),
-            fg=preview_text,
-            anchor="w",
-            bg=preview_bg
-        ).pack(side="left", fill="x", expand=True)
-
-        tk.Label(
-            comparison_block,
-            text="Comparison color",
-            font=("Segoe UI", 9, "bold"),
-            fg=preview_text,
-            anchor="w",
-            bg=preview_bg
-        ).pack(fill="x", pady=(0, 2))
-
-        secondary_body = tk.Frame(comparison_block, bg=preview_bg)
-        secondary_body.pack(fill="x")
-
-        secondary_swatch = tk.Canvas(
-            secondary_body,
-            width=94,
-            height=52,
-            bg=preview_bg,
-            highlightthickness=0,
-            bd=0
-        )
-        secondary_swatch.pack(side="left", padx=(0, 11))
-
-        secondary_rect = secondary_swatch.create_rectangle(
-            3, 3, 91, 49,
-            fill="#f0f0f0",
-            outline="#666666",
-            width=1
+        btn_swap.grid(row=0, column=1, padx=5)
+        vars_dict["swap_color_button"] = btn_swap
+        secondary_swatch, secondary_rect = _build_comparison_preview(
+            2, "Reference color", vars_dict["secondary_name_var"],
+            vars_dict["secondary_meta_var"], vars_dict["secondary_lab_var"], "#f0f0f0"
         )
 
-        tk.Label(
-            secondary_body,
-            textvariable=vars_dict["secondary_name_var"],
-            font=("Segoe UI", 10, "bold"),
-            fg=preview_text,
-            anchor="w",
-            bg=preview_bg
-        ).pack(side="left", fill="x", expand=True)
+        # The compact Quick Samples strip keeps experiment history separate from
+        # the color-space explorer. Each tile can be assigned to Selected or
+        # Reference, pinned, or revisited without reopening a dialog.
+        quick_outer = tk.Frame(analysis_body, bg="#f8fafc", highlightbackground="#d6dce5", highlightthickness=1)
+        quick_header = tk.Frame(quick_outer, bg="#f8fafc")
+        quick_header.pack(fill="x", padx=8, pady=(1, 1))
+        quick_header.grid_columnconfigure(0, weight=1)
+        quick_header.grid_columnconfigure(1, weight=0)
+        quick_header.grid_columnconfigure(2, weight=1)
 
-        tk.Frame(analysis_body, bg="#d8d8d8", height=1).pack(fill="x", pady=(3, 5))
+        # Left: section title. Center: target for selected sample. Right: clear.
+        quick_title_btn = tk.Button(
+            quick_header, text="▾  Quick Samples", font=("Segoe UI", 9, "bold"),
+            fg=UtilsTools.UI_ACCENT_DARK, bg="#f8fafc", relief="flat", bd=0, cursor="hand2",
+            command=lambda: self._toggle_color_evaluation_quick_samples(vars_dict))
+        quick_title_btn.grid(row=0, column=0, sticky="w")
+        target_controls = tk.Frame(quick_header, bg="#f8fafc")
+        target_controls.grid(row=0, column=1)
+        tk.Label(target_controls, text="Add to:", bg="#f8fafc", fg="#697386",
+                 font=("Segoe UI", 8)).pack(side="left", padx=(0, 3))
+        for value, label in (("A", "Selected"), ("B", "Reference")):
+            tk.Radiobutton(target_controls, text=label, value=value,
+                           variable=vars_dict["quick_samples_target_var"],
+                           bg="#f8fafc", activebackground="#f8fafc",
+                           font=("Segoe UI", 8), padx=1).pack(side="left", padx=(0, 1))
+        tk.Button(quick_header, text="Clear recent", font=("Segoe UI", 8, "bold"),
+                  bg="#f8fafc", fg=UtilsTools.UI_ACCENT, relief="flat", cursor="hand2",
+                  activebackground="#f8fafc", activeforeground=UtilsTools.UI_ACCENT_DARK,
+                  command=lambda: self._clear_color_evaluation_recent_samples(vars_dict)
+                  ).grid(row=0, column=2, sticky="e")
+        quick_body = tk.Frame(quick_outer, bg="#f8fafc")
+        quick_body.pack(fill="x", padx=6, pady=(0, 1))
+
+        # There is exactly one results card below Quick Samples. Avoid the
+        # duplicate red/green status strip that hid the actual analysis.
+        quick_canvas = tk.Canvas(quick_body, height=53, bd=0,
+                                 highlightthickness=0, bg="#f8fafc")
+        quick_scroll = ttk.Scrollbar(quick_body, orient="horizontal",
+                                     command=quick_canvas.xview)
+        quick_tiles = tk.Frame(quick_canvas, bg="#f8fafc")
+        quick_canvas.create_window((0, 0), window=quick_tiles, anchor="nw")
+        quick_canvas.configure(xscrollcommand=quick_scroll.set)
+        quick_canvas.pack(fill="x", expand=True)
+        quick_scroll.pack(fill="x")
+        quick_empty_label = tk.Label(
+            quick_body,
+            text="No samples yet. Select a color or use Custom Color / Sample from Image.",
+            bg="#f8fafc", fg="#6b7280", font=("Segoe UI", 9),
+            anchor="center", justify="center", wraplength=450,
+        )
+        def _fit_quick_sample_scroll(_event=None):
+            quick_canvas.configure(scrollregion=quick_canvas.bbox("all"))
+            # Avoid losing a line of space to an unnecessary scrollbar.
+            overflowing = quick_tiles.winfo_reqwidth() > quick_canvas.winfo_width() + 2
+            if overflowing and not quick_scroll.winfo_manager():
+                quick_scroll.pack(fill="x")
+            elif not overflowing and quick_scroll.winfo_manager():
+                quick_scroll.pack_forget()
+
+        quick_tiles.bind("<Configure>", _fit_quick_sample_scroll)
+        quick_canvas.bind("<Configure>", _fit_quick_sample_scroll)
+        vars_dict.update({
+            "quick_samples_outer": quick_outer,
+            "quick_samples_tiles": quick_tiles,
+            "quick_samples_canvas": quick_canvas,
+            "quick_samples_scroll": quick_scroll,
+            "quick_samples_empty_label": quick_empty_label,
+            "quick_samples_title_btn": quick_title_btn,
+            "quick_samples_body": quick_body,
+            "quick_samples_after": colors_row,
+        })
+        self._render_color_evaluation_quick_samples(vars_dict)
+
+        tk.Frame(analysis_body, bg="#e5e7eb", height=1).pack(fill="x", pady=(2, 3))
 
         # Results + Membership column
         results_block = tk.Frame(analysis_body, bg="white")
@@ -11149,7 +11480,7 @@ class PyFCSApp:
             padx=(8, 0)
         )
 
-        # Spacer aligned with the "Results" title on the left column.
+        # Historical spacer retained only for compatibility (not packed).
         membership_title_spacer = tk.Label(
             right_side_column,
             text="",
@@ -11253,26 +11584,15 @@ class PyFCSApp:
 
         self._register_vertical_mousewheel_canvas(membership_list_canvas)
 
-        # Graph buttons shown in the right column when Membership is visible.
+        # Full-width horizontal graph toolbar, located beneath Results.
+        # Membership stays alongside Results only for custom/sample colors.
         graph_buttons_card = self._create_color_evaluation_graph_buttons_card(
-            right_side_column,
-            vars_dict
+            results_block, vars_dict
         )
-        graph_buttons_card.pack(
-            side="top",
-            fill="x",
-            pady=(8, 0)
-        )
+        graph_buttons_card.pack(fill="x", pady=(8, 0))
+        right_side_column.grid_remove()
 
-        # Results card
-        tk.Label(
-            result_left,
-            text="Results",
-            font=("Sans", 10, "bold"),
-            anchor="w",
-            bg="white"
-        ).pack(anchor="w", pady=(0, 8))
-
+        # Show the results card directly, without a redundant "Results" title.
         result_card = tk.Frame(
             result_left,
             bg="#f7f7f7",
@@ -11312,24 +11632,27 @@ class PyFCSApp:
             font=("Sans", 10, "bold"),
             wraplength=300
         )
-        result_title_label.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=8)
+        result_title_label.pack(side="left", fill="x", expand=True, padx=(0, 6), pady=6)
+
+        # Keep the metric value on the SAME line as the evaluation status.
+        # It remains centered within the right half of the results header.
+        result_value_label = tk.Label(
+            result_header,
+            textvariable=vars_dict["selected_detail_var"],
+            anchor="center",
+            justify="center",
+            bg="#eeeeee",
+            fg="#666666",
+            font=("Segoe UI", 9, "bold"),
+            wraplength=230,
+        )
+        result_value_label.pack(side="left", fill="x", expand=True, padx=(0, 6), pady=6)
 
         result_body = tk.Frame(result_card, bg="#f7f7f7")
-        result_body.pack(fill="x", padx=12, pady=(10, 12))
+        result_body.pack(fill="x", padx=10, pady=(6, 8))
 
-        result_value_label = tk.Label(
-            result_body,
-            textvariable=vars_dict["selected_detail_var"],
-            anchor="w",
-            justify="left",
-            bg="#f7f7f7",
-            fg="#666666",
-            font=("Sans", 9, "bold")
-        )
-        result_value_label.pack(anchor="w", fill="x", pady=(0, 12))
-
-        result_separator = tk.Frame(result_body, bg="#dddddd", height=2)
-        result_separator.pack(fill="x", padx=6, pady=(0, 10))
+        result_separator = tk.Frame(result_body, bg="#dddddd", height=1)
+        result_separator.pack(fill="x", padx=4, pady=(0, 6))
 
         result_summary_row = tk.Frame(result_body, bg="#f7f7f7")
         result_summary_row.pack(fill="x")
@@ -11451,37 +11774,42 @@ class PyFCSApp:
 
             inspector_values = tk.Frame(inspector_body, bg="#fafafa")
             inspector_values.pack(side="left", fill="x", expand=True)
+            inspector_values.grid_columnconfigure(0, weight=1, uniform="inspector")
+            inspector_values.grid_columnconfigure(1, weight=1, uniform="inspector")
 
-            inspector_values.grid_columnconfigure(0, minsize=70, weight=0)
-            inspector_values.grid_columnconfigure(1, weight=1)
-
-            def _add_inspector_row(row, label_text, variable):
+            # First column: LAB, RGB, HEX. Second: CIELUV, LCh, CIE1931.
+            # The field labels and values stay together when the inspector is
+            # narrower (for example alongside the membership panel).
+            for index, (label_text, variable) in enumerate((
+                ("CIELAB", vars_dict["inspector_lab_var"]),
+                ("RGB", vars_dict["inspector_rgb_var"]),
+                ("HEX", vars_dict["inspector_hex_var"]),
+                ("CIELUV", vars_dict["inspector_luv_var"]),
+                ("LCh", vars_dict["inspector_lch_var"]),
+                ("CIE1931", vars_dict["inspector_cie1931_var"]),
+            )):
+                column, row = divmod(index, 3)
+                field = tk.Frame(inspector_values, bg="#fafafa")
+                field.grid(row=row, column=column, sticky="new",
+                           padx=(0, 9) if column == 0 else (9, 0), pady=(0, 3))
                 tk.Label(
-                    inspector_values,
-                    text=label_text,
-                    bg="#fafafa",
-                    fg="#333333",
-                    anchor="w",
-                    font=("Sans", 8, "bold")
-                ).grid(row=row, column=0, sticky="w", pady=(0, 2), padx=(0, 8))
+                    field, text=label_text, bg="#fafafa", fg="#333333",
+                    anchor="w", font=("Segoe UI", 8, "bold"),
+                ).pack(side="left", anchor="n", padx=(0, 5))
+                value_label = tk.Label(
+                    field, textvariable=variable, bg="#fafafa", fg="#222222",
+                    anchor="w", justify="left", font=("Consolas", 8),
+                    wraplength=230,
+                )
+                value_label.pack(side="left", fill="x", expand=True)
 
-                tk.Label(
-                    inspector_values,
-                    textvariable=variable,
-                    bg="#fafafa",
-                    fg="#222222",
-                    anchor="w",
-                    justify="left",
-                    font=("Consolas", 8),
-                    wraplength=390
-                ).grid(row=row, column=1, sticky="ew", pady=(0, 2))
+                def _fit_value_wrap(event, label=value_label, name=label_text):
+                    # Keep both columns readable without expanding the inspector
+                    # outside the narrow left panel in custom/sample mode.
+                    label_width = (61 if name in ("CIELUV", "CIE1931") else 53)
+                    label.configure(wraplength=max(72, event.width - label_width - 22))
 
-            _add_inspector_row(0, "CIELAB", vars_dict["inspector_lab_var"])
-            _add_inspector_row(1, "RGB", vars_dict["inspector_rgb_var"])
-            _add_inspector_row(2, "HEX", vars_dict["inspector_hex_var"])
-            _add_inspector_row(3, "CIELUV", vars_dict["inspector_luv_var"])
-            _add_inspector_row(4, "LCh", vars_dict["inspector_lch_var"])
-            _add_inspector_row(5, "CIE1931", vars_dict["inspector_cie1931_var"])
+                field.bind("<Configure>", _fit_value_wrap)
 
             return inspector_card, inspector_preview, inspector_preview_rect
 
@@ -11526,6 +11854,7 @@ class PyFCSApp:
             "result_title_label": result_title_label,
             "result_body": result_body,
             "result_value_label": result_value_label,
+            "value_in_header": True,
             "result_separator": result_separator,
             "result_summary_row": result_summary_row,
             "result_summary_icon": result_summary_icon,
@@ -11547,7 +11876,8 @@ class PyFCSApp:
                 title_wrap = max(result_width - 55, 140)
                 summary_wrap = max(result_width - 70, 140)
 
-                result_title_label.config(wraplength=title_wrap)
+                result_title_label.config(wraplength=max(120, title_wrap // 2))
+                result_value_label.config(wraplength=max(120, result_width // 2 - 35))
                 result_summary_label.config(wraplength=summary_wrap)
             except Exception:
                 pass
@@ -11606,11 +11936,10 @@ class PyFCSApp:
         left_inspector_card = refs.get("left_inspector_card") or vars_dict.get("left_inspector_card")
         full_inspector_card = refs.get("full_inspector_card") or vars_dict.get("full_inspector_card")
 
-        has_custom = (
-            vars_dict.get("secondary_mode") == "custom"
-            and vars_dict.get("secondary_custom_lab") is not None
-            and vars_dict.get("secondary_custom_rgb") is not None
-            and vars_dict.get("secondary_custom_hex") is not None
+        has_custom = any(
+            vars_dict.get(prefix + "_mode") == "custom"
+            and vars_dict.get(prefix + "_custom_lab") is not None
+            for prefix in ("primary", "secondary")
         )
 
         try:
@@ -11691,95 +12020,30 @@ class PyFCSApp:
         if membership_right is None or membership_list_canvas is None or list_inner is None:
             return
 
-        # Make sure the right column is visible.
-        try:
-            if right_side_column is not None and not right_side_column.winfo_ismapped():
-                right_side_column.grid(
-                    row=0,
-                    column=1,
-                    sticky="new",
-                    padx=(8, 0)
-                )
-        except Exception:
-            pass
-
-        # Clear old membership rows
+        # Rebuild category membership rows only when a sampled/custom color is active.
         for child in list_inner.winfo_children():
             child.destroy()
-
-        # Refresh usable graph buttons
         self._update_color_evaluation_graph_buttons(vars_dict)
 
-        has_custom_membership = (
-            sample_lab is not None
-            and vars_dict.get("secondary_mode") == "custom"
-        )
-
-        # No custom/sample color:
-        # hide Membership Degree, keep Graphs on the right.
+        has_custom_membership = sample_lab is not None
         if not has_custom_membership:
             try:
-                # Keep spacer so Graphs starts aligned with the Results card,
-                # not with the "Results" title.
-                if (
-                    membership_title_spacer is not None
-                    and not membership_title_spacer.winfo_ismapped()
-                ):
-                    membership_title_spacer.pack(
-                        side="top",
-                        fill="x",
-                        pady=(0, 8),
-                        before=graph_buttons_card
-                    )
-
                 membership_right.pack_forget()
-
-                if graph_buttons_card is not None:
-                    graph_buttons_card.pack_configure(pady=(0, 0))
-
-            except Exception:
-                pass
-
-            try:
-                membership_list_canvas.update_idletasks()
-                membership_list_canvas.configure(
-                    scrollregion=membership_list_canvas.bbox("all")
-                )
+                if right_side_column is not None:
+                    right_side_column.grid_remove()
                 membership_list_canvas.yview_moveto(0)
-            except Exception:
+            except tk.TclError:
                 pass
-
             return
 
-        # Custom/sample color active:
-        # show Membership Degree above Graphs.
         try:
-            if (
-                membership_title_spacer is not None
-                and not membership_title_spacer.winfo_ismapped()
-            ):
-                membership_title_spacer.pack(
-                    side="top",
-                    fill="x",
-                    pady=(0, 8),
-                    before=graph_buttons_card
-                )
-
-            if not membership_right.winfo_ismapped():
-                membership_right.pack(
-                    side="top",
-                    fill="x",
-                    before=graph_buttons_card
-                )
-
-            if graph_buttons_card is not None:
-                graph_buttons_card.pack_configure(pady=(8, 0))
-
+            if right_side_column is not None:
+                right_side_column.grid(row=0, column=1, sticky="new", padx=(8, 0))
+            if not membership_right.winfo_manager():
+                membership_right.pack(side="top", fill="x")
             if result_card is not None:
-                result_h = max(result_card.winfo_height(), 180)
-                membership_right.configure(height=result_h)
-
-        except Exception:
+                membership_right.configure(height=max(result_card.winfo_height(), 180))
+        except tk.TclError:
             pass
 
         memberships = self._calculate_evaluation_memberships(vars_dict, sample_lab)
@@ -11956,11 +12220,20 @@ class PyFCSApp:
         vars_dict = {
             "space_name_var": tk.StringVar(value="None"),
             "space_count_var": tk.StringVar(value="0"),
+            "space_items_label_var": tk.StringVar(value="Prototypes:"),
+            "color_search_var": tk.StringVar(value=""),
+            "category_rows": [],
+            "category_open": {},
+            "color_row_order": [],
             "color_display_mode_var": tk.StringVar(value="CIELAB"),
 
             "analysis_mode_var": tk.StringVar(value="Select a color from the list."),
             "primary_name_var": tk.StringVar(value="None"),
             "secondary_name_var": tk.StringVar(value="None"),
+            "primary_meta_var": tk.StringVar(value=""),
+            "secondary_meta_var": tk.StringVar(value=""),
+            "primary_lab_var": tk.StringVar(value=""),
+            "secondary_lab_var": tk.StringVar(value=""),
 
             "selected_result_var": tk.StringVar(value="Select a prototype from the list."),
             "selected_detail_var": tk.StringVar(value=""),
@@ -11994,6 +12267,17 @@ class PyFCSApp:
             "secondary_custom_name": "Custom Color",
 
             "analysis_view_mode": "comparison",   # "comparison" | "closest"
+            "primary_mode": "row",             # "row" | "custom"
+            "primary_custom_lab": None,
+            "primary_custom_rgb": None,
+            "primary_custom_hex": None,
+            "primary_custom_name": "Sample",
+            "primary_custom_source": "custom",
+            "secondary_custom_source": "custom",
+            "quick_samples": [],
+            "quick_samples_sequence": 0,
+            "quick_samples_target_var": tk.StringVar(value="B"),
+            "quick_samples_expanded": True,
 
             # Last Threshold Analysis action
             "active_analysis_action": None,
@@ -12021,7 +12305,7 @@ class PyFCSApp:
             try:
                 is_active = key == action_key and key != "clear"
                 button.configure(
-                    bg=UtilsTools.UI_ACCENT_HOVER if is_active else "#f8fafc",
+                    bg=UtilsTools.UI_ACCENT_SOFT if is_active else "#f8fafc",
                     fg=UtilsTools.UI_ACCENT_DARK if is_active else "#1f2937",
                     activebackground=UtilsTools.UI_ACCENT_HOVER if is_active else UtilsTools.UI_ACCENT_SOFT,
                     activeforeground=UtilsTools.UI_ACCENT_DARK if is_active else UtilsTools.UI_ACCENT,
@@ -12120,23 +12404,20 @@ class PyFCSApp:
 
         try:
             loaded = self._load_color_space_for_evaluation_from_file(filename)
-        except Exception:
-            loaded = None
+        except Exception as exc:
+            self.custom_warning(
+                "Color Space Could Not Be Loaded",
+                f"The selected file could not be read:\n{exc}",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
+            return
 
         if not loaded or not isinstance(loaded.get("color_data"), dict):
-            vars_dict["space_name_var"].set("Invalid file")
-            vars_dict["space_count_var"].set("0")
-
-            vars_dict["loaded_space_data"] = None
-            vars_dict["loaded_space_name"] = ""
-            vars_dict["loaded_space_type"] = None
-            vars_dict["loaded_fuzzy_color_space"] = None
-            vars_dict["loaded_cores"] = None
-            vars_dict["loaded_supports"] = None
-            vars_dict["loaded_prototypes"] = None
-            vars_dict["loaded_file_path"] = None
-
-            self._render_color_evaluation_cards(vars_dict, {})
+            self.custom_warning(
+                "Invalid Color Space",
+                "The selected file contains no valid color-space data.",
+                parent=getattr(self, "_color_evaluation_window", None)
+            )
             return
 
         vars_dict["loaded_space_data"] = loaded["color_data"]
@@ -12168,7 +12449,18 @@ class PyFCSApp:
         space_name = vars_dict.get("loaded_space_name", "Unnamed color space")
         valid_rows = self._extract_color_space_rows(data_source)
         vars_dict["space_name_var"].set(space_name)
-        vars_dict["space_count_var"].set(str(len(valid_rows)))
+        space = vars_dict.get("loaded_fuzzy_color_space")
+        if isinstance(space, GranularFuzzyColorSpace):
+            n_granules = sum(len(c.prototypes) for c in space.categories)
+            vars_dict["space_items_label_var"].set("Categories / granules:")
+            vars_dict["space_count_var"].set(f"{len(space.categories)} / {n_granules}")
+        else:
+            vars_dict["space_items_label_var"].set("Prototypes:")
+            vars_dict["space_count_var"].set(str(len(valid_rows)))
+        closest_button = vars_dict.get("closest_action_button")
+        if closest_button is not None:
+            closest_button.configure(text=("Find closest granule" if
+                isinstance(space, GranularFuzzyColorSpace) else "Find closest prototype"))
 
 
     def _extract_color_space_rows(self, data_source):
@@ -12179,47 +12471,13 @@ class PyFCSApp:
         return manager.extract_color_space_rows(data_source)
 
 
-    def _set_custom_color_as_evaluation_comparison(self, vars_dict, sample_lab, sample_rgb, sample_hex):
-        """Set a manually entered custom color as the active comparison color."""
-        vars_dict["comparison_mode"] = False
-        vars_dict["secondary_label"] = None
-
-        vars_dict["secondary_mode"] = "custom"
-        vars_dict["secondary_custom_lab"] = tuple(float(v) for v in sample_lab)
-        vars_dict["secondary_custom_rgb"] = tuple(int(round(v)) for v in sample_rgb)
-        vars_dict["secondary_custom_hex"] = str(sample_hex)
-        vars_dict["secondary_custom_name"] = "Custom Color"
-
-        vars_dict["closest_ranking"] = []
-        vars_dict["closest_best"] = None
-        vars_dict["closest_metric"] = None
-
-        if vars_dict.get("primary_label"):
-            vars_dict["analysis_mode_var"].set(
-                "Custom color active. Select prototypes to compare manually or use 'Find closest prototype'."
-            )
-        else:
-            vars_dict["analysis_mode_var"].set(
-                "Custom color loaded. Use 'Find closest prototype' or select a prototype."
-            )
-
-        self._refresh_color_evaluation_comparison(vars_dict)
-
-        # Repaint row highlights so only primary stays highlighted
-        for label, refs in vars_dict.get("color_row_refs", {}).items():
-            bg = "#e8f0ff" if label == vars_dict.get("primary_label") else "white"
-
-            refs["frame"].configure(bg=bg)
-            refs["content"].configure(bg=bg)
-
-            for widget in refs["widgets"]:
-                if widget is refs.get("swatch"):
-                    continue  # Use a neutral surround so the preview does not bias color comparison.
-                try:
-                    widget.configure(bg=bg)
-                except Exception:
-                    pass
-
+    def _set_custom_color_as_evaluation_comparison(self, vars_dict, sample_lab,
+                                                    sample_rgb, sample_hex,
+                                                    name="Custom Color", source="custom"):
+        """Compatibility entry point: a new external color is assigned to B."""
+        return self._use_color_evaluation_external_sample(
+            vars_dict, name=name, lab=sample_lab, rgb=sample_rgb,
+            hex_color=sample_hex, source=source, target="B")
 
     def _refresh_color_evaluation_table_display_mode(self, vars_dict):
         """
@@ -12239,19 +12497,32 @@ class PyFCSApp:
                 continue
 
             try:
-                value_label.configure(
-                    text=UtilsTools.format_lab_color_value(lab, display_mode)
-                )
+                value_label.configure(text=self._format_color_evaluation_value(
+                    lab, display_mode, rgb=refs.get("rgb")))
             except Exception:
                 value_label.configure(text="-")
 
+        # The two comparison cards use the same display mode as Explore Colors.
+        # Updating only the captions avoids recalculating memberships or ΔE.
+        self._refresh_color_evaluation_preview_values(vars_dict)
 
-    def _rotate_color_evaluation_table_display_mode(self, vars_dict):
-        """
-        Rotate the value column through the available color spaces.
-        """
+
+    def _refresh_color_evaluation_preview_values(self, vars_dict):
+        """Update both preview captions without changing their source LAB data."""
+        mode = vars_dict["color_display_mode_var"].get()
+        for side, prefix in (("A", "primary"), ("B", "secondary")):
+            sample = self._get_color_evaluation_side_sample(vars_dict, side)
+            vars_dict[prefix + "_lab_var"].set(
+                self._format_color_evaluation_value(
+                    sample["lab"], mode, rgb=sample["rgb"],
+                    hex_color=sample["hex"], card=True)
+                if sample else ""
+            )
+
+
+    def _rotate_color_evaluation_table_display_mode(self, vars_dict, direction=1):
+        """Cycle the displayed color coordinates forward or backward."""
         spaces = UtilsTools.get_supported_color_value_spaces()
-
         if not spaces:
             return
 
@@ -12263,233 +12534,575 @@ class PyFCSApp:
             current = "CIELAB"
 
         if current not in spaces:
-            next_space = spaces[0]
+            next_space = spaces[0] if direction >= 0 else spaces[-1]
         else:
-            next_space = spaces[(spaces.index(current) + 1) % len(spaces)]
+            next_space = spaces[(spaces.index(current) + (1 if direction >= 0 else -1))
+                                % len(spaces)]
 
         vars_dict["color_display_mode_var"].set(next_space)
         self._refresh_color_evaluation_table_display_mode(vars_dict)
 
 
-    def _render_color_evaluation_cards(self, vars_dict, data_source):
-        """Render color prototypes as selectable rows aligned with the header."""
-        rows_inner = vars_dict["rows_inner"]
+    @staticmethod
+    def _color_evaluation_actual_entries(data_source, fuzzy_space):
+        """Return selectable real LAB sites, grouped by their model categories.
 
+        Never evaluate a granular category via its legacy representative: a
+        category is a fuzzy union and does not have a unique comparison LAB.
+        """
+        if isinstance(fuzzy_space, GranularFuzzyColorSpace):
+            groups = []
+            for category in fuzzy_space.categories:
+                entries = []
+                for proto in category.prototypes:
+                    try:
+                        lab = np.asarray(fuzzy_space.lab_from_model(proto.positive),
+                                         dtype=float).reshape(3)
+                        if np.isfinite(lab).all():
+                            entries.append((proto.label, lab))
+                    except (TypeError, ValueError):
+                        continue
+                if entries:
+                    groups.append((category.label, entries))
+            return groups
+        groups = []
+        if isinstance(data_source, dict):
+            for label, value in data_source.items():
+                if not isinstance(value, dict):
+                    continue
+                lab = value.get("positive_prototype", value.get("Color"))
+                try:
+                    lab = np.asarray(lab, dtype=float).reshape(3)
+                    if np.isfinite(lab).all():
+                        groups.append((label, [(label, lab)]))
+                except (TypeError, ValueError):
+                    continue
+        return groups
+
+    @staticmethod
+    def _color_evaluation_lab_caption(lab):
+        try:
+            return f"LAB: {float(lab[0]):.2f}, {float(lab[1]):.2f}, {float(lab[2]):.2f}"
+        except (TypeError, IndexError, ValueError):
+            return ""
+
+    @staticmethod
+    def _format_color_evaluation_value(lab, display_mode, *, rgb=None,
+                                       hex_color=None, card=False):
+        """Format color coordinates consistently in the explorer and previews.
+
+        In particular, keep the RGB of an actual sampled pixel rather than
+        converting its stored, full-precision LAB values back into RGB.
+        """
+        try:
+            mode = UtilsTools.normalize_color_value_space(display_mode)
+            if mode == "RGB":
+                values = (UtilsTools.safe_rgb_tuple(rgb) if rgb is not None else
+                          UtilsTools.lab_to_color_value(lab, "RGB"))
+                r, g, b = (int(component) for component in values)
+                text = f"R={r}, G={g}, B={b}"
+                return f"RGB: {text}" if card else text
+            if mode == "CIELAB" and card:
+                return PyFCSApp._color_evaluation_lab_caption(lab)
+            if mode == "HEX" and hex_color and card:
+                return f"HEX: {str(hex_color).upper()}"
+            text = UtilsTools.format_lab_color_value(lab, mode)
+            if not card:
+                return text
+            prefix = {"HEX": "HEX", "CIELUV": "LUV", "LCh": "LCh",
+                      "CIE1931": "CIE1931"}.get(mode, mode)
+            return f"{prefix}: {text}"
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return ""
+
+    def _highlight_color_evaluation_rows(self, vars_dict):
+        """Refresh selection colors in-place without rebuilding entry widgets."""
+        primary = vars_dict.get("primary_label")
+        secondary = vars_dict.get("secondary_label") if vars_dict.get("secondary_mode") == "row" else None
+        for info in vars_dict.get("category_rows", []):
+            if info.get("single"):
+                selected = info["labels"][0] in (primary, secondary)
+                info["header"].configure(bg="#e8f0ff" if selected else "#f1f3f8")
+                for child in info["header"].winfo_children():
+                    if not isinstance(child, tk.Canvas):
+                        try:
+                            child.configure(bg="#e8f0ff" if selected else "#f1f3f8")
+                            for subchild in child.winfo_children():
+                                subchild.configure(bg="#e8f0ff" if selected else "#f1f3f8")
+                        except (tk.TclError, ValueError):
+                            pass
+        for key, refs in vars_dict.get("color_row_refs", {}).items():
+            bg = ("#e9e1ff" if key == primary == secondary else
+                  "#e8f0ff" if key == primary else
+                  "#f1e8ff" if key == secondary else "white")
+            refs["frame"].configure(bg=bg, highlightbackground=(
+                UtilsTools.UI_ACCENT if key in (primary, secondary) else "#e5e7eb"))
+            refs["content"].configure(bg=bg)
+            for widget in refs["widgets"]:
+                if widget is refs.get("swatch"):
+                    continue
+                try:
+                    widget.configure(bg=bg)
+                except (tk.TclError, ValueError):
+                    pass
+
+    def _render_color_evaluation_cards(self, vars_dict, data_source):
+        """Build the searchable atomic/granular color explorer.
+
+        Category headings only expand/collapse. A selectable row always refers
+        to a real prototype/granule and supports comparisons within a category.
+        """
+        rows_inner = vars_dict["rows_inner"]
         for child in rows_inner.winfo_children():
             child.destroy()
-
         vars_dict["color_row_refs"] = {}
+        vars_dict["category_rows"] = []
+        vars_dict["color_row_order"] = []
+        vars_dict["category_open"] = {}
         vars_dict["primary_label"] = None
+        vars_dict["primary_mode"] = "row"
+        vars_dict["primary_custom_lab"] = None
+        vars_dict["primary_custom_rgb"] = None
+        vars_dict["primary_custom_hex"] = None
         vars_dict["secondary_label"] = None
         vars_dict["comparison_mode"] = False
         vars_dict["analysis_view_mode"] = "comparison"
-
         vars_dict["secondary_mode"] = None
         vars_dict["secondary_custom_lab"] = None
         vars_dict["secondary_custom_rgb"] = None
         vars_dict["secondary_custom_hex"] = None
         vars_dict["secondary_custom_name"] = "Custom Color"
-
-        # Reset the active analysis action when a different color space is accepted.
         self._set_color_evaluation_active_action(vars_dict, None)
-
         vars_dict["analysis_mode_var"].set("Select a color from the list.")
 
-        rows = self._extract_color_space_rows(data_source)
-
-        if not rows:
-            tk.Label(
-                rows_inner,
-                text="No color space data available.",
-                anchor="w",
-                bg="white",
-                font=("Sans", 10)
-            ).pack(fill="x", padx=12, pady=12)
-
+        space = vars_dict.get("loaded_fuzzy_color_space")
+        is_granular = isinstance(space, GranularFuzzyColorSpace)
+        groups = self._color_evaluation_actual_entries(data_source, space)
+        if not groups:
+            tk.Label(rows_inner, text="No color space data available.", bg="white",
+                     fg="#6b7280", font=("Segoe UI", 10)).pack(padx=12, pady=16)
             self._clear_color_evaluation_analysis(vars_dict)
             return
 
-        def _get_display_mode():
-            try:
-                return vars_dict["color_display_mode_var"].get()
-            except Exception:
-                return "CIELAB"
-
-        def _highlight_rows():
-            primary = vars_dict.get("primary_label")
-            secondary = vars_dict.get("secondary_label")
-
-            for label, refs in vars_dict["color_row_refs"].items():
-                if label == primary and label == secondary:
-                    bg = "#e9e1ff"
-                elif label == primary:
-                    bg = "#e8f0ff"
-                elif label == secondary:
-                    bg = "#f1e8ff"
-                else:
-                    bg = "white"
-
-                refs["frame"].configure(bg=bg)
-                refs["content"].configure(bg=bg)
-
-                for widget in refs["widgets"]:
-                    if widget is refs.get("swatch"):
-                        continue  # Use a neutral surround so the preview does not bias color comparison.
-                    try:
-                        widget.configure(bg=bg)
-                    except Exception:
-                        pass
-
-        def _on_select_row(label):
-            refs_map = vars_dict["color_row_refs"]
-
-            if label not in refs_map:
+        def _select(label):
+            if label not in vars_dict["color_row_refs"]:
                 return
-
-            if vars_dict.get("comparison_mode", False):
+            if vars_dict.get("comparison_mode"):
                 primary = vars_dict.get("primary_label")
-
-                if primary is None:
+                if primary is None and vars_dict.get("primary_mode") != "custom":
                     vars_dict["primary_label"] = label
                     vars_dict["secondary_label"] = None
-
                     vars_dict["secondary_mode"] = None
-                    vars_dict["secondary_custom_lab"] = None
-                    vars_dict["secondary_custom_rgb"] = None
-                    vars_dict["secondary_custom_hex"] = None
-
+                    vars_dict["analysis_mode_var"].set("Choose a reference color to compare.")
+                elif label == primary:
                     vars_dict["analysis_mode_var"].set(
-                        "Primary color selected. Choose another color to compare."
-                    )
+                        "Choose a different color or granule for the reference.")
+                    return
                 else:
-                    if label == primary:
-                        vars_dict["analysis_mode_var"].set(
-                            "Comparison mode active. Choose a different color than the selected one."
-                        )
-                        self._refresh_color_evaluation_comparison(vars_dict)
-                        _highlight_rows()
-                        return
-
                     vars_dict["secondary_label"] = label
                     vars_dict["secondary_mode"] = "row"
-
                     vars_dict["secondary_custom_lab"] = None
                     vars_dict["secondary_custom_rgb"] = None
                     vars_dict["secondary_custom_hex"] = None
-
                     vars_dict["analysis_mode_var"].set(
-                        "Comparison mode active. Click another color to update the comparison or clear it to exit."
-                    )
+                        "Comparison active. Select another reference or clear comparison.")
             else:
                 vars_dict["primary_label"] = label
+                vars_dict["primary_mode"] = "row"
+                vars_dict["primary_custom_lab"] = None
                 vars_dict["secondary_label"] = None
-
-                if (
-                    vars_dict.get("secondary_mode") == "custom"
-                    and vars_dict.get("secondary_custom_lab") is not None
-                ):
+                if vars_dict.get("secondary_mode") == "custom" and vars_dict.get("secondary_custom_lab") is not None:
                     vars_dict["analysis_mode_var"].set(
-                        "Custom comparison active. Click different selected colors to compare against the custom color."
-                    )
+                        "Custom comparison active. Select another color to compare.")
                 else:
                     vars_dict["analysis_mode_var"].set("Single color selected.")
-
+            refs = vars_dict["color_row_refs"][label]
+            self._add_color_evaluation_quick_sample(
+                vars_dict, name=label, lab=refs["lab"], rgb=refs["rgb"],
+                hex_color=refs["hex"], source="granule" if refs.get("category") else "prototype",
+                category=refs.get("category"), row_label=label)
             self._refresh_color_evaluation_comparison(vars_dict)
-            _highlight_rows()
+            self._highlight_color_evaluation_rows(vars_dict)
 
-        for label, lab in rows:
+        def _make_entry(parent, label, lab, category=None):
             try:
                 rgb = UtilsTools.lab_to_rgb(lab)
                 rgb = tuple(max(0, min(255, int(round(v)))) for v in rgb)
             except Exception:
                 rgb = (200, 200, 200)
-
             hex_color = self._safe_hex_from_rgb(rgb)
-
-            row = tk.Frame(
-                rows_inner,
-                bg="white",
-                bd=1,
-                relief="solid",
-                cursor="hand2"
-            )
-            row.pack(fill="x", padx=7, pady=2)
-
-            content = tk.Frame(row, bg="white")
-            content.pack(fill="x", padx=7, pady=4)
-
-            content.grid_columnconfigure(0, minsize=110)
-            content.grid_columnconfigure(1, minsize=180)
-            content.grid_columnconfigure(2, minsize=245)
-            content.grid_columnconfigure(3, weight=1)
-
-            # Keep color swatches large enough for visual comparison.
-            # Its immediate surround stays neutral even when a row is selected,
-            # so the blue/lilac row highlighting cannot tint the swatch.
-            swatch = tk.Canvas(
-                content,
-                width=94,
-                height=44,
-                bg="#f1f1f1",
-                highlightthickness=0
-            )
-            swatch.grid(row=0, column=0, sticky="w", padx=(5, 4), pady=2)
-
-            swatch.create_rectangle(
-                4, 4, 90, 40,
-                fill=hex_color,
-                outline="#505050",
-                width=1
-            )
-
-            lbl_name = tk.Label(
-                content,
-                text=label,
-                anchor="w",
-                justify="left",
-                bg="white",
-                font=("Segoe UI", 9, "bold")
-            )
-            lbl_name.grid(row=0, column=1, sticky="w", padx=(2, 2))
-
-            lbl_value = tk.Label(
-                content,
-                text=UtilsTools.format_lab_color_value(lab, _get_display_mode()),
-                anchor="center",
-                justify="center",
-                bg="white",
-                font=("Consolas", 9)
-            )
-            lbl_value.grid(row=0, column=2, sticky="w", padx=(2, 8))
-
-            widgets = [
-                swatch,
-                lbl_name,
-                lbl_value,
-            ]
-
+            row = tk.Frame(parent, bg="white", highlightthickness=1,
+                           highlightbackground="#e5e7eb", cursor="hand2")
+            row.pack(fill="x", padx=(13 if category else 8, 8), pady=3)
+            content = tk.Frame(row, bg="white", cursor="hand2")
+            content.pack(fill="x", padx=8, pady=6)
+            swatch = tk.Canvas(content, width=70, height=58, bg="#f1f1f1",
+                               highlightthickness=0, bd=0, cursor="hand2")
+            swatch.pack(side="left", padx=(0, 10))
+            swatch.create_rectangle(4, 4, 66, 54, fill=hex_color,
+                                     outline="#686f78", width=1)
+            details = tk.Frame(content, bg="white", cursor="hand2")
+            details.pack(side="left", fill="both", expand=True)
+            name = tk.Label(details, text=label, bg="white", fg="#243043",
+                            anchor="w", font=("Segoe UI", 10, "bold"),
+                            cursor="hand2")
+            name.pack(anchor="w")
+            if category:
+                subtitle = tk.Label(details, text=f"Granule · {category}",
+                                    bg="white", fg="#697386", anchor="w",
+                                    font=("Segoe UI", 8), cursor="hand2")
+                subtitle.pack(anchor="w", pady=(1, 0))
+            else:
+                subtitle = None
+            value = tk.Label(details, text=self._format_color_evaluation_value(
+                lab, vars_dict["color_display_mode_var"].get(), rgb=rgb),
+                bg="white", fg="#526074", anchor="w", justify="left",
+                wraplength=280, font=("Consolas", 8), cursor="hand2")
+            value.pack(anchor="w", fill="x", pady=(3, 0))
+            widgets = [content, name, value, details]
+            if subtitle is not None:
+                widgets.append(subtitle)
             vars_dict["color_row_refs"][label] = {
-                "frame": row,
-                "content": content,
-                "widgets": widgets,
-                "lab": lab,
-                "rgb": rgb,
-                "hex": hex_color,
-                "swatch": swatch,
-                "value_label": lbl_value,
+                "frame": row, "content": content, "widgets": widgets,
+                "lab": lab, "rgb": rgb, "hex": hex_color,
+                "swatch": swatch, "value_label": value, "category": category,
             }
+            vars_dict["color_row_order"].append(label)
+            for widget in (row, content, swatch, details, name, value):
+                widget.bind("<Button-1>", lambda e, key=label: _select(key))
+            if subtitle is not None:
+                subtitle.bind("<Button-1>", lambda e, key=label: _select(key))
+            return row
 
-            for widget in [row, content, *widgets]:
-                widget.bind("<Button-1>", lambda e, lbl=label: _on_select_row(lbl))
+        for category, entries in groups:
+            if not is_granular:
+                _make_entry(rows_inner, entries[0][0], entries[0][1])
+                continue
+            group_frame = tk.Frame(rows_inner, bg="white")
+            group_frame.pack(fill="x", pady=(2, 0))
+            category_header = tk.Frame(group_frame, bg="#f1f3f8", cursor="hand2")
+            category_header.pack(fill="x", padx=7, pady=(3, 2))
+            multi_swatch = tk.Canvas(category_header, width=70, height=54,
+                                     bg="#f1f3f8", highlightthickness=0,
+                                     cursor="hand2")
+            multi_swatch.pack(side="left", padx=(9, 9), pady=5)
+            shown = entries[:3]
+            swatch_width = 64 / max(1, len(shown))
+            for idx, (_, candidate_lab) in enumerate(shown):
+                try:
+                    color = UtilsTools.lab_to_hex(candidate_lab)
+                except Exception:
+                    color = "#cccccc"
+                x1 = 3 + idx * swatch_width
+                x2 = 3 + (idx + 1) * swatch_width
+                multi_swatch.create_rectangle(x1, 4, x2, 49,
+                                               fill=color, outline="#808891", width=1)
+            title_holder = tk.Frame(category_header, bg="#f1f3f8", cursor="hand2")
+            title_holder.pack(side="left", fill="x", expand=True)
+            title = tk.Label(title_holder, text=category, bg="#f1f3f8",
+                             fg="#283449", font=("Segoe UI", 10, "bold"),
+                             anchor="w", cursor="hand2")
+            title.pack(anchor="w")
+            subtitle = tk.Label(title_holder,
+                                text=("1 granule · click to evaluate" if len(entries) == 1
+                                      else f"{len(entries)} granules · choose a granule"),
+                                bg="#f1f3f8", fg="#697386",
+                                font=("Segoe UI", 8), anchor="w", cursor="hand2")
+            subtitle.pack(anchor="w", pady=(2, 0))
+            arrow = tk.Label(category_header, text="▸", bg="#f1f3f8",
+                             fg=UtilsTools.UI_ACCENT, font=("Segoe UI", 13, "bold"),
+                             cursor="hand2")
+            arrow.pack(side="right", padx=12)
+            children = tk.Frame(group_frame, bg="white")
+            labels = []
+            for label, lab in entries:
+                _make_entry(children, label, lab, category)
+                labels.append(label)
+            info = {"label": category, "frame": group_frame, "children": children,
+                    "header": category_header, "arrow": arrow, "labels": labels,
+                    "single": len(entries) == 1, "open": False}
+            vars_dict["category_rows"].append(info)
+            vars_dict["category_open"][category] = False
+            def _toggle(event=None, current=info):
+                current["open"] = not current["open"]
+                vars_dict["category_open"][current["label"]] = current["open"]
+                self._filter_color_evaluation_entries(vars_dict)
+            if len(entries) == 1:
+                arrow.configure(text="")
+            for widget in (category_header, multi_swatch, title_holder, title, subtitle, arrow):
+                if len(entries) == 1:
+                    widget.bind("<Button-1>", lambda e, key=labels[0]: _select(key))
+                else:
+                    widget.bind("<Button-1>", _toggle)
 
-        if rows:
-            first_label = rows[0][0]
-            vars_dict["primary_label"] = first_label
+        if is_granular and vars_dict["category_rows"]:
+            vars_dict["category_rows"][0]["open"] = True
+            vars_dict["category_open"][vars_dict["category_rows"][0]["label"]] = True
+        self._filter_color_evaluation_entries(vars_dict)
+        first_label = vars_dict["color_row_order"][0]
+        vars_dict["primary_label"] = first_label
+        vars_dict["primary_mode"] = "row"
+        vars_dict["analysis_mode_var"].set("Single color selected.")
+        self._refresh_color_evaluation_comparison(vars_dict)
+        self._highlight_color_evaluation_rows(vars_dict)
+        # A StringVar trace is recreated with each window; remove an old one
+        # when reloading the data so search remains one callback per edit.
+        if not vars_dict.get("search_trace_registered"):
+            vars_dict["color_search_var"].trace_add(
+                "write", lambda *_: self._filter_color_evaluation_entries(vars_dict))
+            vars_dict["search_trace_registered"] = True
+
+    def _filter_color_evaluation_entries(self, vars_dict):
+        """Filter prebuilt rows, retaining the color-space's original order."""
+        query = vars_dict["color_search_var"].get().strip().casefold()
+        category_rows = vars_dict.get("category_rows", [])
+        if category_rows:
+            # Repack only existing frames in model order, not in the order in
+            # which a search query happened to reveal them.
+            for info in category_rows:
+                info["frame"].pack_forget()
+            for info in category_rows:
+                category_match = query in info["label"].casefold()
+                child_matches = {label for label in info["labels"]
+                                 if query in label.casefold()}
+                show_group = not query or category_match or bool(child_matches)
+                if show_group:
+                    info["frame"].pack(fill="x", pady=(2, 0))
+                for label in info["labels"]:
+                    vars_dict["color_row_refs"][label]["frame"].pack_forget()
+                for label in info["labels"]:
+                    if not query or category_match or label in child_matches:
+                        vars_dict["color_row_refs"][label]["frame"].pack(
+                            fill="x", padx=(13, 8), pady=3)
+                expanded = bool(info["open"] or (query and show_group))
+                if expanded and show_group and not info.get("single"):
+                    info["children"].pack(fill="x")
+                else:
+                    info["children"].pack_forget()
+                if not info.get("single"):
+                    info["arrow"].configure(text="▾" if expanded else "▸")
+        else:
+            for label in vars_dict.get("color_row_order", []):
+                vars_dict["color_row_refs"][label]["frame"].pack_forget()
+            for label in vars_dict.get("color_row_order", []):
+                if query in label.casefold():
+                    vars_dict["color_row_refs"][label]["frame"].pack(
+                        fill="x", padx=(8, 8), pady=3)
+
+
+    @staticmethod
+    def _evaluation_sample_snapshot(name, lab, rgb, hex_color, source="custom",
+                                    category=None, row_label=None):
+        """Validated, independent copy of an actual LAB color (never a category mean)."""
+        lab = tuple(float(value) for value in np.asarray(lab, dtype=float).reshape(3))
+        if not np.isfinite(lab).all():
+            raise ValueError("Sample LAB coordinates must be finite.")
+        rgb = UtilsTools.safe_rgb_tuple(rgb)
+        hex_color = str(hex_color).strip()
+        if not hex_color.startswith("#") or len(hex_color) != 7:
+            hex_color = UtilsTools.rgb_to_hex(rgb)
+        return {
+            "name": str(name).strip() or "Sample",
+            "lab": lab, "rgb": tuple(rgb), "hex": hex_color,
+            "source": str(source or "custom"),
+            "category": category, "row_label": row_label,
+        }
+
+    def _add_color_evaluation_quick_sample(self, vars_dict, name, lab, rgb,
+                                           hex_color, source="custom",
+                                           category=None, row_label=None):
+        """Remember recent colors, preserving original LAB precision and pins."""
+        try:
+            sample = self._evaluation_sample_snapshot(
+                name, lab, rgb, hex_color, source, category, row_label)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        history = vars_dict.setdefault("quick_samples", [])
+        signature = (sample["row_label"], sample["source"], sample["name"],
+                     tuple(round(c, 8) for c in sample["lab"]))
+        existing = next((item for item in history if item.get("signature") == signature), None)
+        if existing is not None:
+            history.remove(existing)
+            history.insert(0, existing)
+            item = existing
+        else:
+            vars_dict["quick_samples_sequence"] = vars_dict.get("quick_samples_sequence", 0) + 1
+            item = dict(sample, id=vars_dict["quick_samples_sequence"],
+                        pinned=False, signature=signature)
+            history.insert(0, item)
+        # Keep at most 12 unpinned samples; pinned ones are deliberately retained.
+        recent = 0
+        for saved in list(history):
+            if not saved["pinned"]:
+                recent += 1
+                if recent > 12:
+                    history.remove(saved)
+        self._render_color_evaluation_quick_samples(vars_dict)
+        return item
+
+    def _render_color_evaluation_quick_samples(self, vars_dict):
+        """Update the horizontal thumbnail strip without rebuilding the main UI."""
+        outer = vars_dict.get("quick_samples_outer")
+        inner = vars_dict.get("quick_samples_tiles")
+        if outer is None or inner is None:
+            return
+        history = vars_dict.get("quick_samples", [])
+        # Keep the Quick Samples header visible even before the first sample;
+        # otherwise the new workflow looks identical to the previous version.
+        if not outer.winfo_manager():
+            outer.pack(fill="x", pady=(0, 5), after=vars_dict.get("quick_samples_after"))
+        # Widgets are rebuilt only when the actual sample history changes.
+        for child in inner.winfo_children():
+            child.destroy()
+        for item in ([row for row in history if row["pinned"]]
+                     + [row for row in history if not row["pinned"]]):
+            # Color-only thumbnails: names and precise values are retained in
+            # the history and shown when selected, not repeated in the strip.
+            tile = tk.Frame(inner, bg="white", highlightthickness=1,
+                            highlightbackground="#d7dce5")
+            tile.pack(side="left", padx=3, pady=2)
+            swatch = tk.Canvas(tile, width=42, height=39, bd=0,
+                               highlightthickness=0, bg="white", cursor="hand2")
+            swatch.create_rectangle(3, 3, 39, 36, fill=item["hex"],
+                                    outline="#7f8793", width=1)
+            swatch.pack(side="left", padx=(3, 1), pady=3)
+            swatch.bind("<Button-1>",
+                        lambda _event, sid=item["id"]:
+                        self._select_color_evaluation_quick_sample(vars_dict, sid))
+            tk.Button(
+                tile, text="★" if item["pinned"] else "☆",
+                font=("Segoe UI", 9), relief="flat", bd=0, bg="white",
+                fg=UtilsTools.UI_ACCENT if item["pinned"] else "#718096",
+                activebackground=UtilsTools.UI_ACCENT_SOFT,
+                cursor="hand2", padx=1, pady=0,
+                command=lambda sid=item["id"]: self._pin_color_evaluation_sample(vars_dict, sid)
+            ).pack(side="left", padx=(0, 2), anchor="n")
+        vars_dict["quick_samples_title_btn"].configure(
+            text=("▾" if vars_dict.get("quick_samples_expanded", True) else "▸")
+            + f"  Quick Samples ({len(history)})")
+        body = vars_dict["quick_samples_body"]
+        canvas = vars_dict["quick_samples_canvas"]
+        scroll = vars_dict["quick_samples_scroll"]
+        empty_label = vars_dict["quick_samples_empty_label"]
+        if not vars_dict.get("quick_samples_expanded", True):
+            body.pack_forget()
+            return
+        body.pack(fill="x", padx=6, pady=(0, 1))
+        if history:
+            empty_label.pack_forget()
+            canvas.pack(fill="x", expand=True)
+            # The canvas resize callback shows horizontal scroll only if needed.
+        else:
+            canvas.pack_forget()
+            scroll.pack_forget()
+            empty_label.pack(fill="x", padx=4, pady=(2, 4))
+
+    def _toggle_color_evaluation_quick_samples(self, vars_dict):
+        vars_dict["quick_samples_expanded"] = not vars_dict.get("quick_samples_expanded", True)
+        self._render_color_evaluation_quick_samples(vars_dict)
+
+    def _pin_color_evaluation_sample(self, vars_dict, sample_id):
+        for item in vars_dict.get("quick_samples", []):
+            if item["id"] == sample_id:
+                item["pinned"] = not item["pinned"]
+                break
+        self._render_color_evaluation_quick_samples(vars_dict)
+
+    def _clear_color_evaluation_recent_samples(self, vars_dict):
+        vars_dict["quick_samples"] = [item for item in vars_dict.get("quick_samples", [])
+                                       if item["pinned"]]
+        self._render_color_evaluation_quick_samples(vars_dict)
+
+    def _get_color_evaluation_side_sample(self, vars_dict, side):
+        """Return an independent sample for A or B, whether a row or an external color."""
+        is_a = side == "A"
+        mode = vars_dict.get("primary_mode", "row") if is_a else vars_dict.get("secondary_mode")
+        prefix = "primary" if is_a else "secondary"
+        if mode == "custom":
+            lab = vars_dict.get(prefix + "_custom_lab")
+            rgb = vars_dict.get(prefix + "_custom_rgb")
+            hx = vars_dict.get(prefix + "_custom_hex")
+            if lab is None or rgb is None or hx is None:
+                return None
+            return self._evaluation_sample_snapshot(
+                vars_dict.get(prefix + "_custom_name", "Sample"), lab, rgb, hx,
+                vars_dict.get(prefix + "_custom_source", "custom"))
+        if mode == "row" or (is_a and mode is None):
+            label = vars_dict.get(prefix + "_label")
+            refs = vars_dict.get("color_row_refs", {}).get(label)
+            if refs is not None:
+                return self._evaluation_sample_snapshot(
+                    label, refs["lab"], refs["rgb"], refs["hex"],
+                    "granule" if refs.get("category") else "prototype",
+                    refs.get("category"), label)
+        return None
+
+    def _set_color_evaluation_side_sample(self, vars_dict, side, sample):
+        """Assign A/B without recomputing until both sides are ready."""
+        prefix = "primary" if side == "A" else "secondary"
+        label = sample.get("row_label") if sample else None
+        refs = vars_dict.get("color_row_refs", {}).get(label)
+        # After loading another space, old row snapshots become external samples.
+        matching_row = bool(refs is not None and np.allclose(
+            np.asarray(refs["lab"]), np.asarray(sample["lab"]), rtol=0, atol=1e-7)) if sample else False
+        if matching_row:
+            vars_dict[prefix + "_mode"] = "row"
+            vars_dict[prefix + "_label"] = label
+            vars_dict[prefix + "_custom_lab"] = None
+            vars_dict[prefix + "_custom_rgb"] = None
+            vars_dict[prefix + "_custom_hex"] = None
+        elif sample is not None:
+            vars_dict[prefix + "_mode"] = "custom"
+            vars_dict[prefix + "_label"] = None
+            vars_dict[prefix + "_custom_lab"] = sample["lab"]
+            vars_dict[prefix + "_custom_rgb"] = sample["rgb"]
+            vars_dict[prefix + "_custom_hex"] = sample["hex"]
+            vars_dict[prefix + "_custom_name"] = sample["name"]
+            vars_dict[prefix + "_custom_source"] = sample["source"]
+        elif side == "B":
+            vars_dict["secondary_mode"] = None
             vars_dict["secondary_label"] = None
-            vars_dict["analysis_mode_var"].set("Single color selected.")
-            self._refresh_color_evaluation_comparison(vars_dict)
-            _highlight_rows()
+        vars_dict["comparison_mode"] = False
+        vars_dict["analysis_view_mode"] = "comparison"
+        vars_dict["closest_ranking"] = []
+        vars_dict["closest_best"] = None
+        vars_dict["closest_metric"] = None
 
+    def _select_color_evaluation_quick_sample(self, vars_dict, sample_id):
+        """Immediately compare the selected saved color against the other side."""
+        item = next((item for item in vars_dict.get("quick_samples", [])
+                     if item["id"] == sample_id), None)
+        if item is None:
+            return
+        history = vars_dict["quick_samples"]
+        history.remove(item)
+        history.insert(0, item)
+        self._render_color_evaluation_quick_samples(vars_dict)
+        side = vars_dict["quick_samples_target_var"].get()
+        self._set_color_evaluation_side_sample(vars_dict, side, item)
+        vars_dict["analysis_mode_var"].set(
+            "Comparison active. Select another sample or reference." if
+            self._get_color_evaluation_side_sample(vars_dict, "B") else "Sample selected.")
+        self._refresh_color_evaluation_comparison(vars_dict)
+        self._highlight_color_evaluation_rows(vars_dict)
+
+    def _use_color_evaluation_external_sample(self, vars_dict, *, name, lab,
+                                              rgb, hex_color, source="custom", target="B"):
+        """Save and use one externally supplied color, leaving its picker open."""
+        item = self._add_color_evaluation_quick_sample(
+            vars_dict, name=name, lab=lab, rgb=rgb,
+            hex_color=hex_color, source=source)
+        if item is None:
+            self.custom_warning("Invalid Sample", "The selected color is not valid.",
+                                parent=getattr(self, "_color_evaluation_window", None))
+            return False
+        self._set_color_evaluation_side_sample(vars_dict, target, item)
+        vars_dict["quick_samples_target_var"].set(target)
+        vars_dict["analysis_mode_var"].set(
+            f"{name} added to {self._get_color_evaluation_target_display_name(target)}. Choose another sample to continue comparing.")
+        self._refresh_color_evaluation_comparison(vars_dict)
+        self._highlight_color_evaluation_rows(vars_dict)
+        return True
 
     def _get_color_evaluation_manager(self):
         """
@@ -12507,10 +13120,17 @@ class PyFCSApp:
         return manager
 
 
+    def _get_color_evaluation_target_display_name(self, side):
+        """Return the UI display name for a comparison side."""
+        return "Selected" if str(side).upper() == "A" else "Reference"
+
+
     def _clear_color_evaluation_analysis(self, vars_dict):
         """Reset the analysis panel."""
         vars_dict["primary_name_var"].set("None")
         vars_dict["secondary_name_var"].set("None")
+        for key in ("primary_meta_var", "secondary_meta_var", "primary_lab_var", "secondary_lab_var"):
+            vars_dict[key].set("")
 
         vars_dict["primary_swatch"].itemconfig(vars_dict["primary_rect"], fill="#cccccc")
         vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
@@ -12533,9 +13153,20 @@ class PyFCSApp:
         self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
 
 
+    def _swap_color_evaluation_rows(self, vars_dict):
+        """Exchange A and B, including custom/image colors and precise LAB values."""
+        first = self._get_color_evaluation_side_sample(vars_dict, "A")
+        second = self._get_color_evaluation_side_sample(vars_dict, "B")
+        if first is None or second is None:
+            return
+        self._set_color_evaluation_side_sample(vars_dict, "A", second)
+        self._set_color_evaluation_side_sample(vars_dict, "B", first)
+        self._refresh_color_evaluation_comparison(vars_dict)
+        self._highlight_color_evaluation_rows(vars_dict)
+
     def _enable_color_evaluation_comparison_mode(self, vars_dict):
         """Enable comparison mode so clicked colors become comparison colors."""
-        primary = vars_dict.get("primary_label")
+        primary = self._get_color_evaluation_side_sample(vars_dict, "A")
 
         if primary is None:
             vars_dict["comparison_mode"] = False
@@ -12562,7 +13193,7 @@ class PyFCSApp:
             vars_dict["secondary_custom_hex"] = None
             vars_dict["secondary_custom_name"] = "Custom Color"
 
-        if vars_dict.get("primary_label"):
+        if self._get_color_evaluation_side_sample(vars_dict, "A") is not None:
             vars_dict["analysis_mode_var"].set("Single color selected.")
         else:
             vars_dict["analysis_mode_var"].set("Select a color from the list.")
@@ -12585,169 +13216,66 @@ class PyFCSApp:
 
 
     def _refresh_color_evaluation_comparison(self, vars_dict):
-        """
-        Refresh the right-side analysis panel for single, row-comparison, or custom-comparison mode.
-        """
+        """Update the analysis from two real LAB samples (rows or external colors)."""
         vars_dict["analysis_view_mode"] = "comparison"
-
-        refs_map = vars_dict.get("color_row_refs", {})
-        primary_label = vars_dict.get("primary_label")
-        secondary_label = vars_dict.get("secondary_label")
-        secondary_mode = vars_dict.get("secondary_mode")
-
         self._set_color_evaluation_inspector_layout(vars_dict)
-
-        primary_refs = refs_map.get(primary_label)
-        secondary_refs = refs_map.get(secondary_label)
-
-        if not primary_refs:
+        first = self._get_color_evaluation_side_sample(vars_dict, "A")
+        second = self._get_color_evaluation_side_sample(vars_dict, "B")
+        swap = vars_dict.get("swap_color_button")
+        if swap is not None:
+            swap.configure(state="normal" if first and second else "disabled")
+        if first is None:
             self._clear_color_evaluation_analysis(vars_dict)
             return
 
-        p_lab = primary_refs["lab"]
-        p_rgb = primary_refs.get("rgb")
-        p_hex = primary_refs["hex"]
+        def update_side(side, sample):
+            prefix = "primary" if side == "A" else "secondary"
+            vars_dict[prefix + "_name_var"].set(sample["name"] if sample else "None")
+            vars_dict[prefix + "_meta_var"].set(
+                (f"Granule · {sample['category']}" if sample.get("category") else
+                 "" if sample.get("row_label") else
+                 "Image sample" if sample["source"].startswith("image") else
+                 "Custom / saved sample") if sample else "")
+            vars_dict[prefix + "_lab_var"].set(
+                self._format_color_evaluation_value(
+                    sample["lab"], vars_dict["color_display_mode_var"].get(),
+                    rgb=sample["rgb"], hex_color=sample["hex"], card=True)
+                if sample else "")
+            vars_dict[prefix + "_swatch"].itemconfig(
+                vars_dict[prefix + "_rect"], fill=sample["hex"] if sample else "#f0f0f0")
 
-        vars_dict["primary_name_var"].set(primary_label)
-        vars_dict["primary_swatch"].itemconfig(vars_dict["primary_rect"], fill=p_hex)
-
+        update_side("A", first)
+        update_side("B", second)
+        active = second if second else first
         self._update_color_evaluation_conversion_inspector(
-            vars_dict=vars_dict,
-            lab=p_lab,
-            rgb=p_rgb,
-            hex_color=p_hex,
-            name=primary_label,
-            source="prototype"
-        )
+            vars_dict=vars_dict, lab=active["lab"], rgb=active["rgb"],
+            hex_color=active["hex"], name=active["name"], source=active["source"])
+        external = next((s for s in (second, first) if s is not None
+                         and not s.get("row_label")), None)
+        self._update_color_evaluation_membership_panel(
+            vars_dict, sample_lab=external["lab"] if external else None)
 
-        if secondary_mode not in ("row", "custom"):
-            vars_dict["secondary_name_var"].set("None")
-            vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
-
+        if second is None:
             self._update_color_evaluation_result_card(
-                vars_dict=vars_dict,
-                title="Single color selected. Comparison not active.",
-                detail="",
-                summary=(
-                    "Use 'Compare with another color' to evaluate the selected color "
-                    "against a second prototype, or 'Evaluate custom color' to compare it "
-                    "against a manually entered color."
-                ),
-                status="unavailable"
-            )
-
-            if (
-                vars_dict.get("secondary_custom_lab") is not None
-                and vars_dict.get("secondary_custom_rgb") is not None
-                and vars_dict.get("secondary_custom_hex") is not None
-            ):
-                self._update_color_evaluation_conversion_inspector(
-                    vars_dict=vars_dict,
-                    lab=vars_dict.get("secondary_custom_lab"),
-                    rgb=vars_dict.get("secondary_custom_rgb"),
-                    hex_color=vars_dict.get("secondary_custom_hex"),
-                    name=vars_dict.get("secondary_custom_name", "Custom Color"),
-                    source="custom"
-                )
-
-            self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
+                vars_dict, title="Single color selected. Comparison not active.",
+                detail="", summary=("Select another color, add a custom/image sample, "
+                                    "or reuse a color from Quick Samples."),
+                status="unavailable")
+            self._update_color_evaluation_graph_buttons(vars_dict)
             return
-
-        if secondary_mode == "row":
-            if not secondary_refs:
-                vars_dict["secondary_name_var"].set("None")
-                vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
-                self._update_color_evaluation_result_card(
-                    vars_dict=vars_dict,
-                    title="Comparison color not available.",
-                    detail="",
-                    summary="Select another color from the list or clear the comparison.",
-                    status="unavailable"
-                )
-                return
-
-            s_lab = secondary_refs["lab"]
-            s_rgb = secondary_refs.get("rgb")
-            s_hex = secondary_refs["hex"]
-            secondary_display_name = secondary_label
-
-            self._update_color_evaluation_conversion_inspector(
-                vars_dict=vars_dict,
-                lab=s_lab,
-                rgb=s_rgb,
-                hex_color=s_hex,
-                name=secondary_display_name,
-                source="comparison prototype"
-            )
-
-        else:
-            s_lab = vars_dict.get("secondary_custom_lab")
-            s_rgb = vars_dict.get("secondary_custom_rgb")
-            s_hex = vars_dict.get("secondary_custom_hex")
-
-            if s_lab is None or s_rgb is None or s_hex is None:
-                vars_dict["secondary_name_var"].set("None")
-                vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill="#f0f0f0")
-                self._update_color_evaluation_result_card(
-                    vars_dict=vars_dict,
-                    title="Custom comparison color not available.",
-                    detail="",
-                    summary="Enter a valid custom color or clear the comparison.",
-                    status="unavailable"
-                )
-                return
-
-            secondary_display_name = vars_dict.get("secondary_custom_name", "Custom Color")
-
-            self._update_color_evaluation_conversion_inspector(
-                vars_dict=vars_dict,
-                lab=s_lab,
-                rgb=s_rgb,
-                hex_color=s_hex,
-                name=secondary_display_name,
-                source="custom"
-            )
-
-        vars_dict["secondary_name_var"].set(secondary_display_name)
-        vars_dict["secondary_swatch"].itemconfig(vars_dict["secondary_rect"], fill=s_hex)
-
-        if secondary_mode == "custom":
-            self._update_color_evaluation_membership_panel(vars_dict, sample_lab=s_lab)
-        else:
-            self._update_color_evaluation_membership_panel(vars_dict, sample_lab=None)
 
         metric_name = self.threshold_settings.get("metric", "CIEDE2000")
-
         evaluation = self.evaluate_color_difference_threshold(
-            sample_lab=p_lab,
-            prototype_lab=s_lab,
-            metric=metric_name,
-            threshold_settings=self.threshold_settings
-        )
-
+            sample_lab=first["lab"], prototype_lab=second["lab"],
+            metric=metric_name, threshold_settings=self.threshold_settings)
         metric_value = evaluation.get("metric_value", evaluation.get("delta_e"))
-        status = evaluation.get("status", "unavailable")
-
-        if metric_value is None:
-            self._update_color_evaluation_result_card(
-                vars_dict=vars_dict,
-                title=evaluation.get("evaluation", "Metric not available"),
-                detail="Unable to compute selected metric",
-                summary=evaluation.get("summary_visual", evaluation.get("summary", "")),
-                status=status
-            )
-            return
-
         self._update_color_evaluation_result_card(
-            vars_dict=vars_dict,
-            title=evaluation.get("evaluation", "No evaluation available"),
-            detail=evaluation.get("detail", f"{metric_name} = {metric_value:.3f}"),
+            vars_dict, title=evaluation.get("evaluation", "Metric unavailable"),
+            detail=(evaluation.get("detail", f"{metric_name} = {metric_value:.3f}")
+                    if metric_value is not None else "Unable to compute selected metric"),
             summary=evaluation.get("summary_visual", evaluation.get("summary", "")),
-            status=status
-        )
-
+            status=evaluation.get("status", "unavailable"))
         self._update_color_evaluation_graph_buttons(vars_dict)
-
 
     def _open_color_evaluation_image_sampler(self, vars_dict):
         """
@@ -12759,32 +13287,8 @@ class PyFCSApp:
         - dragging a rectangle to sample the average RGB;
         - sending the sampled color as the custom comparison color.
         """
-        if not hasattr(self, "load_images_names") or not self.load_images_names:
-            self.custom_warning(
-                "No Images Available",
-                "No images are currently loaded.",
-                parent=getattr(self, "_color_evaluation_window", None)
-            )
-            return
-
-        has_original_images = (
-            hasattr(self, "pil_images_original")
-            and bool(self.pil_images_original)
-        )
-
-        has_loaded_paths = (
-            hasattr(self, "load_images_names")
-            and bool(self.load_images_names)
-        )
-
-        if not has_original_images and not has_loaded_paths:
-            self.custom_warning(
-                "No Images Available",
-                "Original image data are not available.",
-                parent=getattr(self, "_color_evaluation_window", None)
-            )
-            return
-
+        # This dialog accepts loaded originals and temporary images alike.
+        # It deliberately does not add the latter to the application's image list.
         parent = getattr(self, "_color_evaluation_window", self.root)
 
         popup = tk.Toplevel(parent)
@@ -12821,6 +13325,7 @@ class PyFCSApp:
             "sample_rgb": None,
             "sample_lab": None,
             "sample_hex": None,
+            "sample_name": "Image Sample",
         }
 
         # Main shell
@@ -12872,21 +13377,23 @@ class PyFCSApp:
 
         image_ids = []
         image_names = []
-
-        for wid, path in self.load_images_names.items():
+        temp_sources = {}
+        for wid, path in (getattr(self, "load_images_names", None) or {}).items():
+            if not path:
+                continue
             image_ids.append(wid)
-            image_names.append(os.path.basename(path))
+            image_names.append(f"{os.path.basename(path)} [loaded]")
 
         selected_image_var = tk.StringVar(value=image_names[0] if image_names else "")
-
         image_combo = ttk.Combobox(
-            selector_row,
-            textvariable=selected_image_var,
-            state="readonly",
-            values=image_names,
-            width=55
-        )
+            selector_row, textvariable=selected_image_var,
+            state="readonly", values=image_names, width=35)
         image_combo.pack(side="left", fill="x", expand=True)
+        open_temp_button = tk.Button(
+            selector_row, text="+ Open image...", relief="solid", bd=1,
+            bg=UtilsTools.UI_ACCENT_SOFT, fg=UtilsTools.UI_ACCENT_DARK,
+            cursor="hand2", font=("Segoe UI", 9, "bold"))
+        open_temp_button.pack(side="left", padx=(8, 0))
 
         # Image preview
         image_card = tk.Frame(body, bg="#fafafa", bd=1, relief="solid")
@@ -12913,7 +13420,8 @@ class PyFCSApp:
         canvas.pack(padx=12, pady=(0, 6))
 
         tip_var = tk.StringVar(
-            value="Mouse wheel to zoom. Click to sample one pixel, or drag to sample the average color of a region."
+            value=("Mouse wheel: zoom · Click: pixel · Drag: ROI. "
+                   "Open a temporary image if none is loaded.")
         )
 
         tk.Label(
@@ -12992,12 +13500,10 @@ class PyFCSApp:
             outline="#555555"
         )
 
-        use_button = ttk.Button(
-            sample_row,
-            text="Use sampled color",
-            state="disabled"
-        )
-        use_button.pack(side="right")
+        use_button = ttk.Button(sample_row, text="Add to Reference", state="disabled")
+        use_button.pack(side="right", padx=(5, 0))
+        add_to_a_button = ttk.Button(sample_row, text="Add to Selected", state="disabled")
+        add_to_a_button.pack(side="right")
 
         # Bottom buttons
         footer = tk.Frame(panel, bg="white")
@@ -13005,7 +13511,7 @@ class PyFCSApp:
 
         tk.Button(
             footer,
-            text="Cancel",
+            text="Done",
             width=12,
             command=popup.destroy
         ).pack(side="right")
@@ -13308,6 +13814,7 @@ class PyFCSApp:
 
                 preview_canvas.itemconfig(preview_rect, fill=hex_color)
                 use_button.config(state="normal")
+                add_to_a_button.config(state="normal")
 
                 self._update_color_evaluation_conversion_inspector(
                     vars_dict=vars_dict,
@@ -13329,6 +13836,7 @@ class PyFCSApp:
 
                 preview_canvas.itemconfig(preview_rect, fill="#d9d9d9")
                 use_button.config(state="disabled")
+                add_to_a_button.config(state="disabled")
 
         def _clear_sample():
             state["sample_rgb"] = None
@@ -13341,6 +13849,7 @@ class PyFCSApp:
 
             preview_canvas.itemconfig(preview_rect, fill="#d9d9d9")
             use_button.config(state="disabled")
+            add_to_a_button.config(state="disabled")
 
 
         def _get_best_sampler_source_pil(window_id):
@@ -13351,6 +13860,9 @@ class PyFCSApp:
             This Color Evaluation sampler should always sample from the real original image,
             not from Color Mapping or Color Mapping All visualizations.
             """
+            if window_id in temp_sources:
+                return temp_sources[window_id]
+
             if (
                 hasattr(self, "pil_images_original")
                 and window_id in self.pil_images_original
@@ -13378,10 +13890,49 @@ class PyFCSApp:
 
             raise ValueError("No valid original image source found.")
 
+        def _open_temporary_image():
+            base = UtilsTools.get_base_path()
+            candidates = (
+                os.path.join(base, "test_images"),
+                os.path.join(base, "image_test"),
+                os.path.join(base, "Source", "test_images"),
+                os.path.join(base, "Source", "image_test"),
+                base,
+            )
+            initial_dir = next((p for p in candidates if os.path.isdir(p)), os.getcwd())
+            path = filedialog.askopenfilename(
+                parent=popup, title="Open temporary image for color sampling",
+                initialdir=initial_dir,
+                filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp"),
+                           ("All files", "*.*")])
+            if not path:
+                return
+            try:
+                with Image.open(path) as img:
+                    pil_image = ImageOps.exif_transpose(img).convert("RGB")
+            except Exception as exc:
+                self.custom_warning("Image Error", f"Could not open this image:\n{exc}",
+                                    parent=popup)
+                return
+            key = f"evaluation-temp-{len(temp_sources) + 1}"
+            label_base = f"{os.path.basename(path)} [temporary]"
+            label = label_base
+            suffix = 2
+            while label in image_names:
+                label = f"{label_base} ({suffix})"
+                suffix += 1
+            temp_sources[key] = pil_image
+            image_ids.append(key)
+            image_names.append(label)
+            image_combo.configure(values=image_names)
+            selected_image_var.set(label)
+            _load_selected_image()
+
         def _load_selected_image(*_):
             window_id = _get_selected_window_id()
 
             if window_id is None:
+                tip_var.set("No image selected. Click '+ Open image...' to sample a temporary image.")
                 return
 
             try:
@@ -13445,11 +13996,14 @@ class PyFCSApp:
             top = min(iy1, iy2)
             bottom = max(iy1, iy2)
 
+            source_name = selected_image_var.get().split(" [", 1)[0]
             if abs(right - left) <= 1 and abs(bottom - top) <= 1:
+                state["sample_name"] = f"{source_name} ({left}, {top})"
                 rgb = state["pil_img"].getpixel((left, top))
                 _set_sample_rgb(rgb, source_text="image pixel")
                 return
 
+            state["sample_name"] = f"{source_name} ROI ({left},{top})–({right},{bottom})"
             crop = state["pil_img"].crop((left, top, right + 1, bottom + 1))
             mean_lab, count = UtilsTools.mean_lab_with_filters(
                 np.asarray(crop.convert("RGB"), dtype=np.uint8)
@@ -13514,35 +14068,19 @@ class PyFCSApp:
 
             _sample_roi_from_canvas(x0, y0, x1, y1)
 
-        def _use_sampled_color():
-            if (
-                state["sample_rgb"] is None
-                or state["sample_lab"] is None
-                or state["sample_hex"] is None
-            ):
+        def _use_sampled_color(target="B"):
+            if any(state[key] is None for key in ("sample_rgb", "sample_lab", "sample_hex")):
                 return
+            name = state.get("sample_name", "Image Sample")
+            if self._use_color_evaluation_external_sample(
+                    vars_dict, name=name, lab=state["sample_lab"],
+                    rgb=state["sample_rgb"], hex_color=state["sample_hex"],
+                    source="image", target=target):
+                tip_var.set(f"Sample added to {self._get_color_evaluation_target_display_name(target)}. Continue sampling, or select Done.")
 
-            self._set_custom_color_as_evaluation_comparison(
-                vars_dict=vars_dict,
-                sample_lab=state["sample_lab"],
-                sample_rgb=state["sample_rgb"],
-                sample_hex=state["sample_hex"]
-            )
-
-            vars_dict["secondary_custom_name"] = "Image Sample"
-
-            self._update_color_evaluation_conversion_inspector(
-                vars_dict=vars_dict,
-                lab=state["sample_lab"],
-                rgb=state["sample_rgb"],
-                hex_color=state["sample_hex"],
-                name="Image Sample",
-                source="image"
-            )
-
-            popup.destroy()
-
-        use_button.configure(command=_use_sampled_color)
+        use_button.configure(command=lambda: _use_sampled_color("B"))
+        add_to_a_button.configure(command=lambda: _use_sampled_color("A"))
+        open_temp_button.configure(command=_open_temporary_image)
 
         image_combo.bind("<<ComboboxSelected>>", _load_selected_image)
 
@@ -13573,39 +14111,29 @@ class PyFCSApp:
 
 
     def _open_custom_color_input_dialog(self, vars_dict):
-        """Open a dialog to input and evaluate a custom color in RGB, LAB, or HEX."""
-        data_source = vars_dict.get("loaded_space_data") or {}
-
-        if not self._extract_color_space_rows(data_source):
+        """Use PyFCS's shared visual Color Picker directly for a quick A/B sample."""
+        if not vars_dict.get("loaded_space_data"):
             self.custom_warning(
-                "No Color Space Loaded",
-                "Load a valid color space before evaluating a custom color.",
-                parent=getattr(self, "_color_evaluation_window", None)
-            )
+                "No Color Space Loaded", "Load a color space before evaluating colors.",
+                parent=getattr(self, "_color_evaluation_window", None))
             return
+        parent = getattr(self, "_color_evaluation_window", None) or self.root
+        target = vars_dict["quick_samples_target_var"].get()
+        active = self._get_color_evaluation_side_sample(vars_dict, target)
+        initial_rgb = active["rgb"] if active else (217, 217, 217)
 
-        parent = getattr(self, "_color_evaluation_window", self.root)
+        def _add_selected_color(rgb, hex_value):
+            rgb = UtilsTools.safe_rgb_tuple(rgb)
+            lab = UtilsTools.safe_lab_tuple(UtilsTools.rgb_to_lab(rgb))
+            accepted = self._use_color_evaluation_external_sample(
+                vars_dict, name="Custom Color", lab=lab, rgb=rgb,
+                hex_color=hex_value, source="custom", target=target)
+            if not accepted:
+                raise ValueError("The selected color could not be added.")
 
-        def on_submit(color_name, sample_lab, sample_rgb, sample_hex, dialog, input_vars):
-            dialog.destroy()
-
-            self._set_custom_color_as_evaluation_comparison(
-                vars_dict=vars_dict,
-                sample_lab=sample_lab,
-                sample_rgb=sample_rgb,
-                sample_hex=sample_hex
-            )
-
-        self._open_custom_color_dialog(
-            parent=parent,
-            title="Evaluate Custom Color",
-            subtitle="Compare a custom RGB, LAB or HEX color",
-            submit_text="Evaluate",
-            require_name=False,
-            default_name="Custom Color",
-            on_submit=on_submit
-        )
-
+        return self._open_square_color_picker(
+            parent=parent, initial_rgb=initial_rgb, on_apply=_add_selected_color,
+            submit_text=f"Add to {self._get_color_evaluation_target_display_name(target)}", title="Evaluate Custom Color")
 
 
     def _open_custom_color_dialog(
@@ -13618,6 +14146,8 @@ class PyFCSApp:
         default_name="Custom Color",
         on_submit=None,
         initial_lab=None,
+        allow_evaluation_target=False,
+        initial_evaluation_target="B",
     ):
         """
         Open a reusable styled dialog to input a custom color in RGB, LAB, or HEX.
@@ -13657,7 +14187,7 @@ class PyFCSApp:
         dialog.transient(parent)
 
         WIN_W = 760
-        WIN_H = 420 if require_name else 390
+        WIN_H = 420 if require_name else (435 if allow_evaluation_target else 390)
 
         try:
             if parent is not None and hasattr(parent, "winfo_x"):
@@ -13680,6 +14210,8 @@ class PyFCSApp:
             "preview_hex_var": tk.StringVar(value="#D9D9D9"),
             "preview_rgb_var": tk.StringVar(value="—"),
             "preview_lab_var": tk.StringVar(value="—"),
+            "evaluation_target_var": tk.StringVar(
+                value=initial_evaluation_target if initial_evaluation_target in ("A", "B") else "B"),
         }
 
         state = {"suspend_validation": False, "previous_mode": "RGB"}
@@ -13821,6 +14353,17 @@ class PyFCSApp:
                               justify="center", anchor="center", wraplength=285, font=("Sans", 9))
         example_label = tk.Label(right_panel, textvariable=input_vars["example_var"], bg="white", fg="#8c8c8c",
                                  justify="center", anchor="center", wraplength=285, font=("Sans", 9, "italic"))
+
+        if allow_evaluation_target:
+            target_row = tk.Frame(panel, bg="white")
+            target_row.pack(fill="x", padx=16, pady=(0, 5))
+            tk.Label(target_row, text="Add color to:", bg="white", fg="#526074",
+                     font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
+            for target in ("A", "B"):
+                tk.Radiobutton(target_row, text=f"Sample {target}", value=target,
+                               variable=input_vars["evaluation_target_var"],
+                               bg="white", activebackground="white",
+                               font=("Segoe UI", 9)).pack(side="left", padx=(0, 14))
 
         footer = tk.Frame(panel, bg="white")
         footer.pack(fill="x", padx=16, pady=(0, 14))
@@ -14254,16 +14797,20 @@ class PyFCSApp:
         """
         manager = self._get_color_evaluation_manager()
 
-        sample_lab = vars_dict.get("secondary_custom_lab")
-        sample_rgb = vars_dict.get("secondary_custom_rgb")
-        sample_hex = vars_dict.get("secondary_custom_hex")
-        sample_name = vars_dict.get("secondary_custom_name", "Custom Color")
+        sample = next((row for row in (
+            self._get_color_evaluation_side_sample(vars_dict, "B"),
+            self._get_color_evaluation_side_sample(vars_dict, "A"))
+                       if row is not None and not row.get("row_label")), None)
+        sample_lab = sample["lab"] if sample else None
+        sample_rgb = sample["rgb"] if sample else None
+        sample_hex = sample["hex"] if sample else None
+        sample_name = sample["name"] if sample else "Custom Color"
 
         metric_name = self.threshold_settings.get("metric", "CIEDE2000")
         vars_dict["analysis_view_mode"] = "closest"
 
         if (
-            vars_dict.get("secondary_mode") != "custom"
+            sample is None
             or sample_lab is None
             or sample_rgb is None
             or sample_hex is None
@@ -14329,7 +14876,10 @@ class PyFCSApp:
 
         self._update_color_evaluation_result_card(
             vars_dict=vars_dict,
-            title=f"Closest prototype: {best['label']}",
+            title=(f"Closest granule: {best.get('granule_label', best['label'])} "
+                   f"(category: {best['label']})"
+                   if isinstance(vars_dict.get("loaded_fuzzy_color_space"), GranularFuzzyColorSpace)
+                   else f"Closest prototype: {best['label']}"),
             detail=f"Minimum {metric_name} = {best.get('metric_value', best['delta_e']):.3f}",
             summary=summary,
             status=status
@@ -14400,16 +14950,14 @@ class PyFCSApp:
         require_closest : bool
             True when the plot needs closest-prototype ranking.
         """
-        sample_lab = vars_dict.get("secondary_custom_lab")
-        sample_rgb = vars_dict.get("secondary_custom_rgb")
-        sample_hex = vars_dict.get("secondary_custom_hex")
-
-        has_custom = (
-            vars_dict.get("secondary_mode") == "custom"
-            and sample_lab is not None
-            and sample_rgb is not None
-            and sample_hex is not None
-        )
+        sample = next((row for row in (
+            self._get_color_evaluation_side_sample(vars_dict, "B"),
+            self._get_color_evaluation_side_sample(vars_dict, "A"))
+                       if row is not None and not row.get("row_label")), None)
+        sample_lab = sample["lab"] if sample else None
+        sample_rgb = sample["rgb"] if sample else None
+        sample_hex = sample["hex"] if sample else None
+        has_custom = sample is not None
 
         if require_custom and not has_custom:
             self.custom_warning(
@@ -14445,19 +14993,16 @@ class PyFCSApp:
         color_data = {}
         hex_color = {}
 
-        for label, lab in rows:
-            try:
-                lab_arr = np.asarray(lab, dtype=float).reshape(-1)[:3]
-
-                color_data[label] = {
-                    "positive_prototype": lab_arr
-                }
-
-                proto_hex = self._get_evaluation_proto_hex(vars_dict, label)
-                hex_color[proto_hex] = lab_arr
-
-            except Exception:
-                continue
+        loaded_space = vars_dict.get("loaded_fuzzy_color_space")
+        display_groups = self._color_evaluation_actual_entries(data_source, loaded_space)
+        for _, entries in display_groups:
+            for label, lab in entries:
+                try:
+                    lab_arr = np.asarray(lab, dtype=float).reshape(-1)[:3]
+                    color_data[label] = {"positive_prototype": lab_arr}
+                    hex_color[UtilsTools.lab_to_hex(lab_arr)] = lab_arr
+                except (TypeError, ValueError):
+                    continue
 
         core = vars_dict.get("loaded_cores")
         alpha = vars_dict.get("loaded_prototypes")
@@ -14707,117 +15252,44 @@ class PyFCSApp:
 
 
     def _open_color_evaluation_membership_plot(self, vars_dict):
-        """
-        Open membership degree bar chart for the current custom/sample color.
-        Requires custom/sample color and fuzzy membership data.
-        """
-        sample_lab = vars_dict.get("secondary_custom_lab")
-
-        if vars_dict.get("secondary_mode") != "custom" or sample_lab is None:
-            self.custom_warning(
-                "Custom Color Required",
-                "Use 'Evaluate custom color' or 'Sample from image' first.",
-                parent=getattr(self, "_color_evaluation_window", None)
-            )
+        """Bar chart for the active external sample, on either side A or B."""
+        sample = next((color for color in (
+            self._get_color_evaluation_side_sample(vars_dict, "B"),
+            self._get_color_evaluation_side_sample(vars_dict, "A"))
+                       if color is not None and not color.get("row_label")), None)
+        if sample is None:
+            self.custom_warning("Custom Color Required",
+                                "Add a custom or image sample to A or B first.",
+                                parent=getattr(self, "_color_evaluation_window", None))
             return
-
-        memberships = self._calculate_evaluation_memberships(vars_dict, sample_lab)
-
+        memberships = self._calculate_evaluation_memberships(vars_dict, sample["lab"])
         if not memberships:
-            self.custom_warning(
-                "Memberships Not Available",
-                "The loaded color space has no fuzzy membership data available.",
-                parent=getattr(self, "_color_evaluation_window", None)
-            )
+            self.custom_warning("Memberships Not Available",
+                                "No fuzzy membership data are available for this sample.",
+                                parent=getattr(self, "_color_evaluation_window", None))
             return
-
         fig = VisualManager.plot_color_evaluation_membership_bar(
             memberships=memberships,
-            title="Membership degrees for custom color",
-            top_n=10,
-        )
-
+            title=f"Membership degrees | {sample['name']}", top_n=10)
         self._show_color_eval_plotly_figure_in_browser(
-            fig,
-            filename_prefix="color_eval_memberships"
-        )
-
+            fig, filename_prefix="color_eval_memberships")
 
     def _open_color_evaluation_component_plot(self, vars_dict):
-        """
-        Open signed component-differences plot.
-
-        Works with:
-        - prototype vs prototype comparison;
-        - prototype vs custom/sample color comparison.
-        """
-        refs_map = vars_dict.get("color_row_refs", {})
-        primary_label = vars_dict.get("primary_label")
-        secondary_label = vars_dict.get("secondary_label")
-        secondary_mode = vars_dict.get("secondary_mode")
-
-        primary_refs = refs_map.get(primary_label)
-
-        if not primary_refs:
-            self.custom_warning(
-                "Comparison Required",
-                "Select a prototype first.",
-                parent=getattr(self, "_color_evaluation_window", None)
-            )
+        """Graph signed LAB/LCh components between any actual colors A and B."""
+        first = self._get_color_evaluation_side_sample(vars_dict, "A")
+        second = self._get_color_evaluation_side_sample(vars_dict, "B")
+        if first is None or second is None:
+            self.custom_warning("Comparison Required",
+                                "Select both a color A and a color B first.",
+                                parent=getattr(self, "_color_evaluation_window", None))
             return
-
-        p_lab = primary_refs.get("lab")
-
-        if secondary_mode == "row":
-            secondary_refs = refs_map.get(secondary_label)
-            if not secondary_refs:
-                self.custom_warning(
-                    "Comparison Required",
-                    "Compare the selected prototype with another prototype first.",
-                    parent=getattr(self, "_color_evaluation_window", None)
-                )
-                return
-
-            s_lab = secondary_refs.get("lab")
-            title = f"Component differences | {primary_label} vs {secondary_label}"
-
-        elif secondary_mode == "custom":
-            s_lab = vars_dict.get("secondary_custom_lab")
-
-            if s_lab is None:
-                self.custom_warning(
-                    "Comparison Required",
-                    "Evaluate a custom color or sample a color from an image first.",
-                    parent=getattr(self, "_color_evaluation_window", None)
-                )
-                return
-
-            custom_name = vars_dict.get("secondary_custom_name", "Custom Color")
-            title = f"Component differences | {primary_label} vs {custom_name}"
-
-        else:
-            self.custom_warning(
-                "Comparison Required",
-                "Use 'Compare with another color' or 'Evaluate custom color' first.",
-                parent=getattr(self, "_color_evaluation_window", None)
-            )
-            return
-
         components = self._calculate_color_evaluation_component_differences(
-            p_lab,
-            s_lab
-        )
-
+            first["lab"], second["lab"])
         fig = VisualManager.plot_color_evaluation_component_differences(
             components=components,
-            title=title
-        )
-
+            title=f"Component differences | {first['name']} vs {second['name']}")
         self._show_color_eval_plotly_figure_in_browser(
-            fig,
-            filename_prefix="color_eval_components"
-        )
-
+            fig, filename_prefix="color_eval_components")
 
     def _calculate_color_evaluation_component_differences(self, lab_1, lab_2):
         """
@@ -14852,14 +15324,15 @@ class PyFCSApp:
         rows = self._extract_color_space_rows(data_source)
 
         secondary_mode = vars_dict.get("secondary_mode")
-        has_primary = vars_dict.get("primary_label") is not None
+        has_primary = self._get_color_evaluation_side_sample(vars_dict, "A") is not None
 
-        has_custom = (
-            secondary_mode == "custom"
-            and vars_dict.get("secondary_custom_lab") is not None
-            and vars_dict.get("secondary_custom_rgb") is not None
-            and vars_dict.get("secondary_custom_hex") is not None
+        has_custom = any(
+            vars_dict.get(prefix + "_mode") == "custom"
+            and vars_dict.get(prefix + "_custom_lab") is not None
+            for prefix in ("primary", "secondary")
         )
+        if secondary_mode is None and has_custom:
+            secondary_mode = "custom"
 
         available = manager.get_color_evaluation_available_graph_keys(
             rows=rows,
@@ -14869,6 +15342,10 @@ class PyFCSApp:
             has_custom=has_custom,
             has_fuzzy_color_space=vars_dict.get("loaded_fuzzy_color_space") is not None,
         )
+        # A single external sample is enough for ranking/memberships, but not
+        # for a component-difference graph, which always requires two colors.
+        if self._get_color_evaluation_side_sample(vars_dict, "B") is None:
+            available = [key for key in available if key != "components"]
 
         method_map = {
             "3d": "_open_color_evaluation_3d_plot",
@@ -14962,129 +15439,56 @@ class PyFCSApp:
 
 
     def _update_color_evaluation_graph_buttons(self, vars_dict):
-        """
-        Refresh visible graph buttons.
-
-        Layout behavior:
-        - Single color / prototype-prototype comparison:
-            narrow right column, one button per row.
-        - Custom/sample color:
-            compact right column, two-button layout when possible.
-        """
+        """Display available graphs in a wide, responsive horizontal toolbar."""
         refs = vars_dict.get("analysis_result_refs", {})
-
         side_card = refs.get("graph_buttons_card")
         results_columns = refs.get("results_columns")
-        right_side_column = refs.get("right_side_column")
         membership_right = refs.get("membership_right")
-
         if side_card is None:
             return
-
         body = getattr(side_card, "_pyfcs_graph_body", None)
         specs = getattr(side_card, "_pyfcs_graph_specs", {})
-
         if body is None:
             return
 
-        available = self._get_color_evaluation_available_graph_keys(vars_dict)
-
-        secondary_mode = vars_dict.get("secondary_mode")
-
-        has_custom = (
-            secondary_mode == "custom"
-            and vars_dict.get("secondary_custom_lab") is not None
-            and vars_dict.get("secondary_custom_rgb") is not None
-            and vars_dict.get("secondary_custom_hex") is not None
+        has_custom = any(
+            vars_dict.get(prefix + "_mode") == "custom"
+            and vars_dict.get(prefix + "_custom_lab") is not None
+            for prefix in ("primary", "secondary")
         )
-
-        # Dynamic right-column width
-        if has_custom:
-            # Width of the whole right column in custom/sample mode
-            right_width = 185
-
-            layout = [
-                ["3d", "ab"],
-                ["lc", "lch"],
-                ["top7"],
-                ["memberships"],
-                ["components"],
-            ]
-        else:
-            # Width of the right column in single / prototype-prototype mode
-            right_width = 140
-
-            layout = [
-                ["3d"],
-                ["ab"],
-                ["lc"],
-                ["lch"],
-                ["components"],
-            ]
-
         try:
             if results_columns is not None:
-                results_columns.grid_columnconfigure(
-                    1,
-                    weight=0,
-                    minsize=right_width
-                )
-        except Exception:
-            pass
-
-        try:
-            if right_side_column is not None:
-                right_side_column.configure(width=right_width)
-        except Exception:
-            pass
-
-        try:
+                results_columns.grid_columnconfigure(1, minsize=215 if has_custom else 0,
+                                                     weight=0)
             if membership_right is not None:
-                membership_right.configure(width=right_width)
-        except Exception:
+                membership_right.configure(width=215)
+        except tk.TclError:
             pass
 
-        # Rebuild visible buttons
+        available = self._get_color_evaluation_available_graph_keys(vars_dict)
         for child in body.winfo_children():
             child.destroy()
+        if not available:
+            side_card.pack_forget()
+            return
+        if not side_card.winfo_manager():
+            side_card.pack(fill="x", pady=(8, 0))
 
-        visible_rows = []
-
-        for row_keys in layout:
-            visible_keys = [
-                key
-                for key in row_keys
-                if key in available and key in specs
-            ]
-
-            if visible_keys:
-                visible_rows.append(visible_keys)
-
-        for row_index, row_keys in enumerate(visible_rows):
+        # 3D LAB / a*b* / L*C* / LCh are always available; additional analyses
+        # appear below only when their prerequisites are satisfied.
+        ordered = [key for key in ("3d", "ab", "lc", "lch", "top7", "memberships", "components")
+                   if key in available and key in specs]
+        for offset in range(0, len(ordered), 4):
             row = tk.Frame(body, bg="#fafafa")
-            row.pack(
-                fill="x",
-                pady=(0, 4) if row_index < len(visible_rows) - 1 else (0, 0)
-            )
-
-            for button_index, key in enumerate(row_keys):
+            row.pack(fill="x", pady=(0, 5 if offset + 4 < len(ordered) else 0))
+            for key in ordered[offset:offset + 4]:
                 spec = specs[key]
-
-                btn = tk.Button(
-                    row,
-                    text=spec["text"],
-                    command=spec["command"],
-                    width=8 if has_custom else 14
-                )
-
-                btn.pack(
-                    side="left",
-                    fill="x",
-                    expand=True,
-                    padx=(0, 4) if button_index < len(row_keys) - 1 else (0, 0)
-                )
-
-
+                tk.Button(
+                    row, text=spec["text"], command=spec["command"],
+                    font=("Segoe UI", 9), bg="#f8fafc", fg="#253044",
+                    relief="solid", bd=1, pady=5, cursor="hand2",
+                    activebackground=UtilsTools.UI_ACCENT_SOFT
+                ).pack(side="left", fill="x", expand=True, padx=3)
 
 
 
