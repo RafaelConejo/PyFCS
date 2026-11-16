@@ -604,61 +604,74 @@ class PyFCSApp:
         )
         main_paned.pack(fill="both", expand=True)
 
-        # Left pane: Image Display
-        image_area_frame = create_card(
-            main_paned,
-            title="Image Display",
-            padx=10,
-            pady=10
-        )
-
-        # Image workspace controls. The canvas still owns all image rendering,
-        # mapping and ROI interactions, but card placement is now automatic.
+        # Image Display: title, status, T-conorm and workspace actions share
+        # ONE compact header, rather than a LabelFrame title + a second toolbar.
+        image_area_frame = tk.Frame(main_paned, bg=CARD_BG, padx=10, pady=7)
         image_workspace_bar = tk.Frame(image_area_frame, bg=CARD_BG)
-        image_workspace_bar.pack(fill="x", pady=(0, 7))
+        image_workspace_bar.pack(fill="x", pady=(0, 5))
+        # Keep the heading at the left.  A single compact control group is
+        # anchored to the right so T-conorm belongs visually with Focus/Grid,
+        # rather than floating alone in the middle of Image Display.
+        image_workspace_bar.grid_columnconfigure(0, weight=1)
+        image_workspace_bar.grid_columnconfigure(1, weight=0)
 
-        self.image_workspace_status_var = tk.StringVar(value="No images open")
+        workspace_heading = tk.Frame(image_workspace_bar, bg=CARD_BG)
+        workspace_heading.grid(row=0, column=0, sticky="w")
         tk.Label(
-            image_workspace_bar,
-            textvariable=self.image_workspace_status_var,
-            font=FONT_SMALL,
-            bg=CARD_BG,
-            fg=MUTED,
-            anchor="w",
-        ).pack(side="left")
+            workspace_heading, text="Image Display", font=FONT_TITLE,
+            bg=CARD_BG, fg=TEXT, anchor="w",
+        ).pack(anchor="w")
+        self.image_workspace_status_var = tk.StringVar(value="0 images")
+        tk.Label(
+            workspace_heading, textvariable=self.image_workspace_status_var,
+            font=FONT_SMALL, bg=CARD_BG, fg=MUTED, anchor="w",
+        ).pack(anchor="w", pady=(3, 0))
 
-        self.image_workspace_grid_button = tk.Button(
-            image_workspace_bar,
-            text="Grid",
-            command=self._arrange_image_workspace_grid,
-            font=FONT_SMALL_BOLD,
-            bg="#f8fafc",
-            fg=TEXT,
-            activebackground=BLUE_BG,
-            relief="solid",
-            bd=1,
-            padx=9,
-            pady=2,
-            cursor="hand2",
+        # T-conorm and workspace actions form one right-aligned cluster.
+        workspace_controls = tk.Frame(image_workspace_bar, bg=CARD_BG)
+        workspace_controls.grid(row=0, column=1, sticky="e")
+        self._mapping_tconorm_bar = tk.Frame(
+            workspace_controls, bg=CARD_BG,
+            highlightthickness=1, highlightbackground="#e5e7eb",
         )
-        self.image_workspace_grid_button.pack(side="right")
+        self._mapping_tconorm_bar.pack(side="left", padx=(0, 10))
+        tk.Label(
+            self._mapping_tconorm_bar, text="T-conorm",
+            font=("Segoe UI", 8, "bold"), bg=CARD_BG, fg=MUTED,
+            anchor="center",
+        ).pack(fill="x", pady=(1, 0))
+        operator_buttons = tk.Frame(self._mapping_tconorm_bar, bg=CARD_BG)
+        operator_buttons.pack(padx=4, pady=(1, 2))
+        self._mapping_tconorm_buttons = {}
+        for mode, caption in (("bounded_sum", "Bounded Sum"), ("max", "Max")):
+            button = tk.Button(
+                operator_buttons, text=caption, font=("Segoe UI", 8),
+                relief="solid", bd=1, padx=5, pady=0, cursor="hand2",
+                command=lambda value=mode: self._set_image_mapping_tconorm(value),
+            )
+            button.pack(side="left", padx=(0, 3 if mode == "bounded_sum" else 0))
+            self._mapping_tconorm_buttons[mode] = button
+        self._sync_image_mapping_tconorm_buttons()
 
+        # Stack Focus above Grid without creating an extra header row.
+        workspace_actions = tk.Frame(workspace_controls, bg=CARD_BG)
+        workspace_actions.pack(side="left")
         self.image_workspace_focus_button = tk.Button(
-            image_workspace_bar,
-            text="Focus",
+            workspace_actions, text="Focus",
             command=self._focus_active_image_workspace_card,
-            font=FONT_SMALL_BOLD,
-            bg="#f8fafc",
-            fg=TEXT,
-            activebackground=BLUE_BG,
-            relief="solid",
-            bd=1,
-            padx=9,
-            pady=2,
-            cursor="hand2",
-            state="disabled",
+            font=FONT_SMALL_BOLD, bg="#f8fafc", fg=TEXT,
+            activebackground=BLUE_BG, relief="solid", bd=1,
+            width=6, padx=4, pady=0, cursor="hand2", state="disabled",
         )
-        self.image_workspace_focus_button.pack(side="right", padx=(0, 6))
+        self.image_workspace_focus_button.pack(anchor="e", pady=(0, 2))
+        self.image_workspace_grid_button = tk.Button(
+            workspace_actions, text="Grid",
+            command=self._arrange_image_workspace_grid,
+            font=FONT_SMALL_BOLD, bg="#f8fafc", fg=TEXT,
+            activebackground=BLUE_BG, relief="solid", bd=1,
+            width=6, padx=4, pady=0, cursor="hand2",
+        )
+        self.image_workspace_grid_button.pack(anchor="e")
 
         image_canvas_shell = tk.Frame(image_area_frame, bg=PANEL_BG)
         image_canvas_shell.pack(fill="both", expand=True)
@@ -2667,6 +2680,7 @@ class PyFCSApp:
     def update_prototypes_info(self):
         # Update 3D graph flags and application state variables
         self.COLOR_SPACE = True
+        self._sync_image_mapping_tconorm_buttons()
 
         # Show Search when a color space is loaded.
         if not self._model_3d_search_frame.winfo_manager():
@@ -2699,6 +2713,79 @@ class PyFCSApp:
         # Trigger update based on the selected options
         self.on_option_select()
 
+
+    def _sync_image_mapping_tconorm_buttons(self):
+        """Display the single shared operator; atomic spaces cannot aggregate."""
+        buttons = getattr(self, "_mapping_tconorm_buttons", {})
+        space = getattr(self, "fuzzy_color_space", None)
+        enabled = bool(getattr(space, "is_granular", False))
+        current = getattr(space, "tconorm", "bounded_sum")
+        for mode, button in buttons.items():
+            active = mode == current
+            button.configure(
+                state="normal" if enabled else "disabled",
+                bg=UtilsTools.UI_ACCENT_SOFT if active else "#f5f5f5",
+                fg=UtilsTools.UI_ACCENT_DARK if active else "#535965",
+                activebackground=UtilsTools.UI_ACCENT_HOVER if active else "#f5f5f5",
+                font=("Segoe UI", 8, "bold" if active else "normal"),
+            )
+
+    def _set_image_mapping_tconorm(self, operator):
+        """Change the shared T-conorm and refresh already-displayed mappings."""
+        space = getattr(self, "fuzzy_color_space", None)
+        if not getattr(space, "is_granular", False):
+            return
+        if operator == space.tconorm:
+            return
+        if self._has_any_active_job():
+            self.custom_warning("Process Running",
+                "Finish or cancel the active process before changing the T-conorm.")
+            return
+        # Capture the displayed selections BEFORE restoring old mappings.
+        snapshots = []
+        for wid, mode in list(getattr(self, "window_mapping_mode", {}).items()):
+            if mode in ("single", "all"):
+                info = getattr(self, "proto_options", {}).get(wid, {})
+                snapshots.append((wid, mode, info.get("selection"),
+                                  info.get("display_style", "gray"),
+                                  getattr(self, "_mapping_all_pack_by_window", {}).get(wid, {}).get("level", "categories"),
+                                  getattr(self, "_mapping_all_pack_by_window", {}).get(wid, {}).get("scheme", "original")))
+        controller = getattr(self, "_image_inspection_controller", None)
+        inspector_open = False
+        try:
+            inspector_open = bool(controller and controller.win.winfo_exists())
+        except Exception:
+            pass
+        if inspector_open:
+            # The inspection controller already handles membership refresh and
+            # cache invalidation, so avoid a duplicate invalidation here.
+            controller._set_tconorm_choice(operator.upper())
+        else:
+            self._prepare_open_images_for_color_space_change()
+            space.set_tconorm(operator)
+            self._invalidate_mapping_caches()
+        self._sync_image_mapping_tconorm_buttons()
+        if space.tconorm != operator:
+            return
+        # Reapply existing maps from the original image. A new membership
+        # calculation is necessary; palette-only changes remain instantaneous.
+        for wid, mode, selection, style, level, scheme in snapshots:
+            if wid not in getattr(self, "window_image_key", {}):
+                continue
+            if mode == "all":
+                self._mapping_all_initial_view = getattr(self, "_mapping_all_initial_view", {})
+                self._mapping_all_initial_view[wid] = (level, scheme)
+                self.color_mapping_all(wid)
+            elif mode == "single":
+                self.color_mapping(wid)
+                info = getattr(self, "proto_options", {}).get(wid)
+                if isinstance(info, dict):
+                    info["display_style"] = style
+                    if selection is not None:
+                        info["selection"] = selection
+                        self._refresh_single_mapping_rows(wid)
+                        self._render_proto_options(wid)
+                        self.get_proto_percentage(wid)
 
     def _prepare_open_images_for_color_space_change(self):
         """
@@ -2734,6 +2821,10 @@ class PyFCSApp:
 
     def _invalidate_mapping_caches(self):
         """Invalidate all results whose memberships depend on the active FCS."""
+        self._sync_image_mapping_tconorm_buttons()
+        # Image Inspection also changes the shared operator. Keep the compact
+        # readout synchronized whichever window initiated the change.
+        self._refresh_pixel_info_memberships()
         if hasattr(self, "cm_cache_by_image"):
             self.cm_cache_by_image.clear()
         if hasattr(self, "proto_percentage_cache_by_image"):
@@ -5166,15 +5257,52 @@ class PyFCSApp:
             if getattr(self, "window_mapping_mode", {}).get(target_window_id) != "all":
                 return None, None
 
-            # Export the displayed legend palette, including any alternate-color selection.
+            # Export ALL assigned categories/granules, even when the compact
+            # on-screen category group is collapsed or scrolled out of view.
+            pack = getattr(self, "_mapping_all_pack_by_window", {}).get(target_window_id)
+            if pack and "level_palettes" in pack:
+                level = pack.get("level", "categories")
+                scheme = pack.get("scheme", "original")
+                palette = np.asarray(pack["level_palettes"][level][scheme], dtype=np.uint8)
+                if level == "categories":
+                    labels = [str(p.label) for p in self.prototypes]
+                elif getattr(self.fuzzy_color_space, "is_granular", False):
+                    labels = [
+                        (f"{cat.label} / {p.label}" if len(cat.prototypes) > 1
+                         else str(cat.label))
+                        for cat in self.fuzzy_color_space.categories
+                        for p in cat.prototypes
+                    ]
+                else:
+                    labels = [str(p.label) for p in self.prototypes]
+                colors = palette[:len(labels)]
+                alpha_values = pack.get("alpha_values")
+                unassigned = pack.get("label_map")
+                if unassigned is not None and alpha_values is not None:
+                    uncovered = (np.asarray(unassigned) < 0) & (np.asarray(alpha_values) > 0)
+                    if np.any(uncovered):
+                        labels.append("Unassigned (original)")
+                        colors = np.vstack([colors, np.asarray([220, 220, 220], dtype=np.uint8)])
+                return labels, colors
+
+            # Legacy fallback for a mapping result created before the current
+            # per-window pack existed or locked to an older color space.
             panel_info = getattr(self, "proto_options", {}).get(target_window_id)
             if isinstance(panel_info, dict) and panel_info.get("kind") == "all":
                 rows = list(panel_info.get("rows", []) or [])
                 if rows:
                     labels = []
                     colors = []
-                    for prototype, rgb in rows:
-                        labels.append(str(getattr(prototype, "label", prototype)))
+                    for row in rows:
+                        if isinstance(row, dict):
+                            if row.get("type") == "group":
+                                continue
+                            label = row.get("export_name", row.get("name", ""))
+                            rgb = row.get("rgb", (0, 0, 0))
+                        else:
+                            prototype, rgb = row
+                            label = getattr(prototype, "label", prototype)
+                        labels.append(str(label))
                         try:
                             rgb_values = np.asarray(rgb, dtype=np.uint8).reshape(-1)[:3]
                             if rgb_values.size != 3:
@@ -5682,15 +5810,15 @@ class PyFCSApp:
         focus_id = getattr(self, "_image_workspace_focus_id", None)
         layout_mode = getattr(self, "_image_workspace_layout_mode", "grid")
 
-        if count == 0:
-            text = "No images open"
-        elif focus_id in ids:
-            filename = os.path.basename(self.load_images_names.get(focus_id, "Image"))
-            text = f"Focus view · {filename}"
-        elif layout_mode == "manual":
-            text = f"{count} image{'s' if count != 1 else ''} · manual layout · Grid to arrange"
+        image_count = f"{count} image{'s' if count != 1 else ''}"
+        if focus_id in ids:
+            # Focus is a distinct workspace mode; report the underlying layout
+            # too, so it remains clear whether it was manual or automatic.
+            previous = getattr(self, "_image_workspace_focus_return_mode", layout_mode)
+            origin = "Manual" if previous == "manual" else "Automatic"
+            text = f"{image_count} · Focus ({origin})"
         else:
-            text = f"{count} image{'s' if count != 1 else ''} · automatic layout"
+            text = f"{image_count} · {'Manual' if layout_mode == 'manual' else 'Automatic'}"
 
         try:
             self.image_workspace_status_var.set(text)
@@ -5737,48 +5865,70 @@ class PyFCSApp:
         self._update_image_workspace_status()
 
 
-    def _set_mapping_all_palette(self, window_id, scheme):
-        """Switch Mapping All palettes without recomputing fuzzy memberships.
+    def _display_cached_mapping_all(self, window_id):
+        """Recolor the selected label map without repeating any fuzzy calculation."""
+        pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id)
+        if not pack:
+            return "break"
+        level = pack["level"]
+        scheme = pack["scheme"]
+        palette = pack["level_palettes"][level][scheme]
+        label_map = pack["label_maps"][level]
+        colored = self.image_manager.recolor_label_map(
+            label_map, palette, pack.get("alpha_values"))
+        if not getattr(self.fuzzy_color_space, "covering", True):
+            # Uncovered regions retain the original image, including alpha.
+            source = self._get_mapping_source_image(window_id)
+            source_rgb = np.asarray(UtilsTools._pil_rgb_for_processing(source))
+            alpha = UtilsTools._get_alpha_values_from_pil(source)
+            missing = (label_map < 0) & (alpha > 0)
+            if np.any(missing):
+                colored[missing, :3] = source_rgb[missing, :3]
+                colored[missing, 3] = alpha[missing]
+        pack["label_map"] = label_map  # Compatibility with image export.
+        pack["palettes"] = pack["level_palettes"][level]
+        self._display_mapping_all_result(window_id, colored, palette)
+        return "break"
 
-        original: RGB colors derived from the FCS prototypes.
-        alt:      alternative, visually separated colors of the current palette.
-        """
-        if scheme not in ("original", "alt") or self._has_active_job(window_id):
+    def _set_mapping_all_palette(self, window_id, scheme):
+        """Switch the Mapping All palette without recomputing category winners."""
+        if self._has_active_job(window_id):
             return "break"
         if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
-            self.custom_warning(
-                "Old Color Space",
-                "This Color Mapping All result belongs to a previous Color Space. Press Original to use the new one."
-            )
-            return "break"
-        if window_id not in getattr(self, "window_image_key", {}):
+            self.custom_warning("Old Color Space",
+                "This Mapping All result belongs to a previous Color Space. Press Original first.")
             return "break"
         pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id)
-        if not pack or pack.get("scheme") == scheme:
+        if not pack or scheme == pack.get("scheme") or scheme not in ("original", "alt"):
             return "break"
-        palettes = pack.get("palettes", {})
-        if scheme not in palettes:
+        previous = pack.get("scheme", "original")
+        pack["scheme"] = scheme
+        try:
+            return self._display_cached_mapping_all(window_id)
+        except Exception as exc:
+            pack["scheme"] = previous
+            self.custom_warning("Mapping Display Error", str(exc))
             return "break"
 
-        palette = palettes[scheme]
-        recolored = self.image_manager.recolor_label_map(
-            pack["label_map"], palette, pack.get("alpha_values")
-        )
-        if getattr(self, "fuzzy_color_space", None) is not None and not self.fuzzy_color_space.covering:
-            try:
-                source = self._get_mapping_source_image(window_id)
-                rgb = np.asarray(UtilsTools._pil_rgb_for_processing(source))
-                alpha = UtilsTools._get_alpha_values_from_pil(source)
-                unassigned = (pack["label_map"] < 0) & (alpha > 0)
-                if np.any(unassigned):
-                    recolored[unassigned, :3] = rgb[unassigned, :3]
-                    recolored[unassigned, 3] = alpha[unassigned]
-            except Exception:
-                pass
-        # Only commit the new selection when the recoloring has succeeded.
-        pack["scheme"] = scheme
-        self._display_mapping_all_result(window_id, recolored, palette)
-        return "break"
+    def _set_mapping_all_level(self, window_id, level):
+        """Switch between aggregated categories and explanatory granules."""
+        if self._has_active_job(window_id):
+            return "break"
+        if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
+            self.custom_warning("Old Color Space",
+                "This Mapping All result belongs to a previous Color Space. Press Original first.")
+            return "break"
+        pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id)
+        if not pack or level == pack.get("level") or level not in ("categories", "granules"):
+            return "break"
+        old = pack["level"]
+        pack["level"] = level
+        try:
+            return self._display_cached_mapping_all(window_id)
+        except Exception as exc:
+            pack["level"] = old
+            self.custom_warning("Mapping Display Error", str(exc))
+            return "break"
 
     def _toggle_mapping_all_palette(self, window_id):
         """Compatibility wrapper for older callbacks using the toggle action."""
@@ -5966,7 +6116,7 @@ class PyFCSApp:
         visible_rows = max(1, min(row_count if row_count else 1, 4))
         row_h = 24
         pad_top = 5
-        footer_h = 40  # Both single and all mappings expose a compact footer.
+        footer_h = 66 if info.get("kind") == "all" else 40
         bottom_pad = 4
         return pad_top + visible_rows * row_h + footer_h + bottom_pad
 
@@ -8257,22 +8407,120 @@ class PyFCSApp:
         return text[:max(1, max_chars - 1)] + "…"
 
 
+    def _mapping_category_rows(self, space, expanded, *, include_granules=True):
+        """Category/granule descriptors shared by atomic and granular spaces."""
+        rows = []
+        granular = bool(getattr(space, "is_granular", False))
+        flat = (space.get_all_prototypes() if granular else space.prototypes)
+        flat_rgb = self.image_manager.build_original_palette_uint8(
+            flat, space.color_space)
+        offset = 0
+        for category_index, cat_proto in enumerate(space.prototypes):
+            granules = (space.categories[category_index].prototypes if granular
+                        else [cat_proto])
+            count = len(granules)
+            swatches = flat_rgb[offset:offset + count]
+            rows.append({
+                "type": "category", "name": str(cat_proto.label),
+                "category": category_index, "count": count,
+                "swatches": swatches, "rgb": tuple(int(c) for c in swatches[0]),
+                "selection": ("category", category_index),
+            })
+            if include_granules and count > 1 and category_index in expanded:
+                for index, proto in enumerate(granules):
+                    rows.append({
+                        "type": "granule", "name": str(proto.label),
+                        "category": category_index, "granule": index,
+                        "rgb": tuple(int(c) for c in swatches[index]),
+                        "selection": ("granule", category_index, index),
+                    })
+            offset += count
+        return rows
+
+    def _refresh_single_mapping_rows(self, window_id):
+        info = getattr(self, "proto_options", {}).get(window_id)
+        space = getattr(self, "fuzzy_color_space", None)
+        if not isinstance(info, dict) or info.get("kind") != "single" or space is None:
+            return
+        info["rows"] = self._mapping_category_rows(
+            space, info.setdefault("expanded_categories", set()))
+
+    def _refresh_mapping_all_legend_rows(self, window_id):
+        info = getattr(self, "proto_options", {}).get(window_id)
+        pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id)
+        space = getattr(self, "fuzzy_color_space", None)
+        if not isinstance(info, dict) or info.get("kind") != "all" or not pack or space is None:
+            return
+        level = pack.get("level", "categories")
+        palette = np.asarray(pack["palettes"][pack["scheme"]], dtype=np.uint8)
+        rows = []
+        expanded = info.setdefault("expanded_categories", set())
+        if level == "categories":
+            for i, proto in enumerate(space.prototypes):
+                rows.append({"type": "color", "name": proto.label,
+                             "rgb": tuple(int(v) for v in palette[i]),
+                             "export_name": proto.label})
+        else:
+            granular = bool(getattr(space, "is_granular", False))
+            index = 0
+            for category_index, proto in enumerate(space.prototypes):
+                granules = (space.categories[category_index].prototypes if granular
+                            else [proto])
+                count = len(granules)
+                if count > 1:
+                    rows.append({"type": "group", "name": proto.label,
+                                 "category": category_index, "count": count,
+                                 "swatches": palette[index:index + count]})
+                if count == 1 or category_index in expanded:
+                    for local_i, granule in enumerate(granules):
+                        rows.append({
+                            "type": "color", "name": str(granule.label),
+                            "category": category_index, "indent": count > 1,
+                            "rgb": tuple(int(v) for v in palette[index + local_i]),
+                            "export_name": (f"{proto.label} / {granule.label}"
+                                            if count > 1 else proto.label),
+                        })
+                index += count
+        if not space.covering and np.any(
+            (np.asarray(pack["label_map"]) < 0) &
+            (np.asarray(pack["alpha_values"]) > 0)):
+            rows.append({"type": "unassigned", "name": "Unassigned (original)",
+                         "rgb": (220, 220, 220),
+                         "export_name": "Unassigned (original)"})
+        info["rows"] = rows
+        info["level"] = level
+
+    def _toggle_mapping_legend_category(self, window_id, category_index):
+        info = getattr(self, "proto_options", {}).get(window_id)
+        if not isinstance(info, dict):
+            return "break"
+        expanded = info.setdefault("expanded_categories", set())
+        if category_index in expanded:
+            expanded.discard(category_index)
+        else:
+            expanded.add(category_index)
+        if info.get("kind") == "single":
+            self._refresh_single_mapping_rows(window_id)
+        else:
+            self._refresh_mapping_all_legend_rows(window_id)
+        self._reposition_proto_options(window_id)
+        self._render_proto_options(window_id)
+        self._schedule_image_workspace_reflow()
+        return "break"
+
     def _scroll_proto_options(self, window_id, delta):
         info = getattr(self, "proto_options", {}).get(window_id)
         if not isinstance(info, dict):
             return "break"
-
         total = len(info.get("rows", []))
         visible = max(1, int(info.get("visible_rows", 1)))
-        max_offset = max(0, total - visible)
-        current = int(info.get("scroll_index", 0))
-        info["scroll_index"] = max(0, min(max_offset, current + int(delta)))
+        info["scroll_index"] = max(0, min(max(0, total - visible),
+                                           int(info.get("scroll_index", 0)) + int(delta)))
         self._render_proto_options(window_id)
         return "break"
 
-
     def _set_single_mapping_style(self, window_id, style):
-        """Toggle JFCS-style color/gray display without repeating membership work."""
+        """Switch grayscale/weighted RGB without recomputing membership."""
         if style not in ("gray", "color") or self._has_active_job(window_id):
             return "break"
         info = getattr(self, "proto_options", {}).get(window_id)
@@ -8282,345 +8530,246 @@ class PyFCSApp:
             return "break"
         info["display_style"] = style
         self._render_proto_options(window_id)
-
-        # A freshly opened selector may have no prototype selected yet. Keep
-        # original pixels until the user selects one. Never show a stale map
-        # from an earlier selection or an earlier Color Space.
-        current = getattr(self, "current_protos", {}).get(window_id)
-        selected = current.get() if current is not None else None
-        if selected and selected == info.get("displayed_for"):
+        selected = info.get("selection")
+        if selected is not None and info.get("displayed_for") == selected:
             gray = getattr(self, "modified_image", {}).get(window_id)
             if isinstance(gray, np.ndarray) and gray.ndim == 2:
                 self.display_color_mapping(gray, window_id)
         return "break"
 
-    def _select_proto_from_legend(self, window_id, color_name):
+    def _select_mapping_item(self, window_id, selection):
         if self._has_active_job(window_id):
             return "break"
-        current = getattr(self, "current_protos", {}).get(window_id)
-        if current is None:
+        info = getattr(self, "proto_options", {}).get(window_id)
+        if not isinstance(info, dict) or info.get("kind") != "single":
             return "break"
-        try:
-            current.set(color_name)
-        except Exception:
-            return "break"
+        info["selection"] = tuple(selection)
+        for row in info.get("rows", []):
+            if row.get("selection") == info["selection"]:
+                current = getattr(self, "current_protos", {}).get(window_id)
+                if current is not None:
+                    current.set(row["name"])
+                break
         self._render_proto_options(window_id)
         self.get_proto_percentage(window_id)
         return "break"
 
+    def _select_proto_from_legend(self, window_id, color_name):
+        """Keep compatibility with the old category-name selection callback."""
+        space = getattr(self, "fuzzy_color_space", None)
+        if space is not None:
+            for i, proto in enumerate(space.prototypes):
+                if str(proto.label) == str(color_name):
+                    return self._select_mapping_item(window_id, ("category", i))
+        return "break"
 
     def _jump_proto_options_scroll(self, window_id, event, track_top, track_height):
         info = getattr(self, "proto_options", {}).get(window_id)
         if not isinstance(info, dict):
             return "break"
-        total = len(info.get("rows", []))
         visible = max(1, int(info.get("visible_rows", 1)))
-        max_offset = max(0, total - visible)
+        max_offset = max(0, len(info.get("rows", [])) - visible)
         if max_offset <= 0:
             return "break"
-
         y = float(self.image_canvas.canvasy(event.y))
-        ratio = (y - float(track_top)) / max(1.0, float(track_height))
-        ratio = max(0.0, min(1.0, ratio))
+        ratio = max(0.0, min(1.0, (y - float(track_top)) / max(1.0, float(track_height))))
         info["scroll_index"] = int(round(ratio * max_offset))
         self._render_proto_options(window_id)
         return "break"
 
-
     def _render_proto_options(self, window_id):
-        """Render the prototype selector/legend entirely with Canvas primitives."""
+        """Compact native-canvas category/granule selector and Mapping All legend."""
         info = getattr(self, "proto_options", {}).get(window_id)
-        if not isinstance(info, dict):
-            return
-
         st = getattr(self, "floating_window_state", {}).get(window_id)
-        if not st:
+        if not isinstance(info, dict) or not st:
             return
-
-        # Preserve the panel registry while replacing only its Canvas drawings.
         try:
             self.image_canvas.delete(f"{window_id}_legend")
         except Exception:
             pass
-
         x = float(info.get("x", st["x"] + 12))
-        y = float(info.get("y", st["y"] + 44 + st["h"] + info.get("gap", 30)))
+        y = float(info.get("y", st["y"] + 44 + st["h"] + info.get("gap", 7)))
         w = int(info.get("width", max(180, int(st.get("w", 250)))))
         h = int(info.get("height", self._workspace_legend_height(window_id)))
         kind = info.get("kind", "single")
         rows = list(info.get("rows", []))
-        scroll_index = max(0, int(info.get("scroll_index", 0)))
-
         tag = f"{window_id}_legend"
-        common_tags = (window_id, "floating", tag, "legend")
-
-        # Panel background. Because this is a Canvas rectangle, it shares the
-        # same z-order as every image/card item instead of floating above them.
-        self.image_canvas.create_rectangle(
-            x, y, x + w, y + h,
-            fill="#ffffff", outline="#2f2f2f", width=1,
-            tags=common_tags,
-        )
-
-        pad = 5
-        scrollbar_space = 12
-        footer_h = 40  # Single: Grayscale/Color · All: Original/Alt. Colors.
-        content_top = y + pad
-        content_bottom = y + h - footer_h - 4
+        common = (window_id, "floating", tag, "legend")
+        self.image_canvas.create_rectangle(x, y, x + w, y + h,
+            fill="white", outline="#2f2f2f", width=1, tags=common)
+        footer_h = 66 if kind == "all" else 40
         row_h = 24
-        visible_rows = max(1, int((content_bottom - content_top) // row_h))
+        top = y + 5
+        bottom = y + h - footer_h - 4
+        visible_rows = max(1, int((bottom - top) // row_h))
         info["visible_rows"] = visible_rows
-
-        max_offset = max(0, len(rows) - visible_rows)
-        scroll_index = max(0, min(max_offset, scroll_index))
-        info["scroll_index"] = scroll_index
-        visible = rows[scroll_index:scroll_index + visible_rows]
-
-        row_right = x + w - scrollbar_space - 3
-
-        for local_index, row_data in enumerate(visible):
-            absolute_index = scroll_index + local_index
-            y1 = content_top + local_index * row_h
+        scroll = max(0, min(int(info.get("scroll_index", 0)),
+                            max(0, len(rows) - visible_rows)))
+        info["scroll_index"] = scroll
+        right = x + w - 15
+        expanded = info.get("expanded_categories", set())
+        for offset, row in enumerate(rows[scroll:scroll + visible_rows]):
+            n = scroll + offset
+            y1 = top + offset * row_h
             y2 = y1 + row_h - 3
-            row_tag = f"{tag}_row_{absolute_index}"
-
+            cy = (y1 + y2) / 2
+            row_tag = f"{tag}_row_{n}"
+            selected = kind == "single" and row.get("selection") == info.get("selection")
+            self.image_canvas.create_rectangle(
+                x + 3, y1, right, y2,
+                fill=UtilsTools.UI_ACCENT_SOFT if selected else "#ffffff",
+                outline="", tags=common + (row_tag,))
+            indent = row.get("type") == "granule" or row.get("indent", False)
+            left = x + (28 if indent else 8)
             if kind == "single":
-                color_name = str(row_data)
-                current = getattr(self, "current_protos", {}).get(window_id)
-                selected = bool(current is not None and current.get() == color_name)
-
-                # Row hover/click target (white, no visible border).
-                self.image_canvas.create_rectangle(
-                    x + 3, y1, row_right, y2,
-                    fill="#ffffff", outline="",
-                    tags=common_tags + (row_tag,),
-                )
-                cx = x + 12
-                cy = (y1 + y2) / 2
-                self.image_canvas.create_oval(
-                    cx - 5, cy - 5, cx + 5, cy + 5,
-                    fill="#ffffff", outline="#2f2f2f", width=1,
-                    tags=common_tags + (row_tag,),
-                )
+                self.image_canvas.create_oval(left, cy - 4.5, left + 9, cy + 4.5,
+                    fill="#ffffff", outline="#60646e", width=1, tags=common + (row_tag,))
                 if selected:
-                    self.image_canvas.create_oval(
-                        cx - 2.5, cy - 2.5, cx + 2.5, cy + 2.5,
-                        fill="#111111", outline="#111111",
-                        tags=common_tags + (row_tag,),
-                    )
-                self.image_canvas.create_text(
-                    x + 23, cy,
-                    text=self._legend_display_name(color_name),
-                    anchor="w", fill="#111111", font=("Sans", 9),
-                    tags=common_tags + (row_tag,),
-                )
-                self.image_canvas.tag_bind(
-                    row_tag,
-                    "<Button-1>",
-                    lambda _e, wid=window_id, name=color_name: self._select_proto_from_legend(wid, name),
-                )
-
+                    self.image_canvas.create_oval(left + 2.5, cy - 2, left + 6.5, cy + 2,
+                        fill=UtilsTools.UI_ACCENT_DARK, outline="", tags=common + (row_tag,))
+                left += 13
+            if row.get("type") in ("category", "group") and row.get("count", 1) > 1:
+                swatches = list(row.get("swatches", []))[:3]
+                for index, rgb in enumerate(swatches):
+                    rgb = np.asarray(rgb, dtype=int)
+                    hx = "#{:02x}{:02x}{:02x}".format(*rgb[:3])
+                    x1 = left + index * 5
+                    self.image_canvas.create_rectangle(x1, cy - 5, x1 + 5, cy + 5,
+                        fill=hx, outline="", tags=common + (row_tag,))
+                left += 19
             else:
-                prototype, rgb = row_data
-                try:
-                    rgb_arr = np.asarray(rgb, dtype=int).reshape(-1)[:3]
-                    color_hex = "#{:02x}{:02x}{:02x}".format(
-                        int(rgb_arr[0]), int(rgb_arr[1]), int(rgb_arr[2])
-                    )
-                    luminance = 0.299 * rgb_arr[0] + 0.587 * rgb_arr[1] + 0.114 * rgb_arr[2]
-                    text_color = "white" if luminance < 80 else "black"
-                except Exception:
-                    color_hex, text_color = "#dddddd", "black"
-
-                self.image_canvas.create_rectangle(
-                    x + 7, y1 + 1, row_right, y2 - 1,
-                    fill=color_hex, outline="#ffffff", width=1,
-                    tags=common_tags + (row_tag,),
-                )
-                self.image_canvas.create_text(
-                    (x + 7 + row_right) / 2, (y1 + y2) / 2,
-                    text=self._legend_display_name(getattr(prototype, "label", prototype)),
-                    anchor="center", fill=text_color, font=("Sans", 9),
-                    tags=common_tags + (row_tag,),
-                )
-
-        # Canvas-native scrollbar. Wheel and track clicking are enough here and
-        # keep the panel visually very close to the old vertical list.
+                rgb = np.asarray(row.get("rgb", (210, 210, 210)), dtype=int)
+                hx = "#{:02x}{:02x}{:02x}".format(*rgb[:3])
+                self.image_canvas.create_rectangle(left, cy - 5, left + 11, cy + 5,
+                    fill=hx, outline="", tags=common + (row_tag,))
+                left += 14
+            expandable = row.get("type") in ("category", "group") and row.get("count", 1) > 1
+            end_reserved = 33 if expandable else 4
+            available = max(3, int((right - end_reserved - left) // 5.4))
+            label = self._legend_display_name(row.get("name", ""), min(24, available))
+            self.image_canvas.create_text(left, cy, text=label, anchor="w",
+                fill=UtilsTools.UI_ACCENT_DARK if selected else "#1f2937",
+                font=("Segoe UI", 8, "bold" if selected else "normal"),
+                tags=common + (row_tag,))
+            if expandable:
+                cat_index = row["category"]
+                marker = "▾" if cat_index in expanded else "▸"
+                arrow_tag = f"{tag}_expand_{n}"
+                self.image_canvas.create_text(right - 18, cy,
+                    text=marker, anchor="center", font=("Segoe UI", 9, "bold"),
+                    fill=UtilsTools.UI_ACCENT_DARK, tags=common + (arrow_tag,))
+                self.image_canvas.tag_bind(arrow_tag, "<Button-1>",
+                    lambda _e, wid=window_id, ci=cat_index:
+                    self._toggle_mapping_legend_category(wid, ci))
+                if kind == "all":
+                    self.image_canvas.tag_bind(row_tag, "<Button-1>",
+                        lambda _e, wid=window_id, ci=cat_index:
+                        self._toggle_mapping_legend_category(wid, ci))
+            if kind == "single":
+                selection = row.get("selection")
+                self.image_canvas.tag_bind(row_tag, "<Button-1>",
+                    lambda _e, wid=window_id, item=selection:
+                    self._select_mapping_item(wid, item))
         if len(rows) > visible_rows:
-            track_x1 = x + w - 11
-            track_x2 = x + w - 6
-            track_y1 = content_top + 3
-            track_y2 = max(track_y1 + 18, content_bottom - 3)
-            track_h = max(1.0, track_y2 - track_y1)
-
-            self.image_canvas.create_rectangle(
-                track_x1, track_y1, track_x2, track_y2,
-                fill="#e7e7e7", outline="#b8b8b8",
-                tags=common_tags + (f"{tag}_scroll_track",),
-            )
-
-            fraction = min(1.0, visible_rows / max(1, len(rows)))
-            thumb_h = max(20.0, track_h * fraction)
-            travel = max(0.0, track_h - thumb_h)
-            ratio = 0.0 if max_offset <= 0 else scroll_index / max_offset
-            thumb_y1 = track_y1 + travel * ratio
-            thumb_y2 = thumb_y1 + thumb_h
-            self.image_canvas.create_rectangle(
-                track_x1 - 1, thumb_y1, track_x2 + 1, thumb_y2,
-                fill="#888888", outline="#777777",
-                tags=common_tags + (f"{tag}_scroll_thumb",),
-            )
-            self.image_canvas.tag_bind(
-                f"{tag}_scroll_track",
-                "<Button-1>",
-                lambda e, wid=window_id, top=track_y1, th=track_h: self._jump_proto_options_scroll(wid, e, top, th),
-            )
-
+            sx1, sx2 = x + w - 11, x + w - 6
+            sy1, sy2 = top + 3, max(top + 21, bottom - 3)
+            length = sy2 - sy1
+            self.image_canvas.create_rectangle(sx1, sy1, sx2, sy2,
+                fill="#e7e7e7", outline="#b8b8b8", tags=common)
+            fraction = min(1.0, visible_rows / len(rows))
+            thumb_h = max(20, length * fraction)
+            thumb_y = sy1 + (length - thumb_h) * (
+                scroll / max(1, len(rows) - visible_rows))
+            self.image_canvas.create_rectangle(sx1 - 1, thumb_y,
+                sx2 + 1, thumb_y + thumb_h, fill="#888888", outline="#777777",
+                tags=common)
+            track_tag = f"{tag}_scroll_track"
+            # Add an invisible mouse target over the complete track.
+            self.image_canvas.create_rectangle(sx1 - 2, sy1, sx2 + 2, sy2,
+                outline="", fill="", tags=common + (track_tag,))
+            self.image_canvas.tag_bind(track_tag, "<Button-1>",
+                lambda e, wid=window_id, track_y=sy1, track_h=length:
+                self._jump_proto_options_scroll(wid, e, track_y, track_h))
+        # Segmented controls. Mapping All has two compact rows, each of which
+        # recolors an already-computed pair of label maps without membership work.
+        def segmented(options, selected_mode, y1, callback):
+            y2 = y1 + 24
+            half = (w - 14) / len(options)
+            for i, (mode, caption) in enumerate(options):
+                x1, x2 = x + 7 + i * half, x + 7 + (i + 1) * half
+                active = selected_mode == mode
+                btag = f"{tag}_button_{y1:.0f}_{mode}"
+                self.image_canvas.create_rectangle(x1, y1, x2, y2,
+                    fill=UtilsTools.UI_ACCENT_SOFT if active else "#f5f5f5",
+                    outline=UtilsTools.UI_ACCENT_MUTED if active else "#b8b8b8",
+                    tags=common + (btag,))
+                self.image_canvas.create_text((x1 + x2) / 2, (y1 + y2) / 2,
+                    text=caption, fill=UtilsTools.UI_ACCENT_DARK if active else "#333333",
+                    font=("Segoe UI", 8, "bold" if active else "normal"),
+                    tags=common + (btag,))
+                self.image_canvas.tag_bind(btag, "<Button-1>",
+                    lambda _e, wid=window_id, m=mode: callback(wid, m))
         if kind == "single":
-            # Like JFCS, the same membership map can be inspected in gray or
-            # with the original RGB channels weighted by membership. Switching
-            # style does not recompute memberships or change the coverage %.
-            selected_style = info.get("display_style", "gray")
-            button_y1 = y + h - 34
-            button_y2 = y + h - 6
-            half = (w - 14) / 2
-            for index, (style, caption) in enumerate((("gray", "Grayscale"), ("color", "Color"))):
-                x1 = x + 7 + index * half
-                x2 = x + 7 + (index + 1) * half
-                active = style == selected_style
-                button_tag = f"{tag}_style_{style}"
-                self.image_canvas.create_rectangle(
-                    x1, button_y1, x2, button_y2,
-                    fill=UtilsTools.UI_ACCENT_SOFT if active else "#f5f5f5",
-                    outline=UtilsTools.UI_ACCENT_MUTED if active else "#b8b8b8",
-                    width=1,
-                    tags=common_tags + (button_tag,),
-                )
-                self.image_canvas.create_text(
-                    (x1 + x2) / 2, (button_y1 + button_y2) / 2,
-                    text=caption,
-                    fill=UtilsTools.UI_ACCENT_DARK if active else "#333333",
-                    font=("Sans", 9, "bold" if active else "normal"),
-                    tags=common_tags + (button_tag,),
-                )
-                self.image_canvas.tag_bind(
-                    button_tag, "<Button-1>",
-                    lambda _e, wid=window_id, mode=style: self._set_single_mapping_style(wid, mode),
-                )
-
-        if kind == "all":
-            # Matching the Grayscale / Color segmented control of single Mapping.
+            segmented((("gray", "Grayscale"), ("color", "Color")),
+                      info.get("display_style", "gray"), y + h - 34,
+                      self._set_single_mapping_style)
+        else:
             pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id, {})
-            current_scheme = pack.get("scheme", "alt")
-            button_y1 = y + h - 34
-            button_y2 = y + h - 6
-            half = (w - 14) / 2
-            for index, (scheme, caption) in enumerate((("original", "Original"), ("alt", "Alt. Colors"))):
-                x1 = x + 7 + index * half
-                x2 = x + 7 + (index + 1) * half
-                active = scheme == current_scheme
-                button_tag = f"{tag}_palette_{scheme}"
-                self.image_canvas.create_rectangle(
-                    x1, button_y1, x2, button_y2,
-                    fill=UtilsTools.UI_ACCENT_SOFT if active else "#f5f5f5",
-                    outline=UtilsTools.UI_ACCENT_MUTED if active else "#b8b8b8",
-                    width=1,
-                    tags=common_tags + (button_tag,),
-                )
-                self.image_canvas.create_text(
-                    (x1 + x2) / 2, (button_y1 + button_y2) / 2,
-                    text=caption,
-                    fill=UtilsTools.UI_ACCENT_DARK if active else "#333333",
-                    font=("Sans", 9, "bold" if active else "normal"),
-                    tags=common_tags + (button_tag,),
-                )
-                self.image_canvas.tag_bind(
-                    button_tag,
-                    "<Button-1>",
-                    lambda _e, wid=window_id, mode=scheme: self._set_mapping_all_palette(wid, mode),
-                )
-
-        # Wheel scrolling is intentionally handled by the single Canvas-level
-        # dispatcher installed in _ensure_image_zoom_mousewheel_binding().
-        # Tk Canvas.tag_bind() accepts button/key/motion events, but not
-        # <MouseWheel>, which would raise TclError on Windows.
-
+            segmented((("categories", "Categories"), ("granules", "Granules")),
+                      pack.get("level", "categories"), y + h - 61,
+                      self._set_mapping_all_level)
+            segmented((("original", "Original"), ("alt", "Alt. Colors")),
+                      pack.get("scheme", "original"), y + h - 32,
+                      self._set_mapping_all_palette)
         self._sync_workspace_card_item_states(window_id)
         self._focus_floating_window(window_id)
 
-
     def _create_single_mapping_panel(self, window_id):
-        """Create a vertical, canvas-native prototype selector below the image."""
+        """Create a compact hierarchical selector below the image."""
         self._destroy_proto_options(window_id)
-
-        values = list(getattr(self, "color_matrix", []) or [])
         if not hasattr(self, "current_protos"):
             self.current_protos = {}
-
-        # Opening Color Mapping is now a neutral state: no prototype is selected
-        # and no radio point is marked until the user explicitly chooses one.
         current = self.current_protos.get(window_id)
         if current is None:
             current = tk.StringVar(value="")
             self.current_protos[window_id] = current
         else:
             current.set("")
-
-        # Clear any percentage left from a previous single mapping while the
-        # user is choosing a new prototype. The displayed image itself is not
-        # altered here.
         try:
             self.image_canvas.itemconfig(f"{window_id}_pct_text", text="")
         except Exception:
             pass
-
         self.proto_options = getattr(self, "proto_options", {})
         self.proto_options[window_id] = {
-            "kind": "single",
-            "rows": values,
-            "gap": 12,
-            "scroll_index": 0,
-            "display_style": "gray",
-            "displayed_for": None,
+            "kind": "single", "rows": [], "selection": None,
+            "expanded_categories": set(), "gap": 7, "scroll_index": 0,
+            "display_style": "gray", "displayed_for": None,
         }
+        self._refresh_single_mapping_rows(window_id)
         self._reposition_proto_options(window_id)
         self._sync_workspace_card_item_states(window_id)
         self._schedule_image_workspace_reflow(delay=0)
-
 
     def _create_mapping_all_panel(self, window_id, palette_uint8):
-        """Create a vertical, canvas-native Mapping-All legend below the image."""
+        """Create the active category/granule Mapping All legend."""
+        old = getattr(self, "proto_options", {}).get(window_id, {})
+        expanded = set(old.get("expanded_categories", set()))
+        scroll = int(old.get("scroll_index", 0))
         self._destroy_proto_options(window_id)
-
-        prototypes = list(getattr(self, "prototypes", []) or [])
-        palette = np.asarray(palette_uint8)
-        rows = []
-        for i, prototype in enumerate(prototypes):
-            try:
-                rgb = tuple(int(v) for v in np.asarray(palette[i], dtype=int).reshape(-1)[:3])
-            except Exception:
-                rgb = (221, 221, 221)
-            rows.append((prototype, rgb))
-
-        # The additional entry is informational, not a selectable prototype.
-        pack = getattr(self, "_mapping_all_pack_by_window", {}).get(window_id, {})
-        label_map = pack.get("label_map")
-        space = getattr(self, "fuzzy_color_space", None)
-        if space is not None and not space.covering and label_map is not None:
-            if np.any(np.asarray(label_map) < 0):
-                rows.append(("Unassigned (original)", (220, 220, 220)))
-
+        if old.get("kind") != "all":
+            space = getattr(self, "fuzzy_color_space", None)
+            if getattr(space, "is_granular", False):
+                expanded = {i for i, cat in enumerate(space.categories)
+                            if len(cat.prototypes) > 1}
         self.proto_options = getattr(self, "proto_options", {})
         self.proto_options[window_id] = {
-            "kind": "all",
-            "rows": rows,
-            "gap": 12,
-            "scroll_index": 0,
+            "kind": "all", "rows": [], "expanded_categories": expanded,
+            "gap": 7, "scroll_index": scroll,
         }
+        self._refresh_mapping_all_legend_rows(window_id)
         self._reposition_proto_options(window_id)
         self._sync_workspace_card_item_states(window_id)
         self._schedule_image_workspace_reflow(delay=0)
-
 
     def color_mapping(self, window_id):
         """Open Color Mapping directly from Original or Mapping All."""
@@ -8679,12 +8828,27 @@ class PyFCSApp:
             self.custom_warning("Error", "Image cache key not found for this window.")
             return
 
-        selected_proto = self.current_protos[window_id].get()
-        if selected_proto not in self.color_matrix:
-            self.custom_warning("Error", "Selected prototype is not available in the current Color Space.")
+        info = getattr(self, "proto_options", {}).get(window_id, {})
+        choice = info.get("selection")
+        if choice is None:
+            self.custom_warning("Select a Color", "Choose a category or granule first.")
             return
-
-        pos = self.color_matrix.index(selected_proto)
+        kind, pos = choice[0], int(choice[1])
+        if pos < 0 or pos >= len(self.prototypes):
+            self.custom_warning("Invalid Selection", "The selected category no longer exists.")
+            return
+        granule_index = int(choice[2]) if kind == "granule" else None
+        if kind == "granule":
+            if not getattr(self.fuzzy_color_space, "is_granular", False):
+                self.custom_warning("Invalid Selection", "This space has no individual granules.")
+                return
+            cat = self.fuzzy_color_space.categories[pos]
+            if not 0 <= granule_index < len(cat.prototypes):
+                self.custom_warning("Invalid Selection", "The selected granule no longer exists.")
+                return
+            selected_proto = f"{cat.label} / {cat.prototypes[granule_index].label}"
+        else:
+            selected_proto = str(self.prototypes[pos].label)
 
         image_key = self.window_image_key[window_id]
         color_space_key = getattr(self, "file_path", None)
@@ -8712,7 +8876,9 @@ class PyFCSApp:
                 valid_mask = UtilsTools._get_alpha_mask_from_pil(source_img)
                 processing_img = UtilsTools._pil_rgb_for_processing(source_img)
 
-                cache_key = (pos, w, h)
+                cache_key = (kind, pos, granule_index, w, h,
+                             getattr(self.fuzzy_color_space, "tconorm", None)
+                             if kind == "category" else None)
                 cached_entry = scope_cache.get(cache_key)
 
                 if cached_entry is not None:
@@ -8731,6 +8897,7 @@ class PyFCSApp:
                         image=processing_img,
                         fuzzy_color_space=self.fuzzy_color_space,
                         selected_option=pos,
+                        granule_index=granule_index,
                         progress_callback=update_progress,
                         cancel_callback=lambda: cancel_event.is_set()
                     )
@@ -8763,7 +8930,7 @@ class PyFCSApp:
                     self.display_color_mapping(grayscale_image_array, window_id)
                     current_info = getattr(self, "proto_options", {}).get(window_id)
                     if isinstance(current_info, dict) and current_info.get("kind") == "single":
-                        current_info["displayed_for"] = selected_proto
+                        current_info["displayed_for"] = choice
                     self.image_canvas.itemconfig(
                         f"{window_id}_pct_text",
                         text=f"{selected_proto}: {pct:.2f}%"
@@ -9061,6 +9228,8 @@ class PyFCSApp:
         if not hasattr(self, "window_mapping_mode"):
             self.window_mapping_mode = {}
         self.window_mapping_mode[window_id] = "all"
+        initial_view = getattr(self, "_mapping_all_initial_view", {}).pop(
+            window_id, ("categories", "original"))
 
         cache_scope = (self.window_image_key[window_id], getattr(self, "file_path", None))
         try:
@@ -9094,38 +9263,54 @@ class PyFCSApp:
                     self.cm_cache_by_image = {}
                 scope_cache = self.cm_cache_by_image.setdefault(cache_scope, {})
                 proto_labels = tuple(p.label for p in self.prototypes)
-                cache_key = (w, h, proto_labels)
-                label_map = scope_cache.get(cache_key)
-                if label_map is None:
-                    label_map = self.image_manager.get_best_prototype_label_map(
-                        image=processing_img, fuzzy_color_space=self.fuzzy_color_space, valid_mask=valid_mask,
+                flat = (self.fuzzy_color_space.get_all_prototypes()
+                        if getattr(self.fuzzy_color_space, "is_granular", False)
+                        else self.prototypes)
+                cache_key = (w, h, proto_labels, tuple(p.label for p in flat),
+                             getattr(self.fuzzy_color_space, "tconorm", None))
+                maps = scope_cache.get(cache_key)
+                if maps is None:
+                    maps = self.image_manager.get_category_granule_label_maps(
+                        image=processing_img, fuzzy_color_space=self.fuzzy_color_space,
+                        valid_mask=valid_mask,
                         progress_callback=lambda current, total: update_progress(job_id, current, total),
                         cancel_callback=lambda: self._is_job_cancelled(window_id, cancel_event, job_id))
-                    if label_map is None:
+                    if maps is None:
                         return
-                    scope_cache[cache_key] = label_map
+                    scope_cache[cache_key] = maps
                 if self._is_job_cancelled(window_id, cancel_event, job_id):
                     return
-                original_palette = self.image_manager.build_original_palette_uint8(
-                    self.prototypes, self.fuzzy_color_space.color_space
-                )
-                alt_palette = self.image_manager.build_alt_palette_uint8(self.prototypes)
-                palette = original_palette
-                recolored_image = self.image_manager.recolor_label_map(label_map, palette, alpha_values)
+                label_maps = {"categories": maps[0], "granules": maps[1]}
+                category_original = self.image_manager.build_original_palette_uint8(
+                    self.prototypes, self.fuzzy_color_space.color_space)
+                category_alt = self.image_manager.build_alt_palette_uint8(self.prototypes)
+                granule_original = self.image_manager.build_original_palette_uint8(
+                    flat, self.fuzzy_color_space.color_space)
+                granule_alt = self.image_manager.build_granule_alt_palette_uint8(
+                    self.fuzzy_color_space, category_alt)
+                level_palettes = {
+                    "categories": {"original": category_original, "alt": category_alt},
+                    "granules": {"original": granule_original, "alt": granule_alt},
+                }
+                level, scheme = initial_view
+                if level not in label_maps:
+                    level = "categories"
+                if scheme not in ("original", "alt"):
+                    scheme = "original"
+                palette = level_palettes[level][scheme]
+                label_map = label_maps[level]
+                recolored_image = self.image_manager.recolor_label_map(
+                    label_map, palette, alpha_values)
                 if not self.fuzzy_color_space.covering:
-                    # Uncovered real-image pixels must NOT be forced into a color.
-                    # Preserve their original appearance and alpha value.
-                    unassigned = (label_map < 0) & valid_mask
-                    if np.any(unassigned):
-                        recolored_image[unassigned, :3] = np.asarray(processing_img)[unassigned, :3]
-                        recolored_image[unassigned, 3] = alpha_values[unassigned]
-                # Share label-map computations, but keep palette choices local to each window.
+                    missing = (label_map < 0) & valid_mask
+                    if np.any(missing):
+                        recolored_image[missing, :3] = np.asarray(processing_img)[missing, :3]
+                        recolored_image[missing, 3] = alpha_values[missing]
                 window_pack = {
-                    "label_map": label_map,
-                    "alpha_values": alpha_values,
-                    "palettes": {"original": original_palette, "alt": alt_palette},
-                    "scheme": "original",
-                    "cache_key": cache_key,
+                    "label_maps": label_maps, "level_palettes": level_palettes,
+                    "label_map": label_map, "alpha_values": alpha_values,
+                    "palettes": level_palettes[level], "level": level,
+                    "scheme": scheme, "cache_key": cache_key,
                 }
                 def _ui():
                     if self._is_job_cancelled(window_id, cancel_event, job_id):
@@ -10474,126 +10659,222 @@ class PyFCSApp:
         return "break"
 
 
+    @staticmethod
+    def _pixel_info_elide(text, max_pixels, font):
+        """End-elide by actual font width, rather than by character count."""
+        text = str(text)
+        if font.measure(text) <= max_pixels:
+            return text
+        ellipsis = "…"
+        if max_pixels <= font.measure(ellipsis):
+            return ellipsis
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if font.measure(text[:mid] + ellipsis) <= max_pixels:
+                low = mid
+            else:
+                high = mid - 1
+        return text[:low] + ellipsis
+
+
+    def _fit_pixel_info_bar(self):
+        """Center pixel information and preserve coordinates when space is tight.
+
+        Each section is measured using the actual Tk font metrics.  If a ROI
+        would overflow, compact its notation before eliding important values.
+        The bar remains bounded by the Model 3D viewport at every size.
+        """
+        frame = getattr(self, "lab_value_frame", None)
+        fields = getattr(self, "_pixel_info_values", None)
+        content = getattr(self, "_pixel_info_content", None)
+        if frame is None or fields is None or content is None:
+            return
+        try:
+            if not frame.winfo_exists():
+                return
+            from tkinter import font as tkfont
+            if not hasattr(self, "_pixel_info_value_font"):
+                self._pixel_info_value_font = tkfont.Font(
+                    root=self.root, family="Segoe UI", size=9)
+                self._pixel_info_prefix_font = tkfont.Font(
+                    root=self.root, family="Segoe UI", size=8, weight="bold")
+            value_font = self._pixel_info_value_font
+            prefix_font = self._pixel_info_prefix_font
+
+            canvas_width = max(1, self.Canvas1.winfo_width())
+            # Padding: 8px left, 31px for the inspection icon, two 1px
+            # separators with their own horizontal padding.
+            actual_width = content.winfo_width()
+            if actual_width <= 1 or actual_width > canvas_width:
+                actual_width = canvas_width - 43
+            available = max(3, actual_width - 30)
+
+            labels = ("Coords:", "LAB:", "Prototype:")
+            raw_coords = str(fields["coords"])
+            selection = (getattr(self, "_last_pixel_info", None) or {}).get(
+                "selection_info")
+            compact_coords = raw_coords
+            if isinstance(selection, dict) and selection.get("type") == "roi":
+                try:
+                    compact_coords = (
+                        f"ROI {selection['x1']},{selection['y1']}–"
+                        f"{selection['x2']},{selection['y2']}")
+                except (KeyError, TypeError, ValueError):
+                    pass
+            lab = fields["lab"]
+            lab_full = f"{lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}"
+            lab_short = f"{lab[0]:.1f}, {lab[1]:.1f}, {lab[2]:.1f}"
+            best = str(fields["best"])
+            texts = [raw_coords, lab_full, best]
+            lead_width = [prefix_font.measure(title) + 5 for title in labels]
+
+            def measured(i):
+                return lead_width[i] + value_font.measure(texts[i]) + 4
+
+            desired = [measured(i) for i in range(3)]
+            overflow = sum(desired) - available
+            if overflow > 0 and compact_coords != raw_coords:
+                # Save horizontal space by changing only the presentation;
+                # original full ROI bounds stay in _last_pixel_info.
+                texts[0] = compact_coords
+                desired[0] = measured(0)
+                overflow = sum(desired) - available
+            if overflow > 0:
+                texts[1] = lab_short
+                desired[1] = measured(1)
+                overflow = sum(desired) - available
+            if overflow > 0:
+                # Long prototype labels are the first to elide. For ordinary
+                # short names, this ordering usually keeps all three values.
+                minimums = [lead_width[0] + 16, lead_width[1] + 16,
+                            lead_width[2] + 12]
+                for i in (2, 0, 1):
+                    if overflow <= 0:
+                        break
+                    reduction = min(overflow, max(0, desired[i] - minimums[i]))
+                    desired[i] -= reduction
+                    overflow -= reduction
+
+            # One shared grid-uniform group preserves these measured widths,
+            # while the child frames center each label + value as a unit.
+            for column, size in zip((0, 2, 4), desired):
+                content.grid_columnconfigure(
+                    column, weight=max(1, int(size)), uniform="pixel_fields")
+            refs = (self.coord_value, self.lab_value_print,
+                    self.proto_value_text)
+            for i, widget in enumerate(refs):
+                room = max(1, desired[i] - lead_width[i] - 4)
+                widget.configure(text=self._pixel_info_elide(
+                    texts[i], room, value_font))
+        except (tk.TclError, ValueError, TypeError):
+            # Resizing or switching color spaces can destroy the overlay while
+            # a deferred Tk redraw is still pending.
+            return
+
+
     def display_pixel_value(self, x_original, y_original, pixel_lab, is_average=False, selection_info=None, image_id=None):
-        """
-        Display selected pixel/ROI LAB information in a compact floating info bar.
-        Shows coordinates, LAB value, selected prototype and a Image Inspection action.
-        Stores pixel/ROI info for Image Inspection.
-        """
-        # Create compact floating info bar only once
-        if not hasattr(self, "lab_value_frame"):
-            BAR_BG = "#ffffff"
-            TEXT = "#1f2937"
-            MUTED = "#6b7280"
-            SEPARATOR = "#d9dde3"
-            LINK = UtilsTools.UI_ACCENT
+        """Display pixel/ROI LAB and the best category, using the active T-conorm.
 
+        This status bar has a bounded width. Full coordinates, LAB precision and
+        category memberships remain available in Image Inspection.
+        """
+        if not hasattr(self, "lab_value_frame") or not self.lab_value_frame.winfo_exists():
+            bg, muted, text = "#ffffff", "#6b7280", "#1f2937"
             self.lab_value_frame = tk.Frame(
-                self.Canvas1,
-                bg=BAR_BG,
-                bd=0,
-                relief="flat",
-                highlightthickness=1,
-                highlightbackground="#d9dde3"
-            )
+                self.Canvas1, bg=bg, bd=0, relief="flat",
+                highlightthickness=1, highlightbackground="#d9dde3")
+            self.lab_value_frame.place(
+                relx=0.5, rely=0.987, relwidth=1.0, width=-12, anchor="s")
+            content = tk.Frame(self.lab_value_frame, bg=bg)
+            content.pack(fill="x", expand=True, padx=(8, 31), pady=3)
+            self._pixel_info_content = content
+            # Center the combined heading/value in each section, keeping the
+            # two separators from the original Pixel Info design.
+            for column, weight in ((0, 38), (2, 34), (4, 28)):
+                content.grid_columnconfigure(column, weight=weight,
+                                             uniform="pixel_fields")
 
-            # Más abajo que antes
-            self.lab_value_frame.place(relx=0.5, rely=0.987, anchor="s")
-
-            text_frame = tk.Frame(self.lab_value_frame, bg=BAR_BG)
-            text_frame.pack(side="left", padx=(10, 6), pady=4)
-
-            label_font = ("Segoe UI", 8, "bold")
-            value_font = ("Segoe UI", 9)
-
-            def add_separator(parent):
-                tk.Frame(
-                    parent,
-                    bg=SEPARATOR,
-                    width=1,
-                    height=18
-                ).pack(side="left", padx=8, pady=2)
-
-            def make_info_item(parent, label_text):
-                group = tk.Frame(parent, bg=BAR_BG)
-                group.pack(side="left")
-
+            def make_field(column, title):
+                group = tk.Frame(content, bg=bg)
+                group.grid(row=0, column=column, sticky="nsew")
+                centered = tk.Frame(group, bg=bg)
+                centered.pack(expand=True)
                 tk.Label(
-                    group,
-                    text=f"{label_text}:",
-                    font=label_font,
-                    bg=BAR_BG,
-                    fg=MUTED
-                ).pack(side="left")
-
-                value_label = tk.Label(
-                    group,
-                    text="",
-                    font=value_font,
-                    bg=BAR_BG,
-                    fg=TEXT
+                    centered, text=title, font=("Segoe UI", 8, "bold"),
+                    bg=bg, fg=muted,
+                ).pack(side="left", padx=(0, 3))
+                result = tk.Label(
+                    centered, font=("Segoe UI", 9), bg=bg, fg=text,
+                    anchor="center", justify="center",
                 )
-                value_label.pack(side="left", padx=(4, 0))
+                result.pack(side="left")
+                return result
 
-                return value_label
-
-            self.coord_value = make_info_item(text_frame, "Coords")
-            add_separator(text_frame)
-
-            self.lab_value_print = make_info_item(text_frame, "LAB")
-            add_separator(text_frame)
-
-            self.proto_value_text = make_info_item(text_frame, "Prototype")
+            self.coord_value = make_field(0, "Coords:")
+            tk.Frame(content, bg="#d9dde3", width=1, height=18).grid(
+                row=0, column=1, sticky="ns", padx=(6, 7), pady=1)
+            self.lab_value_print = make_field(2, "LAB:")
+            tk.Frame(content, bg="#d9dde3", width=1, height=18).grid(
+                row=0, column=3, sticky="ns", padx=(6, 7), pady=1)
+            self.proto_value_text = make_field(4, "Prototype:")
 
             search_icon = self.load_toolbar_icon("Search.png", (17, 17))
-
             inspection_button = tk.Label(
-                self.lab_value_frame,
-                image=search_icon,
-                bg=BAR_BG,
-                cursor="hand2",
-                padx=5,
-                pady=2
-            )
+                self.lab_value_frame, image=search_icon, bg=bg,
+                cursor="hand2", padx=3, pady=2)
             inspection_button.image = search_icon
-            inspection_button.bind("<Button-1>", lambda e: self.show_image_inspection_pixel())
+            inspection_button.place(relx=1.0, rely=0.5, x=-3, anchor="e")
+            inspection_button.bind(
+                "<Button-1>", lambda _e: self.show_image_inspection_pixel())
+            inspection_button.bind(
+                "<Enter>", lambda _e: inspection_button.configure(bg="#f1f5f9"))
+            inspection_button.bind(
+                "<Leave>", lambda _e: inspection_button.configure(bg=bg))
 
-            def _search_enter(_event):
-                try:
-                    inspection_button.configure(bg="#f1f5f9")
-                except Exception:
-                    pass
+            # Subscribe only once: repeated ROI picks must not accumulate
+            # <Configure> handlers on the long-lived 3D canvas frame.
+            if not getattr(self, "_pixel_info_resize_bound", False):
+                self.Canvas1.bind(
+                    "<Configure>", lambda _e: self._fit_pixel_info_bar(), add="+")
+                self._pixel_info_resize_bound = True
 
-            def _search_leave(_event):
-                try:
-                    inspection_button.configure(bg=BAR_BG)
-                except Exception:
-                    pass
-
-            inspection_button.bind("<Enter>", _search_enter)
-            inspection_button.bind("<Leave>", _search_leave)
-            inspection_button.pack(side="right", padx=(2, 8), pady=4)
-
-        # Membership computation
-        membership_degrees = self.fuzzy_color_space.calculate_membership(pixel_lab)
-
+        pixel_lab = tuple(float(v) for v in pixel_lab)
+        space = self.fuzzy_color_space
+        membership_degrees = space.calculate_membership(pixel_lab)
+        winner = None
+        winner_mu = 0.0
         if membership_degrees:
-            max_proto = max(membership_degrees, key=membership_degrees.get)
-            winner_mu = float(membership_degrees[max_proto])
-            top_memberships = sorted(membership_degrees.items(), key=lambda kv: kv[1], reverse=True)
+            # Avoid evaluating all granule geometries twice on ordinary
+            # clicks. Only saturated/tied categories need the shared Mapping
+            # All tie-breaker (distance to the nearest REAL granule).
+            winner = max(membership_degrees, key=membership_degrees.get)
+            if getattr(space, "is_granular", False):
+                top = float(membership_degrees[winner])
+                ties = sum(abs(float(score) - top) <= 1e-12
+                           for score in membership_degrees.values())
+                if ties > 1:
+                    idx = space.best_prototype_index(pixel_lab)
+                    if 0 <= idx < len(space.categories):
+                        proposed = space.categories[idx].label
+                        if proposed in membership_degrees:
+                            winner = proposed
+            winner_mu = float(membership_degrees[winner])
+            top_memberships = sorted(
+                membership_degrees.items(),
+                key=lambda pair: (-float(pair[1]), 0 if pair[0] == winner else 1),
+            )
         else:
-            max_proto = None
-            winner_mu = 0.0
             top_memberships = []
 
-        # Store data for Image Inspection
+        # Keep the FULL sample for Image Inspection, never the shortened UI text.
         self._last_pixel_info = {
             "x": x_original,
             "y": y_original,
             "lab": pixel_lab,
             "is_average": bool(is_average),
             "selection_info": selection_info,
-            "winner_label": max_proto if max_proto is not None else "None",
+            "winner_label": winner if winner is not None else "None",
             "winner_mu": winner_mu,
             "top_memberships": top_memberships,
             "all_memberships": top_memberships,
@@ -10604,7 +10885,6 @@ class PyFCSApp:
             ),
         }
 
-        # Prepare compact display text
         if selection_info and selection_info.get("type") == "roi":
             coord_text = (
                 f"ROI ({selection_info['x1']},{selection_info['y1']})"
@@ -10612,25 +10892,30 @@ class PyFCSApp:
             )
         else:
             coord_text = f"({x_original}, {y_original})"
+        self._pixel_info_values = {
+            "coords": coord_text, "lab": pixel_lab,
+            "best": str(winner) if winner is not None else "—",
+        }
+        self._fit_pixel_info_bar()
 
-        max_coord_len = 24
-        if len(coord_text) > max_coord_len:
-            coord_text = coord_text[:max_coord_len - 1] + "…"
 
-        lab_text = f"{pixel_lab[0]:.2f}, {pixel_lab[1]:.2f}, {pixel_lab[2]:.2f}"
-
-        if max_proto is None:
-            proto_text = "—"
-        else:
-            proto_text = str(max_proto)
-            max_proto_len = 18
-            if len(proto_text) > max_proto_len:
-                proto_text = proto_text[:max_proto_len - 1] + "…"
-
-        # Update UI
-        self.coord_value.config(text=coord_text)
-        self.lab_value_print.config(text=lab_text)
-        self.proto_value_text.config(text=proto_text, fg="#1f2937")
+    def _refresh_pixel_info_memberships(self):
+        """Refresh the last visible sample after an in-session T-conorm change."""
+        info = getattr(self, "_last_pixel_info", None)
+        bar = getattr(self, "lab_value_frame", None)
+        if not isinstance(info, dict) or bar is None:
+            return
+        try:
+            if not bar.winfo_exists() or self.fuzzy_color_space is None:
+                return
+        except tk.TclError:
+            return
+        self.display_pixel_value(
+            info["x"], info["y"], info["lab"],
+            is_average=info.get("is_average", False),
+            selection_info=info.get("selection_info"),
+            image_id=info.get("image_id"),
+        )
 
 
     def _close_image_inspection_window(self):

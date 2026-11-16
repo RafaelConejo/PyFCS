@@ -1889,9 +1889,17 @@ def handle_image_selection(event, listbox, popup, images_names, callback):
 # Alpha / PIL Image Helpers
 
 def _get_alpha_values_from_pil(pil_img):
-    """Return the original per-pixel alpha (uint8), including soft edges."""
+    """Return per-pixel alpha, including RGBA and indexed PNG transparency.
+
+    PNG images in mode P (or RGB) can store transparency in the ``transparency``
+    metadata rather than an A band. Decode that metadata instead of treating
+    those pixels as opaque. The normal PyFCS GUI already converts files to RGBA,
+    but mapping helpers can also be used directly with the original PIL image.
+    """
     if "A" in pil_img.getbands():
         return np.asarray(pil_img.getchannel("A"), dtype=np.uint8).copy()
+    if "transparency" in pil_img.info:
+        return np.asarray(pil_img.convert("RGBA").getchannel("A"), dtype=np.uint8).copy()
     return np.full((pil_img.height, pil_img.width), 255, dtype=np.uint8)
 
 

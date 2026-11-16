@@ -36,17 +36,25 @@ class ImageManager:
     
     @staticmethod
     def _pil_to_rgb_uint8(image):
-        """Return a uint8 RGB NumPy array from a PIL image, safely handling grayscale/RGBA images."""
+        """Convert PIL/array images to RGB uint8 without confusing palette indices.
+
+        Pillow knows how to decode indexed (P), gray+alpha (LA), RGB and RGBA
+        images correctly. For NumPy arrays, accept the already-expanded RGB(A)
+        or grayscale representations used by the public mapping helpers.
+        """
+        if isinstance(image, Image.Image):
+            # RGB is the common path in PyFCS: avoid a redundant full-image copy.
+            rgb_image = image if image.mode == "RGB" else image.convert("RGB")
+            return np.asarray(rgb_image, dtype=np.uint8)
+
         img_np = np.asarray(image)
-
         if img_np.ndim == 2:
-            img_np = np.stack([img_np, img_np, img_np], axis=-1)
-        elif img_np.shape[-1] == 4:
+            img_np = np.repeat(img_np[..., None], 3, axis=-1)
+        elif img_np.ndim == 3 and img_np.shape[-1] >= 3:
             img_np = img_np[..., :3]
-        elif img_np.shape[-1] > 3:
-            img_np = img_np[..., :3]
-
-        return img_np.astype(np.uint8, copy=False)
+        else:
+            raise ValueError("Expected an RGB/RGBA or grayscale image array.")
+        return np.clip(img_np, 0, 255).astype(np.uint8, copy=False)
 
     def _pil_to_lab_image(self, image):
         """Convert a PIL image to LAB using skimage, returning an H x W x 3 float array."""
@@ -77,6 +85,7 @@ class ImageManager:
         selected_option,
         progress_callback=None,
         cancel_callback=None,
+        granule_index=None,
     ):
         """
         Generate a grayscale membership map for one selected prototype.
@@ -89,6 +98,13 @@ class ImageManager:
         """
         if selected_option < 0 or selected_option >= len(prototypes):
             raise ValueError("Selected prototype index is out of range.")
+        if granule_index is not None:
+            if not getattr(fuzzy_color_space, "is_granular", False):
+                raise ValueError("Granule mapping requires a granular color space.")
+            category = fuzzy_color_space.categories[selected_option]
+            if not 0 <= int(granule_index) < len(category.prototypes):
+                raise ValueError("Selected granule index is out of range.")
+            granule_index = int(granule_index)
 
         if cancel_callback and cancel_callback():
             return None
@@ -107,9 +123,23 @@ class ImageManager:
                 return None
 
             lab_tuple = tuple((uniq[i].astype(np.float32) / scale).tolist())
-            value = fuzzy_color_space.calculate_membership_for_prototype(
-                lab_tuple, selected_option, input_space=source_space
-            )
+            if granule_index is None:
+                value = fuzzy_color_space.calculate_membership_for_prototype(
+                    lab_tuple, selected_option, input_space=source_space
+                )
+            else:
+                # The individual raw degree is independent of the T-conorm.
+                # Reuse the geometry pack and the same quantized model color.
+                from Source.fuzzy.FuzzyColor import FuzzyColor
+                coords = fuzzy_color_space._coordinates(lab_tuple, source_space)
+                if not fuzzy_color_space.reference_domain.contains_coordinates(coords, eps=1e-9):
+                    value = 0.0
+                else:
+                    if fuzzy_color_space._precomputed is None:
+                        fuzzy_color_space.precompute_pack()
+                    flat_index = fuzzy_color_space._category_flat_indices[selected_option][granule_index]
+                    value = FuzzyColor._raw_membership_for_index(
+                        coords, flat_index, fuzzy_color_space._precomputed)
             values_for_uniq[i] = np.clip(float(value), 0.0, 1.0)
 
             if progress_callback and (i % 500 == 0 or i == total_uniqs - 1):
@@ -226,6 +256,94 @@ class ImageManager:
             label_map[~valid_mask] = -1
 
         return label_map
+
+    def get_category_granule_label_maps(
+        self, image, fuzzy_color_space, valid_mask=None,
+        progress_callback=None, cancel_callback=None,
+    ):
+        """Return (winning_category, winning_granule) image maps.
+
+        Flattened granule indices follow ``get_all_prototypes()``. The winning
+        category is ALWAYS chosen first, using the current T-conorm, and the
+        winning granule is then chosen only from that category. Atomic spaces
+        use one granule per category and therefore return identical maps.
+        This processes the quantized unique image colors just once.
+        """
+        if cancel_callback and cancel_callback():
+            return None
+        fuzzy_color_space.precompute_pack()
+        uniq, inverse, height, width, scale, source_space = self._unique_model_colors(
+            image, fuzzy_color_space)
+        categories = np.full(len(uniq), -1, dtype=np.int32)
+        granules = np.full(len(uniq), -1, dtype=np.int32)
+        granular = bool(getattr(fuzzy_color_space, "is_granular", False))
+        if granular:
+            from Source.fuzzy.FuzzyColor import FuzzyColor
+            category_indices = fuzzy_color_space._category_flat_indices
+            flat_prototypes = fuzzy_color_space.get_all_prototypes()
+            pack = fuzzy_color_space._precomputed
+        for i, color_bin in enumerate(uniq):
+            if cancel_callback and cancel_callback():
+                return None
+            point = tuple((color_bin.astype(np.float32) / scale).tolist())
+            category_index = fuzzy_color_space.best_prototype_index(
+                point, input_space=source_space)
+            if category_index is not None and int(category_index) >= 0:
+                category_index = int(category_index)
+                categories[i] = category_index
+                if not granular:
+                    granules[i] = category_index
+                else:
+                    coords = fuzzy_color_space._coordinates(point, source_space)
+                    available = category_indices[category_index]
+                    # This comparison is only among granules of the winning
+                    # category, preventing contradictions with Bounded Sum.
+                    values = [float(FuzzyColor._raw_membership_for_index(
+                        coords, flat_i, pack)) for flat_i in available]
+                    maximum = max(values, default=0.0)
+                    winners = [j for j, val in enumerate(values)
+                               if abs(val - maximum) <= 1e-12]
+                    if winners:
+                        query = np.asarray(coords, dtype=float)
+                        local_winner = min(winners, key=lambda j: (
+                            float(np.dot(flat_prototypes[available[j]].positive - query,
+                                         flat_prototypes[available[j]].positive - query)), j))
+                        granules[i] = available[local_winner]
+            if progress_callback and (i % 500 == 0 or i == len(uniq) - 1):
+                if cancel_callback and cancel_callback():
+                    return None
+                progress_callback(i + 1, len(uniq))
+        categories = categories[inverse].reshape(height, width)
+        granules = granules[inverse].reshape(height, width)
+        if valid_mask is not None:
+            if valid_mask.shape != (height, width):
+                raise ValueError("valid_mask shape does not match the generated label maps.")
+            categories = categories.copy()
+            granules = granules.copy()
+            categories[~valid_mask] = -1
+            granules[~valid_mask] = -1
+        return categories, granules
+
+    @staticmethod
+    def build_granule_alt_palette_uint8(space, category_palette):
+        """Category-related distinct shades for a granular Mapping All legend."""
+        colors = []
+        if not getattr(space, "is_granular", False):
+            return np.asarray(category_palette, dtype=np.uint8).copy()
+        for ci, cat in enumerate(space.categories):
+            base = np.asarray(category_palette[ci], dtype=np.float64)
+            count = len(cat.prototypes)
+            for gi in range(count):
+                # Keep each category's hue family, but reveal its granules.
+                ratio = 0.0 if count == 1 else gi / (count - 1)
+                if ratio < 0.5:
+                    amount = 0.35 * (1.0 - ratio * 2.0)
+                    shade = base * (1.0 - amount) + 255.0 * amount
+                else:
+                    amount = 0.34 * ((ratio - 0.5) * 2.0)
+                    shade = base * (1.0 - amount)
+                colors.append(np.rint(np.clip(shade, 0, 255)).astype(np.uint8))
+        return np.asarray(colors, dtype=np.uint8).reshape(-1, 3)
 
     @staticmethod
     def build_original_palette_uint8(prototypes, color_space="LAB"):
