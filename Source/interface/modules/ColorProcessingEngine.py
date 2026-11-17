@@ -19,7 +19,7 @@ It provides:
     - Automatic main-color detection in an image using DBSCAN clustering in LAB space, returning
     representative colors in both LAB and RGB.
 """
-class ImageManager:
+class ColorProcessingEngine:
     def __init__(self, root=None, custom_warning=None, center_popup=None):
         """
         Args:
@@ -224,7 +224,8 @@ class ImageManager:
         if cancel_callback and cancel_callback():
             return None
 
-        fuzzy_color_space.precompute_pack()
+        if getattr(fuzzy_color_space, "_precomputed", None) is None:
+            fuzzy_color_space.precompute_pack()
 
         # Construct/evaluate directly in the space used by the loaded FCS.
         # RGB is encoded as 0..255 channel values; LAB is quantized to 0.01.
@@ -271,7 +272,8 @@ class ImageManager:
         """
         if cancel_callback and cancel_callback():
             return None
-        fuzzy_color_space.precompute_pack()
+        if getattr(fuzzy_color_space, "_precomputed", None) is None:
+            fuzzy_color_space.precompute_pack()
         uniq, inverse, height, width, scale, source_space = self._unique_model_colors(
             image, fuzzy_color_space)
         categories = np.full(len(uniq), -1, dtype=np.int32)
@@ -460,7 +462,11 @@ class ImageManager:
 
         try:
             if isinstance(image, Image.Image):
-                pil_img = image.convert("RGBA") if "A" in image.getbands() else image.convert("RGB")
+                # Indexed PNG/GIF images can carry transparency in image.info,
+                # even though their bands are only ("P",). Preserve that alpha
+                # before the DBSCAN visible-pixel filter below.
+                has_alpha = "A" in image.getbands() or "transparency" in image.info
+                pil_img = image.convert("RGBA" if has_alpha else "RGB")
             else:
                 img_np = np.asarray(image)
 

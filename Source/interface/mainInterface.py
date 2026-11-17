@@ -37,10 +37,11 @@ from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
 from Source.fuzzy.GranularFuzzyColorSpace import GranularFuzzyColorSpace
 from Source.fuzzy.FuzzyColorSpaceBuilder import FuzzyColorSpaceBuilder, rebuild_in_color_space, lab_to_rgb_model_checked
-from Source.interface.modules.ImageManager import ImageManager
+from Source.interface.modules.ColorProcessingEngine import ColorProcessingEngine
 from Source.interface.modules.FuzzyColorSpaceManager import FuzzyColorSpaceManager
 from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
 from Source.interface.modules.ImageInspectionManager import ImageInspectionManager
+from Source.interface.modules.ImageWorkspaceManager import ImageWorkspaceManager
 from Source.interface.modules.ImageBasedCreationManager import ImageBasedCreationManager
 from Source.interface.modules.PaletteBasedCreationManager import PaletteBasedCreationManager
 import Source.interface.modules.DataManager as DataManager
@@ -67,11 +68,14 @@ class PyFCSApp:
         self.logo = tk.PhotoImage(file=logo_path)
         self.root.iconphoto(True, self.logo)
 
-        self.image_manager = ImageManager(
+        self.color_processing_engine = ColorProcessingEngine(
             root=self.root,
             custom_warning=self.custom_warning if hasattr(self, "custom_warning") else None,
             center_popup=self.center_popup if hasattr(self, "center_popup") else None,
         )
+        # Compatibility alias: existing image views and workspace controllers
+        # access the same shared processing engine through app.image_manager.
+        self.image_manager = self.color_processing_engine
         self.fuzzy_manager = FuzzyColorSpaceManager(root=self.root)
         # Keep generated CSV files in the runtime directory, not the installation folder.
         self.color_manager = ColorEvaluationManager(
@@ -79,6 +83,7 @@ class PyFCSApp:
         )
         self._image_inspection_controller = None
         self._image_inspection_window = None
+        self._full_resolution_workspace_controller = None
         self._image_based_creation_controller = None
         self._image_based_creation_window = None
         self._palette_based_creation_controller = None
@@ -360,6 +365,10 @@ class PyFCSApp:
         img_menu.add_command(
             label="Image Inspection",
             command=self.open_image_inspection
+        )
+        img_menu.add_command(
+            label="Open in Image Workspace",
+            command=lambda: self.open_full_resolution_image_workspace(None)
         )
 
         # Separate inspection/actions from the destructive global action.
@@ -1184,6 +1193,9 @@ class PyFCSApp:
             prompt = "Are you sure you want to exit?"
         confirm_exit = messagebox.askyesno("Exit", prompt, parent=self.root)
         if confirm_exit:
+            controller = getattr(self, "_full_resolution_workspace_controller", None)
+            if controller is not None:
+                controller.close()
             self.root.destroy()
 
 
@@ -2831,6 +2843,12 @@ class PyFCSApp:
             self.proto_percentage_cache_by_image.clear()
         if hasattr(self, "_mapping_all_pack_by_window"):
             self._mapping_all_pack_by_window.clear()
+        controller = getattr(self, "_full_resolution_workspace_controller", None)
+        if controller is not None:
+            try:
+                controller.invalidate_model()
+            except tk.TclError:
+                pass
 
 
     def _prepare_color_space_load(self, filename):
@@ -5678,6 +5696,32 @@ class PyFCSApp:
         popup.grab_set()
 
 
+    def open_full_resolution_image_workspace(self, window_id=None):
+        """Open a maximizable image workspace using the original source pixels."""
+        if window_id is None:
+            image_ids = list((getattr(self, "load_images_names", None) or {}).keys())
+            if not image_ids:
+                self.custom_warning("Image Workspace", "Open an image first.")
+                return
+            window_id = getattr(self, "_image_workspace_active_id", None)
+            if window_id not in image_ids:
+                window_id = image_ids[0]
+        controller = getattr(self, "_full_resolution_workspace_controller", None)
+        if controller is not None:
+            try:
+                if controller.win.winfo_exists() and controller.source_window_id == window_id:
+                    controller.win.lift()
+                    controller.win.focus_force()
+                    return
+                controller.close()
+            except tk.TclError:
+                pass
+        try:
+            self._full_resolution_workspace_controller = ImageWorkspaceManager(self, window_id)
+        except (ValueError, OSError, tk.TclError) as exc:
+            self.custom_warning("Image Workspace", f"Could not open the image workspace:\n{exc}")
+
+
     def close_all_image(self):
         """
         Closes all floating windows and cleans up associated UI/window resources.
@@ -5687,6 +5731,9 @@ class PyFCSApp:
         - It only removes window-bound state so cached mappings can be reused
         if the same image is opened again during the session.
         """
+        controller = getattr(self, "_full_resolution_workspace_controller", None)
+        if controller is not None:
+            controller.close()
         if not hasattr(self, "floating_images"):
             return
 
@@ -7435,6 +7482,10 @@ class PyFCSApp:
         # Close window
         def close_window(event):
             """Close the floating window and remove all associated data and canvas items."""
+            controller = getattr(self, "_full_resolution_workspace_controller", None)
+            if controller is not None and controller.source_window_id == window_id:
+                controller.close()
+
 
             # Prevent closing while a job is running
             if self._has_active_job(window_id):
@@ -7546,6 +7597,10 @@ class PyFCSApp:
                 label="Focus Image",
                 state=DISABLED if is_focus else NORMAL,
                 command=lambda: self._set_image_workspace_focus(window_id)
+            )
+            menu.add_command(
+                label="Open in Image Workspace (Original Resolution)",
+                command=lambda: self.open_full_resolution_image_workspace(window_id)
             )
 
             menu.add_separator()
@@ -8234,6 +8289,17 @@ class PyFCSApp:
                 or getattr(self, "_model_rebuild_running", False)):
             return True
 
+        # Full-resolution mapping/export runs on a separate worker.
+        # Do not replace the shared FCS or its T-conorm while that worker
+        # is evaluating or exporting the previous space.
+        workspace = getattr(self, "_full_resolution_workspace_controller", None)
+        if workspace is not None and not getattr(workspace, "_closed", True):
+            worker = getattr(workspace, "_worker", None)
+            if getattr(workspace, "_mapping_busy", False) or getattr(workspace, "_saving", False):
+                return True
+            if worker is not None and worker.is_alive():
+                return True
+
         for info in self.image_jobs.values():
             th = info.get("thread")
             cancel_event = info.get("cancel_event")
@@ -8811,7 +8877,7 @@ class PyFCSApp:
         Compute/display the prototype coverage mapping for the currently selected prototype.
 
         UI/job/cache orchestration stays in the main class.
-        Image/membership computation lives in ImageManager.
+        Image/membership computation lives in ColorProcessingEngine.
         """
         if getattr(self, "mapping_locked_until_original", {}).get(window_id, False):
             self.custom_warning(
