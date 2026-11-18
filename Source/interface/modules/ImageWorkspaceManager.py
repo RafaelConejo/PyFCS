@@ -136,8 +136,11 @@ def compute_full_resolution_mapping(image, manager, space, *, kind="all",
         category, granule = selected
         if not 0 <= int(category) < len(space.get_prototypes()):
             raise ValueError("Selected category is out of range.")
-        if granule is not None and not 0 <= int(granule) < len(space.categories[int(category)].prototypes):
-            raise ValueError("Selected granule is out of range.")
+        if granule is not None:
+            if not getattr(space, "is_granular", False):
+                raise ValueError("The selected color space has no individual granules.")
+            if not 0 <= int(granule) < len(space.categories[int(category)].prototypes):
+                raise ValueError("Selected granule is out of range.")
 
     width, height = x1 - x0, y1 - y0
     result = {"scope": (x0, y0, x1, y1), "kind": kind,
@@ -1487,7 +1490,14 @@ class ImageWorkspaceManager:
                 scratch.cleanup()
                 self._messages.put((token, "error", str(exc)))
         self._worker = threading.Thread(target=work, daemon=True, name="PyFCS-FullResolutionMapping")
-        self._worker.start()
+        try:
+            self._worker.start()
+        except RuntimeError as exc:
+            self._worker = None
+            scratch.cleanup()
+            self._set_mapping_busy(False)
+            self.progress_text.set("Could not start processing")
+            messagebox.showwarning("Processing Error", f"Could not start the worker:\n{exc}", parent=self.win)
 
     def cancel(self):
         if self._cancel_event:
@@ -1615,7 +1625,15 @@ class ImageWorkspaceManager:
                 else:
                     self._messages.put((job_id, "export_error", str(exc)))
         self._worker = threading.Thread(target=work, daemon=True, name="PyFCS-FullResolutionExport")
-        self._worker.start()
+        try:
+            self._worker.start()
+        except RuntimeError as exc:
+            self._worker = None
+            self._saving = False
+            self.cancel_button.configure(state="disabled")
+            self.run_button.configure(state="normal")
+            self.progress_text.set("Could not start export")
+            messagebox.showwarning("Export Error", f"Could not start the worker:\n{exc}", parent=self.win)
 
     def _save_composite(self, path, result, *, level="categories", palette="original", style="color", cancelled=None):
         output = Image.new("RGBA", self.original.size)

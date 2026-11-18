@@ -126,10 +126,19 @@ class PaletteBasedCreationManager:
             self.win.geometry(f"{width}x{height}+{x}+{y}")
 
     def close(self):
+        # Search debouncing belongs to this window, not the root. Cancelling
+        # it avoids Tcl callbacks attempting to use a destroyed Toplevel.
+        pending = getattr(self, "_search_refresh_after_id", None)
+        self._search_refresh_after_id = None
+        if pending is not None:
+            try:
+                self.win.after_cancel(pending)
+            except (tk.TclError, RuntimeError):
+                pass
         try:
             if self.win.winfo_exists():
                 self.win.destroy()
-        except Exception:
+        except tk.TclError:
             pass
 
         try:
@@ -150,22 +159,29 @@ class PaletteBasedCreationManager:
 
     # Data / Color Sources
     def _load_default_source(self):
-        """Load the bundled ISCC-NBS Basic palette as the first source."""
+        """Load a default palette, or allow manual/imported colors if unavailable.
+
+        Missing, empty or invalid installation resources are recoverable: the
+        creation window must still open so users can add their own palette.
+        """
         try:
             loaded = UtilsTools.load_color_data(self.default_source_path)
+            self._add_source_colors(
+                loaded,
+                source_name=self.default_source_name,
+                source_path=self.default_source_path,
+            )
         except Exception as exc:
+            # Optional bundled data must not make the entire creation dialog
+            # unusable. Report any read/parse/import failure and leave a clean
+            # empty workspace where users may import their own source.
             self.app.custom_warning(
                 "Palette Error",
-                f"The predefined palette could not be loaded:\n{exc}",
-                parent=self.win,
+                "The predefined palette could not be loaded. "
+                "You can still import a palette or add colors manually.\n\n"
+                f"Details: {exc}",
+                parent=self.root,
             )
-            loaded = {}
-
-        self._add_source_colors(
-            loaded,
-            source_name=self.default_source_name,
-            source_path=self.default_source_path,
-        )
 
     @staticmethod
     def _source_key(path):

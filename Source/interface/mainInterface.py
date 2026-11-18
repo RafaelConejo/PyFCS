@@ -724,6 +724,15 @@ class PyFCSApp:
             lambda _e: self._schedule_image_workspace_reflow(),
             add="+",
         )
+        # A queued layout callback must be cancelled when the canvas is
+        # destroyed (including an application exit). Otherwise Tk reports
+        # 'invalid command name ..._reflow_image_workspace' after close.
+        self.image_canvas.bind(
+            "<Destroy>",
+            lambda event: self._cancel_image_workspace_reflow()
+            if event.widget is self.image_canvas else None,
+            add="+",
+        )
 
         # Right pane: notebook area
         notebook_container = tk.Frame(
@@ -1182,10 +1191,20 @@ class PyFCSApp:
 
     ########################################################################################### Utils APP ###########################################################################################
     def exit_app(self):
+        """Exit only when background jobs cannot leave partial user files.
+
+        Mapping cancellation is asynchronous; a cancelled thread may still be
+        flushing results. Saving and model construction cannot be interrupted
+        safely. Keep the GUI responsive until all workers have actually exited.
         """
-        Prompt the user to confirm exiting the application.
-        If the user confirms, close the application.
-        """
+        if self._has_any_active_job():
+            self.custom_warning(
+                "Process Running",
+                "A background operation is still running. Finish or cancel it "
+                "and allow it to stop before exiting PyFCS.",
+                parent=self.root,
+            )
+            return
         if getattr(self, "_model_space_unsaved", False):
             prompt = ("The reconstructed model has not been saved.\n\n"
                       "Exit without using Apply Changes?")
@@ -4241,13 +4260,12 @@ class PyFCSApp:
         # Keep the color controls visible and synchronized.
         self.display_color_buttons(self.color_matrix)
 
-        if not selected_options:
-            self.ax_3d.cla()
-            self.graph_widget.draw()
-
-            if hasattr(self, "lab_value_frame"):
-                self.lab_value_frame.lift()
-            return
+        # Even with no visible layers, draw the empty *model-domain* axes.
+        # A bare ax.cla() resets all limits to (0, 1); the next update would
+        # capture those temporary limits as camera state and restore them
+        # over the newly rendered model, hiding every representative/volume.
+        # The shared renderer handles selected_options=[] without geometry
+        # while retaining valid LAB/RGB limits, orientation and view state.
 
         space = getattr(self,"fuzzy_color_space",None)
         plot_hex = self.hex_color
@@ -5731,13 +5749,8 @@ class PyFCSApp:
         - It only removes window-bound state so cached mappings can be reused
         if the same image is opened again during the session.
         """
-        controller = getattr(self, "_full_resolution_workspace_controller", None)
-        if controller is not None:
-            controller.close()
-        if not hasattr(self, "floating_images"):
-            return
-
-        # If any process is running, ask once before cancelling and closing everything
+        # Confirm FIRST. Cancelling this prompt must not close the full-resolution
+        # workspace or discard any ongoing analysis.
         if self._has_any_active_job():
             confirm = messagebox.askyesno(
                 "Processes Running",
@@ -5746,6 +5759,12 @@ class PyFCSApp:
             )
             if not confirm:
                 return
+
+        controller = getattr(self, "_full_resolution_workspace_controller", None)
+        if controller is not None:
+            controller.close()
+        if not hasattr(self, "floating_images"):
+            return
 
         for window_id in list(self.floating_images.keys()):
             # Cancel running job linked to the window
@@ -5883,6 +5902,16 @@ class PyFCSApp:
         except Exception:
             pass
 
+
+    def _cancel_image_workspace_reflow(self):
+        """Remove a pending layout task before its owning canvas disappears."""
+        pending = getattr(self, "_image_workspace_reflow_after_id", None)
+        self._image_workspace_reflow_after_id = None
+        if pending is not None:
+            try:
+                self.image_canvas.after_cancel(pending)
+            except (tk.TclError, RuntimeError):
+                pass
 
     def _schedule_image_workspace_reflow(self, delay=35):
         """Debounce workspace layout after resize/open/close/state changes."""
@@ -6894,24 +6923,28 @@ class PyFCSApp:
             if window_id not in self.load_images_names:
                 break
 
+        # A malformed, removed or inaccessible file must NOT leave a ghost card
+        # in any of the per-window dictionaries. Load and validate first, then
+        # register the image and its cache key as one UI operation.
+        try:
+            with Image.open(filename) as image_file:
+                pil_original = ImageOps.exif_transpose(image_file).convert("RGBA")
+            original_width, original_height = pil_original.size
+            if original_width < 1 or original_height < 1:
+                raise ValueError("The image has invalid dimensions.")
+            image_key = (
+                os.path.abspath(filename),
+                os.path.getmtime(filename),
+                os.path.getsize(filename),
+            )
+        except (OSError, ValueError, MemoryError, Image.DecompressionBombError) as exc:
+            self.custom_warning("Open Image", f"Could not open the selected image:\n{exc}")
+            return False
+
         self.load_images_names[window_id] = filename
-
-        # Stable cache key for this image during the session
-        image_key = (
-            os.path.abspath(filename),
-            os.path.getmtime(filename),
-            os.path.getsize(filename)
-        )
         self.window_image_key[window_id] = image_key
-
-        # State flags
         self.CAN_APPLY_MAPPING[window_id] = bool(self.COLOR_SPACE)
         self.SHOW_ORIGINAL[window_id] = False
-
-        # Load images
-        with Image.open(filename) as image_file:
-            pil_original = ImageOps.exif_transpose(image_file).convert("RGBA")
-        original_width, original_height = pil_original.size
         self.pil_images_original[window_id] = pil_original
         self.original_image_dimensions[window_id] = (original_width, original_height)
 
@@ -7481,22 +7514,29 @@ class PyFCSApp:
 
         # Close window
         def close_window(event):
-            """Close the floating window and remove all associated data and canvas items."""
+            """Close an image only after the user accepts cancelling its jobs."""
             controller = getattr(self, "_full_resolution_workspace_controller", None)
-            if controller is not None and controller.source_window_id == window_id:
-                controller.close()
-
-
-            # Prevent closing while a job is running
-            if self._has_active_job(window_id):
+            owns_workspace = (controller is not None and not getattr(controller, "_closed", True)
+                              and controller.source_window_id == window_id)
+            workspace_thread = getattr(controller, "_worker", None) if owns_workspace else None
+            workspace_busy = bool(owns_workspace and (
+                getattr(controller, "_mapping_busy", False)
+                or getattr(controller, "_saving", False)
+                or (workspace_thread is not None and workspace_thread.is_alive())))
+            card_busy = self._has_active_job(window_id)
+            if workspace_busy or card_busy:
                 confirm = messagebox.askyesno(
                     "Cancel Process",
-                    "A process is running for this image.\n\nDo you want to cancel it and close the window?"
+                    "An operation is still running for this image.\n\n"
+                    "Do you want to cancel it and close the image and its workspace?",
+                    parent=self.root,
                 )
                 if not confirm:
                     return "break"
-
+            if card_busy:
                 self._cancel_window_job(window_id)
+            if owns_workspace:
+                controller.close()
 
             try:
                 self._disable_original_rectangle_sampling(window_id)
@@ -7953,7 +7993,10 @@ class PyFCSApp:
 
         th = info.get("thread")
         cancel_event = info.get("cancel_event")
-        return th is not None and th.is_alive() and cancel_event is not None and not cancel_event.is_set()
+        # A cancellation request does not mean the worker has stopped. Keep
+        # the card busy until the thread actually exits to avoid overlapping
+        # mapping jobs and reusing data while the old worker winds down.
+        return th is not None and th.is_alive()
 
 
     def _is_current_job(self, window_id, job_id):
@@ -8030,7 +8073,8 @@ class PyFCSApp:
                 error_msg = str(e)
 
                 def _ui_error(msg=error_msg):
-                    self.custom_warning("Process Error", f"Unexpected error: {msg}")
+                    if not cancel_event.is_set() and self._is_current_job(window_id, job_id):
+                        self.custom_warning("Process Error", f"Unexpected error: {msg}")
 
                 try:
                     self.image_canvas.after(0, _ui_error)
@@ -8050,7 +8094,13 @@ class PyFCSApp:
 
         th = threading.Thread(target=runner, daemon=True)
         self.image_jobs[window_id]["thread"] = th
-        th.start()
+        try:
+            th.start()
+        except RuntimeError as exc:
+            self.image_jobs.pop(window_id, None)
+            self._hide_window_loading(window_id)
+            self.custom_warning("Process Error", f"Could not start the processing thread:\n{exc}")
+            return None
 
         return job_id
 
@@ -8303,7 +8353,7 @@ class PyFCSApp:
         for info in self.image_jobs.values():
             th = info.get("thread")
             cancel_event = info.get("cancel_event")
-            if th is not None and th.is_alive() and cancel_event is not None and not cancel_event.is_set():
+            if th is not None and th.is_alive():
                 return True
         return False
 

@@ -690,7 +690,17 @@ def render_data(app):
         except tk.TclError:
             pass
 
-    canvas.after_idle(_fit_width)
+    # A new Data render can destroy this canvas before the idle event runs.
+    # Cancel its callback during destruction to avoid Tcl's asynchronous
+    # 'invalid command name ..._fit_width' noise/error on rapid FCS changes.
+    fit_id = canvas.after_idle(_fit_width)
+    def _cancel_pending_fit(event):
+        if event.widget is canvas:
+            try:
+                canvas.after_cancel(fit_id)
+            except (tk.TclError, RuntimeError):
+                pass
+    canvas.bind("<Destroy>", _cancel_pending_fit, add="+")
 
 
 
