@@ -1,0 +1,286 @@
+{
+  "generated_utc": "2026-11-22T15:26:03.546334+00:00",
+  "model_file": "C:\\Users\\rafav\\Desktop\\PYFCS\\fuzzy_color_spaces\\vita_no_covering_max.json",
+  "model_sha256": "0aadde57765b33d59ab3c3442f3b6748be8bdae1d7331698e70e8f7f1edeb30c",
+  "analysis_dir": "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\paper_thresholds_vita_max_delta005",
+  "lattice_step": 0.05,
+  "thresholds": {
+    "PT": 0.8,
+    "AT": 1.8
+  },
+  "camera_source": "PyFCS VisualManager.plot_more_combined_3D Plotly camera",
+  "camera_eye": [
+    1.55,
+    1.65,
+    1.18
+  ],
+  "camera_elev": 27.53018392273792,
+  "camera_azim": 46.78991060824607,
+  "projection": "orthographic",
+  "axis_order": "x=a*, y=b*, z=L*",
+  "view_frame": "zoom",
+  "visual_zoom_factor": 1.2,
+  "selected_shades": [
+    "A3",
+    "B2",
+    "C3",
+    "D4"
+  ],
+  "selection_method": "smallest 0.5-cut polyhedral volume in each VITA family",
+  "polyhedral_volumes_CIELAB3": [
+    {
+      "layer": "core",
+      "shade": "A1",
+      "family": "A",
+      "volume_CIELAB3": 803.8583592308937
+    },
+    {
+      "layer": "core",
+      "shade": "A2",
+      "family": "A",
+      "volume_CIELAB3": 272.57530111000085
+    },
+    {
+      "layer": "core",
+      "shade": "A3",
+      "family": "A",
+      "volume_CIELAB3": 25.20813857902594
+    },
+    {
+      "layer": "core",
+      "shade": "A3.5",
+      "family": "A",
+      "volume_CIELAB3": 30.50585254873387
+    },
+    {
+      "layer": "core",
+      "shade": "A4",
+      "family": "A",
+      "volume_CIELAB3": 253.67039722846386
+    },
+    {
+      "layer": "core",
+      "shade": "B1",
+      "family": "B",
+      "volume_CIELAB3": 2096.524503735353
+    },
+    {
+      "layer": "core",
+      "shade": "B2",
+      "family": "B",
+      "volume_CIELAB3": 64.93114515213544
+    },
+    {
+      "layer": "core",
+      "shade": "B3",
+      "family": "B",
+      "volume_CIELAB3": 333.6277314213709
+    },
+    {
+      "layer": "core",
+      "shade": "B4",
+      "family": "B",
+      "volume_CIELAB3": 1386.884378153505
+    },
+    {
+      "layer": "core",
+      "shade": "C1",
+      "family": "C",
+      "volume_CIELAB3": 64.65099035147848
+    },
+    {
+      "layer": "core",
+      "shade": "C2",
+      "family": "C",
+      "volume_CIELAB3": 127.16873012446021
+    },
+    {
+      "layer": "core",
+      "shade": "C3",
+      "family": "C",
+      "volume_CIELAB3": 60.98121299959082
+    },
+    {
+      "layer": "core",
+      "shade": "C4",
+      "family": "C",
+      "volume_CIELAB3": 1497.8271836747945
+    },
+    {
+      "layer": "core",
+      "shade": "D2",
+      "family": "D",
+      "volume_CIELAB3": 510.5600186872654
+    },
+    {
+      "layer": "core",
+      "shade": "D3",
+      "family": "D",
+      "volume_CIELAB3": 129.01630502030852
+    },
+    {
+      "layer": "core",
+      "shade": "D4",
+      "family": "D",
+      "volume_CIELAB3": 46.22475057813199
+    },
+    {
+      "layer": "alpha",
+      "shade": "A1",
+      "family": "A",
+      "volume_CIELAB3": 6380.530935704898
+    },
+    {
+      "layer": "alpha",
+      "shade": "A2",
+      "family": "A",
+      "volume_CIELAB3": 2180.6024088069653
+    },
+    {
+      "layer": "alpha",
+      "shade": "A3",
+      "family": "A",
+      "volume_CIELAB3": 201.66510869702566
+    },
+    {
+      "layer": "alpha",
+      "shade": "A3.5",
+      "family": "A",
+      "volume_CIELAB3": 244.0468203654993
+    },
+    {
+      "layer": "alpha",
+      "shade": "A4",
+      "family": "A",
+      "volume_CIELAB3": 2029.3631778013307
+    },
+    {
+      "layer": "alpha",
+      "shade": "B1",
+      "family": "B",
+      "volume_CIELAB3": 15931.326121057858
+    },
+    {
+      "layer": "alpha",
+      "shade": "B2",
+      "family": "B",
+      "volume_CIELAB3": 519.4491611508934
+    },
+    {
+      "layer": "alpha",
+      "shade": "B3",
+      "family": "B",
+      "volume_CIELAB3": 2669.021851316868
+    },
+    {
+      "layer": "alpha",
+      "shade": "B4",
+      "family": "B",
+      "volume_CIELAB3": 11095.075025116488
+    },
+    {
+      "layer": "alpha",
+      "shade": "C1",
+      "family": "C",
+      "volume_CIELAB3": 517.2079227598317
+    },
+    {
+      "layer": "alpha",
+      "shade": "C2",
+      "family": "C",
+      "volume_CIELAB3": 1017.349840898565
+    },
+    {
+      "layer": "alpha",
+      "shade": "C3",
+      "family": "C",
+      "volume_CIELAB3": 487.8497040282471
+    },
+    {
+      "layer": "alpha",
+      "shade": "C4",
+      "family": "C",
+      "volume_CIELAB3": 11982.61746878878
+    },
+    {
+      "layer": "alpha",
+      "shade": "D2",
+      "family": "D",
+      "volume_CIELAB3": 4084.480149234416
+    },
+    {
+      "layer": "alpha",
+      "shade": "D3",
+      "family": "D",
+      "volume_CIELAB3": 1032.1304398625925
+    },
+    {
+      "layer": "alpha",
+      "shade": "D4",
+      "family": "D",
+      "volume_CIELAB3": 369.79800462442836
+    }
+  ],
+  "geometry_global_axis_limits": [
+    [
+      -28.66873484032718,
+      -21.48254863738519,
+      41.19036352918059
+    ],
+    [
+      31.33126515967282,
+      54.51745136261481,
+      103.19036352918059
+    ]
+  ],
+  "selected_axis_limits": [
+    [
+      -23.537796960786878,
+      4.354926240001081,
+      57.27564976155402
+    ],
+    [
+      25.462203039213122,
+      35.35492624000108,
+      85.27564976155402
+    ]
+  ],
+  "geometry_method": "VisualManager.display_polygons_for_volume — actual PyFCS clipped halfspaces",
+  "vita_palette": "sRGB preview approximated from CIELAB prototypes; not calibrated guide colors",
+  "distinct_category_palette": {
+    "A1": "#43C7B4",
+    "A2": "#3F9CB9",
+    "A3": "#5FB64B",
+    "A3.5": "#A13E37",
+    "A4": "#8943C7",
+    "B1": "#3C434A",
+    "B2": "#C78C43",
+    "B3": "#7A345A",
+    "B4": "#C7BE43",
+    "C1": "#3863A3",
+    "C2": "#2D7A6F",
+    "C3": "#C761A1",
+    "C4": "#C7837C",
+    "D2": "#7A5D37",
+    "D3": "#677A2D",
+    "D4": "#818BC7"
+  },
+  "figure_1_color_semantics": "Different category colors for PT and AT, constant between panels",
+  "figure_2_color_semantics": "LAB-derived dental-tone volumes; small unobtrusive prototype points use the Figure 1 category palette",
+  "figure_3_color_semantics": "LAB-derived dental-tone volumes, PT=blue, AT-only=orange, text shade labels; no explicit prototype markers",
+  "main_manuscript_figures": [
+    "global/fig_global_alpha_PT_AT_vertical.png",
+    "global/fig_global_core_vs_alpha_vita.png",
+    "selected/fig_selected4_alpha_PT_vs_AT_vertical.png"
+  ],
+  "point_clouds": "SHA-verified 350-point regime subsamples per shade from joint BFS, not frequency/volume estimates",
+  "outputs_png": [
+    "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\paper_thresholds_vita_max_delta005\\results_figures\\global\\fig_global_core_vita.png",
+    "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\paper_thresholds_vita_max_delta005\\results_figures\\global\\fig_global_alpha_vita.png",
+    "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\paper_thresholds_vita_max_delta005\\results_figures\\global\\fig_global_core_vs_alpha_vita.png",
+    "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\paper_thresholds_vita_max_delta005\\results_figures\\global\\fig_global_alpha_PT_AT_vertical.png",
+    "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\paper_thresholds_vita_max_delta005\\results_figures\\selected\\fig_selected4_alpha_PT_vertical.png",
+    "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\paper_thresholds_vita_max_delta005\\results_figures\\selected\\fig_selected4_alpha_AT_vertical.png",
+    "C:\\Users\\rafav\\Desktop\\PYFCS\\Source\\test\\paper_thresholds_vita_max_delta005\\results_figures\\selected\\fig_selected4_alpha_PT_vs_AT_vertical.png"
+  ]
+}

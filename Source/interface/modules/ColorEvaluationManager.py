@@ -95,87 +95,140 @@ class ColorEvaluationManager:
         print(f"✅ CSV saved: {csv_name}")
         return csv_path
 
-    def filter_points_with_threshold(self, selected_volume, threshold, step, metric="CIEDE2000", color_space="LAB"):
-        """Find threshold-qualified grid points inside each selected volume.
+    @staticmethod
+    def _limits_for_threshold_points(points):
+        """Axis-aligned limits of a sampled region (not a bounding volume)."""
+        if not points:
+            return {axis: (None, None) for axis in ("L", "a", "b")}
+        xyz = np.asarray(points, dtype=float)
+        return {
+            axis: (float(xyz[:, index].min()), float(xyz[:, index].max()))
+            for index, axis in enumerate(("L", "a", "b"))
+        }
 
-        Explore the connected qualifying region around each representative.
-        Non-qualifying points are *not* expanded: this avoids the original
-        arbitrary ten-failure cutoff (which lost valid points) without
-        traversing the entire 3D Voronoi volume.
+    def filter_points_with_thresholds(
+        self, selected_volume, step=0.25, metric="CIEDE2000",
+        color_space="LAB", pt_threshold=0.8, at_threshold=1.8,
+    ):
+        """Explore PT and AT with *one* traversal per prototype.
 
-        As with the previous grid algorithm, this is a discrete exploration,
-        not a proof of completeness for disconnected threshold regions.
+        The AT region is explored by six-neighbour BFS, anchored at each
+        positive prototype. Every grid node is evaluated at most once per
+        prototype, and each accepted AT node is classified into PT or AT-only
+        without recomputing the color difference. The grids use INTEGER
+        offsets from the (possibly non-integer) prototype; no cumulative
+        floating-point additions or arbitrary 2-decimal rounding occur.
+
+        Important methodological limitation: this returns the six-connected
+        component reachable from each prototype, NOT necessarily all valid
+        grid points in a disconnected intersection of the fuzzy geometry and
+        the perceptual threshold region. The caller must use a separate grid
+        validation if exhaustive coverage is required for a publication.
+
+        Returns three groups (PT, AT, AT_ONLY). Each group contains a 'points'
+        dict keyed by Volume_0, Volume_1, ... and a 'limits' dict keyed by the
+        actual prototype label. The AT group contains the PT points as well;
+        AT_ONLY and PT form a disjoint partition of AT.
         """
-        filtered_points = {}
-        volume_limits = {}
-        metric = self.normalize_metric_name(metric)
-        threshold = float(threshold)
         step = float(step)
-        if not np.isfinite(threshold) or threshold <= 0:
-            raise ValueError("Threshold must be a finite positive number.")
+        pt_threshold = float(pt_threshold)
+        at_threshold = float(at_threshold)
         if not np.isfinite(step) or step <= 0:
             raise ValueError("Grid step must be a finite positive number.")
-
-        use_rgb = str(color_space).upper() == "RGB"
-        if use_rgb:
+        if not (np.isfinite(pt_threshold) and np.isfinite(at_threshold)
+                and 0 < pt_threshold < at_threshold):
+            raise ValueError("Require finite thresholds 0 < PT < AT.")
+        space_name = str(color_space).upper()
+        if space_name not in ("RGB", "LAB"):
+            raise ValueError("Threshold search supports only LAB and RGB spaces.")
+        metric = self.normalize_metric_name(metric)
+        if space_name == "RGB":
             from skimage import color as skcolor
             step = max(1.0, step)
 
-            def to_lab(x):
-                rgb = np.asarray(x, dtype=float).reshape(1, 1, 3)
+            def to_lab(xyz):
+                rgb = np.asarray(xyz, dtype=float).reshape(1, 1, 3)
                 return skcolor.rgb2lab(np.clip(rgb, 0, 255) / 255.0)[0, 0]
         else:
-            def to_lab(x):
-                return x
+            def to_lab(xyz):
+                return xyz
 
-        for idx, prototype in enumerate(selected_volume):
-            positive = np.asarray(prototype.positive, dtype=float)
-            positive_lab = to_lab(positive)
-            origin = tuple(float(v) for v in positive)
-            points_within_threshold = []
-            frontier = deque([origin])
-            visited = {origin}
+        result = {
+            name: {"points": {}, "limits": {}}
+            for name in ("PT", "AT", "AT_ONLY")
+        }
+        directions = ((1, 0, 0), (-1, 0, 0),
+                      (0, 1, 0), (0, -1, 0),
+                      (0, 0, 1), (0, 0, -1))
+
+        for index, prototype in enumerate(selected_volume):
+            seed = np.asarray(prototype.positive, dtype=float).reshape(3)
+            if not np.all(np.isfinite(seed)):
+                raise ValueError(f"Invalid prototype coordinates: {prototype.label}.")
+            reference_lab = to_lab(seed)
             volume = prototype.voronoi_volume
+            offsets = deque([(0, 0, 0)])
+            seen = {(0, 0, 0)}
+            pt_points, at_points, at_only_points = [], [], []
 
-            while frontier:
-                point = frontier.popleft()
-                # A neighbor can fall outside the geometric volume; do not
-                # expand beyond that boundary.
-                if not volume.isInside(Point(*point)):
+            while offsets:
+                offset = offsets.popleft()
+                # Offset keys are exact integers, even with a sub-centesimal
+                # step. Multiplication from the original seed avoids drift.
+                xyz = tuple(float(seed[axis] + step * offset[axis])
+                            for axis in range(3))
+                if not volume.isInside(Point(*xyz)):
                     continue
-                try:
-                    metric_value = self.calculate_metric_value(
-                        to_lab(point), positive_lab, metric
-                    )
-                except Exception:
-                    continue
-                if not (0 <= metric_value < threshold):
+                distance = self.calculate_metric_value(
+                    to_lab(xyz), reference_lab, metric
+                )
+                if not np.isfinite(distance) or not (0 <= distance < at_threshold):
                     continue
 
-                points_within_threshold.append(point)
-                for axis in range(3):
-                    for sign in (-1, 1):
-                        neighbor = list(point)
-                        neighbor[axis] = round(neighbor[axis] + sign * step, 2)
-                        neighbor = tuple(neighbor)
-                        if neighbor not in visited:
-                            visited.add(neighbor)
-                            frontier.append(neighbor)
+                at_points.append(xyz)
+                if distance < pt_threshold:
+                    pt_points.append(xyz)
+                else:
+                    at_only_points.append(xyz)
 
-            filtered_points[f"Volume_{idx}"] = points_within_threshold
-            if points_within_threshold:
-                pts = np.asarray(points_within_threshold, dtype=float)
-                volume_limits[prototype.label] = {
-                    "L": (float(np.min(pts[:, 0])), float(np.max(pts[:, 0]))),
-                    "a": (float(np.min(pts[:, 1])), float(np.max(pts[:, 1]))),
-                    "b": (float(np.min(pts[:, 2])), float(np.max(pts[:, 2]))),
-                }
-            else:
-                volume_limits[prototype.label] = {
-                    "L": (None, None), "a": (None, None), "b": (None, None),
-                }
+                for direction in directions:
+                    next_offset = (offset[0] + direction[0],
+                                   offset[1] + direction[1],
+                                   offset[2] + direction[2])
+                    if next_offset not in seen:
+                        seen.add(next_offset)
+                        offsets.append(next_offset)
 
-        return filtered_points, volume_limits
+            for region, points in (("PT", pt_points), ("AT", at_points),
+                                   ("AT_ONLY", at_only_points)):
+                result[region]["points"][f"Volume_{index}"] = points
+                result[region]["limits"][prototype.label] = (
+                    self._limits_for_threshold_points(points)
+                )
+
+        return result
+
+    def filter_points_with_threshold(
+        self, selected_volume, threshold, step, metric="CIEDE2000",
+        color_space="LAB",
+    ):
+        """Legacy single-threshold API for existing external integrations.
+
+        Kept independent of the dual-threshold API so callers requesting an
+        arbitrary threshold other than dental PT/AT get the exact requested
+        cutoff, not an approximate substitution.
+        """
+        threshold = float(threshold)
+        if not np.isfinite(threshold) or threshold <= 0:
+            raise ValueError("Threshold must be a finite positive number.")
+        # The paired algorithm requires PT < AT. Pick a lower auxiliary
+        # threshold, then return only the AT set at the requested cutoff.
+        result = self.filter_points_with_thresholds(
+            selected_volume, step=step, metric=metric,
+            color_space=color_space, pt_threshold=threshold / 2.0,
+            at_threshold=threshold,
+        )
+        return result["AT"]["points"], result["AT"]["limits"]
 
     # Metric Lists / Settings
     @classmethod

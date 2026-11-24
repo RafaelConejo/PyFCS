@@ -969,7 +969,28 @@ def mean_rgb_with_lab_filters(rgb_pixels, filters, chunk_size=250000):
 
 
 
-def prepare_granular_creation_options(selected_categories_lab, options):
+def matching_native_rgb(lab, rgb, *, tolerance=1e-2):
+    """Return a precise RGB source only if it created the same displayed LAB.
+
+    Do not turn an arbitrary LAB original into a rounded RGB color. RGB
+    coordinates are kept for model creation only when source provenance is
+    known or an exact RGB/HEX edit can be verified against the GUI's converter.
+    """
+    try:
+        xyz = np.asarray(rgb, dtype=float).reshape(-1)
+        lab_xyz = np.asarray(lab, dtype=float).reshape(-1)
+        if xyz.shape != (3,) or lab_xyz.shape != (3,):
+            return None
+        if not np.all(np.isfinite(xyz)) or np.any((xyz < 0) | (xyz > 255)):
+            return None
+        if np.linalg.norm(np.asarray(rgb_to_lab(xyz), dtype=float) - lab_xyz) <= tolerance:
+            return xyz.copy()
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def prepare_granular_creation_options(selected_categories_lab, options, native_rgb=None):
     """One shared LAB-to-native granular construction path for both creators.
 
     The selected prototype coordinates are in CIELAB. The geometric model
@@ -992,10 +1013,19 @@ def prepare_granular_creation_options(selected_categories_lab, options):
             return lab_to_rgb_model_checked(xyz)[0]
         raise ValueError(f'Unsupported geometric model: {mode}')
 
-    native = {
-        category: {label: to_native(lab) for label, lab in granules.items()}
-        for category, granules in selected_categories_lab.items()
-    }
+    native_sources = native_rgb or {}
+    native = {}
+    for category, granules in selected_categories_lab.items():
+        native[category] = {}
+        for label, lab in granules.items():
+            source = native_sources.get(category, {}).get(label)
+            if mode == 'RGB' and source is not None:
+                xyz = np.asarray(source, dtype=float).reshape(-1)
+                if xyz.shape != (3,) or not np.all(np.isfinite(xyz)) or np.any((xyz < 0) | (xyz > 255)):
+                    raise ValueError(f'Invalid native RGB for {category}/{label}.')
+                native[category][label] = xyz.copy()
+            else:
+                native[category][label] = to_native(lab)
     all_sites = np.asarray(
         [site for granules in native.values() for site in granules.values()],
         dtype=float,
@@ -1724,12 +1754,14 @@ def load_color_data(file_path):
 
     for color_name, color_value in color_data.items():
         lab = np.array(color_value["positive_prototype"], dtype=float)
-        rgb = lab_to_rgb(lab)
+        raw_native = (np.asarray(color_value["Color"], dtype=float).copy()
+                      if str(getattr(input_class, "last_color_space", "LAB")).upper() == "RGB"
+                      else None)
+        rgb = tuple(safe_rgb_tuple(raw_native)) if raw_native is not None else lab_to_rgb(lab)
 
-        colors[color_name] = {
-            "rgb": rgb,
-            "lab": lab
-        }
+        colors[color_name] = {"rgb": rgb, "lab": lab}
+        if raw_native is not None:
+            colors[color_name]["native_rgb"] = raw_native
 
     return colors
 
@@ -3951,6 +3983,7 @@ class CustomCategoryDialog:
             return
         self.granules.append({
             "label": label, "lab": point, "number": number,
+            "native_rgb": matching_native_rgb(point, _rgb),
             "automatic_label": (label == suggested),
         })
         self._render_granules()
@@ -3979,6 +4012,9 @@ class CustomCategoryDialog:
                 return False
             self.granules[index] = dict(
                 label=clean_name, lab=point, number=number,
+                native_rgb=(item.get("native_rgb") if all(abs(a-b) <= 1e-10
+                             for a, b in zip(point, item["lab"]))
+                             else matching_native_rgb(point, _rgb)),
                 automatic_label=(
                     clean_name == original_label and
                     item.get("automatic_label", False)
@@ -4141,6 +4177,7 @@ class CustomCategoryDialog:
             packed.append({
                 "label": label,
                 "lab": tuple(float(v) for v in item["lab"]),
+                "native_rgb": item.get("native_rgb"),
                 "enabled": True,
             })
         for i, item in enumerate(packed):
@@ -4160,6 +4197,7 @@ class CustomCategoryDialog:
         )
         self.palette.color_checks[name] = dict(
             var=tk.BooleanVar(value=True), lab=first, rgb=rgb,
+            native_rgb=packed[0].get("native_rgb"),
         )
         if len(packed) > 1:
             self.palette._expanded_categories.add(name)

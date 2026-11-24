@@ -193,6 +193,9 @@ def rebuild_in_color_space(space, target_color_space, *, gamut_tolerance=0.05):
     source = str(space.color_space).upper()
     if target == source:
         return space
+    if getattr(space, "geometry_only_import", False):
+        raise ValueError("Cannot rebuild imported JSON geometry without its original "
+                         "construction sites. Create a new space from prototypes.")
     if len(space.prototypes) < 2:
         raise ValueError("At least two representatives are needed to rebuild the model.")
 
@@ -436,6 +439,9 @@ def rebuild_granular_in_color_space(space, target_color_space, *, gamut_toleranc
         raise ValueError("The model color space must be LAB or RGB.")
     if target == source:
         return space
+    if getattr(space, "geometry_only_import", False):
+        raise ValueError("Cannot rebuild imported JSON geometry without its original "
+                         "construction sites. Create a new space from prototypes.")
     def convert(values):
         array = np.asarray(values, dtype=float).reshape(-1, 3)
         if source == "LAB":

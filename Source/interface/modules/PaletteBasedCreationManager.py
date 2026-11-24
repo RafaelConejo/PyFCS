@@ -250,7 +250,8 @@ class PaletteBasedCreationManager:
         data.update(lab=lab, rgb=rgb, hex=UtilsTools.rgb_to_hex(rgb).upper())
         data.pop("_search_key_cache", None)
         check = self.color_checks[category]
-        check.update(lab=lab, rgb=rgb)
+        check.update(lab=lab, rgb=rgb,
+                     native_rgb=enabled.get("native_rgb"))
 
     def _set_category_granules(self, category, entries):
         """Validate first, then commit an edit without raising on user mistakes.
@@ -304,9 +305,15 @@ class PaletteBasedCreationManager:
                     return False, error
 
             local_occupied.append((category, label, point))
+            exact = entry.get("native_rgb")
+            if exact is None:
+                previous = next((g for g in prior if g["label"] == label and
+                                 np.linalg.norm(np.asarray(g["lab"]) - np.asarray(point)) < 1e-10), None)
+                exact = previous.get("native_rgb") if previous is not None else None
             validated.append({
                 "label": label,
                 "lab": point,
+                "native_rgb": exact,
                 "enabled": bool(entry.get("enabled", old_flags.get(label, True))),
             })
 
@@ -519,7 +526,8 @@ class PaletteBasedCreationManager:
                     suffix = raw_label[len(requested):]
                     raw_label = category[:max(1, UtilsTools.MAX_COLOR_NAME_CHARS-len(suffix))] + suffix
                 label = self._reserve_granule_label(raw_label, used_granules)
-                imported.append({"label": label, "lab": item["lab"], "enabled": True})
+                imported.append({"label": label, "lab": item["lab"],
+                                 "native_rgb": item.get("native_rgb"), "enabled": True})
             normalized["custom"] = False
             normalized["granules"] = imported
             additions.append((category, normalized))
@@ -534,6 +542,7 @@ class PaletteBasedCreationManager:
                 "var": tk.BooleanVar(master=self.win, value=False),
                 "lab": normalized["lab"],
                 "rgb": normalized["rgb"],
+                "native_rgb": imported[0].get("native_rgb") if imported else None,
             }
         if source_key:
             self.loaded_sources.setdefault(source_key, []).append(
@@ -626,6 +635,7 @@ class PaletteBasedCreationManager:
         """Normalize several PyFCS color-data shapes into RGB/LAB/HEX."""
         try:
             rgb = None
+            native_rgb = None
             color_hex = None
 
             if isinstance(data, dict):
@@ -639,6 +649,7 @@ class PaletteBasedCreationManager:
                     return None
 
                 rgb = data.get("rgb")
+                native_rgb = data.get("native_rgb")
                 color_hex = data.get("hex")
             else:
                 lab_source = data
@@ -681,13 +692,17 @@ class PaletteBasedCreationManager:
                     label = str(granule.get("label", "")).strip()
                     if not label:
                         return None
-                    parsed.append({"label": label, "lab": tuple(float(v) for v in coords)})
+                    parsed.append({
+                        "label": label, "lab": tuple(float(v) for v in coords),
+                        "native_rgb": granule.get("native_rgb"),
+                    })
             else:
-                parsed.append({"label": None, "lab": lab})
+                parsed.append({"label": None, "lab": lab, "native_rgb": native_rgb})
             return {
                 "rgb": rgb,
                 "lab": lab,
                 "hex": color_hex,
+                "native_rgb": native_rgb,
                 "granules": parsed,
                 "custom": bool(data.get("custom", False)) if isinstance(data, dict) else False,
             }
@@ -742,6 +757,36 @@ class PaletteBasedCreationManager:
             # Imported colors remain local; the active application FCS is unchanged.
             loaded = self.app.fuzzy_manager.load_color_file(path)
             raw_colors = loaded.get("color_data", {})
+            # The CNS/FCS readers deliberately expose LAB for the existing
+            # GUI. Retain original model RGB separately, without modifying
+            # either reader or the corresponding on-disk source.
+            loaded_space = loaded.get("fuzzy_color_space")
+            origin = str(loaded.get("source_color_space") or
+                         getattr(loaded_space, "color_space", "LAB")).upper()
+            if origin == "RGB":
+                raw_colors = {label: dict(data) for label, data in raw_colors.items()}
+                sources = {}
+                if loaded_space is not None:
+                    if getattr(loaded_space, "is_granular", False):
+                        for cat in loaded_space.categories:
+                            sources[cat.label] = {g.label: g.positive.copy()
+                                                  for g in cat.prototypes}
+                    else:
+                        sources = {g.label: {g.label: g.positive.copy()}
+                                   for g in loaded_space.prototypes}
+                for label, data in raw_colors.items():
+                    if loaded_space is None:
+                        native = data.get("Color")
+                        if native is not None:
+                            data["native_rgb"] = np.asarray(native, dtype=float).copy()
+                    elif label in sources:
+                        data["native_rgb"] = next(iter(sources[label].values()))
+                        if data.get("granules"):
+                            data["granules"] = [
+                                {**dict(g), **({"native_rgb": sources[label][g["label"]]}
+                                              if g.get("label") in sources[label] else {})}
+                                for g in data["granules"]
+                            ]
 
             added_names = self._add_source_colors(
                 raw_colors,
@@ -1700,6 +1745,19 @@ class PaletteBasedCreationManager:
                 selected[name] = active
         return selected
 
+    def _selected_category_native_rgb(self):
+        """Keep only explicitly retained RGB prototypes from enabled granules."""
+        result = {}
+        for name, check in self.color_checks.items():
+            if not check["var"].get():
+                continue
+            values = {g["label"]: np.asarray(g["native_rgb"], dtype=float)
+                      for g in self.colors[name]["granules"]
+                      if g.get("enabled", True) and g.get("native_rgb") is not None}
+            if values:
+                result[name] = values
+        return result
+
     def _create_color_space(self):
         # Commit both child and parent names before validation / construction.
         if not self._commit_pending_granule_names():
@@ -1756,7 +1814,7 @@ class PaletteBasedCreationManager:
 
         def on_create(name, options):
             saved_options = UtilsTools.prepare_granular_creation_options(
-                selected, options
+                selected, options, native_rgb=self._selected_category_native_rgb(),
             )
             return self.app.save_cs(name, representatives, options=saved_options)
 

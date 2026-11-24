@@ -1623,7 +1623,9 @@ class ImageBasedCreationManager:
                 break
             number += 1
         entries = [dict(g) for g in self.colors[category]["granules"]]
-        entries.append({"label": candidate, "lab": sample["lab"], "enabled": True})
+        entries.append({"label": candidate, "lab": sample["lab"],
+                        "native_rgb": UtilsTools.matching_native_rgb(sample["lab"], sample["rgb"]),
+                        "enabled": True})
         error = self._set_category_granules(category, entries)
         if error:
             self.sample_action_hint_var.set(error)
@@ -2025,7 +2027,8 @@ class ImageBasedCreationManager:
         lab = tuple(first['lab'])
         rgb = tuple(UtilsTools.lab_to_rgb(lab))
         data.update(lab=lab, rgb=rgb, hex=UtilsTools.rgb_to_hex(rgb).upper())
-        self.color_checks[category].update(lab=lab, rgb=rgb)
+        self.color_checks[category].update(
+            lab=lab, rgb=rgb, native_rgb=first.get('native_rgb'))
 
     def _set_category_granules(self, category, entries):
         """Update granules atomically; never re-reject unchanged imported sites.
@@ -2080,8 +2083,14 @@ class ImageBasedCreationManager:
                 )
                 if error:
                     return error
+            original = next((g for g in originals
+                             if g['label'] == label and
+                                np.array_equal(point, np.asarray(g['lab'], dtype=float))), None)
+            native_rgb = entry.get('native_rgb')
+            if native_rgb is None and original is not None:
+                native_rgb = original.get('native_rgb')
             validated.append({
-                'label': label, 'lab': lab,
+                'label': label, 'lab': lab, 'native_rgb': native_rgb,
                 'enabled': bool(entry.get('enabled', True)),
             })
             occupied.append((category, label, lab))
@@ -2181,8 +2190,11 @@ class ImageBasedCreationManager:
                         self._last_add_color_error = error
                         return None
                     occupied.append((name, clean, site))
+                native_rgb = item.get('native_rgb')
+                if native_rgb is None and idx == 0 and not granules:
+                    native_rgb = UtilsTools.matching_native_rgb(site, rgb)
                 validated.append({
-                    'label': clean, 'lab': site,
+                    'label': clean, 'lab': site, 'native_rgb': native_rgb,
                     'enabled': bool(item.get('enabled', True)),
                 })
 
@@ -2201,9 +2213,11 @@ class ImageBasedCreationManager:
             'hex': UtilsTools.rgb_to_hex(preview_rgb).upper(),
             'granules': validated, 'source': source,
         }
+        first = next((g for g in validated if g['enabled']), validated[0])
         self.color_checks[name] = {
             'var': tk.BooleanVar(value=bool(selected)),
             'lab': chosen, 'rgb': preview_rgb,
+            'native_rgb': first.get('native_rgb'),
         }
         if import_mode:
             categories.add(name)
@@ -3052,8 +3066,14 @@ class ImageBasedCreationManager:
         representatives = {cat: next(iter(g.values())) for cat, g in selected.items()}
 
         def on_create(name, options):
+            native = {
+                category: {g['label']: np.asarray(g['native_rgb'], dtype=float)
+                           for g in self.colors[category]['granules']
+                           if g.get('enabled', True) and g.get('native_rgb') is not None}
+                for category in selected
+            }
             saved_options = UtilsTools.prepare_granular_creation_options(
-                selected, options
+                selected, options, native_rgb=native,
             )
             return self.app.save_cs(name, representatives, options=saved_options)
         try:

@@ -1,0 +1,132 @@
+{
+  "script": "threshold_paper_analysis.py",
+  "version": "2.0.0",
+  "date_utc": "2026-11-22T02:36:58.012988+00:00",
+  "model_file": "C:\\Users\\rafav\\Desktop\\PYFCS\\fuzzy_color_spaces\\vita_no_covering_max.json",
+  "model_sha256": "0aadde57765b33d59ab3c3442f3b6748be8bdae1d7331698e70e8f7f1edeb30c",
+  "model_name": "vita_no_covering_max",
+  "native_color_space": "LAB",
+  "non_covering": true,
+  "disjoint": true,
+  "lambda1": 0.5,
+  "lambda2": 1.5,
+  "prototypes": {
+    "A1": [
+      78.17,
+      -0.32,
+      12.77
+    ],
+    "A2": [
+      75.7,
+      1.51,
+      16.09
+    ],
+    "A3": [
+      73.33,
+      1.89,
+      17.58
+    ],
+    "A3.5": [
+      71.09,
+      2.93,
+      21.34
+    ],
+    "A4": [
+      67.32,
+      4.14,
+      19.02
+    ],
+    "B1": [
+      77.62,
+      -0.08,
+      9.1
+    ],
+    "B2": [
+      74.67,
+      0.61,
+      15.62
+    ],
+    "B3": [
+      73.07,
+      2.31,
+      21.07
+    ],
+    "B4": [
+      71.19,
+      2.87,
+      23.23
+    ],
+    "C1": [
+      73.62,
+      0.3,
+      13.15
+    ],
+    "C2": [
+      71.17,
+      0.9,
+      16.47
+    ],
+    "C3": [
+      69.57,
+      1.82,
+      18.19
+    ],
+    "C4": [
+      64.32,
+      3.52,
+      18.07
+    ],
+    "D2": [
+      73.44,
+      0.48,
+      11.97
+    ],
+    "D3": [
+      71.32,
+      1.58,
+      14.55
+    ],
+    "D4": [
+      71.29,
+      1.4,
+      18.38
+    ]
+  },
+  "shades": [
+    "A1",
+    "A2",
+    "A3",
+    "A3.5",
+    "A4",
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "C1",
+    "C2",
+    "C3",
+    "C4",
+    "D2",
+    "D3",
+    "D4"
+  ],
+  "layers": [
+    "core",
+    "alpha"
+  ],
+  "threshold_operator": "strict <",
+  "PT_00": 0.8,
+  "AT_00": 1.8,
+  "grid_step": 0.05,
+  "grid_enabled": true,
+  "grid_validation": false,
+  "sampling": "independent uniform rejection sampling INSIDE each fuzzy polyhedron",
+  "samples_per_shade_per_layer": 8000,
+  "random_seed": 20261121,
+  "high_membership_cutoff": 0.9,
+  "membership_semantics": "raw per-prototype membership from PyFCS",
+  "core_ranges": "computed only on Core PT and AT grid points",
+  "scatter": "uniform whole-volume and PT/AT-stratified lattice points; illustrative, not prevalence",
+  "bfs_limitation": "Only the six-connected component reachable from the seed is guaranteed.",
+  "uniform_fractions_limitation": "Monte Carlo estimates, not exact geometric volumes."
+}

@@ -587,6 +587,10 @@ class PyFCSApp:
             label="Acceptability Threshold (AT)",
             command=self.deploy_at
         )
+        self.menu_display_threshold.add_command(
+            label="Both thresholds (PT + AT)",
+            command=self.deploy_pt_at
+        )
 
         self.display_threshold_button = create_toolbar_button(
             color_evaluation_frame,
@@ -2889,6 +2893,7 @@ class PyFCSApp:
                     "source_color_space": source_native}
         elif extension in (".fcs", ".json"):
             new_color_data, new_fuzzy_color_space = handler.read_file(filename)
+            warning_message = getattr(new_fuzzy_color_space, "import_warnings", None)
             source_type = "fcs"
             data = {"color_data": new_color_data, "type": source_type,
                     "fuzzy_color_space": new_fuzzy_color_space}
@@ -3055,7 +3060,9 @@ class PyFCSApp:
                 return
             if prepared["warning_message"]:
                 messagebox.showwarning(
-                    "CNS File Warning", prepared["warning_message"], parent=self.root
+                    ("CNS File Warning" if prepared.get("source_type") == "cns"
+                     else "JSON Import Warning"),
+                    prepared["warning_message"], parent=self.root
                 )
             if on_success is not None:
                 on_success()
@@ -3223,16 +3230,30 @@ class PyFCSApp:
             domain = options["reference_domain"]
             points = {
                 label: (
-                    np.asarray(lab, dtype=float)
-                    if mode == "LAB" else
-                    lab_to_rgb_model_checked(np.asarray(lab, dtype=float).reshape(1, 3))[0]
+                    np.asarray(lab, dtype=float) if mode == "LAB" else
+                    (np.asarray(self.color_checks[label]["native_rgb"], dtype=float)
+                     if self.color_checks[label].get("native_rgb") is not None else
+                     lab_to_rgb_model_checked(np.asarray(lab, dtype=float).reshape(1, 3))[0])
                 )
                 for label, lab in selected_colors_lab.items()
             }
             Voronoi._validate_points_in_domain(
                 np.asarray(list(points.values())), domain, Voronoi.DEFAULT_EPS
             )
-            return self.save_cs(name, selected_colors_lab, options=options)
+            save_options = dict(options)
+            if mode == "RGB":
+                native = {}
+                for label, lab in selected_colors_lab.items():
+                    raw = self.color_checks[label].get("native_rgb")
+                    if raw is not None:
+                        xyz = np.asarray(raw, dtype=float).reshape(-1)
+                        if xyz.shape != (3,) or not np.all(np.isfinite(xyz)) or np.any((xyz < 0) | (xyz > 255)):
+                            raise ValueError(f"Invalid native RGB prototype for '{label}'.")
+                        native[label] = xyz.copy()
+                    else:
+                        native[label] = points[label]
+                save_options["model_points"] = native
+            return self.save_cs(name, selected_colors_lab, options=save_options)
 
         dialog = UtilsTools.FCSCreationDialog(
             parent_win,
@@ -3921,6 +3942,8 @@ class PyFCSApp:
 
         if hasattr(self, "filtered_points"):
             self.filtered_points = {}
+        self._threshold_analysis_cache = None
+        self._threshold_display_mode = None
 
         if self.graph_widget:
             try:
@@ -4240,6 +4263,52 @@ class PyFCSApp:
         popup.grab_set()
         popup.focus_set()
 
+    def _threshold_view_signature(self, selected_options=None):
+        """Identify the exact geometry shown by the threshold search.
+
+        Cache identity includes the source model, selected prototype volumes,
+        and active geometric layer. A different selection or a rebuilt model
+        therefore cannot silently reuse stale threshold points.
+        """
+        if selected_options is None:
+            selected_options = [
+                name for name, var in self.model_3d_options.items() if var.get()
+            ]
+        by_priority = (
+            ("Support", self.selected_support),
+            ("0.5-cut", self.selected_alpha),
+            ("Core", self.selected_core),
+        )
+        active = next(
+            ((name, volumes) for name, volumes in by_priority
+             if name in selected_options and volumes), None
+        )
+        if active is None:
+            return None
+        layer, volumes = active
+        space = getattr(self, "fuzzy_color_space", None)
+        color_space = getattr(space, "color_space", "LAB")
+        signature = (
+            id(space), layer, color_space, 0.25, "CIEDE2000", 0.8, 1.8,
+            tuple((proto.label, id(proto.voronoi_volume)) for proto in volumes),
+        )
+        return signature, volumes, color_space
+
+    def _threshold_points_for_current_view(self, selected_options=None):
+        """Select cached PT, AT or both without re-running the search."""
+        cache = getattr(self, "_threshold_analysis_cache", None)
+        mode = getattr(self, "_threshold_display_mode", None)
+        current = self._threshold_view_signature(selected_options)
+        if not cache or not current or current[0] != cache["signature"]:
+            return {}
+        result = cache["results"]
+        if mode == "BOTH":
+            return {"PT": result["PT"]["points"],
+                    "AT_ONLY": result["AT_ONLY"]["points"]}
+        if mode in ("PT", "AT"):
+            return {mode: result[mode]["points"]}
+        return {}
+
     def on_option_select(self):
         """
         Refresh the embedded 3D model using the current visualization options.
@@ -4250,12 +4319,12 @@ class PyFCSApp:
             return
 
         self._init_3d_canvas()
-        self.filtered_points = {}
-
         selected_options = [
             key for key, var in self.model_3d_options.items()
             if var.get()
         ]
+        self.filtered_points = self._threshold_points_for_current_view(
+            selected_options)
 
         # Keep the color controls visible and synchronized.
         self.display_color_buttons(self.color_matrix)
@@ -4300,6 +4369,12 @@ class PyFCSApp:
         )
         if space:
             subtitle = f"{space.typology_description}  ·  {space.color_space}"
+            if self.filtered_points:
+                display_mode = getattr(self, "_threshold_display_mode", None)
+                mode_label = {"PT": "PT < 0.8", "AT": "AT < 1.8",
+                              "BOTH": "PT + AT"}.get(display_mode)
+                if mode_label:
+                    subtitle += f"  ·  {mode_label}"
             self.ax_3d.text2D(
                 0.5, 1.017, subtitle,
                 transform=self.ax_3d.transAxes,
@@ -4715,6 +4790,13 @@ class PyFCSApp:
         """Edit a private draft; the loaded model is committed after JSON save."""
         if not getattr(self, "COLOR_SPACE", False) or getattr(self, "fuzzy_color_space", None) is None:
             self.custom_warning("Edit Fuzzy Color Space", "Load a Fuzzy Color Space first.")
+            return
+        if getattr(self.fuzzy_color_space, "geometry_only_import", False):
+            self.custom_warning(
+                "Geometry-only Color Space",
+                "This JSON contains complete volumes but not all original construction "
+                "sites. It can be inspected, evaluated and saved unchanged, but must "
+                "be recreated from prototypes to edit its geometry.")
             return
         if self._has_any_active_job():
             self.custom_warning("Process Running", "Finish or cancel the active process first.")
@@ -9447,122 +9529,97 @@ class PyFCSApp:
             self._show_window_loading(window_id, "Color Mapping All...")
 
 
-    def get_umbral_points(self, threshold, mode=None):
-        """
-        Filter points inside the selected fuzzy volumes using the given threshold
-        and update the embedded 3D view.
-        """
-        # Ensure a color space is available before running the evaluation.
-        if not hasattr(self, "COLOR_SPACE") or not self.COLOR_SPACE:
-            self.custom_warning("No Color Space", "Please load a fuzzy color space before deploying AT or PT.")
+    def get_umbral_points(self, threshold=None, mode=None):
+        """Compute PT + AT together, then display either or both on demand."""
+        if not getattr(self, "COLOR_SPACE", False):
+            self.custom_warning(
+                "No Color Space", "Load a fuzzy color space before displaying PT or AT."
+            )
             return
-
         if self._has_any_active_job():
             self.custom_warning("Process Running", "A processing task is already running.")
             return
 
-        selected_options = [key for key, var in self.model_3d_options.items() if var.get()]
-        if not any(opt in selected_options for opt in ("Support", "0.5-cut", "Core")):
+        if mode is None:
+            mode = "PT" if threshold is not None and abs(float(threshold) - 0.8) < 1e-9 else "AT"
+        mode = str(mode).upper()
+        if mode not in ("PT", "AT", "BOTH"):
+            self.custom_warning("Threshold Mode", "Choose PT, AT, or Both.")
             return
+
+        selected_options = [
+            name for name, var in self.model_3d_options.items() if var.get()
+        ]
+        current = self._threshold_view_signature(selected_options)
+        if current is None:
+            self.custom_warning(
+                "Select a Volume", "Enable Core, 0.5-cut or Support before displaying thresholds."
+            )
+            return
+        signature, selected_volume, geometric_mode = current
+
+        # Switching PT <-> AT <-> Both only changes which stored layer is
+        # plotted. Neither the metric nor the geometric search is repeated.
+        cached = getattr(self, "_threshold_analysis_cache", None)
+        if cached is not None and cached["signature"] == signature:
+            self._threshold_display_mode = mode
+            self.on_option_select()
+            return
+
         self._threshold_job_running = True
         try:
             self.show_loading(
                 title="Processing Color Evaluation",
-                message="Evaluating colors within the selected volumes...",
-                note="The 3D visualization will update when the analysis finishes."
+                message="Computing PT and AT in a single exploration...",
+                note="Both results will be available independently in Display Threshold."
             )
         except Exception:
             self._threshold_job_running = False
             raise
 
-        def update_status(message):
-            try:
-                self.root.after(
-                    0, lambda text=message: self._set_processing_progress(message=text)
-                )
-            except (RuntimeError, tk.TclError):
-                pass
-
         def run_threshold_process():
-            """
-            Run the threshold filtering in a background thread and refresh the 3D plot
-            on the main Tkinter thread when the computation finishes.
-            """
             try:
-                # Define the volume priority used for threshold filtering.
-                priority_map = {
-                    "Support": self.selected_support,
-                    "0.5-cut": self.selected_alpha,
-                    "Core": self.selected_core,
-                }
-
-                selected_option = next(
-                    (opt for opt in ["Support", "0.5-cut", "Core"] if opt in selected_options),
-                    None,
+                result = self.color_manager.filter_points_with_thresholds(
+                    selected_volume, step=0.25, metric="CIEDE2000",
+                    color_space=geometric_mode, pt_threshold=0.8, at_threshold=1.8,
                 )
-                selected_volume = priority_map[selected_option]
-
-                # Step 1: filter the LAB points inside the selected volume.
-                geometric_mode = (self.fuzzy_color_space.color_space
-                                  if getattr(self,"fuzzy_color_space",None) else "LAB")
-                filtered_points, volume_limits = self.color_manager.filter_points_with_threshold(
-                    selected_volume, threshold, step=0.25,
-                    color_space=geometric_mode,
-                )
-
-                # Save the computed ranges as CSV.
-                csv_path = self.color_manager.create_csv(
-                    self.file_base_name, volume_limits, mode,
-                    color_space=geometric_mode)
-                print(f"Threshold CSV saved: {csv_path}")
-
-                # Step 2: prepare the plot refresh.
-                update_status("Preparing the updated 3D visualization...")
-
-                def redraw_filtered_plot():
-                    """
-                    Refresh the existing embedded 3D figure with the filtered points.
-                    """
-                    self.filtered_points = filtered_points
-                    self._init_3d_canvas()
-
-                    space = getattr(self,"fuzzy_color_space",None)
-                    plot_hex = self.hex_color
-                    plot_centroids = self.selected_centroids
-                    if space and space.color_space == "RGB":
-                        plot_hex = {h:space.model_from_lab(lab) for h,lab in self.hex_color.items()}
-                        plot_centroids = {k:{**v,"positive_prototype":space.model_from_lab(
-                            v.get("positive_prototype",v.get("Color")))} for k,v in self.selected_centroids.items()}
-                    VisualManager.plot_combined_3D(
-                        self.ax_3d, self.file_base_name, plot_centroids,
-                        self.selected_core, self.selected_alpha, self.selected_support,
-                        self.volume_limits, plot_hex, selected_options,
-                        self.filtered_points, color_space=space.color_space if space else "LAB",
+                for region in ("PT", "AT"):
+                    self.color_manager.create_csv(
+                        self.file_base_name, result[region]["limits"],
+                        mode=region, color_space=geometric_mode,
                     )
 
-                    self.graph_widget.draw()
-
-                    if hasattr(self, "lab_value_frame"):
-                        self.lab_value_frame.lift()
-
-                # Step 3: redraw the figure on the Tkinter main thread.
                 def finish_success():
                     try:
-                        redraw_filtered_plot()
+                        # The model/selection may have changed while the
+                        # background worker was running: never display stale
+                        # results against a different geometry.
+                        latest = self._threshold_view_signature()
+                        if latest is None or latest[0] != signature:
+                            return
+                        self._threshold_analysis_cache = {
+                            "signature": signature, "results": result,
+                        }
+                        self._threshold_display_mode = mode
+                        self.on_option_select()
+                    except Exception as exc:
+                        self.custom_warning(
+                            "Threshold Visualization Error", str(exc)
+                        )
                     finally:
                         self._threshold_job_running = False
                         self.hide_loading()
 
                 self.root.after(0, finish_success)
-
             except Exception as exc:
-                error_msg = str(exc)
+                error_message = str(exc)
 
-                def finish_error(msg=error_msg):
+                def finish_error(message=error_message):
                     self._threshold_job_running = False
                     self.hide_loading()
                     self.custom_warning(
-                        "Error", f"An error occurred while filtering points: {msg}"
+                        "Threshold Processing Error",
+                        f"Could not compute the threshold regions: {message}",
                     )
 
                 try:
@@ -9570,9 +9627,7 @@ class PyFCSApp:
                 except (RuntimeError, tk.TclError):
                     self._threshold_job_running = False
 
-        # Run the expensive filtering process in a background thread.
         threading.Thread(target=run_threshold_process, daemon=True).start()
-
 
     def deploy_at(self):
         if self._has_any_active_job():
@@ -9586,38 +9641,19 @@ class PyFCSApp:
     def deploy_pt(self):
         if self._has_any_active_job():
             self.custom_warning(
-                "Process Running",
-                "There is a process currently running. Please wait for it to finish or cancel it before loading a Color Space."
+                "Process Running", "A processing task is already running."
             )
             return
         self.get_umbral_points(0.8, mode="PT")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    def deploy_pt_at(self):
+        """Overlay perceptible points and the additional acceptable shell."""
+        self.get_umbral_points(mode="BOTH")
 
     # ============================================================================================================================================================
     #  FUNCTIONS DISPLAY PIXEL INFO
     # ============================================================================================================================================================
+
     def _ensure_threshold_settings(self):
         """
         Ensure shared threshold settings exist and are normalized by ColorEvaluationManager.

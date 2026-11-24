@@ -128,8 +128,21 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
                 if degree > 0.0 or include_zeros}
 
     def calculate_membership(self, new_color, input_space="LAB"):
-        # Never Ruspini-normalize a granular category union: bounded sum and
-        # max have different meaningful raw degrees even in covering spaces.
+        # If every category has exactly one granule, the same geometric
+        # partition must evaluate identically regardless of which Python
+        # wrapper was used to create it. There is no on-disk type marker.
+        if self.is_partition and all(len(cat.prototypes) == 1 for cat in self.categories):
+            coords = self._coordinates(new_color, input_space)
+            if not self.reference_domain.contains_coordinates(coords, eps=1e-9):
+                return {}
+            if self._precomputed is None:
+                self.precompute_pack()
+            values = FuzzyColor.get_membership_degree(coords, self._flat_prototypes,
+                                                       self._precomputed)
+            return {cat.label: values[cat.prototypes[0].label]
+                    for cat in self.categories if cat.prototypes[0].label in values}
+        # Multiple positives per category retain their actual fuzzy union,
+        # with MAX / BOUNDED_SUM selected at evaluation time.
         return self.calculate_raw_memberships(new_color, input_space=input_space)
 
     def calculate_membership_for_prototype(self, new_color, idx_proto, input_space="LAB"):

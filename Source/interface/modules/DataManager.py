@@ -1726,6 +1726,9 @@ def build_model_from_draft(name, draft, source_space, target_model):
     model. Auxiliary sampling is regenerated in the destination domain.
     This also permits valid out-of-sRGB LAB sites when moving RGB -> LAB.
     """
+    if getattr(source_space, "geometry_only_import", False):
+        raise ValueError("Cannot edit geometry-only JSON without the original construction "
+                         "sites. Create a new model from the color prototypes.")
     from Source.colorspace.ReferenceDomain import ReferenceDomain
     from Source.geometry.Voronoi import Voronoi
 

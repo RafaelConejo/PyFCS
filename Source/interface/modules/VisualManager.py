@@ -408,6 +408,26 @@ class VisualManager:
         from Source.colorspace.ReferenceDomain import ReferenceDomain
         return ReferenceDomain.for_color_space(display_space)
 
+    @staticmethod
+    def _threshold_plot_groups(filtered_points):
+        """Accept legacy per-volume points or named PT/AT plot layers.
+
+        The named representation supports plotting PT and the additional
+        AT-only shell independently. Every layer is a Volume_N -> points dict.
+        """
+        if not filtered_points:
+            return []
+        if any(name in filtered_points for name in ("PT", "AT", "AT_ONLY")):
+            styles = (
+                ("AT_ONLY", "AT only (0.8–1.8)", "#e49a34"),
+                ("AT", "Acceptability (AT)", "#e49a34"),
+                ("PT", "Perceptibility (PT)", "#3478d4"),
+            )
+            return [(label, color, filtered_points[name])
+                    for name, label, color in styles
+                    if name in filtered_points and filtered_points[name]]
+        return [("Threshold-qualified", "#cf4f54", filtered_points)]
+
     # Embedded Matplotlib 3D Model
 
     @staticmethod
@@ -451,12 +471,7 @@ class VisualManager:
             for hex_key, lab_val in hex_color.items()
         }
 
-        filtered_points_arrays = {}
-
-        if filtered_points is not None:
-            for proto_name, points in filtered_points.items():
-                if points:
-                    filtered_points_arrays[proto_name] = np.asarray(points, dtype=float)
+        threshold_groups = VisualManager._threshold_plot_groups(filtered_points)
 
         # Representative points
         if "Representative" in selected_options and isinstance(color_data, dict):
@@ -493,7 +508,6 @@ class VisualManager:
         all_faces = []
         all_facecolors = []
         all_edgecolors = []
-        filtered_coords = []
         multiple_layers = len(active_layers) > 1
         primary_layer = active_layers[0] if active_layers else None
         solo_alpha = {"Core": 0.38, "0.5-cut": 0.30, "Support": 0.18}
@@ -526,13 +540,6 @@ class VisualManager:
                 all_facecolors.extend([face_rgba] * len(valid_faces))
                 all_edgecolors.extend([edge_rgba] * len(valid_faces))
 
-                if filtered_points_arrays:
-                    for points_array in filtered_points_arrays.values():
-                        if len(points_array) == 0:
-                            continue
-                        filtered_coords.extend(
-                            point for point in points_array
-                            if prototype.voronoi_volume.isInside(Point(*point)))
 
         if all_faces:
             ax.add_collection3d(
@@ -545,11 +552,19 @@ class VisualManager:
                 )
             )
 
-        if filtered_coords:
-            points_array = to_display(np.asarray(filtered_coords, dtype=float))
-            ax.scatter(points_array[:, 1], points_array[:, 2], points_array[:, 0],
-                       c="red", marker="o", s=10, alpha=0.8,
-                       depthshade=False)
+        # Threshold samples were already geometry-checked by the search.
+        # Draw each sample ONCE, even if Core / 0.5-cut / Support are all shown.
+        for group_label, group_color, group_points in threshold_groups:
+            valid_arrays = [np.asarray(points, dtype=float)
+                            for points in group_points.values() if points]
+            if not valid_arrays:
+                continue
+            plot_points = to_display(np.concatenate(valid_arrays, axis=0))
+            ax.scatter(plot_points[:, 1], plot_points[:, 2], plot_points[:, 0],
+                       c=group_color, marker="o", s=9, alpha=0.8,
+                       depthshade=False, label=group_label)
+        if len(threshold_groups) > 1:
+            ax.legend(loc="lower left", fontsize=8, framealpha=0.88)
 
         if str(display_color_space).upper() == "RGB":
             ax.set_xlabel("G (Green)", fontsize=10, labelpad=10)
@@ -1031,77 +1046,48 @@ class VisualManager:
                 layer_indices[layer_name].append(trace_idx)
                 color_control_indices.append(trace_idx)
 
-        # Optional filtered points.
+        # Optional threshold samples. A combined result consists of two
+        # disjoint layers: PT and AT_ONLY; AT already includes PT.
         def _plot_filtered_points(reference_prototypes):
             if not filtered_points or not reference_prototypes:
                 return
-
-            border_colors = px.colors.qualitative.Dark24
-
-            for proto_name, points in filtered_points.items():
-                try:
-                    proto_idx = int(str(proto_name).split("_")[-1])
-                except Exception:
-                    continue
-
-                if proto_idx < 0 or proto_idx >= len(reference_prototypes):
-                    continue
-
-                prototype = reference_prototypes[proto_idx]
-
-                try:
-                    proto_label = _safe_label(prototype.label)
-                except Exception:
-                    proto_label = f"Prototype {proto_idx}"
-
-                points_inside = []
-
-                for point in points:
+            groups = VisualManager._threshold_plot_groups(filtered_points)
+            for group_label, group_color, group_points in groups:
+                for proto_name, points in group_points.items():
                     try:
-                        if prototype.voronoi_volume.isInside(Point(*point)):
-                            points_inside.append(point)
-                    except Exception:
+                        proto_idx = int(str(proto_name).split("_")[-1])
+                    except (ValueError, TypeError):
                         continue
-
-                if not points_inside:
-                    continue
-
-                pts = to_display(np.asarray(points_inside, dtype=float))
-
-                if pts.ndim != 2 or pts.shape[1] < 3:
-                    continue
-
-                point_size = max(3, min(8, int(260 / max(len(points_inside), 1))))
-                border_color = border_colors[proto_idx % len(border_colors)]
-
-                fig.add_trace(
-                    go.Scatter3d(
-                        x=pts[:, 1],
-                        y=pts[:, 2],
-                        z=pts[:, 0],
+                    if not (0 <= proto_idx < len(reference_prototypes)) or not points:
+                        continue
+                    prototype = reference_prototypes[proto_idx]
+                    proto_label = _safe_label(prototype.label)
+                    pts = to_display(np.asarray(points, dtype=float))
+                    if pts.ndim != 2 or pts.shape[1] != 3:
+                        continue
+                    point_size = max(2, min(6, int(300 / len(points))))
+                    fig.add_trace(go.Scatter3d(
+                        x=pts[:, 1], y=pts[:, 2], z=pts[:, 0],
                         mode="markers",
-                        marker=dict(
-                            size=point_size,
-                            color="black",
-                            line=dict(color=border_color, width=0.8),
-                        ),
-                        opacity=0.62,
-                        visible=True,
-                        name=f"Filtered: {proto_label}",
-                        legendgroup=proto_label,
-                        showlegend=False,
+                        marker=dict(size=point_size, color=group_color),
+                        opacity=0.68, visible=True,
+                        name=f"{group_label} – {proto_label}",
+                        legendgroup=group_label,
+                        showlegend=(proto_idx == 0 and len(groups) > 1),
                         hovertemplate=(
-                            f"<b>Filtered point: {proto_label}</b><br>" +
+                            f"<b>{group_label} – {proto_label}</b><br>" +
                             ("R: %{z:.2f}<br>G: %{x:.2f}<br>B: %{y:.2f}<extra></extra>"
                              if display_color_space == "RGB" else
                              "L*: %{z:.3f}<br>a*: %{x:.3f}<br>b*: %{y:.3f}<extra></extra>")
                         ),
-                    )
-                )
+                    ))
+                    color_control_indices.append(len(fig.data) - 1)
 
-                color_control_indices.append(len(fig.data) - 1)
-
-        _plot_filtered_points(core or alpha or support)
+        preferred_prototypes = (
+            support if "Support" in selected_options else
+            alpha if "0.5-cut" in selected_options else core
+        )
+        _plot_filtered_points(preferred_prototypes)
 
         if closest_lab is not None:
             closest_lab = to_display(closest_lab)

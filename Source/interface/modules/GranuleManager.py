@@ -88,7 +88,9 @@ class GranuleManager:
                     status_var.set(error)
                     return False
                 entries = [dict(item) for item in self.granules]
-                entries.append({"label": label, "lab": point, "enabled": True})
+                entries.append({"label": label, "lab": point,
+                                "native_rgb": UtilsTools.matching_native_rgb(point, _rgb),
+                                "enabled": True})
                 ok, error = self.palette._set_category_granules(self.category_label, entries)
                 if not ok:
                     status_var.set(error)
@@ -124,6 +126,8 @@ class GranuleManager:
                 entries[index] = {
                     "label": label,
                     "lab": point,
+                    "native_rgb": (item.get("native_rgb") if all(abs(a-b) <= 1e-10 for a, b in zip(point, item["lab"]))
+                                   else UtilsTools.matching_native_rgb(point, _rgb)),
                     "enabled": item.get("enabled", True),
                 }
                 ok, error = self.palette._set_category_granules(self.category_label, entries)
