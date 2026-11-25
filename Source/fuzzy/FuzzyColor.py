@@ -5,6 +5,7 @@ from Source.geometry.Face import Face
 from Source.geometry.Volume import Volume
 from Source.geometry.GeometryTools import GeometryTools
 from Source.geometry.Prototype import Prototype
+from Source.geometry.Voronoi import Voronoi
 from Source.membership.MembershipFunction import MembershipFunction
 
 
@@ -93,19 +94,29 @@ class FuzzyColor:
             core_volume = Volume(Point(*proto.positive))
             support_volume = Volume(Point(*proto.positive))
 
-            for face in proto.voronoi_volume.getFaces():
-                if face.isDomainBoundary():
-                    # This is a viewing/domain constraint, not a fuzzy color
-                    # transition.  Keep its plane at the actual domain edge
-                    # in both volumes; membership rays ignore it entirely.
-                    core_volume.addFace(face.copy())
-                    support_volume.addFace(face.copy())
-                    continue
-                if keep_legacy:
-                    FuzzyColor.add_face_to_core_support(face, Point(*proto.positive), core_volume, support_volume, scaling_factor)
-                else:
-                    core_volume.addFace(scaled_face(face, Point(*proto.positive), lambda1))
-                    support_volume.addFace(scaled_face(face, Point(*proto.positive), lambda2))
+            domain = getattr(proto.voronoi_volume, "_construction_domain", None)
+            if domain is not None and lambda1 > 0:
+                # Complete mathematical Voronoi constraints are retained by
+                # the builder. Scale before clipping; reconstruct each polygon
+                # independently inside the original reference domain.
+                core_volume = Voronoi.scale_cell(proto.voronoi_volume, lambda1, domain)
+                support_volume = Voronoi.scale_cell(proto.voronoi_volume, lambda2, domain)
+            else:
+                # Keep the existing path for externally supplied volumes and
+                # the legacy degenerate lambda1=0 case.
+                for face in proto.voronoi_volume.getFaces():
+                    if face.isDomainBoundary():
+                        # This is a viewing/domain constraint, not a fuzzy color
+                        # transition.  Keep its plane at the actual domain edge
+                        # in both volumes; membership rays ignore it entirely.
+                        core_volume.addFace(face.copy())
+                        support_volume.addFace(face.copy())
+                        continue
+                    if keep_legacy:
+                        FuzzyColor.add_face_to_core_support(face, Point(*proto.positive), core_volume, support_volume, scaling_factor)
+                    else:
+                        core_volume.addFace(scaled_face(face, Point(*proto.positive), lambda1))
+                        support_volume.addFace(scaled_face(face, Point(*proto.positive), lambda2))
 
             core_volume_dict = Prototype(
                 label=proto.label,

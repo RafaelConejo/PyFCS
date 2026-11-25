@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
+from scipy.spatial import ConvexHull, QhullError
 
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.geometry.Face import Face
@@ -23,10 +24,10 @@ class Voronoi:
     """
     Optimized 3D Euclidean Voronoi-cell builder for PyFCS.
 
-    The implementation is specialized for bounded 3D Euclidean Voronoi cells. Each
-    cell starts as the reference-domain box and is incrementally clipped by the
-    perpendicular-bisector half-spaces between the selected prototype and the
-    remaining prototypes.
+    The clipped polygons are computed inside the reference box. The complete
+    mathematical Voronoi half-spaces are retained independently, including
+    planes whose facets do not intersect that box. This is required when
+    constructing homothetic fuzzy regions and evaluating membership rays.
 
     No external qvoronoi process, temporary files, or triple-plane exhaustive
     reconstruction is required.
@@ -64,8 +65,8 @@ class Voronoi:
         Returns
         -------
         Volume
-            PyFCS Volume containing only the faces that actually bound the
-            clipped cell.
+            PyFCS Volume with clipped polygons and the remaining mathematical
+            Voronoi planes (vertices=None for non-visible facets).
         """
         p = cls._as_point_array(positive)
         neg = cls._as_points_array(negatives)
@@ -80,7 +81,7 @@ class Voronoi:
 
         if len(neg) == 0:
             faces = cls._create_domain_faces(reference_domain)
-            return cls._to_volume(p, faces)
+            return cls._complete_volume(p, neg, [], faces, reference_domain)
 
         # Preserve the historical local indexing convention used by Prototype:
         # the positive site is index 0 and the negatives are 1..N.
@@ -94,7 +95,7 @@ class Voronoi:
             eps=eps,
             merge_eps=merge_eps,
         )
-        return cls._to_volume(p, faces)
+        return cls._complete_volume(p, neg, source_indices, faces, reference_domain)
 
     @classmethod
     def build_diagram(
@@ -139,7 +140,9 @@ class Voronoi:
                 eps=eps,
                 merge_eps=merge_eps,
             )
-            volumes.append(cls._to_volume(pts[i], faces))
+            volumes.append(cls._complete_volume(pts[i], competitors,
+                                                competitor_indices, faces,
+                                                reference_domain))
 
         return volumes
 
@@ -219,6 +222,98 @@ class Voronoi:
             radius2 = cls._max_radius_squared(current_vertices, positive)
 
         return faces
+
+    @staticmethod
+    def _mathematical_neighbor_indices(positive, competitors):
+        """Find the global Voronoi constraints by polar duality, not clipping.
+
+        In coordinates y=x-p the bisector inequality is u.y <= 1,
+        u=2(q-p)/||q-p||^2. Only vertices of conv({0} union {u})
+        are needed. Including 0 handles unbounded cells; projecting to the
+        affine span handles collinear and coplanar prototypes. A numerical
+        failure keeps all constraints rather than discarding a needed plane.
+        """
+        if len(competitors) == 0:
+            return []
+        diff = np.asarray(competitors, dtype=float) - positive
+        dual = 2.0 * diff / np.einsum('ij,ij->i', diff, diff)[:, None]
+        points = np.vstack((np.zeros(3), dual))
+        try:
+            _, singular, axes = np.linalg.svd(points, full_matrices=False)
+            # Do not silently discard a genuinely tiny third dimension.
+            # In ambiguous rank-deficient cases retaining all sites is safe.
+            rank = int(np.count_nonzero(singular > singular[0] * 1e-12))
+            if rank < 3:
+                return list(range(len(competitors)))
+            projected = points @ axes[:rank].T
+            hull = ConvexHull(projected)
+            # A point almost on the hull may be an active constraint under
+            # rounding. Keep near-coplanar constraints as well.
+            keep = set(int(i) for i in hull.vertices if i != 0)
+            distances = projected @ hull.equations[:, :-1].T + hull.equations[:, -1]
+            near = np.max(distances, axis=1) >= -1e-12 * max(1.0, np.max(np.abs(projected)))
+            keep.update(int(i) for i in np.flatnonzero(near) if i != 0)
+            return sorted(i - 1 for i in keep)
+        except (QhullError, np.linalg.LinAlgError, ValueError):
+            return list(range(len(competitors)))
+
+    @classmethod
+    def _complete_volume(cls, positive, competitors, indices, faces, domain):
+        """Keep real bisectors even when their polygons lie outside the box."""
+        volume = cls._to_volume(positive, faces)
+        visible = {f.getSourceIndex() for f in volume.getFaces()
+                   if not f.isDomainBoundary()}
+        for i in cls._mathematical_neighbor_indices(positive, competitors):
+            index = int(indices[i])
+            if index in visible:
+                continue
+            normal, offset = cls._bisector_halfspace(positive, competitors[i])
+            volume.addFace(Face(Plane(*normal, offset), source_index=index))
+        # Runtime-only: imported geometry is never regenerated on read.
+        volume._construction_domain = domain
+        return volume
+
+    @classmethod
+    def scale_cell(cls, volume, scale, domain, eps=DEFAULT_EPS,
+                   merge_eps=DEFAULT_MERGE_EPS):
+        """Scale the mathematical planes about p, then clip to the real box.
+
+        Keep non-visible mathematical planes for membership intersections.
+        Domain caps are generated anew and never scaled.
+        """
+        if not np.isfinite(scale) or scale <= 0:
+            raise ValueError('A positive homothety scale is required.')
+        rep = volume.getRepresentative()
+        positive = np.array([rep.x, rep.y, rep.z], dtype=float)
+        faces = cls._create_domain_faces(domain)
+        mathematical = []
+        for face in volume.getFaces():
+            if face.isDomainBoundary():
+                continue
+            plane = face.getPlane()
+            normal = np.array([plane.A, plane.B, plane.C], dtype=float)
+            length = np.linalg.norm(normal)
+            normal /= length
+            offset = float(plane.D) / length
+            if np.dot(normal, positive) + offset < 0:
+                normal, offset = -normal, -offset
+            # n.x + (scale*d + (scale-1)*n.p) >= 0
+            offset = scale * offset + (scale - 1.0) * np.dot(normal, positive)
+            mathematical.append((normal, offset, face.getSourceIndex()))
+        for normal, offset, index in mathematical:
+            vertices = cls._collect_vertices(faces)
+            if np.min(vertices @ normal + offset) >= -eps:
+                continue
+            faces = cls._clip_polyhedron(faces, normal, offset, index, eps, merge_eps)
+            if not faces:
+                raise RuntimeError('Scaled fuzzy cell became numerically empty.')
+        result = cls._to_volume(positive, faces)
+        visible = {f.getSourceIndex() for f in result.getFaces()
+                   if not f.isDomainBoundary()}
+        for normal, offset, index in mathematical:
+            if index not in visible:
+                result.addFace(Face(Plane(*normal, offset), source_index=index))
+        return result
 
     @staticmethod
     def _as_point_array(point):
