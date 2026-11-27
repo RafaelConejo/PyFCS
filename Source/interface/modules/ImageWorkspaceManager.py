@@ -604,7 +604,7 @@ class ImageWorkspaceManager:
         scroll_frame = tk.Frame(right, bg=BG)
         scroll_frame.pack(fill="both", expand=True, padx=8, pady=(0, 7))
         aside_canvas = tk.Canvas(scroll_frame, bg=BG, bd=0, highlightthickness=0)
-        aside_scroll = ttk.Scrollbar(scroll_frame, orient="vertical", command=aside_canvas.yview)
+        aside_scroll = UtilsTools.styled_scrollbar(scroll_frame, orient="vertical", command=aside_canvas.yview)
         aside_canvas.configure(yscrollcommand=aside_scroll.set)
         aside_canvas.pack(side="left", fill="both", expand=True)
         aside_scroll.pack(side="right", fill="y")
@@ -647,7 +647,7 @@ class ImageWorkspaceManager:
         # A true compact selector: choosing a destination does not create
         # two more buttons or change the height of Selected Sample.
         self.evaluation_var = tk.StringVar(value="Color Evaluation")
-        self.evaluation_combo = ttk.Combobox(
+        self.evaluation_combo = UtilsTools.styled_combobox(
             sample_actions, state="readonly", justify="center",
             textvariable=self.evaluation_var,
             values=("Use as Selected", "Use as Reference"),
@@ -682,7 +682,7 @@ class ImageWorkspaceManager:
             self.pin_list.heading(column, text=heading, anchor="center")
             self.pin_list.column(column, minwidth=minwidth, width=width,
                                  stretch=True, anchor="center")
-        self.pin_scrollbar = ttk.Scrollbar(
+        self.pin_scrollbar = UtilsTools.styled_scrollbar(
             pin_holder, orient="vertical", command=self.pin_list.yview)
         self.pin_list.configure(yscrollcommand=self.pin_scrollbar.set)
         self.pin_scrollbar.pack(side="right", fill="y")
@@ -734,7 +734,7 @@ class ImageWorkspaceManager:
         self.clear_roi_button.pack(side="right", padx=(6, 0))
         self._mapping_options_widgets.append(self.clear_roi_button)
         self.scope_var = tk.StringVar(value="Full image")
-        self.scope_combo = ttk.Combobox(
+        self.scope_combo = UtilsTools.styled_combobox(
             scope, state="readonly", values=("Full image", "Selected ROI"),
             textvariable=self.scope_var, width=15, justify="center",
             style="ImageWorkspace.TCombobox")
@@ -748,7 +748,7 @@ class ImageWorkspaceManager:
 
         tk.Label(self.single_options, text="Category / Granule", bg="white", fg=MUTED,
                  font=("Segoe UI", 9, "bold"), anchor="center").pack(fill="x", pady=(0, 5))
-        self.category_combo = ttk.Combobox(
+        self.category_combo = UtilsTools.styled_combobox(
             self.single_options, state="readonly", width=32, justify="center",
             style="ImageWorkspace.TCombobox")
         self.category_combo.pack(fill="x")

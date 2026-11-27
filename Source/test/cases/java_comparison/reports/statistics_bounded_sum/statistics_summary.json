@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "model": "basic_granular_complete_PyFCS.json",
+    "model_file_sha256": "98b3634cf78fb207976bd9af230d09dd28e621b38544e98cb1d8dcf3a5f07733",
+    "evaluation": "evaluation_basic_granular_complete.json",
+    "seed": 12345,
+    "declared_samples": 10000000,
+    "processed_samples": 10000000,
+    "complete_file_validated": true,
+    "engine": "fast",
+    "fast_scalar_max_error": 1.3877787807814457e-16,
+    "tolerance": 1e-06,
+    "seconds": 562.5656175999902
+  },
+  "provenance": {
+    "report_sha256": "f699658d5aa216d43c82409f79bccd6dd7a860a4072fa92372eaae19ecb693ea",
+    "categories_sha256": "af59b1fece9542aedc516ac2b2ceb42e5ddb7424e89ec310ad9b2c0ce772bf7a"
+  },
+  "modes": {
+    "bounded_sum": {
+      "comparisons": 130000000,
+      "samples": 10000000,
+      "categories": 13,
+      "mae": 2.0947889199063558e-16,
+      "rmse": 6.725852935826688e-16,
+      "max_error": 5.229150445984487e-14,
+      "bias": 2.7365637950092707e-17,
+      "active_count": 48584434,
+      "active_mae": 5.60514010696978e-16,
+      "membership_within_tolerance_fraction": 1.0,
+      "membership_within_tolerance_count": 130000000,
+      "membership_outside_tolerance_count": 0,
+      "samples_all_within_tolerance_fraction": 1.0,
+      "samples_all_within_tolerance_count": 10000000,
+      "samples_outside_tolerance_count": 0,
+      "winner_set_agreement": 1.0,
+      "winner_set_agreement_count": 10000000,
+      "winner_overlap_agreement": 1.0,
+      "winner_overlap_agreement_count": 10000000,
+      "worst": {
+        "sample_index": 6888611,
+        "rgb": [
+          241,
+          234,
+          232
+        ],
+        "category": "White",
+        "java": 0.9297686122203739,
+        "pyfcs": 0.9297686122203216,
+        "absolute_error": 5.229150445984487e-14
+      }
+    }
+  }
+}

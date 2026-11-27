@@ -1,6 +1,6 @@
 import numpy as np
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib.colors import to_rgba
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -93,6 +93,46 @@ class VisualManager:
 
 
     @staticmethod
+    def _clip_display_polyhedron(faces, normal, offset, source_index, eps, merge_eps):
+        """Clip only faces that cross the plane, retaining exact polygon order.
+
+        Input polygons were created by the domain-box constructor or the
+        original clipping algorithm and are already valid and deduplicated.
+        Wholly inside faces need no re-clipping; wholly outside faces cannot
+        contribute intersections. A conservative numerical guard leaves
+        borderline cases to the original scalar segment intersection routine.
+        This optimization is strictly for display geometry.
+        """
+        from Source.geometry.Voronoi import Voronoi, _PolyFace
+        clipped_faces, cap_points = [], []
+        # Supported model domains are bounded RGB/LAB. For very large custom
+        # coordinates the caller retains the original clipping implementation.
+        guard = 1e-10 + abs(offset) * 1e-14
+        for face in faces:
+            vertices = face.vertices
+            values = vertices @ normal + offset
+            # Bound the rounding error when the vector and scalar dot products
+            # classify a vertex differently near the clipping tolerance.
+            if values.min() >= -eps + guard:
+                clipped_faces.append(face)
+                continue
+            if values.max() < -eps - guard:
+                continue
+            polygon, intersections = Voronoi._clip_polygon(vertices, normal, offset, eps, merge_eps)
+            if intersections:
+                cap_points.extend(intersections)
+            if len(polygon) >= 3 and Voronoi._polygon_is_valid(polygon, merge_eps):
+                clipped_faces.append(_PolyFace(face.normal, face.offset, polygon,
+                                                face.source_index, face.is_domain_boundary))
+        cap_points = Voronoi._unique_points(cap_points, merge_eps)
+        if len(cap_points) >= 3:
+            cap = Voronoi._order_points_on_plane(np.asarray(cap_points, dtype=float), normal)
+            if Voronoi._polygon_is_valid(cap, merge_eps):
+                clipped_faces.append(_PolyFace(np.asarray(normal, dtype=float), float(offset),
+                                                cap, source_index, False))
+        return clipped_faces
+
+    @staticmethod
     def display_polygons_for_volume(volume, domain, include_domain_caps=True):
         """Clip a fuzzy polyhedron to the view domain, without changing its geometry.
 
@@ -109,7 +149,13 @@ class VisualManager:
         eps = Voronoi.DEFAULT_EPS
         merge_eps = Voronoi.DEFAULT_MERGE_EPS
         faces = Voronoi._create_domain_faces(domain)
+        fast_clip = all(float(domain.get_max(i)) - float(domain.get_min(i)) > merge_eps
+                        and max(abs(float(domain.get_min(i))), abs(float(domain.get_max(i)))) <= 1000
+                        for i in range(3))
+        clip = VisualManager._clip_display_polyhedron if fast_clip else Voronoi._clip_polyhedron
         rep = volume.getRepresentative()
+        representative = np.array([rep.x, rep.y, rep.z], dtype=float)
+        vertices = Voronoi._collect_vertices(faces)
         for face in volume.getFaces():
             if face.isDomainBoundary():
                 continue
@@ -120,47 +166,63 @@ class VisualManager:
             if length <= eps:
                 continue
             # All clip planes must point towards the representative.
-            if float(np.dot(normal, [rep.x,rep.y,rep.z]) + offset) < 0:
+            if float(np.dot(normal, representative) + offset) < 0:
                 normal = -normal
                 offset = -offset
             normal /= length
             offset /= length
-            vertices = Voronoi._collect_vertices(faces)
             if len(vertices) == 0:
                 return []
             if np.min(vertices @ normal + offset) >= -eps:
                 continue
-            faces = Voronoi._clip_polyhedron(
-                faces, normal, offset, face.getSourceIndex(), eps, merge_eps)
+            faces = clip(faces, normal, offset, face.getSourceIndex(), eps, merge_eps)
             if not faces:
                 return []
+            # The vertex set is unchanged when a plane does not cut the cell.
+            vertices = Voronoi._collect_vertices(faces)
         return [np.asarray(face.vertices, dtype=float)
                 for face in faces
                 if face.vertices is not None and len(face.vertices) >= 3
                 and (include_domain_caps or not face.is_domain_boundary)]
 
     @staticmethod
-    def _cached_display_polygons(prototype, domain):
-        """Reuse the expensive plane/domain intersection between plot backends.
-
-        Geometry is rebuilt with a new volume on ordinary model updates.  The
-        plane coefficients in the key also catch in-place support corrections.
-        """
+    def _display_geometry_key(prototype, domain):
         volume = prototype.voronoi_volume
         limits = (tuple(domain.comp1), tuple(domain.comp2), tuple(domain.comp3))
+        rep = volume.getRepresentative()
         planes = tuple((float(f.getPlane().A), float(f.getPlane().B),
                         float(f.getPlane().C), float(f.getPlane().D),
-                        bool(f.isDomainBoundary())) for f in volume.getFaces())
-        key = (id(volume), limits, planes)
+                        bool(f.isDomainBoundary()), f.getSourceIndex())
+                       for f in volume.getFaces())
+        return (id(volume), limits, (rep.x, rep.y, rep.z), planes)
+
+    @staticmethod
+    def _cached_display_polygons(prototype, domain):
+        """Share clipped surfaces between backends; invalidate after plane edits."""
+        key = VisualManager._display_geometry_key(prototype, domain)
         cached = getattr(prototype, "_cached_visible_fuzzy_surfaces", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        # Render the complete CLIPPED polyhedron (including caps at RGB/LAB
-        # domain edges).  This does not affect the membership geometry.
         polygons = VisualManager.display_polygons_for_volume(
-            volume, domain, include_domain_caps=True)
+            prototype.voronoi_volume, domain, include_domain_caps=True)
         prototype._cached_visible_fuzzy_surfaces = (key, polygons)
         return polygons
+
+    @staticmethod
+    def has_cached_display_polygons(prototype, domain):
+        cached = getattr(prototype, "_cached_visible_fuzzy_surfaces", None)
+        return (cached is not None and
+                cached[0] == VisualManager._display_geometry_key(prototype, domain))
+
+    @staticmethod
+    def has_cached_projected_display_faces(prototype, domain, source_space, display_space):
+        cached = getattr(prototype, "_cached_visible_fuzzy_surfaces", None)
+        projected = getattr(prototype, "_cached_projected_fuzzy_surfaces", None)
+        return bool(cached is not None and projected is not None
+                    and projected[0] is cached[1]
+                    and projected[1] == str(source_space).upper()
+                    and projected[2] == str(display_space).upper()
+                    and cached[0] == VisualManager._display_geometry_key(prototype, domain))
 
     @staticmethod
     def _cached_projected_display_faces(prototype, domain, source_space,
@@ -444,6 +506,7 @@ class VisualManager:
         filtered_points=None,
         color_space="LAB",
         display_color_space=None,
+        reuse_surface_collection=False,
     ):
         """
         Draw the complete 3D model on an existing Axes3D instance.
@@ -451,7 +514,14 @@ class VisualManager:
         This function reuses the provided axis instead of creating a new figure
         every time. That makes repeated updates much cheaper.
         """
+        cache = getattr(ax, "_pyfcs_recent_surfaces", []) if reuse_surface_collection else []
+        active_artist = getattr(ax, "_pyfcs_surface_artist", None)
+        if active_artist is not None and active_artist.axes is ax:
+            active_artist.remove()
+        ax._pyfcs_surface_artist = None
         ax.cla()
+        if not reuse_surface_collection:
+            ax._pyfcs_recent_surfaces = []
         display_color_space = (display_color_space or color_space).upper()
         target_limits = VisualManager.display_limits(volume_limits, color_space, display_color_space)
         to_display = lambda xyz: VisualManager.reproject_points(xyz, color_space, display_color_space)
@@ -508,6 +578,8 @@ class VisualManager:
         all_faces = []
         all_facecolors = []
         all_edgecolors = []
+        surface_keys = []
+        surface_refs = []
         multiple_layers = len(active_layers) > 1
         primary_layer = active_layers[0] if active_layers else None
         solo_alpha = {"Core": 0.38, "0.5-cut": 0.30, "Support": 0.18}
@@ -536,21 +608,37 @@ class VisualManager:
                 if not multiple_layers:
                     edge_alpha = 0.48 if option == "Core" else 0.38
                 edge_rgba = (0.08, 0.08, 0.08, edge_alpha)
+                surface_keys.append((id(valid_faces), face_rgba, edge_rgba))
+                surface_refs.append(valid_faces)
                 all_faces.extend(valid_faces)
                 all_facecolors.extend([face_rgba] * len(valid_faces))
                 all_edgecolors.extend([edge_rgba] * len(valid_faces))
 
 
         if all_faces:
-            ax.add_collection3d(
-                Poly3DCollection(
-                    all_faces,
-                    facecolors=all_facecolors,
-                    edgecolors=all_edgecolors,
-                    linewidths=0.26 if multiple_layers else 0.34,
-                    zsort="average",
-                )
-            )
+            # Reuse a few recently toggled layer combinations. Keep strong
+            # references to projected polygon lists, preventing identity reuse
+            # after a geometry cache invalidation. The camera still performs
+            # the full depth sort on every paint (no simplified geometry).
+            key = (tuple(surface_keys), multiple_layers)
+            item = next((entry for entry in cache if entry[0] == key), None)
+            if item is not None:
+                cache.remove(item)
+                collection = item[1]
+            else:
+                collection = Poly3DCollection(
+                    all_faces, facecolors=all_facecolors, edgecolors=all_edgecolors,
+                    linewidths=0.26 if multiple_layers else 0.34, zsort="average")
+                item = (key, collection, surface_refs, len(all_faces))
+            ax.add_collection3d(collection)
+            ax._pyfcs_surface_artist = collection
+            if reuse_surface_collection and len(all_faces) <= 8000:
+                cache.insert(0, item)
+                # Bound both the number of cached combinations and their total size.
+                while len(cache) > 3 or sum(entry[3] for entry in cache) > 16000:
+                    cache.pop()
+        if reuse_surface_collection:
+            ax._pyfcs_recent_surfaces = cache
 
         # Threshold samples were already geometry-checked by the search.
         # Draw each sample ONCE, even if Core / 0.5-cut / Support are all shown.
@@ -727,13 +815,13 @@ class VisualManager:
         - Layout adapts its height when many colors are shown.
         """
 
-        fig = go.Figure()
+        traces = []
         display_color_space = (display_color_space or color_space).upper()
         target_limits = VisualManager.display_limits(volume_limits, color_space, display_color_space)
         to_display = lambda xyz: VisualManager.reproject_points(xyz, color_space, display_color_space)
 
         color_data = color_data or {}
-        selected_options = selected_options or ["Representative"]
+        selected_options = ["Representative"] if selected_options is None else selected_options
 
         title_text = str(filename).split("|")[0].strip()
 
@@ -897,10 +985,10 @@ class VisualManager:
             label = _safe_label(label)
             group_label = str(group_label) if group_label is not None else label
 
-            if label in legend_labels_added:
+            if group_label in legend_labels_added:
                 return
 
-            fig.add_trace(
+            traces.append(
                 go.Scatter3d(
                     x=[None],
                     y=[None],
@@ -921,9 +1009,9 @@ class VisualManager:
                 )
             )
 
-            trace_idx = len(fig.data) - 1
+            trace_idx = len(traces) - 1
             color_control_indices.append(trace_idx)
-            legend_labels_added.add(label)
+            legend_labels_added.add(group_label)
 
         # Legend anchors first.
         for rank, (label, value) in enumerate(color_data.items()):
@@ -951,7 +1039,7 @@ class VisualManager:
             category = (granule_categories or {}).get(label)
             shown = to_display(lab)
 
-            fig.add_trace(
+            traces.append(
                 go.Scatter3d(
                     x=[shown[1]],
                     y=[shown[2]],
@@ -980,7 +1068,7 @@ class VisualManager:
                 )
             )
 
-            trace_idx = len(fig.data) - 1
+            trace_idx = len(traces) - 1
             layer_indices["Representative"].append(trace_idx)
             color_control_indices.append(trace_idx)
 
@@ -1011,7 +1099,7 @@ class VisualManager:
                     continue
                 vertices, i_indices, j_indices, k_indices = mesh
 
-                fig.add_trace(
+                traces.append(
                     go.Mesh3d(
                         x=vertices[:, 0],
                         y=vertices[:, 1],
@@ -1042,7 +1130,7 @@ class VisualManager:
                     )
                 )
 
-                trace_idx = len(fig.data) - 1
+                trace_idx = len(traces) - 1
                 layer_indices[layer_name].append(trace_idx)
                 color_control_indices.append(trace_idx)
 
@@ -1066,7 +1154,7 @@ class VisualManager:
                     if pts.ndim != 2 or pts.shape[1] != 3:
                         continue
                     point_size = max(2, min(6, int(300 / len(points))))
-                    fig.add_trace(go.Scatter3d(
+                    traces.append(go.Scatter3d(
                         x=pts[:, 1], y=pts[:, 2], z=pts[:, 0],
                         mode="markers",
                         marker=dict(size=point_size, color=group_color),
@@ -1081,7 +1169,7 @@ class VisualManager:
                              "L*: %{z:.3f}<br>a*: %{x:.3f}<br>b*: %{y:.3f}<extra></extra>")
                         ),
                     ))
-                    color_control_indices.append(len(fig.data) - 1)
+                    color_control_indices.append(len(traces) - 1)
 
         preferred_prototypes = (
             support if "Support" in selected_options else
@@ -1093,7 +1181,7 @@ class VisualManager:
             closest_lab = to_display(closest_lab)
         if custom_lab is not None:
             custom_lab = to_display(custom_lab)
-            fig.add_trace(
+            traces.append(
                 go.Scatter3d(
                     x=[custom_lab[1]],
                     y=[custom_lab[2]],
@@ -1122,7 +1210,7 @@ class VisualManager:
 
         # Optional closest prototype highlight.
         if closest_lab is not None:
-            fig.add_trace(
+            traces.append(
                 go.Scatter3d(
                     x=[closest_lab[1]],
                     y=[closest_lab[2]],
@@ -1153,7 +1241,7 @@ class VisualManager:
         # It appears active by default.
         # The user can still click it in the legend to show/hide it.
         if has_distance_line:
-            fig.add_trace(
+            traces.append(
                 go.Scatter3d(
                     x=[custom_lab[1], closest_lab[1]],
                     y=[custom_lab[2], closest_lab[2]],
@@ -1174,7 +1262,7 @@ class VisualManager:
                 )
             )
 
-            layer_indices["Distance line"].append(len(fig.data) - 1)
+            layer_indices["Distance line"].append(len(traces) - 1)
 
         # Displayed geometry buttons.
         # Layer controls change opacity; hidden layers remain hidden on Select All.
@@ -1275,6 +1363,8 @@ class VisualManager:
             ),
         ]
 
+        # One bulk construction avoids a figure mutation for each mesh.
+        fig = go.Figure(data=traces)
         fig.update_layout(
             height=figure_height,
             title=dict(
@@ -1356,6 +1446,220 @@ class VisualManager:
 
         return fig
 
+
+    @staticmethod
+    def write_model_3d_html(fig, file_path, color_tree):
+        """Export Model 3D with a responsive, independently scrolling color tree.
+
+        The figure is not modified. Color visibility and layer visibility are
+        independent; every real Plotly trace belongs to a single granule.
+        The desktop selection defines the subset exported to the browser.
+        """
+        import html
+        import json
+        from pathlib import Path
+
+        # The native legend and menus overlap in large spaces. Keep Plotly's
+        # camera, modebar and meshes, but move these controls outside its canvas.
+        exported = go.Figure(fig)
+        layers = []
+        anchors = set()
+        colors = {}
+        extras = {}
+        groups = {}
+        for index, trace in enumerate(exported.data):
+            group = str(trace.legendgroup or '')
+            if not group:
+                continue
+            if (trace.type == 'scatter3d' and trace.showlegend is True
+                    and trace.x is not None and len(trace.x) == 1 and trace.x[0] is None):
+                anchors.add(index)
+                colors[group] = str(trace.marker.color)
+            else:
+                groups.setdefault(group, []).append(index)
+                if trace.showlegend:
+                    extras.setdefault(group, str(trace.name))
+        for group in groups:
+            if group not in colors and group not in extras:
+                extras[group] = group
+        for menu in exported.layout.updatemenus or ():
+            if not menu.buttons or len(menu.buttons) != 1:
+                continue
+            button = menu.buttons[0]
+            args = button.args
+            if not args or 'opacity' not in args[0]:
+                continue
+            layers.append(dict(name=button.label, indices=list(args[1]),
+                               opacity=float(args[0]['opacity']), active=menu.active == 0))
+        for index in anchors:
+            exported.data[index].visible = False
+        title = str(exported.layout.title.text or 'Model 3D')
+        exported.layout.updatemenus = ()
+        exported.layout.annotations = ()
+        exported.update_layout(height=None, width=None, autosize=True, showlegend=False,
+                               title=dict(text=''),
+                               margin=dict(l=8, r=8, t=32, b=8), uirevision='pyfcs-interactive')
+        exported.update_layout(scene=dict(domain=dict(x=[0, 1], y=[0, 1]),
+                                          uirevision='pyfcs-interactive'))
+        payload = dict(tree=color_tree, colors=colors, groups=groups, extras=extras, layers=layers)
+        # Do not interpolate user-provided names into executable JS or HTML.
+        data = json.dumps(payload, ensure_ascii=True).replace('<', '\\u003c')
+        script = r"""
+const gd = document.getElementById('{plot_id}');
+const payload = JSON.parse(document.getElementById('fcs-data').textContent);
+const {tree, colors, groups, extras, layers} = payload;
+const own = (o,k) => Object.prototype.hasOwnProperty.call(o,k);
+const ids = Object.keys(colors).filter(id => own(groups,id));
+const allowed = new Set(ids), active = new Set(ids), extraActive = new Set(Object.keys(extras));
+const list = document.getElementById('color-tree'), search = document.getElementById('search');
+const counter = document.getElementById('count'), expanded = new Set();
+const descendants = new Map();
+function leaves(kind,name) {
+  if(kind==='granule') return allowed.has(name) ? [name] : [];
+  if(descendants.has(name)) return descendants.get(name);
+  const out = [...new Set((own(tree.children,name)?tree.children[name]:[]).flatMap(([k,n])=>leaves(k,n)))];
+  descendants.set(name,out); return out;
+}
+const roots = tree.roots.filter(([k,n])=>leaves(k,n).length);
+// Include any geometry not reachable via the supplied tree (legacy flat spaces).
+const covered = new Set(roots.flatMap(([k,n])=>leaves(k,n)));
+for(const id of ids) if(!covered.has(id)) roots.push(['granule',id]);
+let rows=[];
+function updateCounts(){
+  counter.textContent=active.size+'/'+ids.length;
+  for(const r of rows){
+    const n=r.ids.filter(id=>active.has(id)).length;
+    r.cb.checked=n===r.ids.length; r.cb.indeterminate=n>0&&n<r.ids.length;
+    if(r.count) r.count.textContent=n+'/'+r.ids.length;
+  }
+  for(const box of list.querySelectorAll('[data-extra]')) box.checked=extraActive.has(box.dataset.extra);
+}
+function change(idsToChange,value){
+  const indices=[], values=[];
+  for(const id of idsToChange){
+    if(active.has(id)===value) continue;
+    if(value) active.add(id); else active.delete(id);
+    for(const i of groups[id]||[]){indices.push(i);values.push(value);}
+  }
+  updateCounts();
+  if(indices.length) enqueue({'visible':values},indices);
+}
+// Serialize updates; rapid clicks must not race Plotly's asynchronous restyle.
+let queue=Promise.resolve();
+function enqueue(update,indices){
+  if(!indices.length) return;
+  queue=queue.catch(console.error).then(()=>Plotly.restyle(gd,update,indices));
+}
+const norm=s=>s.toLocaleLowerCase();
+const matchMemo=new Map();
+function matches(kind,name,q){
+  if(!q||norm(name).includes(q)) return true;
+  if(kind==='granule') return false;
+  if(matchMemo.has(name)) return matchMemo.get(name);
+  const result=(own(tree.children,name)?tree.children[name]:[]).some(([k,n])=>leaves(k,n).length&&matches(k,n,q));
+  matchMemo.set(name,result); return result;
+}
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;}
+function render(){
+  const q=norm(search.value.trim()); matchMemo.clear(); rows=[]; list.replaceChildren();
+  let truncated=false;
+  function add(parent,kind,name,path,ancestorMatch){
+    if(rows.length>=2000 || path.length>64){truncated=true;return;}
+    const memberIds=leaves(kind,name); if(!memberIds.length) return;
+    const selfMatch=ancestorMatch||norm(name).includes(q);
+    if(q&&!selfMatch&&!matches(kind,name,q)) return;
+    const category=kind==='category', key=JSON.stringify(path);
+    const branch=el('div','branch'), row=el('div','color-row'); parent.append(branch);branch.append(row);
+    if(category){
+      const arrow=el('button','arrow',expanded.has(key)||q?'▾':'▸');arrow.type='button';
+      arrow.setAttribute('aria-label','Expand '+name);arrow.setAttribute('aria-expanded',String(!!q||expanded.has(key)));
+      arrow.onclick=()=>{if(expanded.has(key))expanded.delete(key);else expanded.add(key);render();};row.append(arrow);
+    }else row.append(el('span','arrow-spacer'));
+    const cb=el('input');cb.type='checkbox';cb.setAttribute('aria-label','Show '+name);row.append(cb);
+    cb.onchange=()=>change(memberIds,cb.checked);
+    const label=el('label','color-label'+(category?' category':''));
+    const swatch=el('span','swatch');swatch.style.backgroundColor=colors[memberIds[0]];label.append(swatch,el('span','name',name));
+    label.title=name;label.onclick=()=>cb.click();row.append(label);
+    const count=memberIds.length>1?el('span','row-count'):null;if(count)row.append(count);
+    rows.push({cb,ids:memberIds,count});
+    if(category&&(q||expanded.has(key))){
+      const childBox=el('div','children');branch.append(childBox);
+      for(const [k,n] of (own(tree.children,name)?tree.children[name]:[])) add(childBox,k,n,path.concat([[k,n]]),selfMatch);
+      if(!childBox.childElementCount)childBox.remove();
+    }
+  }
+  for(const [k,n] of roots) add(list,k,n,[[k,n]],false);
+  if(truncated) list.append(el('p','empty','Too many matching branches. Refine the search or collapse groups.'));
+  if(!rows.length) list.append(el('p','empty','No matching colors.'));
+  for(const [id,name] of Object.entries(extras)){
+    if(q&&!norm(name).includes(q))continue;
+    const row=el('label','extra-row'), cb=el('input');cb.type='checkbox';cb.dataset.extra=id;
+    cb.onchange=()=>{if(cb.checked)extraActive.add(id);else extraActive.delete(id);enqueue({visible:cb.checked},groups[id]);};
+    row.append(cb,el('span','name',name));list.append(row);
+  }
+  updateCounts();
+}
+function bulk(value){
+  change(ids,value);
+  const indices=[];
+  for(const id of Object.keys(extras)) if(extraActive.has(id)!==value){
+    if(value)extraActive.add(id);else extraActive.delete(id);indices.push(...groups[id]);
+  }
+  updateCounts();enqueue({visible:value},indices);
+}
+document.getElementById('select-all').onclick=()=>bulk(true);
+document.getElementById('deselect-all').onclick=()=>bulk(false);
+document.getElementById('clear-search').onclick=()=>{search.value='';render();};
+search.addEventListener('input',render);
+for(const layer of layers){
+  const b=el('button','layer',layer.name);b.type='button';
+  b.setAttribute('aria-pressed',String(layer.active));b.disabled=!layer.indices.length;
+  b.onclick=()=>{layer.active=!layer.active;b.setAttribute('aria-pressed',String(layer.active));
+    enqueue({opacity:layer.active?layer.opacity:0},layer.indices);};
+  document.getElementById('layers').append(b);
+}
+render();
+// CSS controls the figure height; resizing does not change the camera.
+if(typeof ResizeObserver!=='undefined'){
+  const area=document.getElementById('plot-area');
+  new ResizeObserver(()=>{if(gd.isConnected && gd.clientWidth && gd.clientHeight)
+    Promise.resolve(Plotly.Plots.resize(gd)).catch(()=>{});}).observe(area);
+}
+"""
+        fragment = exported.to_html(full_html=False, include_plotlyjs=True,
+                                    default_width='100%', default_height='100%',
+                                    config=dict(responsive=True, displaylogo=False), post_script=script)
+        style = """
+*{box-sizing:border-box}html,body{height:100%;margin:0;font:14px Arial,sans-serif;color:#292535;background:white}
+body{display:grid;grid-template-rows:auto minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden}
+header{padding:12px 18px 10px;border-bottom:1px solid #e0e2e8;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+h1{font-size:19px;font-weight:600;margin:0;overflow-wrap:anywhere}#layers{display:flex;gap:7px;flex-wrap:wrap;margin-left:auto}
+button{font:inherit;color:#68428f;background:white;border:1px solid #d3cbdc;padding:6px 9px;cursor:pointer;border-radius:3px}
+button:hover{background:#f3eef8}button:disabled{cursor:default;opacity:.5}button[aria-pressed=true]{background:#eee6f6;border-color:#a992c5;font-weight:600}
+main{min-height:0;display:grid;grid-template-columns:minmax(0,1fr) clamp(225px,24vw,345px);gap:10px;padding:10px}
+#plot-area{min-width:0;min-height:0;overflow:hidden}#plot-area>div{height:100%;width:100%}
+aside{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid #dfe1e6;padding:11px;gap:10px}
+.heading{display:flex;justify-content:space-between;align-items:center;font-weight:bold}.heading span{color:#68428f}
+.bulk{display:grid;grid-template-columns:1fr 1fr;gap:6px}.bulk button{background:#f0f2f5;color:#292535;font-size:12px;font-weight:600}
+.search-row{display:flex;align-items:center;gap:6px;justify-content:center}.search-row input{min-width:0;width:100%;max-width:150px;border:1px solid #c9cdd4;padding:4px;font:inherit}.search-row button{padding:3px;border:0;color:#777}
+#color-tree{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:#c4cad3 #f1f3f6;padding-right:5px}
+.color-row{display:flex;align-items:center;gap:5px;min-height:29px;padding:3px 0}.arrow,.arrow-spacer{width:14px;flex:0 0 14px}.arrow{padding:0;border:0;color:#68428f;font-size:15px;background:transparent}.color-row input,.extra-row input{margin:0;accent-color:#68428f;flex:none}
+.color-label{display:flex;align-items:center;gap:6px;min-width:0;flex:1;cursor:pointer}.category{font-weight:600}.swatch{display:inline-block;width:16px;height:16px;flex:0 0 16px;border:1px solid #aaa}.name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.row-count{font-size:12px;color:#68428f;flex:none}.children{margin-left:6px;padding-left:12px;border-left:1px solid #c9bfda}.children>.branch>.color-row{position:relative}.children>.branch>.color-row:before{content:'';position:absolute;left:-12px;width:10px;top:50%;border-top:1px solid #c9bfda}.extra-row{display:flex;gap:6px;align-items:center;padding:5px}.empty{color:#777;font-size:13px}
+@media(max-width:600px){main{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(120px,35vh)}header{padding:8px;gap:5px}#layers{margin-left:0}h1{font-size:16px}aside{padding:6px;gap:5px}}
+"""
+        document = ('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                    '<title>'+html.escape(title)+'</title><style>'+style+
+                    'main>aside{grid-column:2;grid-row:1}#plot-area{grid-column:1;grid-row:1}'
+                    '@media(max-width:600px){main>aside{grid-column:1;grid-row:2}}</style></head><body>'
+                    '<header><h1>'+html.escape(title)+'</h1><div id="layers" aria-label="Display layers"></div></header>'
+                    '<script id="fcs-data" type="application/json">'+data+'</script>'
+                    '<main><aside><div class="heading">Colors<span id="count"></span></div>'
+                    '<div class="bulk"><button id="select-all">Select All</button><button id="deselect-all">Deselect All</button></div>'
+                    '<div class="search-row"><label for="search">Search</label><input id="search" type="search">'
+                    '<button id="clear-search">Clear</button></div><div id="color-tree"></div></aside>'
+                    '<section id="plot-area">'+fragment+'</section></main></body></html>')
+        Path(file_path).write_text(document, encoding='utf-8')
 
     @staticmethod
     def plot_color_evaluation_ab_projection(

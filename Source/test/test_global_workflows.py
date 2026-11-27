@@ -23,7 +23,7 @@ from Source.fuzzy.FuzzyColorSpaceBuilder import (
 )
 from Source.input_output.InputFCS import InputFCS
 from Source.input_output.InputCNS import InputCNS
-from Source.interface.modules.ImageManager import ImageManager
+from Source.interface.modules.ColorProcessingEngine import ColorProcessingEngine
 from Source.interface.modules.VisualManager import VisualManager
 from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
 
@@ -150,7 +150,7 @@ class GlobalWorkflowsTests(unittest.TestCase):
             color_space="RGB"
         )
 
-        manager = ImageManager()
+        manager = ColorProcessingEngine()
 
         pixels = np.array([
             [[30, 45, 55], [200, 40, 50], [60, 185, 75]],
@@ -329,7 +329,7 @@ class GlobalWorkflowsTests(unittest.TestCase):
 
     def test_jfcs_compatibility_metrics_and_invalid_input(self):
         """Validate JFCS loading, RGB ranges and CIEDE2000 accuracy."""
-        fixture_dir = Path(__file__).resolve().parent / "fixtures"
+        fixture_dir = Path(__file__).resolve().parent / "cases" / "java_comparison" / "fixtures"
 
         # Validate the existing JFCS reference files.
         for filename in ("partition_jfcs.fcs", "noncover_jfcs.fcs"):

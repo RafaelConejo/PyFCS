@@ -8,6 +8,71 @@ from Source.geometry.Point import Point
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 
 
+def rank_membership_frontier(space, lab, snapshot, level=0, *, input_value=None, input_space="LAB", frontier=None):
+    """Rank one semantic frontier, never ancestors against their descendants."""
+    if space is None:
+        return {"memberships": [], "winner_label": None, "winner_mu": 0.0}
+    values = snapshot["categories"]
+    labels = space.get_categories_at_level(level) if frontier is None else frontier
+    ordered = sorted(((name, values[name]["degree"]) for name in labels),
+                     key=lambda item: -item[1])
+    winner = ordered[0][0] if ordered and ordered[0][1] > 0 else None
+    if winner is not None and getattr(space, "is_granular", False):
+        top = ordered[0][1]
+        ties = [name for name, degree in ordered if abs(degree-top) <= 1e-12 and degree > 0]
+        if len(ties) > 1:
+            q = np.asarray(space._coordinates(lab if input_value is None else input_value, input_space))
+            winner = min(ties, key=lambda name: min(
+                float(np.dot(p.positive-q, p.positive-q))
+                for p in space.get_descendant_granules(name)))
+        ordered.sort(key=lambda item: (-item[1], item[0] != winner))
+    return {"memberships": ordered, "winner_label": winner,
+            "winner_mu": values[winner]["degree"] if winner is not None else 0.0}
+
+
+def membership_snapshot(space, lab, manager, level=0, *, input_value=None,
+                                   input_space="LAB", descendants=None, frontier=None):
+    """One raw evaluation per geometry; union at every semantic node.
+
+    Atomic legacy spaces retain their existing normalized membership API.
+    Granular spaces use the common semantic snapshot (no normalization).
+    """
+    if space is None:
+        return {"memberships": [], "categories": {}, "granules": {},
+                "winner_label": None, "winner_mu": 0.0}
+    if getattr(space, "is_granular", False):
+        raw = space.calculate_membership_snapshot(
+            lab if input_value is None else input_value, input_space=input_space)
+        degrees = raw["granules"]
+        values = {name: {"degree": float(degree),
+                         "granules": {g: float(degrees[g]) for g in (
+                             descendants[name] if descendants is not None else
+                             (p.label for p in space.get_descendant_granules(name)))}}
+                  for name, degree in raw["categories"].items()}
+    else:
+        result = dict(manager.calculate_memberships(space, lab))
+        degrees = {p.label: float(result.get(p.label, 0.0)) for p in space.prototypes}
+        values = {name: {"degree": degree, "granules": {name: degree}}
+                  for name, degree in degrees.items()}
+    snapshot = {"categories": values, "granules": degrees}
+    snapshot.update(rank_membership_frontier(space, lab, snapshot, level,
+                                    input_value=input_value, input_space=input_space, frontier=frontier))
+    return snapshot
+
+
+def nearest_granule(manager, candidates, lab, metric):
+    """Use a real descendant, with stable tie order, as the metric reference."""
+    best = None
+    for label, candidate in candidates:
+        try:
+            distance = float(manager.calculate_metric_value(lab, candidate, metric))
+            if np.isfinite(distance) and (best is None or distance < best[0]):
+                best = (distance, label)
+        except (TypeError, ValueError, ArithmeticError):
+            continue
+    return best[1] if best else (candidates[0][0] if candidates else None)
+
+
 class ColorEvaluationManager:
     """
     Handles color evaluation operations:
@@ -916,11 +981,10 @@ class ColorEvaluationManager:
         space = fuzzy_color_space
         groups = {}
         if getattr(space, "is_granular", False):
-            for category in space.categories:
-                groups[category.label] = [
-                    (proto.label, np.asarray(space.lab_from_model(proto.positive), dtype=float))
-                    for proto in category.prototypes
-                ]
+            for label in space.get_root_categories():
+                groups[label] = [(p.label, np.asarray(space.lab_from_model(p.positive), dtype=float))
+                                 for p in space.get_descendant_granules(label)]
+            color_rows = [(label, candidates[0][1]) for label, candidates in groups.items() if candidates]
         ranking = []
         for label, proto_lab in color_rows:
             candidates = groups.get(label, [(label, proto_lab)])

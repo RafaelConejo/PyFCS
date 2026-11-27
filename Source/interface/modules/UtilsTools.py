@@ -32,11 +32,9 @@ def check_granule_site(label, lab, existing_sites=(), *,
     Returns ``(clean_name, lab_tuple, error_message)``. A normal validation
     failure returns a message, not ValueError, keeping Tk callbacks safe.
     """
-    clean_name = str(label or "").strip()
-    if not clean_name or len(clean_name) > max_name_length:
-        return None, None, (
-            f"Granule name must contain 1 to {max_name_length} characters."
-        )
+    clean_name, error = check_label_name(label, max_length=max_name_length, kind="Granule")
+    if error:
+        return None, None, error
 
     try:
         point = np.asarray(lab, dtype=float).reshape(-1)
@@ -59,24 +57,96 @@ def check_granule_site(label, lab, existing_sites=(), *,
 
 
 
-def validate_color_space_name(value):
-    """Validate a portable, safe color-space filename, returning the clean name."""
+def check_label_name(value, *, max_length=MAX_COLOR_NAME_CHARS, kind="Color"):
+    """Labels are JSON identifiers, not filenames. Allow printable Unicode."""
+    import unicodedata
+    raw = str(value) if value is not None else ""
+    name = raw.strip()
+    if any(unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp") for ch in raw):
+        return name, f"{kind} name must not contain control or invisible characters."
+    if not name or len(name) > max_length:
+        return name, f"{kind} name must contain 1 to {max_length} characters."
+    return name, ""
+
+
+def check_color_space_name(value):
+    """Non-throwing validation for names used as Windows filenames."""
     import re
-    name = str(value).strip() if value is not None else ""
-    if not name:
-        raise ValueError("Please enter a name for the fuzzy color space.")
-    if len(name) > 100:
-        raise ValueError("The color space name must not exceed 100 characters.")
-    if name in (".", "..") or name.endswith((".", " ")):
-        raise ValueError("The name cannot end in a dot or space.")
-    if re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
-        raise ValueError("The name contains characters that cannot be used in a file name.")
-    if name.split(".", 1)[0].upper() in (
-        "CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
-        *(f"LPT{i}" for i in range(1, 10)),
-    ):
-        raise ValueError("This name is reserved by Windows. Choose another name.")
+    name, error = check_label_name(value, max_length=100, kind="Color space")
+    if error:
+        return name, error
+    if name in (".", "..") or name.endswith("."):
+        return name, "The name cannot end in a dot."
+    if re.search(r'[<>:"/\\|?*]', name):
+        return name, "The name contains characters that cannot be used in a file name."
+    stem = name.split(".", 1)[0].rstrip().upper()
+    if stem in ("CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+                *(f"COM{i}" for i in "123456789¹²³"),
+                *(f"LPT{i}" for i in "123456789¹²³")):
+        return name, "This name is reserved by Windows. Choose another name."
+    return name, ""
+
+
+def validate_color_space_name(value):
+    """Strict API for non-UI callers; UI uses check_color_space_name."""
+    name, error = check_color_space_name(value)
+    if error:
+        raise ValueError(error)
     return name
+
+
+def preferred_picker_mode(app, explicit=None, *, fallback="RGB"):
+    """Choose the initial display mode, independently of stored exact LAB."""
+    model = getattr(getattr(app, "fuzzy_color_space", None), "color_space", None)
+    mode = str(explicit or model or fallback).upper()
+    return mode if mode in ("RGB", "LAB", "HSV", "HSL", "HEX") else fallback
+
+
+def styled_combobox(parent, **options):
+    """Shared compact ttk style; no theme change or event API replacement."""
+    style = ttk.Style(parent)
+    name = "PyFCS.TCombobox"
+    style.configure(name, padding=(7, 4), fieldbackground="#fafbfe",
+                    background="#fafbfe", foreground="#1f2937", arrowcolor="#6b7280",
+                    bordercolor="#d9dde3", lightcolor="#d9dde3", darkcolor="#d9dde3",
+                    relief="flat")
+    style.map(name, fieldbackground=[("disabled", "#eef0f3"), ("readonly", "#fafbfe")],
+              foreground=[("disabled", "#9ca3af"), ("readonly", "#1f2937")],
+              selectbackground=[("readonly", "#fafbfe")],
+              selectforeground=[("readonly", "#1f2937")],
+              background=[("disabled", "#eef0f3"), ("readonly", "#fafbfe")])
+    options["style"] = name
+    return ttk.Combobox(parent, **options)
+
+
+def styled_scrollbar(parent, **options):
+    """Consistent slim, flat scrollbar without changing the current theme.
+
+    Use clam drawing elements even on native Windows themes; retain ttk's
+    standard thumb dragging, page scrolling and command/set interface.
+    """
+    style = ttk.Style(parent)
+    vertical = str(options.get("orient", "vertical")).lower() == "vertical"
+    axis = "Vertical" if vertical else "Horizontal"
+    name = f"PyFCS.{axis}.TScrollbar"
+    prefix = f"PyFCS.{axis}.Scrollbar"
+    trough, thumb = f"{prefix}.trough", f"{prefix}.thumb"
+    existing = set(style.element_names())
+    for element, source in ((trough, "trough"), (thumb, "thumb")):
+        if element not in existing:
+            style.element_create(element, "from", "clam", source)
+    style.layout(name, [(trough, {"sticky": "nswe", "children": [
+        (thumb, {"sticky": "nswe"})]})])
+    style.configure(name, background="#C4CAD3", troughcolor="#F1F3F6",
+                    bordercolor="#F1F3F6", lightcolor="#C4CAD3", darkcolor="#C4CAD3",
+                    arrowsize=11, width=11, sliderlength=24, gripcount=0,
+                    borderwidth=0, relief="flat", troughrelief="flat")
+    style.map(name, background=[("pressed", "#919BAA"), ("active", "#A6AFBC")],
+              lightcolor=[("pressed", "#919BAA"), ("active", "#A6AFBC")],
+              darkcolor=[("pressed", "#919BAA"), ("active", "#A6AFBC")])
+    options["style"] = name
+    return ttk.Scrollbar(parent, **options)
+
 
 # Shared interface accent. Data-driven colors, membership status and RGB
 # swatches must NOT use these values: this palette is for UI chrome only.
@@ -1044,6 +1114,13 @@ def prepare_granular_creation_options(selected_categories_lab, options, native_r
                     if other == owner or other not in native:
                         raise ValueError(f'Invalid negative category: {other}')
                     points.extend(native[other].values())
+                elif isinstance(other, dict):
+                    if set(other) != {'native'}:
+                        raise ValueError('Invalid native negative prototype.')
+                    point = np.asarray(other['native'], dtype=float).reshape(3)
+                    if not np.all(np.isfinite(point)):
+                        raise ValueError('Invalid negative coordinates.')
+                    points.append(point)
                 else:
                     points.append(to_native(other))
             negatives[owner] = points
@@ -1824,7 +1901,7 @@ def create_popup_window(parent, title, width, height, header_text):
     frame_container.pack(pady=10, fill="both", expand=True)
 
     canvas = tk.Canvas(frame_container, bg="#f5f5f5")
-    scrollbar = ttk.Scrollbar(
+    scrollbar = styled_scrollbar(
         frame_container,
         orient="vertical",
         command=canvas.yview
@@ -2015,7 +2092,7 @@ class ColorSwatchList(tk.Frame):
 
         self.canvas = tk.Canvas(self, height=height, bg=CARD, bd=0,
                                 highlightthickness=0, takefocus=1)
-        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.scrollbar = styled_scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.scrollbar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -2117,6 +2194,409 @@ class ColorSwatchList(tk.Frame):
         return "break"
 
 
+def negative_coordinate(value, mode, target):
+    """Convert precise negative inputs without quantizing native coordinates."""
+    from Source.fuzzy.FuzzyColorSpaceBuilder import lab_to_rgb_model_checked
+    mode, target = str(mode).upper(), str(target).upper()
+    if mode == 'HEX':
+        import re
+        value = str(value).strip().lstrip('#')
+        if not re.fullmatch(r'[0-9a-fA-F]{6}', value):
+            raise ValueError('Enter a six-digit HEX color.')
+        value = [int(value[i:i+2],16) for i in (0,2,4)]
+        mode = 'RGB'
+    elif isinstance(value, str):
+        value = value.replace(',', ' ').split()
+    point = np.asarray(value, dtype=float).reshape(-1)
+    if point.shape != (3,) or not np.all(np.isfinite(point)):
+        raise ValueError('Enter three finite coordinates.')
+    if mode == 'RGB':
+        if np.any((point < 0) | (point > 255)):
+            raise ValueError('RGB coordinates must be between 0 and 255.')
+        if target == 'LAB':
+            point = skcolor.rgb2lab((point/255).reshape(1,1,3))[0,0]
+    elif mode == 'LAB':
+        if not is_valid_lab(point):
+            raise ValueError('Enter valid CIELAB coordinates.')
+        if target == 'RGB':
+            point = lab_to_rgb_model_checked(point.reshape(1,3))[0]
+    else:
+        raise ValueError('Unknown coordinate model.')
+    return tuple(float(x) for x in point)
+
+
+def native_negative_sets(categories, values):
+    """Validate complete per-category negative sets, without mutating drafts."""
+    if set(values) != set(categories):
+        raise ValueError('Negative sets must match the geometric categories.')
+    result = {}
+    for owner, choices in values.items():
+        unique = []
+        for q in choices:
+            point = np.asarray(q, dtype=float).reshape(-1)
+            if point.shape != (3,) or not np.all(np.isfinite(point)):
+                raise ValueError(f'Invalid negative coordinates in {owner}.')
+            if any(np.linalg.norm(point-p) <= Voronoi.DEFAULT_MERGE_EPS
+                   for p in categories[owner].values()):
+                raise ValueError(f'{owner} cannot use one of its own positives as a negative.')
+            if not any(np.linalg.norm(point-p) <= Voronoi.DEFAULT_MERGE_EPS for p in unique):
+                unique.append(tuple(float(v) for v in point))
+        result[owner] = unique
+    return result
+
+
+def filter_negative_names(names, sets):
+    """Keep optional display names only for points still used as negatives."""
+    points = {tuple(float(x) for x in q) for values in sets.values() for q in values}
+    result = {}
+    for q, label in (names or {}).items():
+        key = tuple(float(x) for x in q)
+        if key in points:
+            name, error = check_label_name(label, kind='Negative')
+            if error: raise ValueError(error)
+            result[key] = name
+    return result
+
+
+class NegativePrototypeDialog(tk.Toplevel):
+    """Transactional negative editor shared by creation and Edit FCS.
+
+    Existing positives are selected at granule level. Custom entries retain
+    exact native coordinates; only explicitly chosen points become negatives.
+    """
+    def __init__(self, parent, categories, mode, initial=None, warn=None, app=None, negative_names=None):
+        validated = native_negative_sets(categories, initial if initial is not None else
+                                         {k: [] for k in categories})
+        if not categories:
+            raise ValueError('Select at least one category.')
+        super().__init__(parent)
+        self.withdraw(); self.title('Manage Negative Prototypes')
+        self.configure(bg=BG); self.transient(parent)
+        self.categories = categories
+        self.mode = mode
+        self.warn = warn
+        self.app = app
+        self.result = None
+        self.values = validated
+        self.negative_names = filter_negative_names(negative_names, validated)
+        self.result_names = None
+        self.owner = next(iter(categories))
+        self._previous_grab = parent.grab_current()
+        self.protocol('WM_DELETE_WINDOW', self.cancel)
+        self.bind('<Escape>', lambda e: self.cancel())
+        header = tk.Frame(self,bg=CARD,highlightbackground=BORDER,highlightthickness=1)
+        header.pack(fill='x',padx=14,pady=12)
+        tk.Label(header,text='Manage Negative Prototypes',bg=CARD,fg=TEXT,font=FONT_TITLE).pack(pady=(10,2))
+        tk.Label(header,text=f'Define geometric competitors for each category · {mode} model',bg=CARD,fg=MUTED,font=FONT_CAPTION).pack(pady=(0,10))
+        # Experimental import is intentionally hidden from the normal workflow.
+        self.bind('<Control-Shift-I>', self._import_shortcut)
+        self.bind('<Control-Shift-i>', self._import_shortcut)
+        self.status=tk.StringVar(master=self,value='Select a category and add negative prototypes.')
+        content=tk.Frame(self,bg=BG); content.pack(fill='both',expand=True,padx=14)
+        for i,w in enumerate((1,2,2)): content.columnconfigure(i,weight=w,uniform='neg')
+        content.rowconfigure(0,weight=1)
+        frames=[]
+        for i,title in enumerate(('Color categories','Available granules','Selected negatives')):
+            f=tk.LabelFrame(content,text=title,bg=CARD,fg=TEXT,font=FONT_BOLD,labelanchor='n',padx=6,pady=6)
+            f.grid(row=0,column=i,sticky='nsew',padx=(0,8) if i<2 else 0); frames.append(f)
+        self.categories_list=ColorSwatchList(frames[0],on_select=self.select_category,height=300)
+        self.categories_list.pack(fill='both',expand=True)
+        self.query=tk.StringVar(); self.query.trace_add('write',lambda *_: self.refresh())
+        search=tk.Frame(frames[1],bg=CARD); search.pack(fill='x',pady=(0,6))
+        tk.Label(search,text='Search',bg=CARD,fg=TEXT,font=FONT_BOLD).pack(side='left',padx=(0,7))
+        tk.Entry(search,textvariable=self.query,font=FONT,relief='solid',bd=1,width=15).pack(side='left',fill='x',expand=True)
+        tk.Button(search,text='Clear',command=lambda:self.query.set(''),bg=CARD,fg=MUTED,relief='flat',padx=4).pack(side='left')
+        chosen_intro=tk.Frame(frames[2],bg=CARD); chosen_intro.pack(fill='x',pady=(0,6))
+        tk.Label(chosen_intro,text='Negatives for the selected category',bg=CARD,fg=MUTED,font=FONT_CAPTION).place(relx=.5,rely=.5,anchor='center')
+        chosen_intro.pack_propagate(False)
+        chosen_intro.configure(height=search.winfo_reqheight())
+        search.bind('<Configure>',lambda e:chosen_intro.configure(height=e.height))
+        self.available=ColorSwatchList(frames[1],height=260,on_activate=lambda _:self.add_selected())
+        self.available.pack(fill='both',expand=True)
+        self.chosen=ColorSwatchList(frames[2],height=260,on_activate=lambda _:self.remove_selected())
+        self.chosen.pack(fill='both',expand=True)
+        actions=tk.Frame(frames[1],bg=CARD); actions.pack(fill='x',pady=(8,0))
+        add_buttons=[]
+        for text,cmd in (('Add granule',self.add_selected),('Add category',self.add_category),('Add all',self.add_all)):
+            add_buttons.append(tk.Button(actions,text=text,command=cmd,bg=UI_ACCENT_SOFT,fg=UI_ACCENT,relief='flat',padx=7,pady=4))
+        actions.columnconfigure(0,weight=1)
+        actions.columnconfigure(4,weight=1)
+        def layout_add_buttons(event=None, bar=actions, buttons=add_buttons):
+            width = event.width if event is not None else bar.winfo_width()
+            narrow = width < sum(b.winfo_reqwidth()+6 for b in buttons)
+            if getattr(bar, '_narrow', None) == narrow: return
+            bar._narrow = narrow
+            for b in buttons: b.grid_forget()
+            for i,b in enumerate(buttons):
+                b.grid(row=1 if narrow and i==2 else 0,column=1 if narrow and i==2 else i+1,
+                       columnspan=3 if narrow and i==2 else 1,padx=3,pady=2)
+        actions.bind('<Configure>',layout_add_buttons)
+        layout_add_buttons()
+        actions=tk.Frame(frames[2],bg=CARD); actions.pack(pady=(8,0))
+        tk.Button(actions,text='+ New negative',command=self.choose_color,bg=CARD,fg=UI_ACCENT,font=FONT_BOLD,relief='flat',bd=0,highlightthickness=0,activebackground=UI_ACCENT_SOFT,cursor='hand2',padx=8,pady=4).pack(side='left',padx=3)
+        for text,cmd in (('Remove',self.remove_selected),('Remove all',self.clear)):
+            tk.Button(actions,text=text,command=cmd,bg=CARD,fg='#B23F52',relief='flat',bd=0,highlightthickness=0,cursor='hand2',padx=5,pady=4).pack(side='left',padx=2)
+        info=tk.Frame(self,bg=BG); info.pack(fill='x',padx=14,pady=(8,5))
+        # Identical column weights to the three panels; neither a long name
+        # nor an error message can move the explanatory label horizontally.
+        for i, weight in enumerate((1, 2, 2)):
+            info.columnconfigure(i, weight=weight, uniform='neg_info')
+        counter = tk.Frame(info, bg=BG, height=32, width=1)
+        counter.grid(row=0,column=0,sticky='ew',padx=(0,8))
+        counter.pack_propagate(False)
+        status_label = tk.Label(counter,textvariable=self.status,bg=BG,fg=PURPLE,font=FONT_CAPTION_BOLD,anchor='center',justify='center')
+        status_label.pack(fill='both',expand=True)
+        counter.bind('<Configure>', lambda e: status_label.configure(wraplength=max(1,e.width-4)))
+        help_frame = tk.Frame(info,bg=BG,height=32,width=1)
+        help_frame.grid(row=0,column=1,columnspan=2,sticky='ew')
+        help_frame.pack_propagate(False)
+        help_label = tk.Label(help_frame,text='Add granule: one prototype · Add category: all its granules · Add all: all other positives.',bg=BG,fg=MUTED,font=FONT_CAPTION,justify='center')
+        help_label.pack(fill='both',expand=True)
+        help_frame.bind('<Configure>',lambda e:help_label.configure(wraplength=max(1,e.width-8)))
+
+        footer=tk.Frame(self,bg=BG);footer.pack(fill='x',padx=14,pady=(0,12))
+        tk.Button(footer,text='Copy negatives to...',command=self.copy_sets,bg=BG,fg=PURPLE,font=FONT_BOLD,relief='flat',padx=7).pack(side='left')
+        tk.Button(footer,text='Apply Changes',command=self.accept,bg=PURPLE,fg='white',font=FONT_BOLD,relief='flat',padx=16,pady=7).pack(side='right')
+        tk.Button(footer,text='Cancel',command=self.cancel,bg='#E7E9ED',fg=TEXT,relief='flat',padx=16,pady=7).pack(side='right',padx=8)
+        self.refresh()
+        parent.update_idletasks()
+        # Centre on the usable screen instead of the short creation dialog.
+        # Reserve room for the Windows title bar and taskbar.
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w=min(1010,sw-40); h=min(650,sh-120)
+        x=max(0,(sw-w)//2)
+        y=max(0,(sh-70-h)//2)
+        self.geometry(f'{w}x{h}+{x}+{y}'); self.minsize(min(760,w),min(480,h)); self.deiconify(); self.grab_set()
+
+    def _item(self, name, p, coordinates=None):
+        p=np.asarray(p,dtype=float)
+        rgb=p if self.mode=='RGB' else skcolor.lab2rgb(p.reshape(1,1,3))[0,0]*255
+        hx='#%02X%02X%02X'%tuple(np.rint(np.clip(rgb,0,255)).astype(int))
+        return {'name':name,'hex':hx,'coordinates':coordinates if coordinates is not None else ', '.join(f'{v:.3f}'.rstrip('0').rstrip('.') for v in p)}
+
+    def select_category(self, name):
+        if name in self.categories and name!=self.owner:
+            self.owner=name; self.refresh()
+
+    def refresh(self):
+        if not hasattr(self,'chosen'): return
+        self.categories_list.set_items([self._item(k,next(iter(v.values())),f'{len(self.values[k])} negatives') for k,v in self.categories.items()],selected=self.owner,preserve_scroll=True)
+        self.available_map={}
+        self.available_owners={}
+        needle=self.query.get().strip().casefold()
+        for k,sites in self.categories.items():
+            if k==self.owner: continue
+            for g,p in sites.items():
+                label=f'{k} / {g}'
+                if needle not in label.casefold(): continue
+                if label in self.available_map:
+                    label=f'{label} [{len(self.available_map)+1}]'
+
+                if any(np.linalg.norm(np.asarray(p)-q)<=Voronoi.DEFAULT_MERGE_EPS for q in self.values[self.owner]): continue
+                self.available_map[label]=tuple(p)
+                self.available_owners[label]=k
+        self.available.set_items([self._item(n,p) for n,p in self.available_map.items()],preserve_scroll=True)
+        self.negative_names = filter_negative_names(self.negative_names, self.values)
+        self.chosen_map={}
+        for i,p in enumerate(self.values[self.owner]):
+            name=self.negative_names.get(tuple(p)) or next((f'{k} / {g}' for k,sites in self.categories.items() for g,q in sites.items() if k!=self.owner and np.linalg.norm(np.asarray(q)-p)<=Voronoi.DEFAULT_MERGE_EPS),f'Custom {i+1}')
+            original=name
+            suffix=2
+            while name in self.chosen_map:
+                name=f'{original} [{suffix}]'; suffix+=1
+            self.chosen_map[name]=p
+        self.chosen.set_items([self._item(n,p) for n,p in self.chosen_map.items()],preserve_scroll=True)
+        self.status.set(f'{self.owner} · {len(self.values[self.owner])} negatives')
+
+    def _add(self, points):
+        try:
+            candidate={**self.values,self.owner:self.values[self.owner]+list(points)}
+            self.values=native_negative_sets(self.categories,candidate)
+            self.refresh();return True
+        except (ValueError,TypeError) as exc:
+            self.status.set(str(exc));return False
+
+    def add_selected(self):
+        if self.available.selected in self.available_map:self._add([self.available_map[self.available.selected]])
+    def add_category(self):
+        owner=self.available_owners.get(self.available.selected)
+        if owner is not None: self._add(self.categories[owner].values())
+    def add_all(self):
+        """All other positives, not just the current search results."""
+        self._add(p for k, sites in self.categories.items() if k != self.owner
+                  for p in sites.values())
+
+    def choose_color(self):
+        name_var = tk.StringVar(master=self, value='')
+        def selected(lab, rgb, _hex, exact_lab, status_var):
+            try:
+                # Preserve exact LAB input; use exact native RGB integers for
+                # RGB/HEX/visual selection instead of a LAB round trip.
+                source = 'LAB' if exact_lab else 'RGB'
+                point = negative_coordinate(lab if exact_lab else rgb, source, self.mode)
+                if any(np.linalg.norm(np.asarray(point)-q)<=Voronoi.DEFAULT_MERGE_EPS
+                       for q in self.values[self.owner]):
+                    raise ValueError('This negative is already selected.')
+                name = name_var.get().strip()
+                if name_var.get():
+                    name, error = check_label_name(name_var.get(), kind='Negative')
+                    if error: raise ValueError(error)
+                previous_name = self.negative_names.get(tuple(point))
+                if name and previous_name and name != previous_name:
+                    raise ValueError(f'This negative is already named {previous_name}. Use that name or leave it blank.')
+                if not self._add([point]):
+                    status_var.set(self.status.get()); return False
+                if name:
+                    self.negative_names[tuple(point)] = name
+                    self.refresh()
+                return True
+            except (TypeError, ValueError, OverflowError) as exc:
+                status_var.set(str(exc)); return False
+        return open_square_color_picker(self.app,self,initial_rgb=(128,128,128),
+            on_color_submit=selected, title='Add Negative Prototype',
+            initial_mode=self.mode, submit_text='Add negative',
+            external_name_var=name_var, name_label='Negative name')
+
+    def _import_shortcut(self, _event=None):
+        self.import_sets()
+        return 'break' 
+    def copy_sets(self):
+        """Copy the current negative set to selected geometric categories."""
+        source=self.owner
+        names=[k for k in self.categories if k!=source]
+        if not names:
+            self.status.set('No other categories to copy to.'); return
+        win=tk.Toplevel(self); win.withdraw(); win.title('Copy negative prototypes')
+        win.configure(bg=BG); win.transient(self)
+        header=tk.Frame(win,bg=CARD,highlightbackground=BORDER,highlightthickness=1)
+        header.pack(fill='x',padx=12,pady=(12,8))
+        tk.Label(header,text=f'Copy negatives from {source}',bg=CARD,fg=TEXT,font=FONT_TITLE,wraplength=420,justify='center').pack(padx=10,pady=(12,4))
+        tk.Label(header,text='Choose destination categories. Existing negative sets are replaced. Own positives are excluded.',bg=CARD,fg=MUTED,font=FONT_CAPTION,justify='center',wraplength=410).pack(padx=10,pady=(0,12))
+        content=tk.LabelFrame(win,text='Color categories',labelanchor='n',bg=CARD,fg=TEXT,font=FONT_BOLD,padx=8,pady=8)
+        content.pack(fill='both',expand=True,padx=12,pady=(0,8))
+        toolbar=tk.Frame(content,bg=CARD); toolbar.pack(fill='x',pady=(0,6))
+        toolbar.columnconfigure(0,weight=1,uniform='copy_margin',minsize=70)
+        toolbar.columnconfigure(2,weight=1,uniform='copy_margin',minsize=70)
+        query=tk.StringVar(master=win); count=tk.StringVar(master=win)
+        search=tk.Frame(toolbar,bg=CARD); search.grid(row=0,column=1)
+        tk.Label(search,text='Search',bg=CARD,fg=TEXT,font=FONT_BOLD).pack(side='left',padx=(0,6))
+        tk.Entry(search,textvariable=query,font=FONT,width=20,relief='solid',bd=1).pack(side='left')
+        tk.Button(search,text='Clear',command=lambda:query.set(''),bg=CARD,fg=MUTED,relief='flat',bd=0,highlightthickness=0,cursor='hand2').pack(side='left')
+        tk.Label(toolbar,textvariable=count,bg=CARD,fg=PURPLE,font=FONT_CAPTION).grid(row=0,column=2,sticky='e')
+        listing=tk.Frame(content,bg=CARD,highlightbackground=BORDER,highlightthickness=1)
+        listing.pack(fill='both',expand=True)
+        canvas=tk.Canvas(listing,bg=CARD,highlightthickness=0,bd=0,height=260)
+        scroll=styled_scrollbar(listing,orient='vertical',command=canvas.yview)
+        scroll.pack(side='right',fill='y'); canvas.pack(side='left',fill='both',expand=True)
+        canvas.configure(yscrollcommand=scroll.set)
+        inner=tk.Frame(canvas,bg=CARD); item=canvas.create_window(0,0,window=inner,anchor='nw')
+        inner.bind('<Configure>',lambda e:canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>',lambda e:canvas.itemconfigure(item,width=e.width))
+        checked={k:tk.BooleanVar(master=win,value=False) for k in names}
+        rows={}; status=tk.StringVar(master=win)
+        def update_count():
+            n=sum(v.get() for v in checked.values()); count.set(f'{n} selected')
+            copy_button.configure(state='normal' if n else 'disabled')
+            status.set('')
+        def toggle(name):
+            checked[name].set(not checked[name].get()); update_count()
+        def wheel(event):
+            if getattr(event,'num',None)==4 or getattr(event,'delta',0)>0: canvas.yview_scroll(-1,'units')
+            elif getattr(event,'num',None)==5 or getattr(event,'delta',0)<0: canvas.yview_scroll(1,'units')
+            return 'break'
+        def bind_wheel(widget):
+            for seq in ('<MouseWheel>','<Button-4>','<Button-5>'):widget.bind(seq,wheel)
+        bind_wheel(canvas); bind_wheel(inner)
+        for name in names:
+            row=tk.Frame(inner,bg=CARD); rows[name]=row
+            cb=tk.Checkbutton(row,variable=checked[name],command=update_count,bg=CARD,activebackground=CARD,selectcolor=CARD,cursor='hand2',bd=0,highlightthickness=0)
+            cb.pack(side='left',padx=(5,3))
+            color=self._item(name,next(iter(self.categories[name].values())))['hex']
+            swatch=tk.Frame(row,bg=color,width=22,height=22,highlightbackground='#CCD1DA',highlightthickness=1)
+            swatch.pack(side='left',padx=(0,8),pady=6)
+            label=tk.Label(row,text=name,bg=CARD,fg=TEXT,font=FONT,anchor='w')
+            label.pack(side='left',fill='x',expand=True)
+            detail=tk.Label(row,text=f'{len(self.values[name])} negatives',bg=CARD,fg=MUTED,font=FONT_CAPTION)
+            detail.pack(side='right',padx=8)
+            for w in (row,swatch,label,detail):
+                w.configure(cursor='hand2'); w.bind('<Button-1>',lambda e,k=name:toggle(k)); bind_wheel(w)
+            bind_wheel(cb)
+        empty=tk.Label(inner,text='No matching categories.',bg=CARD,fg=MUTED,font=FONT_CAPTION,pady=14)
+        def render(*_):
+            needle=query.get().strip().casefold()
+            for row in rows.values():row.pack_forget()
+            empty.pack_forget()
+            visible=[k for k in names if needle in k.casefold()]
+            for k in visible:rows[k].pack(fill='x',padx=2,pady=1)
+            if not visible:empty.pack(fill='x')
+            canvas.yview_moveto(0)
+        def select_visible():
+            needle=query.get().strip().casefold()
+            for k,v in checked.items():
+                if needle in k.casefold():v.set(True)
+            update_count()
+        def clear_selection():
+            for v in checked.values():v.set(False)
+            update_count()
+        tools=tk.Frame(content,bg=CARD); tools.pack(side='bottom',pady=(6,0),before=listing)
+        tk.Button(tools,text='Select visible',command=select_visible,bg=CARD,fg=PURPLE,relief='flat',bd=0,highlightthickness=0,cursor='hand2').pack(side='left',padx=4)
+        tk.Button(tools,text='Clear selection',command=clear_selection,bg=CARD,fg=MUTED,relief='flat',bd=0,highlightthickness=0,cursor='hand2').pack(side='left',padx=4)
+        def close():
+            win.destroy()
+            if self.winfo_exists():self.grab_set();self.focus_set()
+        def apply():
+            targets=[k for k in names if checked[k].get()]
+            if not targets:return
+            candidate={**self.values}
+            for k in targets:
+                candidate[k]=[p for p in self.values[source] if not any(np.linalg.norm(np.asarray(p)-q)<=Voronoi.DEFAULT_MERGE_EPS for q in self.categories[k].values())]
+            try:self.values=native_negative_sets(self.categories,candidate)
+            except (TypeError,ValueError) as exc:status.set(str(exc));return
+            close();self.refresh()
+        footer=tk.Frame(win,bg=BG);footer.pack(side='bottom',fill='x',padx=12,pady=(0,12),before=content)
+        tk.Label(footer,textvariable=status,bg=BG,fg='#B23F52',font=FONT_CAPTION,wraplength=230,justify='left').pack(side='left',fill='x',expand=True)
+        copy_button=tk.Button(footer,text='Copy',command=apply,bg=PURPLE,fg='white',font=FONT_BOLD,relief='flat',padx=16,pady=7)
+        copy_button.pack(side='right')
+        tk.Button(footer,text='Cancel',command=close,bg='#E7E9ED',fg=TEXT,relief='flat',padx=16,pady=7).pack(side='right',padx=8)
+        query.trace_add('write',render); render(); update_count()
+        win.protocol('WM_DELETE_WINDOW',close);win.bind('<Escape>',lambda e:close())
+        w=min(520,win.winfo_screenwidth()-40);h=min(510,win.winfo_screenheight()-70)
+        _center_auxiliary_popup(win,self,w,h);win.minsize(min(480,w),min(360,h))
+        win.deiconify();win.grab_set();win.focus_set()
+        return win
+
+    def remove_selected(self):
+        if self.chosen.selected in self.chosen_map:
+            self.values[self.owner].remove(self.chosen_map[self.chosen.selected]);self.refresh()
+    def clear(self):self.values[self.owner]=[];self.refresh()
+    def import_sets(self):
+        import json
+        path=filedialog.askopenfilename(parent=self,filetypes=[('JSON files','*.json')])
+        if not path:return
+        try:
+            from Source.input_output.InputJSON import InputJSON
+            with open(path,encoding='utf-8-sig') as file:doc=json.load(file,object_pairs_hook=InputJSON._distinct_object_pairs)
+            if doc.get('color_space')!=self.mode:raise ValueError('Import must use the current geometric model.')
+            raw=doc.get('categories')
+            if isinstance(raw,dict):raw={k:v['negatives'] for k,v in raw.items() if k in self.categories}
+            elif isinstance(raw,list):raw={c['label']:c['negatives'] for c in raw if 'negatives' in c}
+            else:raise ValueError('Expected category negative sets.')
+            raw={k:[negative_coordinate(p,self.mode,self.mode) for p in v] for k,v in raw.items()}
+            self.values=native_negative_sets(self.categories,raw);self.refresh()
+        except (OSError,ValueError,KeyError,TypeError) as exc:self.status.set(f'Import failed: {exc}')
+    def accept(self):
+        try:
+            self.result=native_negative_sets(self.categories,self.values)
+            self.result_names=filter_negative_names(self.negative_names,self.result)
+        except (ValueError,TypeError) as exc:self.status.set(str(exc));return
+        self._close()
+    def cancel(self):self.result=None;self._close()
+    def _close(self):
+        previous=self._previous_grab
+        self.destroy()
+        if previous is not None and previous.winfo_exists():previous.grab_set();previous.focus_set()
+
+
 class FCSCreationDialog(tk.Toplevel):
     """Choose name, geometry, typology, scalings, bounds and negative colors.
 
@@ -2125,7 +2605,7 @@ class FCSCreationDialog(tk.Toplevel):
     """
 
     def __init__(self, parent, selected_colors_lab, on_accept, warn=None,
-                 initial_color_space="LAB"):
+                 initial_color_space="LAB", initial_name="", selected_categories=None, native_rgb=None, initial_negatives=None, app=None, initial_negative_names=None):
         super().__init__(parent)
         self.withdraw()
         self.title("New Fuzzy Color Space")
@@ -2135,10 +2615,17 @@ class FCSCreationDialog(tk.Toplevel):
         self.result = False
         self._on_accept = on_accept
         self._warn = warn
+        self._app = app
         self._building = True
+        self._save_pending = False
         self._colors = {str(name): np.asarray(lab, dtype=float).reshape(3)
                         for name, lab in selected_colors_lab.items()}
         self.names = list(self._colors)
+        self._category_sites = selected_categories or {k:{k:v} for k,v in self._colors.items()}
+        self._native_rgb_sites = native_rgb or {}
+        self._custom_sets = dict(initial_negatives or {})
+        self._custom_names = dict(initial_negative_names or {})
+        self.negative_mode = tk.StringVar(value='Custom' if self._custom_sets else 'Automatic')
         self._rgb = {}
         self._swatches = {}
         for name, lab in self._colors.items():
@@ -2149,11 +2636,11 @@ class FCSCreationDialog(tk.Toplevel):
             self._rgb[name] = rgb
             self._swatches[name] = "#%02X%02X%02X" % tuple(np.rint(rgb).astype(int))
 
-        self.name_var = tk.StringVar()
+        self.name_var = tk.StringVar(value=initial_name)
         # Creating a NEW fuzzy color space always starts in CIELAB.
         # The loaded FCS model is deliberately independent from this default;
         # RGB remains available when explicitly selected by the user.
-        self.mode_var = tk.StringVar(value="LAB")
+        self.mode_var = tk.StringVar(value=initial_color_space if initial_color_space in ("LAB", "RGB") else "LAB")
         self.disjoint_var = tk.BooleanVar(value=True)
         self.covering_var = tk.BooleanVar(value=True)
         self.lambda1_var = tk.StringVar(value="0.5")
@@ -2161,18 +2648,11 @@ class FCSCreationDialog(tk.Toplevel):
         self.samples_var = tk.StringVar(value="27")
         self.typology_var = tk.StringVar(value="PARTITION")
         self.bounds_vars = [tk.StringVar() for _ in range(6)]
-        self.negatives = {name: set() for name in self.names}
-        self.current_category = self.names[0] if self.names else None
-        self.available_choice = None
-        self.chosen_choice = None
-        self.search_var = tk.StringVar()
-        self.selected_search_var = tk.StringVar()
 
         self._build()
         self._building = False
         self._set_default_bounds()
         self._update_typology()
-        self._refresh_categories()
         self._refresh_negative_lists()
         self._fit_window()
         self.deiconify()
@@ -2184,8 +2664,9 @@ class FCSCreationDialog(tk.Toplevel):
     @staticmethod
     def _info(parent, text=None, textvariable=None, bg=CARD, **opts):
         opts.setdefault("font", FONT_CAPTION)
+        opts.setdefault("justify", "center")
         return tk.Label(parent, text=text, textvariable=textvariable, bg=bg,
-                        fg=MUTED, justify="left", **opts)
+                        fg=MUTED, **opts)
 
     @staticmethod
     def _field(parent, var, width=None):
@@ -2200,16 +2681,15 @@ class FCSCreationDialog(tk.Toplevel):
                         highlightthickness=1, bd=0)
         heading = tk.Frame(card, bg=CARD)
         heading.pack(fill="x", padx=14, pady=(10, 5))
-        tk.Label(heading, text=title, font=FONT_BOLD, bg=CARD, fg=TEXT).pack(anchor="w")
+        tk.Label(heading, text=title, font=FONT_BOLD, bg=CARD, fg=TEXT).pack(anchor="center")
         return card
 
     def _build(self):
         # Keep the required name visible, even when the configuration below is scrolled.
         # This prevents the user from reaching Create while the name is off-screen.
-        header = tk.Frame(self, bg=CARD, height=125)
+        header = tk.Frame(self, bg=CARD)
         self.header = header
         header.pack(fill="x")
-        header.pack_propagate(False)
         tk.Label(header, text="Create Fuzzy Color Space", bg=CARD,
                  fg=TEXT, font=FONT_TITLE).pack(anchor="center", padx=21, pady=(9, 0))
         self._info(header, "Configure the model and how its color categories interact.",
@@ -2222,14 +2702,14 @@ class FCSCreationDialog(tk.Toplevel):
         self.name_entry.pack(side="left", ipady=4)
         self.name_error = tk.Label(header, text="", bg=CARD,
                                    fg="#B23F52", font=FONT_CAPTION)
-        self.name_error.pack(anchor="center", pady=(3, 0))
+        self.name_error.pack(anchor="center", pady=(3, 8))
         self.name_var.trace_add("write", self._name_changed)
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
 
         outer = tk.Frame(self, bg=BG)
         outer.pack(fill="both", expand=True)
         self.scroll = tk.Canvas(outer, bg=BG, bd=0, highlightthickness=0)
-        self.scrollbar = ttk.Scrollbar(outer, orient="vertical", command=self.scroll.yview)
+        self.scrollbar = styled_scrollbar(outer, orient="vertical", command=self.scroll.yview)
         self.scroll.configure(yscrollcommand=self._scroll_feedback)
         self.scrollbar.pack(side="right", fill="y")
         self.scroll.pack(side="left", fill="both", expand=True)
@@ -2272,41 +2752,39 @@ class FCSCreationDialog(tk.Toplevel):
             bd=0, relief="flat", cursor="hand2"
         )
         self.advanced_toggle.place(relx=1.0, x=-14, y=9, anchor="ne")
-        self.advanced_summary = self._info(card_geometry, "", anchor="w")
+        self.advanced_summary = self._info(card_geometry, "", anchor="center")
         self.advanced_summary.pack(fill="x", padx=14, pady=(0, 11))
         # Like JFCS, expose the sample density as soon as Non-Covering is selected.
         # 27 denotes 3 per axis, not 27 stored auxiliary negatives: an expanded
         # candidate grid is filtered before the geometry is constructed.
-        samples_area = tk.Frame(card_geometry, bg=CARD)
-        samples_area.pack(fill="x")
-        self.samples_box = tk.Frame(samples_area, bg=CARD)
-        self.samples_box.pack(anchor="center", pady=(0, 9))
-        tk.Label(self.samples_box, text="Samples", bg=CARD, fg=TEXT,
+        self.samples_box = tk.Frame(card_geometry, bg=CARD)
+        tk.Label(self.samples_box, text="Auxiliary sampling", bg=CARD, fg=TEXT,
                  font=FONT).pack(side="left", padx=(0, 8))
-        self.samples_combo = ttk.Combobox(
+        self.samples_combo = styled_combobox(
             self.samples_box, textvariable=self.samples_var,
             width=7, state="readonly", values=(8, 27, 64, 125, 216, 343, 512),
         )
         self.samples_combo.pack(side="left")
         self.geometry_details = tk.Frame(card_geometry, bg=CARD)
         params = tk.Frame(self.geometry_details, bg=CARD)
-        params.pack(anchor="center", padx=14, pady=(0, 3))
+        params.pack(anchor="center", padx=14, pady=(3, 3))
         for title, var in (("Core (λ1)", self.lambda1_var), ("Support (λ2)", self.lambda2_var)):
             part = tk.Frame(params, bg=CARD)
             part.pack(side="left", padx=(0, 20))
             tk.Label(part, text=title, bg=CARD, fg=TEXT, font=FONT).pack(side="left", padx=(0, 7))
             field = self._field(part, var, width=7)
+            field.configure(justify="center")
             field.pack(side="left", ipady=3)
         self._info(self.geometry_details, "Core: 0 ≤ λ1 < 1  ·  Support: 1 < λ2 ≤ 2",
                    anchor="center").pack(fill="x", padx=14, pady=(4, 9))
         row_bounds_heading = tk.Frame(self.geometry_details, bg=CARD)
         row_bounds_heading.pack(fill="x", padx=14)
         tk.Label(row_bounds_heading, text="Reference bounds", bg=CARD, fg=TEXT,
-                 font=FONT_BOLD).pack(side="left")
+                 font=FONT_BOLD).pack(anchor="center")
         tk.Button(row_bounds_heading, text="Reset defaults", bg=CARD, fg=PURPLE,
                   font=FONT_CAPTION, cursor="hand2", relief="flat", bd=0,
                   activebackground=CARD, activeforeground=PURPLE_DARK,
-                  command=self._set_default_bounds).pack(side="right")
+                  command=self._set_default_bounds).place(relx=1.0, rely=0.5, anchor="e")
         grid = tk.Frame(self.geometry_details, bg=CARD)
         grid.pack(fill="x", padx=14, pady=(5, 10))
         self.bounds_labels = []
@@ -2315,68 +2793,27 @@ class FCSCreationDialog(tk.Toplevel):
             slot.grid(row=0, column=i, padx=(0, 8) if i < 5 else 0, sticky="ew")
             grid.columnconfigure(i, weight=1, uniform="bounds")
             label = tk.Label(slot, text="", bg=CARD, fg=MUTED, font=FONT_CAPTION)
-            label.pack(anchor="w")
+            label.pack(anchor="center")
             self.bounds_labels.append(label)
-            self._field(slot, var).pack(fill="x", ipady=4)
+            field = self._field(slot, var, width=8)
+            field.configure(justify="center")
+            field.pack(fill="x", ipady=3)
 
-        self.neg_card = self._card(self.content, "Negative prototypes by category")
-        self._info(self.neg_card,
-                   "Select which other colors act as negatives. Unselected categories may overlap.",
-                   anchor="center", wraplength=710).pack(fill="x", padx=14, pady=(0, 9))
-        neg_layout = tk.Frame(self.neg_card, bg=CARD)
-        neg_layout.pack(fill="both", expand=True, padx=14, pady=(0, 11))
-        neg_layout.columnconfigure(0, weight=1, minsize=180)
-        neg_layout.columnconfigure(1, weight=2, minsize=390)
-        categories_frame = tk.Frame(neg_layout, bg=CARD)
-        categories_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        self._info(categories_frame, "CATEGORIES", font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(0, 5))
-        self.categories_list = ColorSwatchList(categories_frame,
-                                                on_select=self._select_category,
-                                                height=165)
-        self.categories_list.pack(fill="both", expand=True)
-        right = tk.Frame(neg_layout, bg=CARD)
-        right.grid(row=0, column=1, sticky="nsew")
-        self._info(right, "NEGATIVES FOR THE SELECTED CATEGORY").pack(anchor="w", pady=(0, 5))
-        two_lists = tk.Frame(right, bg=CARD)
-        two_lists.pack(fill="both", expand=True)
-        two_lists.columnconfigure(0, weight=1)
-        two_lists.columnconfigure(1, weight=1)
-        available_frame = tk.Frame(two_lists, bg=CARD)
-        available_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        selected_frame = tk.Frame(two_lists, bg=CARD)
-        selected_frame.grid(row=0, column=1, sticky="nsew")
-        tk.Label(available_frame, text="Available colors", bg=CARD,
-                 fg=MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(0, 3))
-        self.search_entry = self._field(available_frame, self.search_var)
-        self.search_entry.pack(fill="x", pady=(0, 5), ipady=2)
-        self.available_list = ColorSwatchList(available_frame, height=137,
-                                              on_select=self._set_available_choice,
-                                              on_activate=lambda _name: self.add_negative())
-        self.available_list.pack(fill="both", expand=True)
-        tk.Label(selected_frame, text="Selected negatives", bg=CARD,
-                 fg=MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(0, 3))
-        self.selected_search_entry = self._field(selected_frame, self.selected_search_var)
-        self.selected_search_entry.pack(fill="x", pady=(0, 5), ipady=2)
-        self.selected_list = ColorSwatchList(selected_frame, height=137,
-                                             on_select=self._set_chosen_choice,
-                                             on_activate=lambda _name: self.remove_negative())
-        self.selected_list.pack(fill="both", expand=True)
-        commands = tk.Frame(right, bg=CARD)
-        commands.pack(fill="x", pady=(8, 0))
-        centered_commands = tk.Frame(commands, bg=CARD)
-        centered_commands.pack(anchor="center")
-        for label, command in (("Add →", self.add_negative),
-                               ("← Remove", self.remove_negative),
-                               ("Add all", self.add_all_negatives),
-                               ("Clear", self.clear_negatives)):
-            tk.Button(centered_commands, text=label, command=command,
-                      bg="#F2F3F6", fg=TEXT,
-                      activebackground="#E6E8EC", activeforeground=TEXT,
-                      bd=0, relief="flat", cursor="hand2",
-                      font=FONT_CAPTION, padx=10, pady=5
-                      ).pack(side="left", padx=4)
-        self.negative_status = self._info(self.neg_card, "")
-        self.negative_status.pack(fill="x", padx=14, pady=(0, 10))
+        self.neg_card = self._card(self.content, "Negative prototypes")
+        self.negative_intro = self._info(self.neg_card,
+                   "Negative prototypes define the geometric limits of each category. They do not create new colors.",
+                   anchor="center", wraplength=620)
+        self.negative_intro.pack(fill="x", padx=14, pady=(0, 8))
+        row = tk.Frame(self.neg_card, bg=CARD)
+        row.pack(anchor="center", padx=14, pady=(0, 6))
+        tk.Label(row, text="Mode", bg=CARD, fg=TEXT, font=FONT_BOLD).pack(side="left", padx=(0, 8))
+        self.negative_combo = styled_combobox(row, values=('Automatic','Custom'), textvariable=self.negative_mode, state='readonly',width=14)
+        self.negative_combo.pack(side='left')
+        self.negative_combo.bind("<<ComboboxSelected>>", self._negative_mode_changed)
+        self.manage_button = tk.Button(row,text='Manage negatives...',command=self.manage_negatives,bg=UI_ACCENT_SOFT,fg=PURPLE,relief='flat',font=FONT_BOLD,padx=12,pady=4)
+        self.manage_button.pack(side='left', padx=(14, 0))
+        self.negative_status = self._info(self.neg_card, '',anchor='center',wraplength=620)
+        self.negative_status.pack(fill='x',padx=14,pady=(0,10))
 
         footer = tk.Frame(self, bg=CARD)
         self.footer = footer
@@ -2395,8 +2832,6 @@ class FCSCreationDialog(tk.Toplevel):
                                        padx=18, pady=8, cursor="hand2")
         self.cancel_button.pack(side="left")
 
-        self.search_var.trace_add("write", lambda *_: self._refresh_negative_lists())
-        self.selected_search_var.trace_add("write", lambda *_: self._refresh_negative_lists())
         for change_var in (self.lambda1_var, self.lambda2_var, self.samples_var):
             change_var.trace_add("write", lambda *_: self._update_advanced_summary())
 
@@ -2406,6 +2841,10 @@ class FCSCreationDialog(tk.Toplevel):
         width = min(790, max(1, available - 24))
         self.scroll.itemconfigure(self._content_id, width=width)
         self.scroll.coords(self._content_id, max(0, (available - width) // 2), 0)
+        wrap = max(240, width - 70)
+        if hasattr(self, "negative_status"):
+            self.negative_status.configure(wraplength=wrap)
+            self.negative_intro.configure(wraplength=wrap)
 
     def _scroll_feedback(self, first, last):
         self.scrollbar.set(first, last)
@@ -2451,83 +2890,53 @@ class FCSCreationDialog(tk.Toplevel):
 
     def _geometry_changed(self):
         self._set_default_bounds()
-        self._refresh_categories()
         self._refresh_negative_lists()
 
-    def _item(self, name):
-        if self.mode_var.get() == "RGB":
-            r, g, b = self._rgb[name]
-            coordinates = f"R {r:.0f}  G {g:.0f}  B {b:.0f}"
-        else:
-            l, a, b = self._colors[name]
-            coordinates = f"L {l:.1f}  a {a:.1f}  b {b:.1f}"
-        return {"name": name, "hex": self._swatches[name], "coordinates": coordinates}
+    def _native_category_sites(self):
+        from Source.fuzzy.FuzzyColorSpaceBuilder import lab_to_rgb_model_checked
+        mode=self.mode_var.get()
+        result={}
+        for category, sites in self._category_sites.items():
+            result[category]={}
+            for label, lab in sites.items():
+                if mode=='LAB': point=lab
+                else:
+                    point=self._native_rgb_sites.get(category,{}).get(label)
+                    if point is None: point=lab_to_rgb_model_checked(np.asarray(lab,dtype=float).reshape(1,3))[0]
+                result[category][label]=tuple(float(x) for x in point)
+        return result
 
-    def _refresh_categories(self):
-        self.categories_list.set_items([self._item(name) for name in self.names],
-                                       selected=self.current_category, preserve_scroll=True)
-
-    def _select_category(self, name):
-        if name and name != self.current_category:
-            self.current_category = name
-            self.available_choice = None
-            self.chosen_choice = None
-            self.search_var.set("")
-            self.selected_search_var.set("")
-            self._refresh_negative_lists()
-
-    def _set_available_choice(self, name):
-        self.available_choice = name
-
-    def _set_chosen_choice(self, name):
-        self.chosen_choice = name
+    def _negative_mode_changed(self, _event=None):
+        self._refresh_negative_lists()
+        self._fit_window()
 
     def _refresh_negative_lists(self):
-        if not hasattr(self, "available_list") or self.current_category is None:
-            return
-        category = self.current_category
-        chosen = self.negatives[category]
-        candidates = [x for x in self.names if x != category and x not in chosen]
-        needle = self.search_var.get().casefold().strip()
-        if needle:
-            candidates = [x for x in candidates if needle in x.casefold()]
-        existing = [x for x in self.names if x in chosen and x != category]
-        selected_needle = self.selected_search_var.get().casefold().strip()
-        if selected_needle:
-            visible_existing = [x for x in existing if selected_needle in x.casefold()]
+        if not hasattr(self,'negative_status'): return
+        custom=self.negative_mode.get()=='Custom'
+        self.manage_button.configure(state='normal' if custom else 'disabled')
+        sets=self._custom_sets.get(self.mode_var.get())
+        if custom:
+            text = 'Choose existing granules or define independent negative coordinates for each category.'
+            if sets is not None:
+                text += f'\n{sum(map(len, sets.values()))} negative assignments configured.'
+            if self.covering_var.get():
+                text += '\nCoverage is checked before saving.'
         else:
-            visible_existing = existing
-        self.available_list.set_items([self._item(n) for n in candidates],
-                                      selected=self.available_choice, preserve_scroll=True)
-        self.selected_list.set_items([self._item(n) for n in visible_existing],
-                                     selected=self.chosen_choice, preserve_scroll=True)
-        self.negative_status.configure(text=(
-            f"{category}: {len(existing)} selected negative(s) · "
-            "Double-click a color to add or remove it."
-        ))
+            text = 'Automatic (default): use all positive granules from the other categories as negatives.'
+        self.negative_status.configure(text=text)
 
-    def add_negative(self):
-        if self.current_category and self.available_list.selected:
-            self.negatives[self.current_category].add(self.available_list.selected)
-            self.available_choice = None
+    def manage_negatives(self):
+        try:
+            sites=self._native_category_sites(); mode=self.mode_var.get()
+            dialog=NegativePrototypeDialog(self,sites,mode,self._custom_sets.get(mode),warn=self._warn,app=self._app,negative_names=self._custom_names.get(mode))
+            self.wait_window(dialog)
+            if dialog.result is not None:
+                self._custom_sets[mode]=dialog.result
+                self._custom_names[mode]=dialog.result_names
             self._refresh_negative_lists()
-
-    def remove_negative(self):
-        if self.current_category and self.selected_list.selected:
-            self.negatives[self.current_category].discard(self.selected_list.selected)
-            self.chosen_choice = None
-            self._refresh_negative_lists()
-
-    def add_all_negatives(self):
-        if self.current_category:
-            self.negatives[self.current_category].update(
-                x for x in self.names if x != self.current_category)
-            self._refresh_negative_lists()
-
-    def clear_negatives(self):
-        if self.current_category:
-            self.negatives[self.current_category].clear()
-            self._refresh_negative_lists()
+            self._fit_window()
+        except (ValueError,TypeError,KeyError,tk.TclError) as exc:
+            self.negative_status.configure(text=str(exc))
 
     def _update_typology(self):
         disjoint, covering = self.disjoint_var.get(), self.covering_var.get()
@@ -2538,12 +2947,14 @@ class FCSCreationDialog(tk.Toplevel):
         if covering:
             self.samples_box.pack_forget()
         elif not self.samples_box.winfo_manager():
-            self.samples_box.pack(anchor="center", pady=(0, 9))
+            order = {"before": self.geometry_details} if self.geometry_details.winfo_manager() else {}
+            self.samples_box.pack(anchor="center", pady=(0, 9), **order)
         if disjoint:
             self.neg_card.pack_forget()
         elif not self.neg_card.winfo_manager():
             self.neg_card.pack(fill="x", padx=17, pady=(0, 10))
         self._update_advanced_summary()
+        self._refresh_negative_lists()
         if not self._building:
             self._fit_window()
 
@@ -2565,9 +2976,10 @@ class FCSCreationDialog(tk.Toplevel):
                                       highlightcolor=PURPLE)
 
     def _check_name(self):
-        if self.name_var.get().strip():
+        _, error = check_color_space_name(self.name_var.get())
+        if not error:
             return True
-        self.name_error.configure(text="Please enter a name for the fuzzy color space.")
+        self.name_error.configure(text=error)
         self.name_entry.configure(highlightbackground="#B23F52",
                                   highlightcolor="#B23F52")
         self.name_entry.focus_set()
@@ -2585,14 +2997,25 @@ class FCSCreationDialog(tk.Toplevel):
         count = int(self.samples_var.get()) if not covering else 0
         if not covering and count not in (8, 27, 64, 125, 216, 343, 512):
             raise ValueError("Select one of the JFCS sampling options: 8, 27, 64, 125, 216, 343 or 512.")
-        negative = ({k: [n for n in self.names if n in vals]
-                     for k, vals in self.negatives.items()} if not disjoint else None)
+        negative = None
+        negative_names = {}
+        if not disjoint:
+            if self.negative_mode.get() == 'Automatic':
+                negative = {k:[n for n in self.names if n!=k] for k in self.names}
+            else:
+                sets=self._custom_sets.get(self.mode_var.get())
+                if sets is None:
+                    raise ValueError('Configure custom negatives for the selected geometric model.')
+                validated=native_negative_sets(self._native_category_sites(),sets)
+                negative={k:[{'native':list(p)} for p in vals] for k,vals in validated.items()}
+                negative_names=filter_negative_names(self._custom_names.get(self.mode_var.get()),validated)
         return name, {
             "color_space": self.mode_var.get().upper(),
             "reference_domain": domain,
             "lambda1": lam1, "lambda2": lam2,
             "disjoint": disjoint, "covering": covering,
             "samples": count, "negative_prototypes": negative,
+            "negative_names": negative_names,
         }
 
     def _enter_key(self, event):
@@ -2602,7 +3025,7 @@ class FCSCreationDialog(tk.Toplevel):
         self.confirm()
 
     def confirm(self):
-        if self.result:
+        if self.result or self._save_pending:
             return
         # Normal input validation: show inline feedback instead of raising a
         # ValueError that may interrupt execution when debugging exceptions.
@@ -2624,10 +3047,32 @@ class FCSCreationDialog(tk.Toplevel):
             else:
                 messagebox.showerror("Invalid space configuration", str(exc), parent=self)
             return
+        if self._save_pending:
+            return
+        self.result = True
+        self.destroy()
+
+    def begin_save(self):
+        self._save_pending = True
+        self.ok_button.configure(state='disabled')
+        self.cancel_button.configure(state='disabled')
+
+    def on_save_failure(self, message):
+        if not self.winfo_exists(): return
+        self._save_pending = False
+        self.ok_button.configure(state='normal')
+        self.cancel_button.configure(state='normal')
+        self.negative_status.configure(text=str(message))
+        self.deiconify(); self.lift(); self.grab_set()
+
+    def on_save_success(self):
+        if not self.winfo_exists(): return
+        self._save_pending = False
         self.result = True
         self.destroy()
 
     def cancel(self):
+        if self._save_pending: return
         if not self.result:
             self.result = False
             self.destroy()
@@ -2735,11 +3180,14 @@ def open_square_color_picker(
     *, initial_lab=None, granule_name=None, on_granule_submit=None,
     submit_text=None, title=None, embedded_parent=None,
     compact=False, external_name_var=None, on_change=None,
-    initial_empty=False,
+    initial_empty=False, initial_mode=None, on_color_submit=None, name_label="Granule name",
 ):
     """Open the shared visual/numeric picker, optionally editing a granule.
 
     Normal mode retains the old ``on_apply(rgb, hex)`` contract.
+    Optional ``on_color_submit(lab, rgb, hex, exact_lab, status_var)``
+    is for unnamed colors requiring precise LAB and recoverable validation.
+    A False return keeps the popup open.
     Granule mode adds a name and calls
     ``on_granule_submit(name, lab, rgb, hex, dialog, status_var)``.
     Return ``False`` from that callback to keep the dialog open after a
@@ -2786,11 +3234,19 @@ def open_square_color_picker(
         # Leave enough room for the footer even on scaled Windows displays.
         # The swatch and footer now fit in a shorter standalone window.
         # The embedded category editor keeps its own compact dimensions.
-        win_w, win_h = 866, 548 if granule_mode else 510
+        win_w, win_h = 866, 548 if granule_mode or external_name_var is not None else 510
         try:
             app.center_popup_to_parent(popup, win_w, win_h, parent=parent)
         except Exception:
-            app.center_popup(popup, win_w, win_h)
+            if callable(getattr(app, 'center_popup', None)):
+                app.center_popup(popup, win_w, win_h)
+            else:
+                parent.update_idletasks()
+                win_w = min(win_w, popup.winfo_screenwidth()-20)
+                win_h = min(win_h, popup.winfo_screenheight()-50)
+                x = max(0, min(parent.winfo_rootx()+(parent.winfo_width()-win_w)//2, popup.winfo_screenwidth()-win_w))
+                y = max(0, min(parent.winfo_rooty()+(parent.winfo_height()-win_h)//2, popup.winfo_screenheight()-win_h))
+                popup.geometry(f'{win_w}x{win_h}+{x}+{y}')
 
     try:
         initial = tuple(ui.safe_rgb_tuple(initial_rgb))
@@ -2890,7 +3346,7 @@ def open_square_color_picker(
     if granule_mode or external_name_var is not None:
         name_row = tk.Frame(editor_card, bg=card)
         name_row.pack(fill="x", padx=13, pady=(13, 2))
-        tk.Label(name_row, text="Granule name", bg=card, fg=text_color,
+        tk.Label(name_row, text=name_label, bg=card, fg=text_color,
                  font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 10))
         name_entry = tk.Entry(name_row, textvariable=granule_name_var,
                               font=("Segoe UI", 10), relief="solid", bd=1)
@@ -2906,8 +3362,10 @@ def open_square_color_picker(
                           pady=(6 if compact else 12, 5 if compact else 8))
     tk.Label(controls_heading, text="Fine adjustments", bg=card,
              fg=text_color, font=("Segoe UI", 10, "bold")).pack(side="left")
-    mode_var = tk.StringVar(value="RGB")
-    mode_choice = ttk.Combobox(
+    mode_var = tk.StringVar(value=preferred_picker_mode(
+        app if granule_mode else None, initial_mode,
+        fallback="LAB" if exact_initial_lab is not None else "RGB"))
+    mode_choice = styled_combobox(
         controls_heading, textvariable=mode_var, state="readonly",
         values=("RGB", "HSV", "HSL", "LAB", "HEX"), width=7)
     mode_choice.pack(side="right")
@@ -3429,12 +3887,9 @@ def open_square_color_picker(
             return
         selected = tuple(state["rgb"])
         if granule_mode:
-            name = granule_name_var.get().strip()
-            if not name:
-                _validation_warning("Enter a granule name.")
-                return
-            if len(name) > ui.MAX_COLOR_NAME_CHARS:
-                _validation_warning("Granule name is too long.")
+            name, error = check_label_name(granule_name_var.get(), kind="Granule")
+            if error:
+                _validation_warning(error)
                 return
             lab = (state["exact_lab"] if state["exact_lab"] is not None
                    else tuple(float(v) for v in ui.rgb_to_lab(selected)))
@@ -3450,6 +3905,17 @@ def open_square_color_picker(
                 return
             if accepted is False:
                 _validation_warning(status_var.get())
+                return
+        elif callable(on_color_submit):
+            try:
+                exact_lab = state['exact_lab'] is not None
+                lab = state['exact_lab'] if exact_lab else tuple(float(v) for v in ui.rgb_to_lab(selected))
+                if on_color_submit(lab, selected, _current_hex(), exact_lab, status_var) is False:
+                    return
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).exception('Color submission failed')
+                status_var.set(f'Could not apply color: {exc}')
                 return
         elif callable(on_apply):
             try:
@@ -3476,11 +3942,6 @@ def open_square_color_picker(
         popup.bind("<Escape>", lambda _event: _close_picker())
 
     _redraw()
-    if granule_mode and exact_initial_lab is not None:
-        # Open existing prototypes in LAB mode without changing their
-        # original coordinates by an unnecessary roundtrip.
-        mode_var.set("LAB")
-        _sync_numeric()
     if not embedded:
         popup.deiconify()
         popup.grab_set()
@@ -3563,6 +4024,10 @@ class CustomCategoryDialog:
         self._pending_refresh = None
         self._scroll_region_after_id = None
         self.name_var = tk.StringVar(value="")
+        self.parent_category = getattr(palette, "parent_category", None)
+        self.original_child_parent = getattr(palette, "original_child_parent", None)
+        self.original_child_var = tk.StringVar(value="")
+        self.original_child_entry = None
         # Only the suggested default is derived from the category name.
         # The user can give every granule an independent label.
         self.granule_name_var = tk.StringVar(value="")
@@ -3572,7 +4037,7 @@ class CustomCategoryDialog:
 
         self.win = tk.Toplevel(palette.win)
         self.win.withdraw()
-        self.win.title("Add Color Category")
+        self.win.title("Add subcategory" if self.parent_category is not None else "Add Color Category")
         self.win.configure(bg=palette.BG)
         self.win.resizable(True, True)
         self.win.minsize(760, 470)
@@ -3587,6 +4052,7 @@ class CustomCategoryDialog:
             self.win.geometry(f"880x{desired_height}")
         self._build_ui()
         self.name_var.trace_add("write", self._on_name_change)
+        self.original_child_var.trace_add("write", lambda *_args: self._update_create_state())
         self.granule_name_var.trace_add(
             "write", lambda *_args: self._update_create_state())
         self.win.bind("<Escape>", lambda _event: self.close())
@@ -3596,7 +4062,30 @@ class CustomCategoryDialog:
         self.win.grab_set()
         self.name_entry.focus_set()
 
+    def _cancel_local_job(self, name):
+        token = getattr(self, name, None)
+        if token is not None:
+            try:
+                self.win.after_cancel(token)
+            except tk.TclError:
+                pass
+            setattr(self, name, None)
+
+    def _schedule_local_job(self, name, callback, delay=None):
+        self._cancel_local_job(name)
+        def run():
+            setattr(self, name, None)
+            try:
+                if self.win.winfo_exists():
+                    callback()
+            except tk.TclError:
+                pass
+        token = self.win.after_idle(run) if delay is None else self.win.after(delay, run)
+        setattr(self, name, token)
+
     def close(self):
+        for name in ("_restore_position_id", "_scroll_last_id", "_restore_grab_id"):
+            self._cancel_local_job(name)
         if self._scroll_region_after_id is not None:
             try:
                 self.win.after_cancel(self._scroll_region_after_id)
@@ -3638,7 +4127,7 @@ class CustomCategoryDialog:
                   font=p.FONT, relief="solid", bd=1,
                   padx=12, pady=7).pack(side="right", padx=(9, 0))
         self.create_button = tk.Button(
-            bottom, text="Create Category", command=self.create,
+            bottom, text="Create subcategory" if self.parent_category is not None else "Create Category", command=self.create,
             font=p.FONT_BOLD, relief="flat", bd=0, padx=16, pady=8,
             bg=p.BLUE, fg="white", activebackground=UI_ACCENT_DARK,
             activeforeground="white", cursor="hand2", state="disabled"
@@ -3648,7 +4137,7 @@ class CustomCategoryDialog:
 
         viewport = tk.Frame(root, bg=p.BG)
         viewport.pack(fill="both", expand=True)
-        self.scrollbar = tk.Scrollbar(viewport, orient="vertical")
+        self.scrollbar = styled_scrollbar(viewport, orient="vertical")
         self.scrollbar.pack(side="right", fill="y")
         self.scroll_canvas = tk.Canvas(
             viewport, bg=p.BG, highlightthickness=0, bd=0,
@@ -3668,9 +4157,9 @@ class CustomCategoryDialog:
         header = tk.Frame(self.scroll_body, bg=p.CARD, highlightbackground=p.BORDER,
                           highlightthickness=1)
         header.pack(fill="x", pady=(0, 8))
-        tk.Label(header, text="Add Color Category", font=("Segoe UI", 14, "bold"),
+        tk.Label(header, text="Add subcategory" if self.parent_category is not None else "Add Color Category", font=("Segoe UI", 14, "bold"),
                  bg=p.CARD, fg=p.TEXT).pack(side="left", padx=(16, 10), pady=11)
-        tk.Label(header, text="Define one or more positive granules",
+        tk.Label(header, text=f"Parent: {self.parent_category}" if self.parent_category is not None else "Define one or more positive granules",
                  font=p.FONT_SMALL, fg=p.MUTED, bg=p.CARD).pack(
                      side="right", padx=(6, 16), pady=11)
 
@@ -3680,8 +4169,8 @@ class CustomCategoryDialog:
         card.pack(fill="x", pady=(0, 8))
         name_row = tk.Frame(card, bg=p.CARD)
         name_row.pack(fill="x", padx=15, pady=(10, 8))
-        tk.Label(name_row, text="Category name", font=p.FONT_BOLD, bg=p.CARD,
-                 fg=p.TEXT, width=15, anchor="w").pack(side="left")
+        tk.Label(name_row, text="New subcategory" if self.parent_category is not None else "Category name", font=p.FONT_BOLD, bg=p.CARD,
+                 fg=p.TEXT, width=20 if self.parent_category is not None else 15, anchor="w").pack(side="left")
         category_name_vcmd = (
             self.win.register(lambda proposed: len(proposed) <= MAX_CATEGORY_NAME_CHARS),
             "%P",
@@ -3692,6 +4181,18 @@ class CustomCategoryDialog:
             validate="key", validatecommand=category_name_vcmd,
         )
         self.name_entry.pack(side="left", fill="x", expand=True)
+        if self.original_child_parent is not None:
+            row = tk.Frame(card, bg=p.CARD)
+            row.pack(fill="x", padx=15, pady=(0, 4))
+            tk.Label(row, text="Keep granules in", font=p.FONT_BOLD, bg=p.CARD,
+                     fg=p.TEXT, width=20, anchor="w").pack(side="left")
+            self.original_child_entry = tk.Entry(row, textvariable=self.original_child_var,
+                font=("Segoe UI", 10), bd=1, relief="solid", validate="key",
+                validatecommand=category_name_vcmd)
+            self.original_child_entry.pack(side="left", fill="x", expand=True)
+            tk.Label(card, text=f"Name a subcategory for the current granules of '{self.original_child_parent}'. Their colors stay the same.",
+                     font=p.FONT_SMALL, fg=p.MUTED, bg=p.CARD, anchor="w", justify="left",
+                     wraplength=600).pack(fill="x", padx=15, pady=(0, 8))
 
         tk.Frame(card, height=1, bg=p.BORDER).pack(fill="x", padx=15, pady=(0, 7))
         color_heading = tk.Frame(card, bg=p.CARD)
@@ -3712,6 +4213,7 @@ class CustomCategoryDialog:
             self.app, self.win, embedded_parent=picker_host,
             compact=True, external_name_var=self.granule_name_var,
             initial_empty=True, on_change=self._on_picker_change,
+            initial_mode=getattr(self.palette, "initial_picker_mode", None),
         )
         self.mode_var = self.color_picker.mode_var
         self.granule_name_entry = self.color_picker.name_entry
@@ -3817,17 +4319,26 @@ class CustomCategoryDialog:
         lab, rgb, hx = color
         return True, "", lab, rgb, hx
 
+    def _original_child_error(self):
+        if self.original_child_parent is None:
+            return ""
+        name, error = check_label_name(self.original_child_var.get(), max_length=MAX_CATEGORY_NAME_CHARS, kind="Subcategory")
+        if error:
+            return error
+        if name == self._current_name() or name in self.palette.colors:
+            return "Use two different, unused category names."
+        return ""
+
     def _update_create_state(self, hint=""):
-        name = self._current_name()
-        valid_name = bool(name) and len(name) <= MAX_CATEGORY_NAME_CHARS
+        name, name_error = check_label_name(self.name_var.get(), max_length=MAX_CATEGORY_NAME_CHARS, kind="Category")
+        valid_name = not name_error
         unique_name = valid_name and name not in self.palette.colors
 
         # The buttons have independent semantics: Add needs valid input,
         # Create needs at least one previously added granule.
         granule_name = self.granule_name_var.get().strip()
         valid_granule_name = (
-            bool(granule_name) and
-            len(granule_name) <= MAX_COLOR_NAME_CHARS and
+            not check_label_name(self.granule_name_var.get(), kind="Granule")[1] and
             granule_name not in self.palette._used_granule_labels() and
             all(g["label"] != granule_name for g in self.granules)
         )
@@ -3836,7 +4347,8 @@ class CustomCategoryDialog:
             unique_name and valid_granule_name and
             self._cached_lab is not None and duplicate_color is None
         )
-        can_create = unique_name and bool(self.granules)
+        original_error = self._original_child_error()
+        can_create = unique_name and bool(self.granules) and not original_error
         self.add_button.configure(
             state="normal" if can_add else "disabled",
             bg=self.palette.BLUE if can_add else self.palette.PANEL,
@@ -3846,16 +4358,17 @@ class CustomCategoryDialog:
             bg=self.palette.BLUE if can_create else self.palette.PANEL,
         )
         if not valid_name:
-            self.status_var.set(
-                f"Enter a category name (maximum {MAX_CATEGORY_NAME_CHARS} characters).")
+            self.status_var.set(name_error)
         elif not unique_name:
             self.status_var.set("This category name is already used.")
+        elif original_error:
+            self.status_var.set(original_error)
         elif self._cached_lab is not None and duplicate_color is not None:
             self.status_var.set(
                 f"Color matches '{duplicate_color}'. Change at least one "
                 "coordinate before adding another granule.")
         elif not valid_granule_name:
-            self.status_var.set("Enter a unique granule name.")
+            self.status_var.set(check_label_name(self.granule_name_var.get(), kind="Granule")[1] or "Enter a unique granule name.")
         elif can_create:
             count = len(self.granules)
             self.status_var.set(
@@ -3869,7 +4382,7 @@ class CustomCategoryDialog:
     def _restore_grab(self):
         try:
             if self.win.winfo_exists():
-                self.win.after_idle(self.win.grab_set)
+                self._schedule_local_job("_restore_grab_id", self.win.grab_set)
         except tk.TclError:
             pass
 
@@ -3959,9 +4472,9 @@ class CustomCategoryDialog:
 
     def add(self):
         """Append the current RGB/LAB/HEX color to the pending granule list."""
-        name = self._current_name()
-        if not name or len(name) > MAX_CATEGORY_NAME_CHARS:
-            self.status_var.set("Enter a valid category name first.")
+        name, error = check_label_name(self.name_var.get(), max_length=MAX_CATEGORY_NAME_CHARS, kind="Category")
+        if error:
+            self.status_var.set(error)
             return
         if name in self.palette.colors:
             self.status_var.set(f"Category '{name}' already exists.")
@@ -3972,7 +4485,7 @@ class CustomCategoryDialog:
             return
         try:
             suggested, number = self._next_label()
-            requested = self.granule_name_var.get().strip()
+            requested = self.granule_name_var.get()
             label, point, error = self._check_site(requested, lab)
         except (TypeError, ValueError) as exc:
             # The color parser is already checked, but keep this callback safe.
@@ -3988,7 +4501,7 @@ class CustomCategoryDialog:
         })
         self._render_granules()
         # Wait for geometry propagation before bringing the newest row into view.
-        self.scroll_canvas.after(30, self._scroll_to_last_granule)
+        self._schedule_local_job("_scroll_last_id", self._scroll_to_last_granule, delay=30)
         self._sync_suggested_granule_name(force=True)
         self._clear_color_fields()
 
@@ -4027,7 +4540,7 @@ class CustomCategoryDialog:
         dialog = self.app._open_square_color_picker(
             parent=self.win, title="Edit granule",
             granule_name=original_label,
-            initial_lab=original_lab,
+            initial_lab=original_lab, initial_mode=self.mode_var.get(),
             submit_text="Save changes",
             on_granule_submit=submit,
         )
@@ -4155,16 +4668,22 @@ class CustomCategoryDialog:
                     self.scroll_canvas.yview_moveto(previous_position)
             except tk.TclError:
                 pass
-        self.scroll_canvas.after_idle(restore_position)
+        self._schedule_local_job("_restore_position_id", restore_position)
 
     def create(self):
         """Commit exactly the granules the user explicitly added."""
-        name = self._current_name()
-        if not name or len(name) > MAX_CATEGORY_NAME_CHARS:
-            self.status_var.set("Enter a valid category name.")
+        name, error = check_label_name(self.name_var.get(), max_length=MAX_CATEGORY_NAME_CHARS, kind="Category")
+        if error:
+            self.status_var.set(error)
             return
         if name in self.palette.colors:
             self.status_var.set(f"Category '{name}' already exists.")
+            return
+        original_error = self._original_child_error()
+        if original_error:
+            self.status_var.set(original_error)
+            if self.original_child_entry is not None:
+                self.original_child_entry.focus_set()
             return
         if not self.granules:
             self.status_var.set("Add at least one granule before creating the category.")
@@ -4189,6 +4708,13 @@ class CustomCategoryDialog:
                 return
             item["lab"] = point
 
+        # The editor validates and commits its draft before closing the picker.
+        # Other palette creation workflows keep their original behavior.
+        commit = getattr(self.palette, "commit_category", None)
+        if callable(commit):
+            if commit(name, packed, self.original_child_var.get().strip() or None):
+                self.close()
+            return
         first = packed[0]["lab"]
         rgb = tuple(safe_rgb_tuple(lab_to_rgb(first)))
         self.palette.colors[name] = dict(

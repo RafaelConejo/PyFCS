@@ -80,6 +80,69 @@ def generate_auxiliary_negatives(positive_points, domain, samples=27):
     return points[mask]
 
 
+def validate_custom_coverage(space, *, max_boxes=200000, max_depth=36):
+    """Certify strict support coverage of the closed reference box.
+
+    Domain caps are not membership-zero boundaries. Every accepted box lies
+    strictly inside one mathematical support. A positive margin outside all
+    supports proves a gap; unresolved boxes are NOT proof of non-coverage.
+    Only used for covering constructions with independent negative sites.
+    """
+    supports = (space.get_all_supports() if hasattr(space, 'get_all_supports')
+                else space.supports)
+    planes = []
+    for support in supports:
+        p = np.asarray(support.positive, dtype=float)
+        rows = []
+        for face in support.voronoi_volume.getFaces():
+            if face.isDomainBoundary():
+                continue
+            pl = face.getPlane()
+            row = np.array([pl.A, pl.B, pl.C, pl.D], dtype=float)
+            row /= np.linalg.norm(row[:3])
+            if row[:3] @ p + row[3] > 0:
+                row = -row
+            rows.append(row)
+        if not rows:
+            # A support with no mathematical faces is the entire domain.
+            return
+        planes.append(np.asarray(rows))
+    h = np.zeros((len(planes), max(map(len, planes)), 4))
+    h[:, :, 3] = -1e100
+    for i, rows in enumerate(planes):
+        h[i, :len(rows)] = rows
+    a, d = h[:, :, :3], h[:, :, 3]
+    abs_a = abs(a)
+    bounds = np.asarray(space.reference_domain.bounds, dtype=float)
+    stack = [(bounds[::2], bounds[1::2], 0)]
+    count = 0
+    tol = 1e-8
+    while stack:
+        lo, hi, depth = stack.pop()
+        center, radius = (lo + hi) / 2, (hi - lo) / 2
+        at_center = a @ center + d
+        if np.min(np.max(at_center + abs_a @ radius, axis=1)) < -tol:
+            continue
+        if np.min(np.max(at_center, axis=1)) > tol:
+            raise ValueError('Custom negatives leave an uncovered point at ' +
+                             str(tuple(round(float(x), 6) for x in center)) +
+                             '. Change the negative prototypes or typology.')
+        count += 1
+        if depth >= max_depth or count >= max_boxes:
+            raise ValueError('Coverage could not be certified within the validation limit. '
+                             'Review the negative prototypes; the model was not saved.')
+        axis = int(np.argmax(radius))
+        left, right = hi.copy(), lo.copy()
+        left[axis] = right[axis] = center[axis]
+        stack.extend([(lo, left, depth + 1), (right, hi, depth + 1)])
+
+
+def _has_independent_negatives(negative_prototypes, points):
+    return any(not np.any(np.linalg.norm(points - np.asarray(q), axis=1)
+                          <= Voronoi.DEFAULT_MERGE_EPS)
+               for values in (negative_prototypes or {}).values() for q in values)
+
+
 class FuzzyColorSpaceBuilder:
     @staticmethod
     def build(name, selected_points, *, color_space="LAB", reference_domain=None,
@@ -109,6 +172,10 @@ class FuzzyColorSpaceBuilder:
                 "Auxiliary sampling produced no negative sites. "
                 "Increase the sample density or revise the reference domain."
             )
+        if set(negative_prototypes or {}) - set(labels):
+            raise ValueError("Negative prototypes refer to unknown categories.")
+        if disjoint and any(len(v) for v in (negative_prototypes or {}).values()):
+            raise ValueError("Disjoint spaces use automatic negatives from other categories.")
         negmap = {}
         volumes = []
         if disjoint and covering:
@@ -127,25 +194,27 @@ class FuzzyColorSpaceBuilder:
             for label, p in items:
                 choices = source.get(label, [])
                 negatives = np.asarray(choices, dtype=float).reshape(-1,3)
-                # Covering requires negatives to be drawn from REAL positive sites;
-                # the UI exposes a subset selector rather than arbitrary points.
-                if covering and len(negatives):
-                    for q in negatives:
-                        if not any(np.linalg.norm(q-z)<Voronoi.DEFAULT_MERGE_EPS for z in pts):
-                            raise ValueError("Covering construction accepts only other real representatives as negatives.")
+                if not np.all(np.isfinite(negatives)):
+                    raise ValueError(f"Invalid negative prototype for '{label}'.")
+                if any(np.linalg.norm(q-p) <= Voronoi.DEFAULT_MERGE_EPS for q in negatives):
+                    raise ValueError(f"'{label}' cannot use its own positive as a negative.")
+                negatives = np.asarray(list(dict.fromkeys(map(tuple, negatives))), dtype=float).reshape(-1, 3)
                 neg = np.vstack([negatives, extra]) if len(extra) else negatives
                 volumes.append(Voronoi.build_cell(p, neg, reference_domain=domain))
                 negmap[label] = [tuple(row) for row in neg]
 
         prototypes = [Prototype(label=label, positive=p, voronoi_volume=v)
                       for (label,p),v in zip(items,volumes)]
-        return FuzzyColorSpace(
+        result = FuzzyColorSpace(
             space_name=name, prototypes=prototypes, color_space=color_space,
             disjoint=disjoint, covering=covering, reference_domain=domain,
             lambda1=lambda1, lambda2=lambda2, samples=(int(samples) if not covering else 0),
             negative_prototypes=negmap, auxiliary_negatives=extra,
             description=description, improve_geometry=bool(improve_geometry),
         )
+        if covering and not disjoint and _has_independent_negatives(negative_prototypes, pts):
+            validate_custom_coverage(result)
+        return result
 
 
     @staticmethod
@@ -153,7 +222,7 @@ class FuzzyColorSpaceBuilder:
                        reference_domain=None, lambda1=0.5, lambda2=1.5,
                        disjoint=True, covering=True, samples=27,
                        negative_prototypes=None, auxiliary_negatives=None,
-                       description=None, tconorm="bounded_sum"):
+                       description=None, tconorm="bounded_sum", hierarchy=None):
         """Construct a granular FCS with one Voronoi volume per positive site.
 
         The grouped ``categories`` mapping preserves the order of categories
@@ -165,7 +234,7 @@ class FuzzyColorSpaceBuilder:
             disjoint=disjoint, covering=covering, samples=samples,
             negative_prototypes=negative_prototypes,
             auxiliary_negatives=auxiliary_negatives,
-            description=description, tconorm=tconorm,
+            description=description, tconorm=tconorm, hierarchy=hierarchy,
         )
 
 # Model conversion is intentionally separate from the display LAB/RGB projection.
@@ -241,11 +310,6 @@ def rebuild_in_color_space(space, target_color_space, *, gamut_tolerance=0.05):
                         raise ValueError(f"'{category}' cannot be its own negative.")
                     real_negatives.append(np.asarray(points_by_name[matching[0]], dtype=float))
                 else:
-                    if space.covering:
-                        raise ValueError(
-                            f"The negative prototypes of '{category}' are not real color categories. "
-                            "The model was not changed."
-                        )
                     real_negatives.append(convert([value])[0])
             new_negatives[category] = real_negatives
 
@@ -266,6 +330,8 @@ def rebuild_in_color_space(space, target_color_space, *, gamut_tolerance=0.05):
         negative_prototypes=new_negatives if not space.disjoint else None,
         description=space.description,
     )
+    rebuilt.negative_names = {tuple(convert([q])[0]): label
+                              for q,label in getattr(space,'negative_names',{}).items()}
     rebuilt.tconorm = getattr(space, "tconorm", "bounded_sum")
     rebuilt.precompute_pack()
     return rebuilt
@@ -275,7 +341,7 @@ def build_granular_color_space(name, categories, *, color_space="LAB",
                                reference_domain=None, lambda1=0.5, lambda2=1.5,
                                disjoint=True, covering=True, samples=27,
                                negative_prototypes=None, auxiliary_negatives=None,
-                               description=None, tconorm="bounded_sum"):
+                               description=None, tconorm="bounded_sum", hierarchy=None):
     """Build a polyhedral granular color space from native-model coordinates.
 
     Parameters
@@ -360,13 +426,8 @@ def build_granular_color_space(name, categories, *, color_space="LAB",
             if any(np.linalg.norm(xyz - p) <= Voronoi.DEFAULT_MERGE_EPS
                    for _, p in own):
                 raise ValueError(f"Category '{label}' cannot use its own positive as negative.")
-            if covering and not disjoint and not any(
-                    np.linalg.norm(xyz - p) <= Voronoi.DEFAULT_MERGE_EPS
-                    and cat_index != idx
-                    for cat_index, p in zip(category_index, coords)):
-                raise ValueError("Covering non-disjoint spaces require negative sites "
-                                 "from another category's positives.")
-            rows.append(xyz)
+            if not any(np.linalg.norm(xyz-q) <= Voronoi.DEFAULT_MERGE_EPS for q in rows):
+                rows.append(xyz)
         if disjoint and rows:
             raise ValueError("Disjoint spaces use automatic negatives from other categories.")
         explicit[label] = rows
@@ -419,14 +480,17 @@ def build_granular_color_space(name, categories, *, color_space="LAB",
         else:
             values = [tuple(row) for row in explicit[label]]
         negatives_map[label] = values + [tuple(row) for row in extra]
-    return GranularFuzzyColorSpace(
+    result = GranularFuzzyColorSpace(
         name, groups, tconorm=tconorm, disjoint=disjoint, covering=covering,
         color_space=mode, reference_domain=domain,
         lambda1=lambda1, lambda2=lambda2,
         samples=(int(samples) if not covering else 0),
         negative_prototypes=negatives_map,
-        auxiliary_negatives=extra, description=description,
+        auxiliary_negatives=extra, description=description, hierarchy=hierarchy,
     )
+    if covering and not disjoint and _has_independent_negatives(explicit, coords):
+        validate_custom_coverage(result)
+    return result
 
 
 
@@ -475,8 +539,6 @@ def rebuild_granular_in_color_space(space, target_color_space, *, gamut_toleranc
                 match = next((v for old, v in old_to_new
                               if np.linalg.norm(old - q) < Voronoi.DEFAULT_MERGE_EPS), None)
                 if match is None:
-                    if space.covering:
-                        raise ValueError("An explicit negative was not a real positive site.")
                     match = convert(q.reshape(1, 3))[0]
                 values.append(match)
             negatives[cat.label] = values
@@ -489,7 +551,9 @@ def rebuild_granular_in_color_space(space, target_color_space, *, gamut_toleranc
         disjoint=space.disjoint, covering=space.covering,
         samples=space.samples or 27,
         negative_prototypes=negatives if not space.disjoint else None,
-        tconorm=space.tconorm, description=space.description,
+        tconorm=space.tconorm, description=space.description, hierarchy=space.hierarchy,
     )
+    rebuilt.negative_names = {tuple(convert([q])[0]): label
+                              for q,label in getattr(space,'negative_names',{}).items()}
     rebuilt.precompute_pack()
     return rebuilt

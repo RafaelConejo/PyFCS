@@ -6,7 +6,10 @@ used for granular membership. The complete atomic geometry is available via
 ``get_all_prototypes`` and ``get_granules``. No artificial category prototype
 is used to determine membership or the winning category.
 """
+import copy
 import numpy as np
+
+from Source.fuzzy.ColorHierarchy import ColorHierarchy
 
 from Source.fuzzy.FuzzyColor import FuzzyColor
 from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
@@ -21,7 +24,7 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
                  disjoint=True, covering=True, color_space="LAB",
                  reference_domain=None, lambda1=0.5, lambda2=1.5,
                  samples=0, negative_prototypes=None, auxiliary_negatives=None,
-                 description=None):
+                 description=None, hierarchy=None):
         # The grouped category objects preserve the complete input order.
         self.categories = list(categories)
         if len(self.categories) < 2:
@@ -63,6 +66,7 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
             auxiliary_negatives=auxiliary_negatives, description=description,
         )
         self.set_tconorm(tconorm)
+        self._hierarchy = ColorHierarchy(self.categories, hierarchy)
 
     def set_tconorm(self, tconorm):
         operator = str(tconorm).lower().replace("-", "_")
@@ -70,6 +74,139 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
             raise ValueError("tconorm must be 'max' or 'bounded_sum'.")
         self.tconorm = operator
         return self.tconorm
+
+    @property
+    def hierarchy(self):
+        """A defensive copy of the optional semantic graph."""
+        return self._hierarchy.to_dict()
+
+    def with_hierarchy(self, nodes):
+        """Return a semantic copy sharing existing geometry, without rebuilding it."""
+        graph = ColorHierarchy(self.categories, nodes)
+        result = copy.copy(self)
+        result._hierarchy = graph
+        return result
+
+    @classmethod
+    def from_flat_space(cls, space):
+        """Lift a single-granule-per-category space without constructing geometry."""
+        if isinstance(space, cls):
+            return space
+        result = cls(space.space_name, [GranularFuzzyColor(p.label, [p], [c], [s])
+                     for p, c, s in zip(space.prototypes, space.cores, space.supports)],
+                     disjoint=space.disjoint, covering=space.covering,
+                     color_space=space.color_space, reference_domain=space.reference_domain,
+                     lambda1=space.lambda1, lambda2=space.lambda2, samples=space.samples,
+                     negative_prototypes=space.negative_prototypes,
+                     auxiliary_negatives=space.auxiliary_negatives,
+                     description=space.description)
+        for attr in ("geometry_only_import", "source_file_format", "import_warnings",
+                     "num_aux_negatives_recorded"):
+            if hasattr(space, attr):
+                setattr(result, attr, getattr(space, attr))
+        return result
+
+    def make_hierarchy_view(self, labels, name=None):
+        """Create a separate flat evaluation view from non-overlapping nodes.
+
+        This preserves atomic geometry and the runtime t-conorm, and never
+        reconstructs Voronoi. Views with repeated leaf occurrences cannot be
+        represented by the existing flat GUI and are deliberately rejected.
+        """
+        labels = list(labels)
+        if len(labels) < 2 or len(set(labels)) != len(labels):
+            raise ValueError("Select at least two distinct categories for a view.")
+        groups, used = [], set()
+        for label in labels:
+            counts = self._hierarchy.granule_occurrence_counts(label)
+            leaves = self._hierarchy.unique_granules(label)
+            if any(n != 1 for n in counts.values()) or used.intersection(leaves):
+                raise ValueError("Selected categories share granules. Select non-overlapping "
+                                 "categories (do not mix parents and their children).")
+            used.update(leaves)
+            indices = [self._granule_index[g] for g in leaves]
+            groups.append(GranularFuzzyColor(label,
+                          [self._flat_prototypes[i] for i in indices],
+                          [self._flat_cores[i] for i in indices],
+                          [self._flat_supports[i] for i in indices]))
+        covering = self.covering and used == set(self._granule_index)
+        # A singleton partition uses legacy normalization in the flat API;
+        # refusing that view prevents silent divergence from raw hierarchical
+        # membership. Such categories can be evaluated in the hierarchy dialog.
+        if self.disjoint and covering and all(len(c.prototypes) == 1 for c in groups):
+            raise ValueError("A complete singleton partition uses legacy normalized memberships. "
+                             "Use the base model or the raw hierarchy evaluator instead.")
+        result = GranularFuzzyColorSpace(name or self.space_name, groups,
+                     tconorm=self.tconorm, disjoint=self.disjoint, covering=covering,
+                     color_space=self.color_space, reference_domain=self.reference_domain,
+                     lambda1=self.lambda1, lambda2=self.lambda2, samples=self.samples,
+                     auxiliary_negatives=self.auxiliary_negatives)
+        result.geometry_only_import = True
+        result.num_aux_negatives_recorded = getattr(self, "num_aux_negatives_recorded",
+                                                    len(self.auxiliary_negatives))
+        result.import_warnings = ("Derived semantic view: original atomic geometry is retained. "
+                                  "This flat view is not a new geometric construction. "
+                                  "Keep the original hierarchical model for editing.")
+        return result
+
+    def get_hierarchy_granule_labels(self, label):
+        return self._hierarchy.granule_labels(label)
+
+    def get_root_categories(self):
+        return self._hierarchy.roots()
+
+    def get_all_category_labels(self):
+        return self._hierarchy.category_labels
+
+    def get_category_children(self, label):
+        return self._hierarchy.children(label)
+
+    def get_descendant_granules(self, label):
+        return tuple(self._flat_prototypes[self._granule_index[g]]
+                     for g in self._hierarchy.unique_granules(label))
+
+    def get_categories_at_level(self, level=0):
+        return self._hierarchy.categories_at_level(level)
+
+    def calculate_membership_snapshot(self, value, input_space="LAB", tconorm=None):
+        """Evaluate each unique geometry once; aggregate every semantic node.
+
+        Raw degrees are intentional. The legacy flat membership API retains
+        historical singleton-partition normalization for existing callers.
+        """
+        coords = self._coordinates(value, input_space)
+        if self.reference_domain.contains_coordinates(coords, eps=1e-9):
+            if self._precomputed is None:
+                self.precompute_pack()
+            degrees = {p.label: float(FuzzyColor._raw_membership_for_index(
+                coords, i, self._precomputed)) for i, p in enumerate(self._flat_prototypes)}
+        else:
+            degrees = {p.label: 0.0 for p in self._flat_prototypes}
+        values = self._hierarchy.evaluate(degrees, self.tconorm if tconorm is None else tconorm)
+        return {"granules": degrees, "categories": {k: float(v) for k, v in values.items()}}
+
+    def calculate_category_membership(self, value, category, input_space="LAB", tconorm=None):
+        if category not in self.get_all_category_labels():
+            raise ValueError(f"Unknown category '{category}'.")
+        return self.calculate_membership_snapshot(value, input_space, tconorm)["categories"][category]
+
+    def get_best_category(self, value, categories=None, input_space="LAB", tconorm=None):
+        labels = tuple(self.get_root_categories() if categories is None else categories)
+        scores = self.calculate_membership_snapshot(value, input_space, tconorm)["categories"]
+        if any(label not in scores for label in labels):
+            raise ValueError("Unknown active category.")
+        top = max((scores[label] for label in labels), default=0.0)
+        if top <= 0.0:
+            return None
+        q = np.asarray(self._coordinates(value, input_space))
+        return min((label for label in labels if abs(scores[label]-top) <= 1e-12),
+                   key=lambda label: min(float(np.dot(p.positive-q, p.positive-q))
+                                         for p in self.get_descendant_granules(label)))
+
+    def calculate_hierarchy_memberships(self, value, input_space="LAB",
+                                        include_zeros=False, tconorm=None):
+        values = self.calculate_membership_snapshot(value, input_space, tconorm)["categories"]
+        return {name: degree for name, degree in values.items() if include_zeros or degree > 0.0}
 
     def get_all_prototypes(self):
         return self._flat_prototypes

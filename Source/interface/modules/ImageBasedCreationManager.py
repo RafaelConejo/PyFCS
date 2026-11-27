@@ -4,12 +4,13 @@ import platform
 import re
 import threading
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, font as tkfont
 
 import numpy as np
 from PIL import Image, ImageTk, ImageOps
 
 import Source.interface.modules.UtilsTools as UtilsTools
+from Source.interface.modules.PaletteBasedCreationManager import PaletteBasedCreationManager
 
 
 class ImageBasedCreationManager:
@@ -22,6 +23,8 @@ class ImageBasedCreationManager:
     files preserve all positive granules. The original files and saved FCS
     geometry remain unchanged.
     """
+
+    _filter_cached_rows = True
 
     BG = "#f5f6f8"
     CARD = "#ffffff"
@@ -99,6 +102,8 @@ class ImageBasedCreationManager:
         self._spinner_angle = 0
 
         self._create_variables()
+        from Source.interface.modules.GranuleManager import InlineCreationTree
+        self._inline_tree = InlineCreationTree(self)
         self._build_ui()
         self._load_workspace_sources(select_first=True)
 
@@ -120,7 +125,7 @@ class ImageBasedCreationManager:
     # Window / State
     def _configure_window_size(self):
         """Center the workspace slightly above the parent (screen-safe)."""
-        width, height = 1200, 700
+        width, height = min(1380, max(1120, self.win.winfo_screenwidth()-50)), 700
         try:
             self.root.update_idletasks()
             self.app.center_popup(self.win, width, height)
@@ -198,7 +203,7 @@ class ImageBasedCreationManager:
         self.source_var = tk.StringVar(value="")
         self.mode_var = tk.StringVar(value="Manual")
         self.help_var = tk.StringVar(
-            value="Click: pixel · Drag: mean · Right-drag: move · Wheel: zoom"
+            value="Click: sample pixel · Drag: mean color · Right-drag: pan · Wheel: zoom"
         )
         self.zoom_var = tk.StringVar(value="Fit")
 
@@ -209,9 +214,10 @@ class ImageBasedCreationManager:
         self.sample_lab_var = tk.StringVar(value="LAB: —")
         self.sample_hex_var = tk.StringVar(value="HEX: —")
 
-        self.selected_count_var = tk.StringVar(value="0 of 0 selected")
+        self.selected_count_var = tk.StringVar(value="0 of 0 granules selected")
         self.color_source_status_var = tk.StringVar(value="")
-        self.search_var = tk.StringVar(value="")  # shared CustomCategoryDialog adapter
+        self.search_var = tk.StringVar(value="")
+        self._search_after_id = None
         self.sample_destination_var = tk.StringVar(value="New category")
         self.sample_action_hint_var = tk.StringVar(
             value="Choose a destination to add the sample as a granule."
@@ -274,8 +280,10 @@ class ImageBasedCreationManager:
 
         left = tk.Frame(paned, bg=self.BG)
         right = tk.Frame(paned, bg=self.BG)
-        paned.add(left, stretch="always", minsize=580)
-        paned.add(right, stretch="always", minsize=450)
+        # Explicit requested pane widths prevent the contents of a newly shown
+        # extraction card from moving the sash before the first idle layout.
+        paned.add(left, stretch="always", minsize=580, width=580)
+        paned.add(right, stretch="always", minsize=480, width=480)
 
         self._build_image_workspace(left)
         self._build_selected_colors_panel(right)
@@ -284,11 +292,11 @@ class ImageBasedCreationManager:
             try:
                 total = paned.winfo_width()
                 if total > 1:
-                    paned.sash_place(0, int(total * 0.60), 1)
+                    paned.sash_place(0, max(580, min(int(total * 0.55), total-480)), 1)
             except Exception:
                 pass
 
-        self._startup_after_ids.append(self.win.after(150, _initial_sash))
+        self._startup_after_ids.append(self.win.after_idle(_initial_sash))
 
     def _build_header(self, parent):
         header = tk.Frame(parent, bg=self.CARD, bd=1, relief="solid")
@@ -323,7 +331,7 @@ class ImageBasedCreationManager:
         )
         self.prev_source_button.pack(side="left", padx=(8, 3))
 
-        self.source_combo = ttk.Combobox(
+        self.source_combo = UtilsTools.styled_combobox(
             inner,
             textvariable=self.source_var,
             state="readonly",
@@ -372,13 +380,30 @@ class ImageBasedCreationManager:
         )
         self.refresh_sources_button.pack(side="left")
 
-        tk.Label(
+        subtitle = tk.Label(
             inner,
             text="Build FCS from image samples",
             font=self.FONT_SMALL,
             bg=self.CARD,
             fg=self.MUTED,
-        ).pack(side="right", padx=(12, 2))
+        )
+        subtitle.pack(side="right", padx=(12, 2))
+        widgets = inner.pack_slaves()
+        for widget in widgets:
+            widget.pack_forget()
+        for i, widget in enumerate(widgets):
+            widget.grid(row=0, column=i, padx=(0, 7), sticky="ew" if widget is self.source_combo else "w")
+            if widget is self.source_combo:
+                inner.grid_columnconfigure(i, weight=1)
+        self.source_combo.configure(width=20)
+        def fit_header(event):
+            required = sum(w.winfo_reqwidth() + 7 for w in widgets)
+            if event.width < required:
+                if subtitle.winfo_manager():
+                    subtitle.grid_remove()
+            elif not subtitle.winfo_manager():
+                subtitle.grid()
+        inner.bind("<Configure>", fit_header)
 
     def _build_image_workspace(self, parent):
         image_card = self._card(parent, "Image")
@@ -415,59 +440,8 @@ class ImageBasedCreationManager:
         controls = tk.Frame(image_card, bg=self.CARD)
         controls.pack(fill="x", pady=(8, 0))
 
-        left_controls = tk.Frame(controls, bg=self.CARD)
-        left_controls.pack(side="left")
-
-        tk.Label(
-            left_controls,
-            text="Extraction:",
-            font=self.FONT_BOLD,
-            bg=self.CARD,
-            fg=self.TEXT,
-        ).pack(side="left")
-
-        self.mode_combo = ttk.Combobox(
-            left_controls,
-            textvariable=self.mode_var,
-            values=("Manual", "Automatic"),
-            state="readonly",
-            width=11,
-        )
-        self.mode_combo.pack(side="left", padx=(7, 6))
-        self.mode_combo.bind("<<ComboboxSelected>>", self._on_mode_changed)
-
-        # Filter ROI pixels before calculating their mean color.
-        self.filters_button = tk.Button(
-            left_controls,
-            text="Filters...",
-            command=self._open_detection_filters,
-            font=self.FONT,
-            bg="#f8fafc",
-            fg=self.TEXT,
-            activebackground="#eef2f7",
-            activeforeground=self.TEXT,
-            relief="solid",
-            bd=1,
-            padx=9,
-            pady=3,
-            cursor="hand2",
-        )
-        self.filters_button.pack(side="left", padx=(4, 0))
-
         right_controls = tk.Frame(controls, bg=self.CARD)
         right_controls.pack(side="right", padx=(8, 0))
-
-        tk.Button(
-            right_controls,
-            text="Fit",
-            command=self._reset_view,
-            font=self.FONT,
-            relief="solid",
-            bd=1,
-            padx=6,
-            pady=2,
-            cursor="hand2",
-        ).pack(side="left", padx=(0, 8))
 
         tk.Label(
             right_controls,
@@ -483,11 +457,22 @@ class ImageBasedCreationManager:
             font=self.FONT_SMALL,
             bg=self.CARD,
             fg=self.TEXT,
-            width=5,
             anchor="w",
-        ).pack(side="left", padx=(3, 0))
+        ).pack(side="left", padx=(2, 4))
 
-        tk.Label(
+        tk.Button(
+            right_controls,
+            text="Fit",
+            command=self._reset_view,
+            font=self.FONT,
+            relief="solid",
+            bd=1,
+            padx=6,
+            pady=2,
+            cursor="hand2",
+        ).pack(side="left")
+
+        self._image_help_label = tk.Label(
             controls,
             textvariable=self.help_var,
             font=self.FONT_SMALL,
@@ -495,31 +480,110 @@ class ImageBasedCreationManager:
             fg=self.MUTED,
             anchor="center",
             justify="center",
-        ).pack(side="left", fill="x", expand=True, padx=8)
+        )
+        self._image_help_label.pack(side="left", fill="x", expand=True, padx=(3, 5))
+        help_font = tkfont.Font(root=self.win, font=self.FONT_SMALL)
+        full_help = self.help_var.get()
+        def fit_help(event):
+            # Reserve the same number of lines for both modes. Avoid clipping
+            # at narrower sash positions or increased Windows text scaling.
+            width = max(1, event.width - 4)
+            lines, used = 1, 0
+            for word in full_help.split():
+                size = help_font.measure(word + " ")
+                if used and used + size > width:
+                    lines += 1
+                    used = 0
+                used += size
+            if (int(self._image_help_label.cget("wraplength")) != width or
+                    int(self._image_help_label.cget("height")) != lines):
+                self._image_help_label.configure(wraplength=width, height=lines)
+        self._image_help_label.bind("<Configure>", fit_help)
 
-        self.manual_card = self._card(image_card, "Manual Sample", padx=9, pady=8)
-        self.manual_card.pack(fill="x", pady=(8, 0))
+        # Both extraction modes occupy the same fixed-height slot. The
+        # image viewport therefore stays stable when changing modes.
+        self.extraction_footer = tk.Frame(image_card, bg=self.CARD, height=153)
+        self.extraction_footer.pack(fill="x", pady=(6, 0))
+        self.extraction_footer.grid_propagate(False)
+        self.extraction_footer.grid_columnconfigure(1, weight=1)
+        self.extraction_footer.grid_rowconfigure(0, weight=1)
+
+        extraction = self._card(self.extraction_footer, "Extraction", padx=7, pady=6)
+        extraction.grid(row=0, column=0, sticky="ns", padx=(0, 7))
+        extraction_controls = tk.Frame(extraction, bg=self.CARD)
+        extraction_controls.pack(expand=True, fill="x", padx=2)
+        self.mode_combo = UtilsTools.styled_combobox(
+            extraction_controls, textvariable=self.mode_var,
+            values=("Manual", "Automatic"), state="readonly", width=10)
+        self.mode_combo.pack(fill="x", pady=(0, 8))
+        self.mode_combo.bind("<<ComboboxSelected>>", self._on_mode_changed)
+        self.filters_button = tk.Button(
+            extraction_controls, text="Filters...", command=self._open_detection_filters,
+            font=self.FONT, bg="#f8fafc", fg=self.TEXT,
+            activebackground="#eef2f7", activeforeground=self.TEXT,
+            relief="solid", bd=1, padx=7, pady=4, cursor="hand2")
+        self.filters_button.pack(fill="x")
+
+        self.manual_card = self._card(self.extraction_footer, "Manual Sample", padx=7, pady=5)
+        self.manual_card.grid(row=0, column=1, sticky="nsew")
         self._build_manual_card(self.manual_card)
-        # A pixel and a large ROI may have differently sized descriptions.
-        # Keep the inspector stable so the image canvas never jumps in height.
-        self.manual_card.configure(height=169)
-        self.manual_card.pack_propagate(False)
-
-        self.auto_card = self._card(image_card, "Automatic Detection", padx=9, pady=8)
+        self.auto_card = self._card(self.extraction_footer, "Automatic Detection", padx=7, pady=5)
+        self.auto_card.grid(row=0, column=1, sticky="nsew")
         self._build_auto_card(self.auto_card)
+        self.auto_card.grid_remove()
+        # Reserve the footer and help bar first; the image consumes the
+        # remaining height, rather than clipping controls at high DPI.
+        canvas_holder.pack_forget()
+        controls.pack_forget()
+        self.extraction_footer.pack_forget()
+        self.extraction_footer.pack(side="bottom", fill="x", pady=(6, 0))
+        controls.pack(side="bottom", fill="x", pady=(8, 0))
+        canvas_holder.pack(fill="both", expand=True)
+        # At higher DPI or narrower sash positions, the destination label
+        # moves above the combobox. The shared height is still mode-independent.
+        def fit_extraction(event):
+            available = max(1, event.width - extraction.winfo_reqwidth() - 7 - 18)
+            self._fit_sample_footer(available)
+        self.extraction_footer.bind("<Configure>", fit_extraction)
+
+    def _fit_sample_footer(self, available):
+        destination = self._sample_destination_frame
+        buttons = self._sample_button_frame
+        needed = destination.winfo_reqwidth() + buttons.winfo_reqwidth() + 8
+        narrow = available < needed
+        if getattr(self, '_sample_controls_stacked', None) != narrow:
+            self._sample_controls_stacked = narrow
+            if narrow:
+                destination.grid(row=0, column=0, columnspan=2, padx=0)
+                buttons.grid(row=1, column=0, columnspan=2, padx=0, pady=(3, 0))
+            else:
+                destination.grid(row=0, column=0, columnspan=1, padx=(0, 5))
+                buttons.grid(row=0, column=1, columnspan=1, padx=0, pady=0)
+        action_h = max(30, destination.winfo_reqheight(), buttons.winfo_reqheight())
+        if narrow:
+            action_h = destination.winfo_reqheight() + buttons.winfo_reqheight() + 3
+        if int(self._sample_actions.cget('height')) != action_h:
+            self._sample_actions.configure(height=action_h)
+        # Allocate space for title, sample details and two lines of status.
+        # Measure fonts rather than relying on a Windows DPI assumption.
+        line = tkfont.Font(root=self.win, font=self.FONT_SMALL).metrics('linespace')
+        details_h = max(61, self._sample_detail_minimum)
+        height = max(153, details_h + action_h + 2*line + 32)
+        if int(self.extraction_footer.cget('height')) != height:
+            self.extraction_footer.configure(height=height)
 
     def _quiet_button(self, parent, text, command, *, danger=False,
-                      strong=False, **kwargs):
+                      strong=False, compact=False, **kwargs):
         """Subtle secondary actions; purple is reserved for the main action."""
         background = "#FBEDEE" if danger else "#F5F6F8"
         hover = "#F5DEE1" if danger else "#E9ECF1"
         return tk.Button(
             parent, text=text, command=command,
-            font=self.FONT_BOLD if strong else self.FONT,
+            font=self.FONT_SMALL if compact else (self.FONT_BOLD if strong else self.FONT),
             bg=background, fg=self.TEXT,
             activebackground=hover, activeforeground=self.TEXT,
             relief="solid", bd=1, highlightthickness=0,
-            padx=9, pady=4, cursor="hand2", **kwargs
+            padx=5 if compact else 9, pady=3 if compact else 4, cursor="hand2", **kwargs
         )
 
     def _add_action_button(self, parent, text, command, *, role="category", **kwargs):
@@ -552,19 +616,22 @@ class ImageBasedCreationManager:
 
     def _build_manual_card(self, card):
         """Stable-height sample inspection and clearly grouped add actions."""
-        details = tk.Frame(card, bg=self.CARD, height=69)
+        small_line = tkfont.Font(root=self.win, font=self.FONT_SMALL).metrics('linespace')
+        title_line = tkfont.Font(root=self.win, font=self.FONT_BOLD).metrics('linespace')
+        self._sample_detail_minimum = max(61, title_line + 3*small_line + 9)
+        details = tk.Frame(card, bg=self.CARD, height=self._sample_detail_minimum)
         details.pack(fill="x", pady=(0, 4))
         details.grid_propagate(False)
         details.grid_rowconfigure(0, weight=1)
-        details.grid_columnconfigure(1, weight=1, minsize=210)
+        details.grid_columnconfigure(1, weight=1, minsize=100)
 
         self.sample_swatch = tk.Canvas(
-            details, width=86, height=54, bg=self.CARD,
+            details, width=62, height=48, bg=self.CARD,
             highlightthickness=0, bd=0,
         )
-        self.sample_swatch.grid(row=0, column=0, sticky="w", padx=(1, 12))
+        self.sample_swatch.grid(row=0, column=0, sticky="w", padx=(9, 10))
         self.sample_swatch_rect = self.sample_swatch.create_rectangle(
-            3, 3, 83, 51, fill="#D9DDE3", outline="#979CA6", width=1,
+            3, 3, 59, 45, fill="#D9DDE3", outline="#979CA6", width=1,
         )
 
         # The context is allowed to change from Pixel to ROI without changing
@@ -576,11 +643,13 @@ class ImageBasedCreationManager:
             font=self.FONT_BOLD, bg=self.CARD, fg=self.TEXT,
             anchor="w",
         ).pack(fill="x")
-        tk.Label(
+        position_label = tk.Label(
             description, textvariable=self.sample_position_var,
             font=self.FONT_SMALL, bg=self.CARD, fg=self.MUTED,
-            anchor="w", justify="left", height=2, wraplength=245,
-        ).pack(fill="x", pady=(2, 0))
+            anchor="w", justify="left", height=2, wraplength=150,
+        )
+        position_label.pack(fill="x", pady=(1, 0))
+        description.bind("<Configure>", lambda e: position_label.configure(wraplength=max(1, e.width-2)))
         tk.Label(
             description, textvariable=self.sample_filters_var,
             font=("Segoe UI", 8, "italic"), bg=self.CARD, fg=self.MUTED,
@@ -596,46 +665,53 @@ class ImageBasedCreationManager:
                 bg=self.CARD, fg=self.TEXT, anchor="e", justify="right",
             ).pack(anchor="e", pady=1)
 
-        tk.Frame(card, bg=self.BORDER, height=1).pack(fill="x", pady=(2, 7))
+        tk.Frame(card, bg=self.BORDER, height=1).pack(fill="x", pady=(1, 3))
 
-        actions = tk.Frame(card, bg=self.CARD, height=31)
+        actions = self._sample_actions = tk.Frame(card, bg=self.CARD, height=30)
         actions.pack(fill="x")
         actions.pack_propagate(False)
-
-        destination = tk.Frame(actions, bg=self.CARD)
-        destination.pack(side="left", fill="x", expand=True)
-        tk.Label(
+        action_group = tk.Frame(actions, bg=self.CARD)
+        action_group.pack(expand=True)
+        destination = self._sample_destination_frame = tk.Frame(action_group, bg=self.CARD)
+        destination.grid(row=0, column=0, padx=(0, 5))
+        self._sample_destination_label = tk.Label(
             destination, text="Add sample to:",
             bg=self.CARD, fg=self.MUTED, font=self.FONT_SMALL,
-        ).pack(side="left", padx=(0, 6))
-        self.sample_destination_combo = ttk.Combobox(
+        )
+        self._sample_destination_label.pack(side="left", padx=(0, 6))
+        self.sample_destination_combo = UtilsTools.styled_combobox(
             destination, textvariable=self.sample_destination_var,
             values=["New category"], state="readonly", width=14,
         )
-        self.sample_destination_combo.pack(side="left", fill="x", expand=True)
+        self.sample_destination_combo.pack(side="left")
         self.sample_destination_combo.bind(
             "<<ComboboxSelected>>", lambda _e: self._refresh_sample_destinations()
         )
 
-        # Explicit destinations: new category versus new positive granule.
-        # Pack from the right so both actions remain grouped at the far edge.
+        buttons = self._sample_button_frame = tk.Frame(action_group, bg=self.CARD)
+        buttons.grid(row=0, column=1)
+
         self.add_sample_button = self._add_action_button(
-            actions, "Add as Category", self._add_current_sample,
+            buttons, "Add as Category", self._add_current_sample,
             role="category", state="disabled",
         )
-        self.add_sample_button.pack(side="right", padx=(7, 0))
+        self.add_sample_button.configure(font=self.FONT_SMALL_BOLD, padx=5, pady=3)
 
         self.add_sample_to_category_button = self._add_action_button(
-            actions, "Add as Granule", self._add_sample_to_category,
+            buttons, "Add as Granule", self._add_sample_to_category,
             role="granule", state="disabled",
         )
-        self.add_sample_to_category_button.pack(side="right")
+        self.add_sample_to_category_button.configure(font=self.FONT_SMALL_BOLD, padx=3, pady=3)
+        self.add_sample_to_category_button.pack(side="left")
+        self.add_sample_button.pack(side="left", padx=(4, 0))
 
-        tk.Label(
+        hint = tk.Label(
             card, textvariable=self.sample_action_hint_var,
             bg=self.CARD, fg=self.MUTED, font=self.FONT_SMALL,
             anchor="center", justify="center",
-        ).pack(fill="x", pady=(4, 0))
+        )
+        hint.pack(fill="x", pady=(2, 0))
+        card.bind("<Configure>", lambda e: hint.configure(wraplength=max(1, e.width-20)), add="+")
 
     def _build_auto_card(self, card):
         top = tk.Frame(card, bg=self.CARD)
@@ -660,7 +736,7 @@ class ImageBasedCreationManager:
             bd=1,
             cursor="hand2",
         )
-        self.threshold_minus_button.pack(side="left", padx=(12, 4))
+        self.threshold_minus_button.pack(side="left", padx=(6, 3))
 
         self.threshold_plus_button = tk.Button(
             top,
@@ -673,7 +749,7 @@ class ImageBasedCreationManager:
             bd=1,
             cursor="hand2",
         )
-        self.threshold_plus_button.pack(side="left", padx=(0, 12))
+        self.threshold_plus_button.pack(side="left", padx=(0, 5))
 
         self.detect_button = tk.Button(
             top,
@@ -690,6 +766,7 @@ class ImageBasedCreationManager:
             pady=4,
             cursor="hand2",
         )
+        self.detect_button.configure(font=self.FONT_SMALL_BOLD, padx=7)
         self.detect_button.pack(side="right")
 
         info_row = tk.Frame(card, bg=self.CARD)
@@ -714,7 +791,7 @@ class ImageBasedCreationManager:
         )
         self.detection_status_label.pack(side="right", padx=(12, 0))
 
-        tk.Label(
+        explanation = tk.Label(
             card,
             text=(
                 "Decrease the threshold if too many colors are detected; "
@@ -726,8 +803,10 @@ class ImageBasedCreationManager:
             fg=self.MUTED,
             anchor="w",
             justify="left",
-            wraplength=700,
-        ).pack(fill="x", pady=(2, 0))
+            wraplength=400,
+        )
+        explanation.pack(fill="x", pady=(2, 0))
+        card.bind("<Configure>", lambda e: explanation.configure(wraplength=max(1, e.width-20)), add="+")
 
     def _build_selected_colors_panel(self, parent):
         outer = tk.Frame(parent, bg=self.BG)
@@ -739,23 +818,51 @@ class ImageBasedCreationManager:
         toolbar = tk.Frame(card, bg=self.CARD)
         toolbar.pack(fill="x", pady=(0, 8))
 
+        search_box = tk.Frame(toolbar, bg=self.CARD)
+        search_box.grid(row=0, column=0, sticky="w")
+        tk.Label(search_box, text="Search", font=self.FONT_SMALL_BOLD,
+                 bg=self.CARD, fg=self.TEXT).pack(side="left", padx=(0, 4))
+        self.color_search_entry = tk.Entry(search_box, textvariable=self.search_var,
+                                           font=self.FONT_SMALL, relief="solid", bd=1, width=12)
+        self.color_search_entry.pack(side="left")
+        tk.Button(search_box, text="Clear", command=lambda: self.search_var.set(""),
+                  font=self.FONT_SMALL, bg=self.CARD, fg=self.MUTED, relief="flat",
+                  bd=0, padx=3, pady=2, cursor="hand2").pack(side="left", padx=(4, 0))
+
+        bulk = tk.Frame(toolbar, bg=self.CARD)
+        bulk.grid(row=0, column=1, sticky="e", padx=(10, 0))
+        toolbar.grid_columnconfigure(1, weight=1)
         self._quiet_button(
-            toolbar, "Select All", self._select_all_colors,
+            bulk, "Select All", self._select_all_colors, compact=True,
         ).pack(side="left")
         self._quiet_button(
-            toolbar, "Deselect All", self._deselect_all_colors,
+            bulk, "Deselect All", self._deselect_all_colors, compact=True,
         ).pack(side="left", padx=(5, 0))
         self._quiet_button(
-            toolbar, "Remove", self._remove_selected_colors, danger=True,
+            bulk, "Remove selected", self._remove_selected_colors, danger=True, compact=True,
         ).pack(side="left", padx=(5, 0))
+        self.search_var.trace_add("write", self._schedule_color_search)
+        def fit_search(event):
+            narrow = event.width < bulk.winfo_reqwidth() + search_box.winfo_reqwidth() + 18
+            if getattr(self, '_search_on_second_row', None) == narrow:
+                return
+            self._search_on_second_row = narrow
+            if narrow:
+                search_box.grid(row=0, column=0, columnspan=2, sticky="w", padx=0, pady=0)
+                bulk.grid(row=1, column=0, columnspan=2, sticky="e", padx=0, pady=(5, 0))
+            else:
+                search_box.grid(row=0, column=0, columnspan=1, sticky="w", padx=0, pady=0)
+                bulk.grid(row=0, column=1, columnspan=1, sticky="e", padx=(10, 0), pady=0)
+        toolbar.bind("<Configure>", fit_search)
 
-        tk.Label(
-            toolbar,
-            textvariable=self.selected_count_var,
-            bg=self.CARD,
-            fg=self.MUTED,
-            font=self.FONT_SMALL,
-        ).pack(side="right")
+        group_toolbar = tk.Frame(card, bg=self.CARD)
+        group_toolbar.pack(fill="x", pady=(0, 6))
+        tk.Label(group_toolbar, textvariable=self.selected_count_var, bg=self.CARD,
+                 fg=self.BLUE, font=self.FONT_SMALL_BOLD).pack(side="left", padx=3)
+        tk.Button(group_toolbar, text="Create Group", command=self._inline_tree.add_group,
+                  bg=self.CARD, fg=self.BLUE, font=self.FONT_SMALL_BOLD, relief="solid", bd=1,
+                  activebackground=self.BLUE_SOFT, activeforeground=self.BLUE,
+                  padx=12, pady=4, cursor="hand2").pack(side="right")
 
         list_holder = tk.Frame(card, bg=self.CARD, bd=1, relief="solid")
         list_holder.pack(fill="both", expand=True)
@@ -766,7 +873,7 @@ class ImageBasedCreationManager:
             highlightthickness=0,
             bd=0,
         )
-        colors_scroll = ttk.Scrollbar(
+        colors_scroll = UtilsTools.styled_scrollbar(
             list_holder,
             orient="vertical",
             command=self.colors_canvas.yview,
@@ -830,9 +937,9 @@ class ImageBasedCreationManager:
             bg=self.CARD,
             fg=self.MUTED,
             font=self.FONT_SMALL,
-            anchor="center", justify="center",
+            anchor="w", justify="left",
             wraplength=340,
-        ).grid(row=0, column=0, sticky="nsew", padx=(4, 8))
+        ).grid(row=0, column=0, sticky="w", padx=(4, 8))
 
         tk.Button(
             create_row,
@@ -1255,17 +1362,17 @@ class ImageBasedCreationManager:
             self._clear_current_sample()
 
             self.help_var.set(
-                "Detection uses original image · Right-drag: move · Wheel: zoom"
+                "Detection uses original image · Right-drag: pan · Wheel: zoom"
             )
-            self.manual_card.pack_forget()
-            self.auto_card.pack(fill="x", pady=(8, 0))
+            self.manual_card.grid_remove()
+            self.auto_card.grid()
 
         else:
             self.help_var.set(
-                "Click: pixel · Drag: mean · Right-drag: move · Wheel: zoom"
+                "Click: sample pixel · Drag: mean color · Right-drag: pan · Wheel: zoom"
             )
-            self.auto_card.pack_forget()
-            self.manual_card.pack(fill="x", pady=(8, 0))
+            self.auto_card.grid_remove()
+            self.manual_card.grid()
 
         self._drag_start_source = None
         self._drag_current_source = None
@@ -2008,7 +2115,7 @@ class ImageBasedCreationManager:
 
     # Selected Colors
     def _next_unique_name(self, base):
-        return UtilsTools.make_unique_color_name(base, self.colors.keys())
+        return UtilsTools.make_unique_color_name(base, set(self.colors) | set(self._inline_tree.hierarchy))
 
     @staticmethod
     def _unique_import_label(base, occupied, max_length, additional=()):
@@ -2051,7 +2158,9 @@ class ImageBasedCreationManager:
         originals = self.colors[category]['granules']
         validated = []
         for index, entry in enumerate(entries):
-            label = str(entry.get('label') or '').strip()
+            label, label_error = UtilsTools.check_label_name(entry.get('label'), kind='Granule')
+            if label_error:
+                return label_error
             try:
                 point = np.asarray(entry.get('lab'), dtype=float).reshape(-1)
                 if (point.size != 3 or not np.all(np.isfinite(point))
@@ -2122,7 +2231,7 @@ class ImageBasedCreationManager:
         # established naming and immediate LAB validation behavior.
         if import_mode:
             categories = (reserved_categories if reserved_categories is not None
-                          else set(self.colors))
+                          else set(self.colors) | set(self._inline_tree.hierarchy))
             labels = (reserved_labels if reserved_labels is not None
                       else self._all_granule_labels())
             name = self._unique_import_label(
@@ -2311,14 +2420,18 @@ class ImageBasedCreationManager:
                         granules.append({
                             'label': item.get('label') or f'{name}-g{index+1}',
                             'lab': xyz,
+                            'native_rgb': item.get('native_rgb'),
                         })
                 except (ValueError, TypeError, KeyError) as exc:
                     skipped.append((name, str(exc)))
                     continue
+            if granules is None and isinstance(data, dict) and data.get('native_rgb') is not None:
+                granules = [{'label': name, 'lab': lab, 'native_rgb': data['native_rgb']}]
             prepared.append((name, rgb, lab, granules))
 
         added = []
-        used_categories = set(self.colors)
+        imported_names = {}
+        used_categories = set(self.colors) | set(self._inline_tree.hierarchy)
         used_granules = self._all_granule_labels()
         for name, rgb, lab, granules in prepared:
             # For imported candidates, only uniqueness of the displayed IDs
@@ -2333,7 +2446,9 @@ class ImageBasedCreationManager:
                 skipped.append((name, self._last_add_color_error or 'Invalid category'))
                 continue
             added.append(added_name)
+            imported_names[name] = added_name
 
+        self._last_import_names = imported_names
         self._last_source_import_report = {
             'added': tuple(added),
             'skipped': tuple(skipped),
@@ -2386,9 +2501,12 @@ class ImageBasedCreationManager:
             # Only color_data is used; imported volumes remain untouched.
             loaded = self.app.fuzzy_manager.load_color_file(path)
             source_name = os.path.basename(path)
-            added = self._add_color_source_data(
-                loaded.get("color_data", {}), source_name
-            )
+            from Source.interface.modules.GranuleManager import confirm_tree_import, remember_import_tree, source_colors_with_native_rgb
+            loaded_space = loaded.get("fuzzy_color_space")
+            if not confirm_tree_import(self, loaded_space):
+                return
+            added = self._add_color_source_data(source_colors_with_native_rgb(loaded), source_name)
+            self._inline_tree.add_import(loaded_space, self._last_import_names)
             skipped = list(getattr(self, '_last_source_import_report', {})
                            .get('skipped', ()))
             if added:
@@ -2425,9 +2543,28 @@ class ImageBasedCreationManager:
             self.color_source_status_var.set("Import failed · no changes to existing colors")
             self.app.custom_warning("Color Source Error", message, parent=self.win)
 
-    def _matches_search(self, _name):
-        # Shared CustomCategoryDialog adapter; Image-Based has no text search.
-        return True
+    def _matches_search(self, name):
+        tokens = PaletteBasedCreationManager._search_tokens(self.search_var.get())
+        if not tokens or self._inline_tree.ancestor_match(name, tokens):
+            return True
+        data = self.colors.get(name, {})
+        parts = [name]
+        for granule in data.get('granules', ()):
+            parts.extend((granule['label'], *self._color_values(granule)))
+        searchable = ' '.join(parts).casefold().replace(',', ' ')
+        return all(token.casefold() in searchable for token in tokens)
+
+    def _schedule_color_search(self, *_args):
+        # Coalesce typing into one incremental visibility update.
+        if self._search_after_id is None:
+            def apply():
+                self._search_after_id = None
+                self._inline_tree.layout()
+                self.colors_canvas.yview_moveto(0)
+            self._search_after_id = self._schedule_idle(apply)
+
+    def _bulk_selection_targets(self):
+        return [name for name in self.colors if self._matches_search(name)]
 
     def _scroll_to_bottom(self):
         self._scroll_colors_to_bottom()
@@ -2454,20 +2591,13 @@ class ImageBasedCreationManager:
             if index < total:
                 variable.set(active and bool(granules[index].get('enabled', True)))
 
-        if color_changed and info.get('value_labels'):
-            lab = data['lab']
-            rgb = tuple(int(v) for v in UtilsTools.lab_to_rgb(lab))
-            values = (
-                f'RGB  {rgb[0]}, {rgb[1]}, {rgb[2]}',
-                f'HEX  {UtilsTools.rgb_to_hex(rgb).upper()}',
-                f'LAB  {lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}',
-            )
-            for label, value in zip(info['value_labels'], values):
+        if counter is not None:
+            counter.configure(fg=self.BLUE if total > 1 else self.MUTED)
+        if color_changed:
+            for label, value in zip(info.get('value_labels', ()), self._color_values(data)):
                 label.configure(text=value)
-            swatch = info.get('swatch')
-            if swatch is not None:
-                canvas, rectangle = swatch
-                canvas.itemconfigure(rectangle, fill=data['hex'])
+            if info.get('swatch') is not None:
+                info['swatch'].configure(bg=data['hex'])
 
     def _category_toggle(self, name):
         enabled = bool(self.color_checks[name]['var'].get())
@@ -2497,36 +2627,29 @@ class ImageBasedCreationManager:
         self._update_selected_count()
 
     def _toggle_details(self, name):
+        info = self._row_details.get(name)
+        if info is None:
+            return
         if name in self._expanded_categories:
             self._expanded_categories.discard(name)
+            if info['panel'] is not None:
+                info['panel'].pack_forget()
         else:
             self._expanded_categories.add(name)
-        self._rebuild_one_category(name)
+            if info['panel'] is None:
+                info['panel'] = self._create_image_granules(name, info)
+            info['panel'].pack(fill='x')
+        self._refresh_image_summary(name)
+        self._layout_leaf_details(name, info['guide']._flags)
 
     def _rebuild_one_category(self, name):
-        """Replace only the changed category; preserve all other Tk rows."""
-        info = self._row_details.get(name)
-        if not info:
-            self._refresh_color_list()
-            return
-        old_wrapper = info['wrapper']
-        if not old_wrapper.winfo_exists():
-            return
-        siblings = self.colors_inner.pack_slaves()
-        try:
-            pos = siblings.index(old_wrapper)
-            next_widget = siblings[pos + 1] if pos + 1 < len(siblings) else None
-        except ValueError:
-            next_widget = None
-        self._name_editors = [(key, variable) for key, variable in self._name_editors
-                              if key != name]
-        old_wrapper.destroy()
-        self._row_details.pop(name, None)
+        """Recreate just the edited row, not the rest of the workspace."""
+        info = self._row_details.pop(name, None)
+        if info is not None:
+            self._name_editors = [(key, var) for key,var in self._name_editors if key != name]
+            info['wrapper'].destroy()
         self._create_color_row(name)
-        fresh = self._row_details[name]['wrapper']
-        if next_widget is not None and next_widget.winfo_exists():
-            fresh.pack_configure(before=next_widget)
-        self.colors_canvas.configure(scrollregion=self.colors_canvas.bbox('all'))
+        self._inline_tree.layout()
 
     def _open_granule_picker(self, category, index=None):
         if category not in self.colors:
@@ -2549,7 +2672,9 @@ class ImageBasedCreationManager:
             try:
                 entries = [dict(g) for g in self.colors[category]['granules']]
                 new = {'label': name, 'lab': lab,
-                       'enabled': item.get('enabled', True) if item else True}
+                       'enabled': item.get('enabled', True) if item else True,
+                       'native_rgb': (item.get('native_rgb') if item and np.allclose(lab, item['lab'], rtol=0, atol=1e-10)
+                                      else UtilsTools.matching_native_rgb(lab, _rgb))}
                 if index is None:
                     entries.append(new)
                 else:
@@ -2588,6 +2713,8 @@ class ImageBasedCreationManager:
     def _remove_category(self, category):
         """Remove only this category, after confirmation, without affecting others."""
         if category not in self.colors:
+            return
+        if not self._inline_tree.allow_remove([category]):
             return
         if not messagebox.askyesno(
             "Remove Color Category",
@@ -2632,6 +2759,8 @@ class ImageBasedCreationManager:
             return False
 
         is_last = len(source_items) == 1
+        if is_last and not self._inline_tree.allow_remove([category]):
+            return False
         if is_last and not messagebox.askyesno(
             'Move Last Granule',
             f"Moving '{moving['label']}' to '{destination}' will remove "
@@ -2689,168 +2818,167 @@ class ImageBasedCreationManager:
         finally:
             menu.grab_release()
 
-    def _create_color_row(self, name):
-        """Two-line category rows and expanded, individually selectable granules.
+    # Shared tree presentation from Palette; the image-specific two-line
+    # rows below keep the same controls in a much narrower work area.
+    _guide_set = PaletteBasedCreationManager._guide_set
+    _guide_draw = PaletteBasedCreationManager._guide_draw
+    _action = PaletteBasedCreationManager._action
+    _swatch = PaletteBasedCreationManager._swatch
+    _palette_group_row = PaletteBasedCreationManager._palette_group_row
+    _layout_leaf_details = PaletteBasedCreationManager._layout_leaf_details
+    def _layout_inline_tree(self):
+        PaletteBasedCreationManager._layout_inline_tree(self)
+        if not hasattr(self, 'colors_inner') or not self.colors_inner.winfo_exists():
+            return
+        label = getattr(self, '_no_color_matches', None)
+        if label is None or not label.winfo_exists():
+            label = self._no_color_matches = tk.Label(self.colors_inner,
+                text='No colors match the current search.', bg=self.CARD, fg=self.MUTED,
+                font=self.FONT, pady=20)
+        if self.colors and self.search_var.get().strip() and not self._bulk_selection_targets():
+            if not label.winfo_manager():
+                label.pack(fill='x')
+        else:
+            label.pack_forget()
 
-        RGB and CIELAB are shown on the representative only while collapsed;
-        expanding shows those values for each positive granule instead.
-        """
+
+    def _guide(self, parent, bg, toggle=None):
+        outer = getattr(parent, '_tree_row', parent)
+        guide = PaletteBasedCreationManager._guide(self, outer, bg, toggle)
+        if outer is not parent:
+            guide.pack_configure(before=parent._tree_body)
+            guide._midpoint = 17
+        return guide
+
+    def _table_row(self, parent, bg):
+        row = tk.Frame(parent, bg=bg)
+        row.pack(fill='x')
+        body = tk.Frame(row, bg=bg)
+        body.pack(side='left', fill='both', expand=True)
+        top = tk.Frame(body, bg=bg, height=34)
+        top.pack(fill='x')
+        top.pack_propagate(False)
+        actions = tk.Frame(top, bg=bg)
+        actions.pack(side='right', padx=(0, 2))
+        cell = tk.Frame(top, bg=bg)
+        cell.pack(side='left', fill='both', expand=True)
+        cell._tree_row = row
+        cell._tree_body = body
+        return row, cell, actions
+
+    def _color_values(self, data):
+        lab = data['lab']
+        native = data.get('native_rgb')
+        if native is None and data.get('granules'):
+            # Representative follows the selected positive granule.
+            native = next((g.get('native_rgb') for g in data['granules']
+                           if tuple(g['lab']) == tuple(lab)), None)
+        rgb = tuple(int(round(v)) for v in (native if native is not None else UtilsTools.lab_to_rgb(lab)))
+        return (f'LAB  {lab[0]:.2f}, {lab[1]:.2f}, {lab[2]:.2f}',
+                f'RGB  {rgb[0]}, {rgb[1]}, {rgb[2]}', UtilsTools.rgb_to_hex(rgb).upper())
+
+    def _value_row(self, body, data):
+        row = tk.Frame(body, bg=self.CARD)
+        row.pack(fill='x', pady=(0, 4))
+        labels = []
+        for i, value in enumerate(self._color_values(data)):
+            row.grid_columnconfigure(i, weight=1)
+            label = tk.Label(row, text=value, bg=self.CARD, fg=self.MUTED, font=self.FONT_SMALL)
+            label.grid(row=0, column=i, sticky='ew')
+            labels.append(label)
+        return row, labels
+
+    def _add_inline_granule(self, name):
+        self._open_granule_picker(name)
+
+    def _refresh_image_summary(self, name):
+        info = self._row_details[name]
+        opened = name in self._expanded_categories
+        singleton = len(self.colors[name]['granules']) == 1
+        if opened and singleton:
+            info['delete'].pack_forget()
+        elif not info['delete'].winfo_manager():
+            info['delete'].pack(side='left', padx=2)
+        if not opened and singleton:
+            info['values_row'].pack(fill='x', pady=(0, 4))
+        else:
+            info['values_row'].pack_forget()
+        self._update_visible_selection(name, color_changed=True)
+
+    def _create_image_granules(self, name, info):
+        panel = tk.Frame(info['wrapper'], bg=self.CARD)
+        items = self.colors[name]['granules']
+        active = self.color_checks[name]['var']
+        info['granule_check_vars'] = []
+        info['granule_guides'] = []
+        info['granule_name_vars'] = []
+        for i, g in enumerate(items):
+            row, cell, actions = self._table_row(panel, self.CARD)
+            info['granule_guides'].append(self._guide(cell, self.CARD))
+            var = tk.BooleanVar(value=bool(active.get() and g.get('enabled', True)))
+            info['granule_check_vars'].append((i, var))
+            tk.Checkbutton(cell, variable=var, bg=self.CARD, activebackground=self.CARD,
+                           selectcolor=self.CARD, bd=0, highlightthickness=0, cursor='hand2',
+                           command=lambda n=name,j=i,v=var:self._granule_toggle(n,j,v.get())).pack(side='left')
+            rgb = g.get('native_rgb')
+            if rgb is None: rgb = UtilsTools.lab_to_rgb(g['lab'])
+            self._swatch(cell, UtilsTools.rgb_to_hex(rgb), 21)
+            name_var = tk.StringVar(master=self.win, value=g['label'])
+            entry = tk.Entry(cell, textvariable=name_var, font=self.FONT_SMALL,
+                             bg=self.CARD, fg=self.TEXT, relief='solid', bd=1, width=17)
+            entry.configure(validate='key', validatecommand=(self.win.register(
+                lambda v, var=name_var: len(v) <= UtilsTools.MAX_COLOR_NAME_CHARS or len(v) < len(var.get())), '%P'))
+            entry.pack(side='left', padx=(0, 2))
+            info['granule_name_vars'].append((i, name_var))
+            for event in ('<Return>', '<FocusOut>'):
+                entry.bind(event, lambda _e, n=name, j=i, v=name_var: self._commit_granule_name(n, j, v))
+            self._action(actions, 'Edit', lambda n=name,j=i:self._open_granule_picker(n,j)).pack(side='left')
+            if len(items) > 1:
+                if len(self.colors)>1:
+                    move = self._action(actions, 'Move', lambda:None)
+                    move.configure(command=lambda n=name,j=i,w=move:self._move_menu(n,j,w))
+                    move.pack(side='left')
+                self._action(actions, 'Delete', lambda n=name,j=i:self._remove_granule(n,j), True).pack(side='left')
+            else:
+                info['singleton_move'] = self._action(actions,'Move',lambda n=name:self._inline_tree.move_category(n))
+                info['singleton_delete'] = self._action(actions,'Delete',lambda n=name:self._remove_category(n),True)
+                info['singleton_delete'].pack(side='left')
+            self._value_row(cell._tree_body, g)
+        return panel
+
+    def _create_color_row(self, name):
         if name not in self.colors or name not in self.color_checks:
             return
         data = self.colors[name]
-        active = self.color_checks[name]['var']
-        items = data['granules']
-        expanded = name in self._expanded_categories
-
         wrapper = tk.Frame(self.colors_inner, bg=self.CARD)
-        wrapper.pack(fill='x', padx=4, pady=3)
-        self._row_details[name] = {
-            'wrapper': wrapper, 'granule_check_vars': [],
-            'count_label': None, 'swatch': None, 'value_labels': [],
-        }
-
-        background = self.PANEL
-        row = tk.Frame(wrapper, bg=background, height=57 if not expanded else 35)
-        row.pack(fill='x')
-        row.pack_propagate(False)
-        top = tk.Frame(row, bg=background, height=33)
-        top.pack(fill='x')
-        top.pack_propagate(False)
-        tk.Checkbutton(
-            top, variable=active, bg=background, activebackground=background,
-            selectcolor=background, cursor='hand2',
-            command=lambda key=name: self._category_toggle(key),
-            highlightthickness=0, bd=0,
-        ).pack(side='left', padx=(2, 1))
-
-        toggle = tk.Label(
-            top, text='▾' if expanded else '▸', bg=background, fg=self.BLUE,
-            font=self.FONT_BOLD, width=2, anchor='center', cursor='hand2',
-        )
-        toggle.pack(side='left')
-        toggle.bind('<Button-1>', lambda _e, key=name: self._toggle_details(key))
-
-        if not expanded:
-            swatch = tk.Canvas(top, width=26, height=26, bg=background,
-                               highlightthickness=0, bd=0)
-            swatch.pack(side='left', padx=(2, 7))
-            swatch_rectangle = swatch.create_rectangle(
-                1, 1, 25, 25, fill=data['hex'], outline='#979ca6')
-            self._row_details[name]['swatch'] = (swatch, swatch_rectangle)
-
-        # Right-side controls are packed before the expanding name field,
-        # so they stay visible even when the category name is long.
-        tk.Button(
-            top, text='×', font=self.FONT_BOLD,
-            fg=self.RED, bg=background, activebackground=background,
-            relief='flat', bd=0, highlightthickness=0, cursor='hand2',
-            command=lambda key=name: self._remove_category(key),
-        ).pack(side='right', padx=(1, 4))
-        tk.Button(
-            top, text='+', font=self.FONT_BOLD, fg=self.BLUE,
-            bg=background, activebackground=background,
-            relief='flat', bd=0, highlightthickness=0, cursor='hand2',
-            command=lambda key=name: self._open_granule_picker(key),
-        ).pack(side='right', padx=(1, 2))
-
-        n_selected = sum(bool(g.get('enabled', True)) for g in items) if active.get() else 0
-        n_total = len(items)
-        count_label = tk.Label(
-            top, text=f'{n_selected}/{n_total}', font=self.FONT_SMALL_BOLD,
-            fg=self.BLUE if n_total > 1 else self.MUTED,
-            bg=self.BLUE_SOFT if n_total > 1 else self.SOFT,
-            padx=5, cursor='hand2',
-        )
-        count_label.pack(side='right', padx=(1, 3))
-        self._row_details[name]['count_label'] = count_label
-        count_label.bind('<Button-1>', lambda _e, key=name: self._toggle_details(key))
-
-        name_var = tk.StringVar(value=name)
-        entry = tk.Entry(top, textvariable=name_var, font=self.FONT_BOLD,
-                         relief='solid', bd=1, width=10)
-        entry.pack(side='left', fill='x', expand=True, padx=(1, 2))
-        entry.bind('<Return>', lambda _e, old=name, v=name_var: self._commit_color_name(old, v))
-        entry.bind('<FocusOut>', lambda _e, old=name, v=name_var: self._commit_color_name(old, v))
-        self._name_editors.append((name, name_var))
-
-        def color_values(parent, lab, *, indent=28, bg=background):
-            """Show RGB / HEX / LAB in three aligned columns, on one line."""
-            rgb = tuple(int(v) for v in UtilsTools.lab_to_rgb(lab))
-            hex_value = UtilsTools.rgb_to_hex(rgb).upper()
-            l, a, b = lab
-            value_row = tk.Frame(parent, bg=bg, height=20)
-            value_row.pack(fill='x', padx=(indent, 3))
-            value_row.pack_propagate(False)
-            fields = (
-                f'RGB  {rgb[0]}, {rgb[1]}, {rgb[2]}',
-                f'HEX  {hex_value}',
-                f'LAB  {l:.2f}, {a:.2f}, {b:.2f}',
-            )
-            labels = []
-            for col, (text, minimum, weight) in enumerate(zip(
-                fields, (102, 80, 145), (3, 2, 4)
-            )):
-                value_row.grid_columnconfigure(col, weight=weight, minsize=minimum)
-                label = tk.Label(
-                    value_row, text=text,
-                    font=self.FONT_SMALL, bg=bg, fg=self.MUTED,
-                    anchor='center', justify='center',
-                )
-                label.grid(row=0, column=col, sticky='nsew')
-                labels.append(label)
-            return labels
-
-        if not expanded:
-            self._row_details[name]['value_labels'] = color_values(
-                row, data['lab'], indent=52)
-            return
-
-        for i, g in enumerate(items):
-            bg = self.CARD if i % 2 else self.PANEL
-            child = tk.Frame(wrapper, bg=bg, height=57)
-            child.pack(fill='x', padx=(13, 0))
-            child.pack_propagate(False)
-
-            first_line = tk.Frame(child, bg=bg, height=35)
-            first_line.pack(fill='x')
-            first_line.pack_propagate(False)
-            gv = tk.BooleanVar(value=bool(active.get() and g.get('enabled', True)))
-            self._row_details[name]['granule_check_vars'].append((i, gv))
-            tk.Checkbutton(
-                first_line, variable=gv, bg=bg, activebackground=bg,
-                selectcolor=bg, bd=0, highlightthickness=0, cursor='hand2',
-                command=lambda key=name, ix=i, v=gv: self._granule_toggle(key, ix, v.get()),
-            ).pack(side='left', padx=(2, 2))
-            swatch = tk.Canvas(first_line, width=22, height=22, bg=bg,
-                               highlightthickness=0, bd=0)
-            swatch.pack(side='left', padx=(0, 6))
-            rgb = tuple(int(v) for v in UtilsTools.lab_to_rgb(g['lab']))
-            swatch.create_rectangle(1, 1, 21, 21,
-                                    fill=UtilsTools.rgb_to_hex(rgb), outline='#979ca6')
-
-            # Draw actions before the expanding name so they never disappear.
-            tk.Button(
-                first_line, text='×', font=self.FONT_SMALL_BOLD, fg=self.RED,
-                bg=bg, relief='flat', bd=0, highlightthickness=0, cursor='hand2',
-                command=lambda key=name, ix=i: self._remove_granule(key, ix),
-            ).pack(side='right', padx=(1, 4))
-            if len(self.colors) > 1:
-                move = tk.Button(first_line, text='Move', font=self.FONT_SMALL,
-                                 bg=bg, fg=self.BLUE, relief='flat', bd=0,
-                                 highlightthickness=0, cursor='hand2')
-                move.configure(command=lambda key=name, ix=i, b=move:
-                               self._move_menu(key, ix, b))
-                move.pack(side='right', padx=(1, 3))
-            tk.Button(
-                first_line, text='Edit', font=self.FONT_SMALL,
-                bg=bg, fg=self.BLUE, relief='flat', bd=0, highlightthickness=0, cursor='hand2',
-                command=lambda key=name, ix=i: self._open_granule_picker(key, ix),
-            ).pack(side='right', padx=(1, 3))
-            tk.Label(
-                first_line, text=g['label'], font=self.FONT_SMALL,
-                bg=bg, fg=self.TEXT, anchor='w',
-            ).pack(side='left', fill='x', expand=True)
-            color_values(child, g['lab'], indent=39, bg=bg)
+        row, cell, actions = self._table_row(wrapper, self.CARD)
+        toggle = lambda n=name:self._toggle_details(n)
+        guide = self._guide(cell, self.CARD, toggle)
+        tk.Checkbutton(cell, variable=self.color_checks[name]['var'], bg=self.CARD,
+                       activebackground=self.CARD, selectcolor=self.CARD, bd=0,
+                       highlightthickness=0, cursor='hand2',
+                       command=lambda n=name:self._category_toggle(n)).pack(side='left')
+        swatch = self._swatch(cell, data['hex'], toggle=toggle)
+        var = tk.StringVar(value=name)
+        entry = tk.Entry(cell, textvariable=var, font=self.FONT_BOLD, relief='solid', bd=1, width=17)
+        entry.pack(side='left', padx=(0, 2))
+        entry.configure(validate='key', validatecommand=(self.win.register(lambda v:len(v)<=UtilsTools.MAX_CATEGORY_NAME_CHARS or len(v)<len(var.get())), '%P'))
+        for event in ('<Return>', '<FocusOut>'):
+            entry.bind(event, lambda _e,n=name,v=var:self._commit_color_name(n,v))
+        self._name_editors.append((name,var))
+        count = self._action(actions, '', toggle)
+        count.pack(side='left', padx=2)
+        move = self._action(actions, 'Move', lambda n=name:self._inline_tree.move_category(n))
+        delete = self._action(actions, 'Delete', lambda n=name:self._remove_category(n), True)
+        delete.pack(side='left', padx=2)
+        values_row, labels = self._value_row(cell._tree_body, data)
+        info = self._row_details[name] = dict(wrapper=wrapper, guide=guide, swatch=swatch,
+            panel=None, move=move, delete=delete, count_label=count, values_row=values_row,
+            value_labels=labels, granule_check_vars=[], granule_guides=[])
+        if name in self._expanded_categories:
+            info['panel'] = self._create_image_granules(name, info)
+            info['panel'].pack(fill='x')
+        self._refresh_image_summary(name)
 
     def _append_color_rows(self, names):
         if not hasattr(self, 'colors_inner'):
@@ -2871,7 +2999,12 @@ class ImageBasedCreationManager:
         # created. Refresh that one transition so pre-existing granule rows
         # also expose the action; ordinary additions remain append-only.
         if len(self.colors) > 1 and len(self.colors) - len(names) == 1:
-            self._refresh_color_list()
+            # Only the existing multi-granule panel needs its new Move action.
+            # The shared reconciler preserves every other widget.
+            previous = next((n for n in self.colors if n not in names), None)
+            if previous in self._expanded_categories and len(self.colors[previous]['granules']) > 1:
+                self._inline_tree._dirty_leaf_rows = set(getattr(self._inline_tree, '_dirty_leaf_rows', ())) | {previous}
+            self._inline_tree.refresh()
             return
         if len(self.colors) == len(names):
             for child in self.colors_inner.winfo_children():
@@ -2880,6 +3013,7 @@ class ImageBasedCreationManager:
             self._row_details = {}
         for name in names:
             self._create_color_row(name)
+        self._inline_tree.layout()
         self._refresh_sample_destinations()
 
     def _refresh_color_list(self):
@@ -2897,6 +3031,7 @@ class ImageBasedCreationManager:
                      justify='center', pady=20).pack(fill='x')
         for name in self.colors:
             self._create_color_row(name)
+        self._inline_tree.layout()
         self._update_selected_count()
         self._refresh_sample_destinations()
         self._schedule_idle(lambda: self.colors_canvas.yview_moveto(top)
@@ -2916,16 +3051,16 @@ class ImageBasedCreationManager:
     def _commit_color_name(self, old_name, name_var):
         if old_name not in self.colors:
             return True
-        requested = name_var.get().strip()
-        if requested == old_name:
+        requested, error = UtilsTools.check_label_name(name_var.get(), max_length=UtilsTools.MAX_CATEGORY_NAME_CHARS, kind='Category')
+        if requested == old_name and not error:
             return True
         name_var.set(old_name)  # Prevent duplicate FocusOut warning on modal.
-        if not requested or len(requested) > UtilsTools.MAX_CATEGORY_NAME_CHARS:
+        if error:
             self.app.custom_warning('Invalid Category Name',
                 f'Category name must contain 1 to {UtilsTools.MAX_CATEGORY_NAME_CHARS} characters.',
                 parent=self.win)
             return False
-        if requested in self.colors:
+        if requested in (set(self.colors) | set(self._inline_tree.hierarchy)):
             self.app.custom_warning('Duplicate Category',
                 f"Category '{requested}' already exists.", parent=self.win)
             return False
@@ -2962,21 +3097,24 @@ class ImageBasedCreationManager:
         if old_name in self._expanded_categories:
             self._expanded_categories.remove(old_name)
             self._expanded_categories.add(requested)
+        self._inline_tree.rename_leaf(old_name, requested)
         self._sync_representative(requested)
         self._refresh_color_list()
         return True
 
     def _update_selected_count(self):
-        total = len(self.color_checks)
-        selected = sum(bool(ch['var'].get()) for ch in self.color_checks.values())
+        if self._inline_tree._batch_selection:
+            return
         granules = sum(sum(g.get('enabled', True) for g in data['granules'])
                        for name, data in self.colors.items()
                        if self.color_checks[name]['var'].get())
-        self.selected_count_var.set(f'{selected}/{total} categories · {granules} granules')
+        self.selected_count_var.set(f'{granules} of {sum(len(d["granules"]) for d in self.colors.values())} granules selected')
+        self._inline_tree.update_checks()
 
     def _select_all_colors(self):
         """Select in O(N) without recreating any category/granule widgets."""
-        for name, check in self.color_checks.items():
+        for name in self._bulk_selection_targets():
+            check = self.color_checks[name]
             check['var'].set(True)
             for granule in self.colors[name]['granules']:
                 granule['enabled'] = True
@@ -2988,16 +3126,19 @@ class ImageBasedCreationManager:
 
     def _deselect_all_colors(self):
         """Deselect in place; preserve granule flags for later reactivation."""
-        for name, check in self.color_checks.items():
+        for name in self._bulk_selection_targets():
+            check = self.color_checks[name]
             check['var'].set(False)
             self._update_visible_selection(name)
         self._update_selected_count()
 
     def _remove_selected_colors(self):
-        names = [name for name, check in self.color_checks.items() if check['var'].get()]
+        names = [name for name in self._bulk_selection_targets() if self.color_checks[name]['var'].get()]
         if not names:
             self.app.custom_warning('No Category Selected',
                                     'Select at least one category to remove.', parent=self.win)
+            return
+        if not self._inline_tree.allow_remove(names):
             return
         for name in names:
             del self.colors[name]
@@ -3007,7 +3148,37 @@ class ImageBasedCreationManager:
 
     def _add_custom_color(self):
         """Re-use the same full granular category dialog as Palette Creation."""
-        UtilsTools.CustomCategoryDialog(self)
+        self._inline_tree.add_category()
+
+    def _commit_granule_name(self, category, index, variable):
+        """Rename a sampled granule in place, preserving its exact coordinates."""
+        items = self.colors.get(category, {}).get('granules', [])
+        if not 0 <= index < len(items):
+            return False
+        old = items[index]['label']
+        new, error = UtilsTools.check_label_name(variable.get(), kind='Granule')
+        if new == old and not error:
+            return True
+        variable.set(old)
+        if self._detection_running or self.app._has_any_active_job():
+            error = 'Finish the active process first.'
+        occupied = self._all_granule_labels(exclude_category=category)
+        occupied.update(g['label'] for i, g in enumerate(items) if i != index)
+        if error or new in occupied:
+            self.app.custom_warning('Invalid Granule Name', error or f"Granule '{new}' already exists.", parent=self.win)
+            return False
+        items[index]['label'] = new
+        variable.set(new)
+        if self.search_var.get().strip():
+            self._schedule_color_search()
+        return True
+
+    def _commit_pending_granule_names(self):
+        for category, info in list(self._row_details.items()):
+            for index, variable in info.get('granule_name_vars', []):
+                if not self._commit_granule_name(category, index, variable):
+                    return False
+        return True
 
     def _commit_pending_color_names(self):
         for old_name, name_var in list(self._name_editors):
@@ -3031,62 +3202,9 @@ class ImageBasedCreationManager:
         return selected
 
     def _create_color_space(self):
-        if not self._commit_pending_color_names():
+        if self._detection_running:
             return
-        selected = self._selected_category_granules()
-        if len(selected) < 2:
-            self.app.custom_warning('Not Enough Categories',
-                'Select at least two categories to build a color space.', parent=self.win)
-            return
-        occupied = []
-        for category, granules in selected.items():
-            for label, lab in granules.items():
-                _, _, error = UtilsTools.check_granule_site(label, lab, occupied,
-                                                            max_name_length=64)
-                if error:
-                    self.app.custom_warning('Invalid Granule', error, parent=self.win)
-                    return
-                occupied.append((category, label, lab))
-        granular = any(len(g) > 1 or next(iter(g)) != cat
-                       for cat, g in selected.items())
-        if not granular:
-            previous = getattr(self.app, 'color_checks', None)
-            self.app.color_checks = self.color_checks
-            try:
-                started = self.app.create_color_space(parent=self.win)
-            finally:
-                if previous is None:
-                    try: delattr(self.app, 'color_checks')
-                    except AttributeError: pass
-                else:
-                    self.app.color_checks = previous
-            if started:
-                self.close()
-            return
-        representatives = {cat: next(iter(g.values())) for cat, g in selected.items()}
-
-        def on_create(name, options):
-            native = {
-                category: {g['label']: np.asarray(g['native_rgb'], dtype=float)
-                           for g in self.colors[category]['granules']
-                           if g.get('enabled', True) and g.get('native_rgb') is not None}
-                for category in selected
-            }
-            saved_options = UtilsTools.prepare_granular_creation_options(
-                selected, options, native_rgb=native,
-            )
-            return self.app.save_cs(name, representatives, options=saved_options)
-        try:
-            dialog = UtilsTools.FCSCreationDialog(
-                self.win, representatives, on_accept=on_create,
-                warn=self.app.custom_warning)
-            dialog.transient(self.win)
-            dialog.grab_set()
-            dialog.wait_window()
-            if dialog.result:
-                self.close()
-        except (ValueError, TypeError, RuntimeError, tk.TclError) as exc:
-            self.app.custom_warning('Cannot Build Space', str(exc), parent=self.win)
+        self._inline_tree.configure()
 
     def _dispatch_colors_mousewheel(self, event):
         """Scroll over any child of the category list, not other controls."""

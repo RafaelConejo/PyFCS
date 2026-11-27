@@ -1,0 +1,321 @@
+{
+  "model": "C:\\Users\\rafav\\Desktop\\PYFCS\\fuzzy_color_spaces\\test\\basic_granular_complete_PyFCS.json",
+  "model_file_sha256": "98b3634cf78fb207976bd9af230d09dd28e621b38544e98cb1d8dcf3a5f07733",
+  "evaluation": "C:\\Users\\rafav\\Desktop\\PYFCS\\fuzzy_color_spaces\\test\\evaluation_basic_granular_complete.json",
+  "seed": 12345,
+  "declared_samples": 10000000,
+  "processed_samples": 10000000,
+  "complete_file_validated": true,
+  "engine": "fast",
+  "fast_scalar_max_error": 1.3877787807814457e-16,
+  "tolerance": 1e-06,
+  "seconds": 562.5656175999902,
+  "modes": {
+    "max": {
+      "mae": 0.03063984894392786,
+      "rmse": 0.10086090968905356,
+      "max_error": 0.7552052349791782,
+      "membership_within_tolerance_fraction": 0.8736696692307693,
+      "samples_all_within_tolerance_fraction": 0.2040619,
+      "winner_set_agreement": 0.6266862,
+      "winner_overlap_agreement": 0.8739237,
+      "worst": {
+        "sample_index": 80668,
+        "rgb": [
+          66,
+          228,
+          107
+        ],
+        "category": "Blue",
+        "java": 1.0,
+        "pyfcs": 0.2447947650208217,
+        "absolute_error": 0.7552052349791782
+      },
+      "per_category": [
+        {
+          "category": "Olive",
+          "mae": 0.004987336817715963,
+          "rmse": 0.038665304099543725,
+          "bias": -0.004987336817715924,
+          "max_error": 0.49962811454072253,
+          "within_tolerance_fraction": 0.975933,
+          "active_count": 2499724,
+          "active_mae": 0.019951549921975238
+        },
+        {
+          "category": "Brown",
+          "mae": 0.015246046953907327,
+          "rmse": 0.06882396994882482,
+          "bias": -0.01524604695390732,
+          "max_error": 0.6533749489528031,
+          "within_tolerance_fraction": 0.9299337,
+          "active_count": 3463369,
+          "active_mae": 0.044020856437495766
+        },
+        {
+          "category": "Red",
+          "mae": 0.01989461247870759,
+          "rmse": 0.08087355785887886,
+          "bias": -0.019894612478707586,
+          "max_error": 0.7266057464194712,
+          "within_tolerance_fraction": 0.9171279,
+          "active_count": 2883238,
+          "active_mae": 0.06900093741379515
+        },
+        {
+          "category": "Pink",
+          "mae": 0.022499937192545838,
+          "rmse": 0.08601349406784357,
+          "bias": -0.02249993719254583,
+          "max_error": 0.663092917478882,
+          "within_tolerance_fraction": 0.9055769,
+          "active_count": 3461975,
+          "active_mae": 0.06499162239053094
+        },
+        {
+          "category": "Yellow-Green",
+          "mae": 0.04575810780845867,
+          "rmse": 0.12337735459684403,
+          "bias": -0.04575810780845867,
+          "max_error": 0.7215132178669097,
+          "within_tolerance_fraction": 0.8117133,
+          "active_count": 4936137,
+          "active_mae": 0.09270023868555241
+        },
+        {
+          "category": "Orange",
+          "mae": 0.022966201431858145,
+          "rmse": 0.08650247855022807,
+          "bias": -0.022966201431858138,
+          "max_error": 0.6605941344253143,
+          "within_tolerance_fraction": 0.9017951,
+          "active_count": 2432193,
+          "active_mae": 0.09442590054267135
+        },
+        {
+          "category": "Green",
+          "mae": 0.06052979362679513,
+          "rmse": 0.1427722621397186,
+          "bias": -0.06052979362679513,
+          "max_error": 0.6620407084324604,
+          "within_tolerance_fraction": 0.7547451,
+          "active_count": 5543055,
+          "active_mae": 0.10919933795857181
+        },
+        {
+          "category": "Yellow",
+          "mae": 0.026066721813317532,
+          "rmse": 0.09269157287965764,
+          "bias": -0.026066721813317532,
+          "max_error": 0.653873616565512,
+          "within_tolerance_fraction": 0.8916519,
+          "active_count": 2948982,
+          "active_mae": 0.08839227168330473
+        },
+        {
+          "category": "Blue",
+          "mae": 0.05925504614826564,
+          "rmse": 0.14253857591517,
+          "bias": -0.05925504614826563,
+          "max_error": 0.7552052349791782,
+          "within_tolerance_fraction": 0.7686926,
+          "active_count": 5066945,
+          "active_mae": 0.11694432473268536
+        },
+        {
+          "category": "Gray",
+          "mae": 0.04470331068425334,
+          "rmse": 0.1196489821550806,
+          "bias": -0.04470331068425333,
+          "max_error": 0.7303150550651314,
+          "within_tolerance_fraction": 0.8048642,
+          "active_count": 6151683,
+          "active_mae": 0.07266842372120498
+        },
+        {
+          "category": "White",
+          "mae": 0.00311840822755846,
+          "rmse": 0.031295007147176424,
+          "bias": -0.0031184082275584435,
+          "max_error": 0.6609189764515336,
+          "within_tolerance_fraction": 0.9859207,
+          "active_count": 1476905,
+          "active_mae": 0.02111448080654111
+        },
+        {
+          "category": "Black",
+          "mae": 0.002654634281710047,
+          "rmse": 0.02924220804591157,
+          "bias": -0.0026546342817100462,
+          "max_error": 0.6576486765211411,
+          "within_tolerance_fraction": 0.9885844,
+          "active_count": 1246339,
+          "active_mae": 0.02129945610070813
+        },
+        {
+          "category": "Purple",
+          "mae": 0.07063787880596849,
+          "rmse": 0.1546916175471249,
+          "bias": -0.07063787880596849,
+          "max_error": 0.7276447944781209,
+          "within_tolerance_fraction": 0.7211669,
+          "active_count": 6473889,
+          "active_mae": 0.10911197088175051
+        }
+      ]
+    },
+    "bounded_sum": {
+      "mae": 2.0947889199063558e-16,
+      "rmse": 6.725852935826688e-16,
+      "max_error": 5.229150445984487e-14,
+      "membership_within_tolerance_fraction": 1.0,
+      "samples_all_within_tolerance_fraction": 1.0,
+      "winner_set_agreement": 1.0,
+      "winner_overlap_agreement": 1.0,
+      "worst": {
+        "sample_index": 6888611,
+        "rgb": [
+          241,
+          234,
+          232
+        ],
+        "category": "White",
+        "java": 0.9297686122203739,
+        "pyfcs": 0.9297686122203216,
+        "absolute_error": 5.229150445984487e-14
+      },
+      "per_category": [
+        {
+          "category": "Olive",
+          "mae": 1.8011395228830603e-16,
+          "rmse": 5.606514889971786e-16,
+          "bias": 1.0922950436689293e-16,
+          "max_error": 4.884981308350689e-15,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 2499724,
+          "active_mae": 7.205353562565549e-16
+        },
+        {
+          "category": "Brown",
+          "mae": 1.5313823018033696e-16,
+          "rmse": 3.7640535759649473e-16,
+          "bias": 2.3796740165687396e-18,
+          "max_error": 4.440892098500626e-15,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 3463369,
+          "active_mae": 4.421655046873058e-16
+        },
+        {
+          "category": "Red",
+          "mae": 1.50075190832614e-16,
+          "rmse": 4.818807017530328e-16,
+          "bias": -1.8781748785426745e-18,
+          "max_error": 7.438494264988549e-15,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 2883238,
+          "active_mae": 5.205092012265862e-16
+        },
+        {
+          "category": "Pink",
+          "mae": 2.2424038315481317e-16,
+          "rmse": 6.522946933963394e-16,
+          "bias": -2.7014295419092843e-17,
+          "max_error": 1.2878587085651816e-14,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 3461975,
+          "active_mae": 6.477238661596724e-16
+        },
+        {
+          "category": "Yellow-Green",
+          "mae": 2.6220174260530764e-16,
+          "rmse": 6.711926641381204e-16,
+          "bias": 4.09476779961841e-17,
+          "max_error": 6.5503158452884236e-15,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 4936137,
+          "active_mae": 5.311881388326695e-16
+        },
+        {
+          "category": "Orange",
+          "mae": 1.639180599027268e-16,
+          "rmse": 5.399853469695226e-16,
+          "bias": -1.433191213495495e-17,
+          "max_error": 9.325873406851315e-15,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 2432193,
+          "active_mae": 6.739516966898877e-16
+        },
+        {
+          "category": "Green",
+          "mae": 3.231892199988175e-16,
+          "rmse": 8.890786032055524e-16,
+          "bias": 3.2739833502555333e-17,
+          "max_error": 9.825473767932635e-15,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 5543055,
+          "active_mae": 5.830525224787009e-16
+        },
+        {
+          "category": "Yellow",
+          "mae": 1.6286310942581692e-16,
+          "rmse": 4.77643922479814e-16,
+          "bias": 4.127999865305512e-18,
+          "max_error": 7.771561172376096e-15,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 2948982,
+          "active_mae": 5.522689166153504e-16
+        },
+        {
+          "category": "Blue",
+          "mae": 2.726078596505416e-16,
+          "rmse": 7.824600344446161e-16,
+          "bias": 1.443343000323774e-16,
+          "max_error": 1.0880185641326534e-14,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 5066945,
+          "active_mae": 5.380122729781784e-16
+        },
+        {
+          "category": "Gray",
+          "mae": 3.790319618219952e-16,
+          "rmse": 1.1676148281835892e-15,
+          "bias": 3.19372192306576e-17,
+          "max_error": 4.474198789239381e-14,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 6151683,
+          "active_mae": 6.161435201098548e-16
+        },
+        {
+          "category": "White",
+          "mae": 8.167255602052061e-17,
+          "rmse": 4.2952144689661633e-16,
+          "bias": 4.058141811788096e-17,
+          "max_error": 5.229150445984487e-14,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 1476905,
+          "active_mae": 5.529980331877854e-16
+        },
+        {
+          "category": "Black",
+          "mae": 2.540011027909691e-17,
+          "rmse": 1.5948699161269153e-16,
+          "bias": 5.3753909438588375e-18,
+          "max_error": 1.4876988529977098e-14,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 1246339,
+          "active_mae": 2.0379776512728006e-16
+        },
+        {
+          "category": "Purple",
+          "mae": 3.4477321971736883e-16,
+          "rmse": 9.060536003687802e-16,
+          "bias": -1.2675342288485757e-17,
+          "max_error": 2.5979218776228663e-14,
+          "within_tolerance_fraction": 1.0,
+          "active_count": 6473889,
+          "active_mae": 5.325596711920282e-16
+        }
+      ]
+    }
+  }
+}

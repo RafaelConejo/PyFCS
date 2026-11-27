@@ -151,6 +151,48 @@ class FuzzyColorSpace(FuzzyColor):
         return FuzzyColor._raw_membership_for_index(
             coordinates, idx_proto, self._precomputed)
 
+    # Common semantic API: an atomic model is a one-granule-per-category graph.
+    def get_root_categories(self):
+        return tuple(p.label for p in self.prototypes)
+
+    def get_all_category_labels(self):
+        return self.get_root_categories()
+
+    def get_category_children(self, label):
+        return tuple(("granule", p.label) for p in self.get_descendant_granules(label))
+
+    def get_descendant_granules(self, label):
+        for p in self.prototypes:
+            if p.label == label:
+                return (p,)
+        raise ValueError(f"Unknown category '{label}'.")
+
+    def get_categories_at_level(self, level=0):
+        if type(level) is not int or level < 0:
+            raise ValueError("Hierarchy level must be a nonnegative integer.")
+        return self.get_root_categories()
+
+    def calculate_membership_snapshot(self, value, input_space="LAB", tconorm=None):
+        degrees = self.calculate_raw_memberships(value, input_space=input_space, include_zeros=True)
+        return {"granules": dict(degrees), "categories": dict(degrees)}
+
+    def calculate_category_membership(self, value, category, input_space="LAB", tconorm=None):
+        self.get_descendant_granules(category)
+        return self.calculate_membership_snapshot(value, input_space, tconorm)["categories"][category]
+
+    def get_best_category(self, value, categories=None, input_space="LAB", tconorm=None):
+        labels = tuple(self.get_root_categories() if categories is None else categories)
+        scores = self.calculate_membership_snapshot(value, input_space, tconorm)["categories"]
+        if any(label not in scores for label in labels):
+            raise ValueError("Unknown active category.")
+        top = max((scores[label] for label in labels), default=0.0)
+        if top <= 0.0:
+            return None
+        q = np.asarray(self._coordinates(value, input_space))
+        return min((label for label in labels if abs(scores[label]-top) <= 1e-12),
+                   key=lambda label: min(float(np.dot(p.positive-q, p.positive-q))
+                                         for p in self.get_descendant_granules(label)))
+
     def get_cores(self):
         return self.cores
 

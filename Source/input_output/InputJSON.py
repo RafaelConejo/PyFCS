@@ -1,8 +1,9 @@
 """PyFCS official JSON format_version 1.
 
-One category contains one or more granules; every granule stores its exact
-positive prototype and complete Core/Voronoi/Support geometry. A category may
-also carry an RGB display swatch. The file stores traceability metadata but
+Categories are listed first, including semantic aggregates.
+Atomic granule prototypes live in their base categories;
+Core/Voronoi/Support volumes are stored once in the final geometry mapping.
+The previous embedded-geometry layouts remain readable. The file stores traceability metadata but
 never uses an atomic/granular type flag to decide its mathematics.
 
 For interchange, this reader also understands the two earlier model/geometry
@@ -27,6 +28,7 @@ from skimage import color as skcolor
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
 from Source.fuzzy.GranularFuzzyColor import GranularFuzzyColor
+from Source.fuzzy.ColorHierarchy import ColorHierarchy
 from Source.fuzzy.GranularFuzzyColorSpace import GranularFuzzyColorSpace
 from Source.fuzzy.FuzzyColorSpaceBuilder import FuzzyColorSpaceBuilder, lab_to_rgb_model_checked
 from Source.geometry.Face import Face
@@ -49,7 +51,8 @@ class InputJSON(Input):
             data = np.asarray(value, dtype=float).reshape(-1)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{what} must contain three numeric coordinates.") from exc
-        if data.shape != (3,) or not np.all(np.isfinite(data)):
+        if (data.shape != (3,) or not np.all(np.isfinite(data))
+                or (isinstance(value, (list, tuple)) and any(isinstance(v, bool) for v in value))):
             raise ValueError(f"{what} must contain three finite coordinates.")
         return [float(x) for x in data]
 
@@ -161,7 +164,9 @@ class InputJSON(Input):
             if not isinstance(coefficients, list) or len(coefficients) != 4:
                 raise ValueError(f"Invalid plane in {location}.")
             coeffs = [cls._numeric(v, f"{location} plane") for v in coefficients]
-            if np.linalg.norm(coeffs[:3]) <= 1e-14:
+            with np.errstate(over="ignore", invalid="ignore"):
+                norm = np.linalg.norm(coeffs[:3])
+            if not np.isfinite(norm) or norm <= 1e-14:
                 raise ValueError(f"Degenerate plane in {location}.")
             infinite = entry.get("infinity")
             boundary = entry.get("domain_boundary")
@@ -284,6 +289,8 @@ class InputJSON(Input):
         All category/granule geometry is serialized without rebuilding Voronoi.
         """
         if isinstance(space, GranularFuzzyColorSpace):
+            if space.hierarchy:
+                raise ValueError("The historical construction format cannot store a hierarchy.")
             return cls._serialize_granular_space_v1(space)
         if len(space.prototypes) != len(space.cores) or len(space.prototypes) != len(space.supports):
             raise ValueError("Inconsistent number of prototype/core/support volumes.")
@@ -400,10 +407,20 @@ class InputJSON(Input):
         """
         fields = ("color_space", "reference_domain", "categories")
         content = {key: document[key] for key in fields}
+        if "geometry" in document:
+            content["geometry"] = document["geometry"]
+        if "hierarchy" in document:
+            content["hierarchy"] = document["hierarchy"]
         # Semantic hash stays compatible with early simple v1 drafts, where
         # these construction flags were placed at the document root.
         for flag in ("disjoint", "covering"):
             content[flag] = cls._construction_flag(document, flag)
+        params = document.get("metadata", {}).get("construction", {})
+        # Optional exact construction inputs are hashed only when present;
+        # old files keep their original hash convention.
+        if "negative_prototypes" in params or "auxiliary_negatives" in params:
+            content["construction_sites"] = {key: params[key] for key in
+                ("negative_prototypes", "auxiliary_negatives") if key in params}
         canonical = json.dumps(content, sort_keys=True, separators=(",", ":"),
                                ensure_ascii=False, allow_nan=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -428,26 +445,22 @@ class InputJSON(Input):
                       for proto, core, support in zip(
                           space.prototypes, space.cores, space.supports))
         categories = []
+        geometry = {}
         for category_label, records in groups:
             granules = []
             for proto, core, support in records:
-                granules.append({
-                    "label": proto.label,
-                    "prototype": cls._triple(proto.positive, proto.label),
+                if proto.label in geometry:
+                    raise ValueError(f"Duplicated granule label '{proto.label}'.")
+                granules.append({"label": proto.label,
+                                 "prototype": cls._triple(proto.positive, proto.label)})
+                geometry[proto.label] = {
                     "core": cls._volume_to_data(core),
                     "voronoi": cls._volume_to_data(proto),
                     "support": cls._volume_to_data(support),
-                })
-            first = np.asarray(records[0][0].positive, dtype=float)
-            if str(space.color_space).upper() == "LAB":
-                rgb = skcolor.lab2rgb(first.reshape(1, 1, 3))[0, 0] * 255.0
-            else:
-                rgb = first
-            categories.append({
-                "label": category_label,
-                "display_rgb": [int(v) for v in np.rint(np.clip(rgb, 0, 255))],
-                "granules": granules,
-            })
+                }
+            categories.append({"label": category_label, "granules": granules})
+        for label, members in getattr(space, "hierarchy", {}).items():
+            categories.append({"label": label, "members": members})
         bounds = space.reference_domain.bounds
         document = {
             "format_version": cls.FORMAT_VERSION,
@@ -469,11 +482,43 @@ class InputJSON(Input):
             "reference_domain": [[float(bounds[i]), float(bounds[i + 1])]
                                  for i in (0, 2, 4)],
             "categories": categories,
+            "geometry": geometry,
         }
+        params = document["metadata"]["construction"]
+        if getattr(space, "geometry_only_import", False):
+            document["metadata"]["geometry_only_import"] = True
+        else:
+            # Store only the sampling resolution and actual count when the
+            # deterministic grid can be regenerated exactly. Historical or
+            # externally supplied non-standard grids keep their coordinates.
+            auxiliary = [cls._triple(p, "Auxiliary negative") for p in space.auxiliary_negatives]
+            if not space.covering:
+                from Source.fuzzy.FuzzyColorSpaceBuilder import generate_auxiliary_negatives
+                try:
+                    positives = [g["prototype"] for c in categories for g in c.get("granules", [])]
+                    generated = generate_auxiliary_negatives(positives, space.reference_domain, params["samples"])
+                    compact = np.array_equal(np.asarray(auxiliary), generated)
+                except ValueError:
+                    compact = False
+                if not compact:
+                    params["auxiliary_negatives"] = auxiliary
+            if not space.disjoint:
+                for cat in categories:
+                    if "granules" in cat:
+                        cat["negatives"] = [cls._triple(q, "Negative prototype")
+                            for q in space.negative_prototypes.get(cat["label"], [])
+                            if not any(np.linalg.norm(np.asarray(q)-a) <= Voronoi.DEFAULT_MERGE_EPS for a in auxiliary)]
+        # Names are optional display metadata, not geometric construction inputs.
+        from Source.interface.modules.UtilsTools import filter_negative_names
+        named = filter_negative_names(getattr(space, 'negative_names', {}),
+            {c['label']: c.get('negatives', []) for c in categories})
+        if named:
+            document['metadata']['negative_names'] = [
+                {'prototype': list(p), 'label': label} for p,label in sorted(named.items())]
         if getattr(space, "import_warnings", None):
             document["metadata"]["source_warning"] = str(space.import_warnings)
         # Validate structure before publishing; stored faces are validated on read.
-        cls._validate_v2_document(document, check_hash=False)
+        cls._validate_v2_document(cls._expand_split_document(document), check_hash=False)
         document["metadata"]["geometry_sha256"] = cls.geometry_sha256(document)
         return document
 
@@ -557,6 +602,37 @@ class InputJSON(Input):
             np.asarray([record[2] for record in entries], dtype=float),
             Voronoi.DEFAULT_MERGE_EPS,
         )
+        if "geometry_only_import" in metadata and type(metadata["geometry_only_import"]) is not bool:
+            raise ValueError("geometry_only_import must be boolean.")
+        if "auxiliary_negatives" in params:
+            aux = cls._point_list(params["auxiliary_negatives"], "Auxiliary negatives")
+            if len(aux) != params.get("num_aux_negatives", len(aux)):
+                raise ValueError("Auxiliary negative count does not match construction metadata.")
+            if cls._construction_flag(doc, "covering") and aux:
+                raise ValueError("Covering spaces cannot have auxiliary negatives.")
+            if not cls._construction_flag(doc, "covering") and not aux:
+                raise ValueError("Non-covering spaces need auxiliary negatives.")
+        if "negative_prototypes" in params:
+            neg = params["negative_prototypes"]
+            if not isinstance(neg, dict) or set(neg) != seen_cat:
+                raise ValueError("Negative prototypes must be specified for each base category.")
+            for label, vals in neg.items():
+                points = cls._point_list(vals, f"Negatives for '{label}'")
+                if cls._construction_flag(doc, "disjoint") and points:
+                    raise ValueError("Disjoint construction does not need explicit negatives.")
+                for point in points:
+                    if any(cat == label and np.linalg.norm(np.asarray(point)-xyz) <= Voronoi.DEFAULT_MERGE_EPS
+                           for cat, _, xyz, _ in entries):
+                        raise ValueError(f"Category '{label}' uses its own positive as a negative.")
+        if "hierarchy" in doc:
+            # Validate references before constructing any geometry, including cycles.
+            from types import SimpleNamespace
+            base = [SimpleNamespace(label=c["label"], prototypes=[
+                SimpleNamespace(label=g["label"]) for g in c["granules"]])
+                for c in categories]
+            if not isinstance(doc["hierarchy"], dict):
+                raise ValueError("hierarchy must be a JSON object.")
+            ColorHierarchy(base, doc["hierarchy"])
         if check_hash and "geometry_sha256" in metadata:
             recorded = metadata["geometry_sha256"]
             if (not isinstance(recorded, str) or len(recorded) != 64 or
@@ -567,7 +643,99 @@ class InputJSON(Input):
         return name, doc["color_space"], domain, entries
 
     @classmethod
+    def _expand_split_document(cls, doc):
+        """Validate the reference layout and adapt to the existing geometry loader.
+
+        No geometry is recalculated. The split hash is checked before adapting;
+        embedded-layout hashes are still checked by the original validator.
+        """
+        from types import SimpleNamespace
+        categories, geometry = doc.get("categories"), doc.get("geometry")
+        if not isinstance(categories, list) or not isinstance(geometry, dict):
+            raise ValueError("Expected a categories list and geometry mapping.")
+        if "hierarchy" in doc:
+            raise ValueError("Split JSON must declare aggregate members in categories only.")
+        meta = doc.get("metadata")
+        if not isinstance(meta, dict):
+            raise ValueError("Missing/invalid metadata object.")
+        if "geometry_sha256" in meta:
+            recorded = meta["geometry_sha256"]
+            if not isinstance(recorded, str) or recorded.lower() != cls.geometry_sha256(doc):
+                raise ValueError("geometry_sha256 does not match the saved geometry.")
+        base, nodes, points, first_ids, names, representatives = [], {}, {}, {}, set(), {}
+        category_negatives = {}
+        for cat in categories:
+            if not isinstance(cat, dict):
+                raise ValueError("Invalid category object.")
+            label = cls._label(cat.get("label"), "Category label")
+            if label in names or len(label) > 24:
+                raise ValueError(f"Duplicated or overlong category label '{label}'.")
+            names.add(label)
+            # Legacy split files may carry a redundant representative.
+            if "representative" in cat:
+                representatives[label] = cls._triple(cat["representative"], f"Representative '{label}'")
+            if ("members" in cat) == ("granules" in cat):
+                raise ValueError(f"Category '{label}' must define either granules or members.")
+            if "members" in cat:
+                if "negatives" in cat:
+                    raise ValueError("Aggregate categories cannot define geometric negatives.")
+                nodes[label] = cat["members"]
+                continue
+            granules = cat["granules"]
+            if not isinstance(granules, list) or not granules:
+                raise ValueError(f"Category '{label}' needs at least one granule.")
+            embedded = []
+            for g in granules:
+                if not isinstance(g, dict) or set(g) != {"label", "prototype"}:
+                    raise ValueError(f"Invalid granule entry in '{label}'.")
+                key = cls._label(g.get("label"), "Granule label")
+                if key in points:
+                    raise ValueError(f"Duplicated granule label '{key}'.")
+                geom = geometry.get(key)
+                if not isinstance(geom, dict) or set(geom) != {"core", "voronoi", "support"}:
+                    raise ValueError(f"Missing/invalid geometry for granule '{key}'.")
+                points[key] = cls._triple(g.get("prototype"), f"Prototype '{key}'")
+                embedded.append({**g, **geom})
+            first_ids[label] = embedded[0]["label"]
+            # Legacy display_rgb is descriptive and never used by the loader.
+            base.append({"label": label, "granules": embedded})
+            if "negatives" in cat:
+                category_negatives[label] = cat["negatives"]
+        if set(geometry) != set(points):
+            raise ValueError("Geometry contains unreferenced granule IDs.")
+        graph = ColorHierarchy([SimpleNamespace(label=c["label"], prototypes=[
+            SimpleNamespace(label=g["label"]) for g in c["granules"]]) for c in base], nodes)
+        # Validate optional legacy representatives against the deterministic first leaf.
+        # It is descriptive, not an additional positive site.
+        for label, rep in representatives.items():
+            target = label
+            while target in nodes:
+                kind, child = next(iter(nodes[target][0].items()))
+                if kind == "granule":
+                    target = child
+                    break
+                target = child
+            else:
+                target = first_ids[target]
+            if not np.array_equal(rep, points[target]):
+                raise ValueError(f"Representative '{label}' must equal its first granule prototype.")
+        expanded = {k: v for k, v in doc.items() if k not in ("categories", "geometry")}
+        expanded["metadata"] = {k: v for k, v in meta.items() if k != "geometry_sha256"}
+        if category_negatives:
+            params = dict(meta.get("construction", {}))
+            if "negative_prototypes" in params:
+                raise ValueError("Negatives cannot be defined in both categories and construction metadata.")
+            params["negative_prototypes"] = category_negatives
+            expanded["metadata"]["construction"] = params
+        expanded["categories"] = base
+        if graph:
+            expanded["hierarchy"] = graph.to_dict()
+        return expanded
+
+    @classmethod
     def _read_v2_document(cls, doc):
+        if "geometry" in doc:
+            doc = cls._expand_split_document(doc)
         name, mode, domain, entries = cls._validate_v2_document(doc)
         groups = {}
         for cat_label, glabel, xyz, data in entries:
@@ -584,7 +752,7 @@ class InputJSON(Input):
         # The exchange schema has no distinct space type: a category simply
         # contains one or more granules. Keep the legacy internal class
         # selection for GUI compatibility, based solely on the structure.
-        is_granular = inferred_granular
+        is_granular = inferred_granular or bool(doc.get("hierarchy"))
         colors = {}
         for label, records in groups.items():
             first = records[0][1].positive
@@ -620,6 +788,26 @@ class InputJSON(Input):
                     lambda2=float(params.get("lambda2", 1.5)),
                     samples=int(params.get("samples", 0)),
                     negative_prototypes={}, auxiliary_negatives=[])
+        # Exact native construction inputs are optional for historical files.
+        aux = params.get("auxiliary_negatives")
+        if aux is None and not base["covering"] and params.get("samples", 0) >= 2:
+            from Source.fuzzy.FuzzyColorSpaceBuilder import generate_auxiliary_negatives
+            try:
+                generated = generate_auxiliary_negatives([row[2] for row in entries], domain, params["samples"])
+                if len(generated) == params.get("num_aux_negatives"):
+                    aux = generated.tolist()
+            except ValueError:
+                pass
+        if aux is None and base["covering"]:
+            aux = []
+        if aux is not None:
+            base["auxiliary_negatives"] = aux
+        if base["disjoint"]:
+            base["negative_prototypes"] = {label: [row[2] for row in entries if row[0] != label] + list(aux or [])
+                                          for label in groups}
+        elif "negative_prototypes" in params:
+            base["negative_prototypes"] = {label: list(vals) + list(aux or [])
+                                          for label, vals in params["negative_prototypes"].items()}
         if is_granular:
             categories = [GranularFuzzyColor(
                 label,
@@ -627,12 +815,23 @@ class InputJSON(Input):
                 [item[0] for item in records],
                 [item[2] for item in records],
             ) for label, records in groups.items()]
-            space = GranularFuzzyColorSpace(name, categories, **base)
+            space = GranularFuzzyColorSpace(name, categories, hierarchy=doc.get("hierarchy"), **base)
         else:
             cores = [records[0][0] for records in groups.values()]
             protos = [records[0][1] for records in groups.values()]
             supports = [records[0][2] for records in groups.values()]
             space = FuzzyColorSpace(name, protos, cores, supports, **base)
+        from Source.interface.modules.UtilsTools import filter_negative_names
+        records = doc['metadata'].get('negative_names', [])
+        if not isinstance(records, list): raise ValueError('Invalid negative_names metadata.')
+        names = {}
+        for record in records:
+            if not isinstance(record, dict) or set(record) != {'prototype','label'}:
+                raise ValueError('Invalid negative name entry.')
+            key = tuple(cls._triple(record['prototype'], 'Named negative'))
+            if key in names: raise ValueError('Duplicate named negative coordinates.')
+            names[key] = cls._label(record['label'], 'Negative label')
+        space.negative_names = filter_negative_names(names, params.get('negative_prototypes', {}))
         space.source_file_format = "PYFCS_JSON_V1"
         space.num_aux_negatives_recorded = int(params.get("num_aux_negatives", 0))
         # A disjoint PyFCS construction can be rebuilt from its complete
@@ -640,18 +839,36 @@ class InputJSON(Input):
         # without these values, or a non-disjoint space with unspecified
         # negative choices, remains evaluation-only (never guessed).
         required = {"lambda1", "lambda2", "samples", "num_aux_negatives"}
-        can_rebuild = (cls._construction_flag(doc, "disjoint") and required.issubset(params) and
-                       (cls._construction_flag(doc, "covering") or params["samples"] >= 2) and
-                       not doc["metadata"].get("source_warning"))
+        can_rebuild = (required.issubset(params) and aux is not None and
+                       (base["covering"] or len(aux) > 0) and
+                       (base["disjoint"] or "negative_prototypes" in params) and
+                       not doc["metadata"].get("source_warning") and
+                       not doc["metadata"].get("geometry_only_import", False))
         space.geometry_only_import = not can_rebuild
         if doc["metadata"].get("source_warning"):
             space.import_warnings = str(doc["metadata"]["source_warning"])
         return colors, space
 
     @staticmethod
+    def format_document(document):
+        """Pretty JSON with compact numeric vectors, without rounding or changing values."""
+        def render(value, depth=0):
+            indent = "  " * depth
+            child = "  " * (depth + 1)
+            if isinstance(value, dict) and value:
+                return "{\n" + ",\n".join(
+                    child + json.dumps(k, ensure_ascii=False) + ": " + render(v, depth+1)
+                    for k, v in value.items()) + "\n" + indent + "}"
+            if isinstance(value, list) and value:
+                if len(value) <= 4 and all(type(v) in (int, float) for v in value):
+                    return json.dumps(value, ensure_ascii=False, allow_nan=False)
+                return "[\n" + ",\n".join(child + render(v, depth+1) for v in value) + "\n" + indent + "]"
+            return json.dumps(value, ensure_ascii=False, allow_nan=False)
+        return render(document) + "\n"
+
+    @staticmethod
     def _write_document_atomic(name, document, progress_callback=None):
-        encoded = (json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2)
-                   + "\n").encode("utf-8")
+        encoded = InputJSON.format_document(document).encode("utf-8")
         folder = os.path.join(get_base_path(), "fuzzy_color_spaces")
         os.makedirs(folder, exist_ok=True)
         destination = os.path.join(folder, name + ".json")
@@ -697,7 +914,7 @@ class InputJSON(Input):
                             reference_domain=None, lambda1=0.5, lambda2=1.5,
                             disjoint=True, covering=True, samples=27,
                             negative_prototypes=None, auxiliary_negatives=None,
-                            tconorm="bounded_sum"):
+                            tconorm="bounded_sum", hierarchy=None, negative_names=None):
         """Build and save all granules. Input coordinates are NATIVE model values.
 
         categories = {category_label: {granule_label: [x,y,z], ...}, ...}
@@ -709,8 +926,9 @@ class InputJSON(Input):
             reference_domain=reference_domain, lambda1=lambda1, lambda2=lambda2,
             disjoint=disjoint, covering=covering, samples=samples,
             negative_prototypes=negative_prototypes,
-            auxiliary_negatives=auxiliary_negatives, tconorm=tconorm,
+            auxiliary_negatives=auxiliary_negatives, tconorm=tconorm, hierarchy=hierarchy,
         )
+        space.negative_names = dict(negative_names or {})
         return self.save_space(space, name=name, progress_callback=progress_callback,
                                return_fuzzy_space=return_fuzzy_space)
 
@@ -719,7 +937,7 @@ class InputJSON(Input):
                    reference_domain=None, lambda1=0.5, lambda2=1.5,
                    disjoint=True, covering=True, samples=27,
                    negative_prototypes=None, description=None, tconorm=None,
-                   model_points=None):
+                   model_points=None, negative_names=None):
         """Build a space using the current engine, save native JSON atomically.
 
         Retains the existing InputFCS GUI call signature. The *runtime*
@@ -766,6 +984,10 @@ class InputJSON(Input):
                     if value not in points:
                         raise ValueError(f"Unknown negative category '{value}'.")
                     converted.append(points[value].copy())
+                elif isinstance(value, dict):
+                    if set(value) != {"native"}:
+                        raise ValueError("Invalid native negative prototype.")
+                    converted.append(np.asarray(self._triple(value["native"], "Native negative"), dtype=float))
                 else:
                     converted.append(to_model(value))
             negmap[label] = converted
@@ -777,6 +999,7 @@ class InputJSON(Input):
             samples=int(samples), negative_prototypes=negmap,
             description=description,
         )
+        space.negative_names = dict(negative_names or {})
         # Runtime-only option. Keeping it out of JSON is intentional.
         if tconorm is not None:
             space.tconorm = tconorm
@@ -816,9 +1039,10 @@ class InputJSON(Input):
                     return self._read_java_document(doc)
                 if isinstance(doc["model"].get("categories"), list):
                     return self._read_v1_document(doc)
-            raise ValueError("Unknown JSON structure: expected categories/granules and embedded volumes.")
+            raise ValueError("Unknown JSON structure: expected categories and geometry.")
         except (OSError, UnicodeError, ValueError, TypeError, KeyError,
-                IndexError, json.JSONDecodeError, np.linalg.LinAlgError) as exc:
+                IndexError, AttributeError, OverflowError, RecursionError,
+                json.JSONDecodeError, np.linalg.LinAlgError) as exc:
             raise ValueError(f"Error reading .json color space: {exc}") from exc
 
     @classmethod
@@ -900,7 +1124,9 @@ class InputJSON(Input):
         used, categories, color_data = {}, [], {}
         for cat_label, identifiers in refs.items():
             cls._label(cat_label, "Java category label")
-            if not isinstance(identifiers, list) or not identifiers:
+            if (not isinstance(identifiers, list) or not identifiers
+                    or not all(isinstance(item, str) for item in identifiers)
+                    or len(set(identifiers)) != len(identifiers)):
                 raise ValueError(f"Empty Java category '{cat_label}'.")
             records = [[], [], []]
             data_granules = []

@@ -5,7 +5,8 @@ From the project root:
     python -m Source.test.run_full_suite
     python -m Source.test.run_full_suite --gui
 
-All test_*.py modules are discovered automatically. The optional --gui flag
+All test_*.py modules are discovered recursively in packages.
+Research experiments and manual scripts are not executed. The optional --gui flag
 checks the Tkinter FCS creation dialog and requires a graphical display.
 """
 
@@ -109,7 +110,7 @@ def main(argv=None):
     parser.add_argument(
         "--report-dir",
         type=Path,
-        default=TESTS / "test_reports",
+        default=TESTS / "reports",
         help="Where to save .log and .json results"
     )
 
@@ -131,14 +132,15 @@ def main(argv=None):
 
         print(f"PyFCS regression suite | root: {ROOT}", file=stream)
         print(
-            "Discovering Source/test/test_*.py (including global workflows)...",
+            "Discovering global and case-specific automated regression tests...",
             file=stream
         )
 
         # Test modules, including comparison-tool checks, run in one suite.
         suite = unittest.defaultTestLoader.discover(
             start_dir=str(TESTS),
-            pattern="test_*.py"
+            pattern="test_*.py",
+            top_level_dir=str(ROOT)
         )
 
         result = unittest.TextTestRunner(
