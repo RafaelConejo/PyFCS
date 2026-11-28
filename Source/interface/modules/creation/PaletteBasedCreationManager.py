@@ -8,8 +8,8 @@ import numpy as np
 
 from Source.geometry.Voronoi import Voronoi
 from Source.fuzzy.FuzzyColorSpaceBuilder import lab_to_rgb_model_checked
-from Source.interface.modules.GranuleManager import GranuleManager
-import Source.interface.modules.UtilsTools as UtilsTools
+from Source.interface.modules.data.GranuleManager import GranuleManager
+import Source.interface.modules.common.UtilsTools as UtilsTools
 
 
 class PaletteBasedCreationManager:
@@ -94,7 +94,7 @@ class PaletteBasedCreationManager:
 
         self._configure_window_size()
         self._create_variables()
-        from Source.interface.modules.GranuleManager import InlineCreationTree
+        from Source.interface.modules.data.GranuleManager import InlineCreationTree
         self._inline_tree = InlineCreationTree(self)
         self._load_default_source()
         self._build_ui()
@@ -728,10 +728,7 @@ class PaletteBasedCreationManager:
         cores, supports and Voronoi geometry are not imported. This operation
         is fully local and does not change the FCS currently loaded in PyFCS.
         """
-        base_path = UtilsTools.get_base_path()
-        initial_dir = os.path.join(base_path, "fuzzy_color_spaces")
-        if not os.path.isdir(initial_dir):
-            initial_dir = base_path
+        initial_dir = UtilsTools.get_color_space_initial_dir()
 
         path = filedialog.askopenfilename(
             title="Add Color Source",
@@ -771,7 +768,7 @@ class PaletteBasedCreationManager:
             # GUI. Retain original model RGB separately, without modifying
             # either reader or the corresponding on-disk source.
             loaded_space = loaded.get("fuzzy_color_space")
-            from Source.interface.modules.GranuleManager import confirm_tree_import, remember_import_tree
+            from Source.interface.modules.data.GranuleManager import confirm_tree_import, remember_import_tree
             if not confirm_tree_import(self, loaded_space):
                 return
             origin = str(loaded.get("source_color_space") or

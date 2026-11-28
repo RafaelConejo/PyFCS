@@ -198,7 +198,7 @@ def get_base_path():
         return os.path.dirname(os.path.abspath(sys.executable))
 
     return os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..")
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
     )
 
 
@@ -248,6 +248,66 @@ def get_resource_path(relative_path):
     return app_candidate
 
 
+def _writable_directory_target(path):
+    """Check the existing parent of a possibly not-yet-created directory."""
+    candidate = os.path.abspath(path)
+    while not os.path.exists(candidate):
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            return False
+        candidate = parent
+    return os.path.isdir(candidate) and os.access(candidate, os.W_OK | os.X_OK)
+
+
+def get_user_data_dir():
+    """Per-user data directory for read-only installations and macOS bundles."""
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "PyFCS")
+    if sys.platform == "win32":
+        return os.path.join(os.environ.get("LOCALAPPDATA") or home, "PyFCS")
+    xdg = os.environ.get("XDG_DATA_HOME", "")
+    return os.path.join(xdg if os.path.isabs(xdg) else os.path.join(home, ".local", "share"), "PyFCS")
+
+
+def get_color_space_dir(base_path=None):
+    """Keep the repository layout when writable, otherwise use user data.
+
+    Never write user-created spaces inside a frozen macOS .app bundle.
+    GUI overwrite checks and both writers must resolve the same directory.
+    """
+    base = get_base_path() if base_path is None else os.fspath(base_path)
+    candidate = os.path.join(base, "fuzzy_color_spaces")
+    mac_bundle = (sys.platform == "darwin" and getattr(sys, "frozen", False)
+                  and any(part.lower().endswith(".app") for part in base.split(os.sep)))
+    if not mac_bundle and _writable_directory_target(candidate):
+        return candidate
+    return os.path.join(get_user_data_dir(), "fuzzy_color_spaces")
+
+
+def get_color_space_initial_dir():
+    """Prefer user-saved models, then shipped models, then the project root."""
+    for candidate in (get_color_space_dir(), get_resource_path("fuzzy_color_spaces"), get_base_path()):
+        if os.path.isdir(candidate):
+            return candidate
+    return os.path.expanduser("~")
+
+
+def save_pil_image_atomic(image, path):
+    """Encode beside the destination; an encoding failure cannot truncate it."""
+    destination = os.path.abspath(os.fspath(path))
+    directory = os.path.dirname(destination)
+    suffix = os.path.splitext(destination)[1]
+    fd, staged = tempfile.mkstemp(prefix=".pyfcs_image_", suffix=suffix, dir=directory)
+    os.close(fd)
+    try:
+        image.save(staged)
+        os.replace(staged, destination)
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
+
+
 def get_runtime_temp_dir(*parts, create=True):
     """
     Return a writable directory for temporary PyFCS runtime files.
@@ -268,6 +328,8 @@ def get_runtime_temp_dir(*parts, create=True):
         base_dir = os.path.join(tempfile.gettempdir(), "PyFCS")
     else:
         base_dir = os.path.join(get_base_path(), "Source", "external", "temp")
+        if not _writable_directory_target(base_dir):
+            base_dir = os.path.join(get_user_data_dir(), "temp")
 
     path = os.path.join(base_dir, *[str(part) for part in parts if part])
     if create:
@@ -797,6 +859,20 @@ def srgb_to_lab(r, g, b):
     return (L, a, bb)
 
 
+def analysis_rgb_to_lab(rgb):
+    """Convert sRGB [0,255] to CIELAB (D65, 2 degrees) in float64.
+
+    Shared by analysis/mapping tools and consistent with the scientific
+    core's model_from_rgb conversion. Accepts one triplet or an array of
+    triplets. Do not round LAB coordinates or change the legacy picker
+    conversion used for creating existing models.
+    """
+    values = np.asarray(rgb, dtype=np.float64)
+    if values.ndim == 0 or values.shape[-1] != 3:
+        raise ValueError("Expected RGB triplets.")
+    return color.rgb2lab(np.clip(values, 0.0, 255.0) / 255.0)
+
+
 def rgb_to_lab(rgb):
     """
     Convert RGB tuple to LAB.
@@ -1138,18 +1214,18 @@ def mean_lab_with_filters(rgb_pixels, filters=None, chunk_size=100000):
 
     Returns (mean_lab, accepted_count), or (None, 0) for an empty selection.
     """
-    pixels = np.asarray(rgb_pixels, dtype=np.float32).reshape(-1, 3)
+    # Promote only the current chunk, not the entire ROI, to float64.
+    pixels = np.asarray(rgb_pixels).reshape(-1, 3)
     filters = dict(filters or {})
     chunk_size = max(1, int(chunk_size))
     sums = np.zeros(3, dtype=np.float64)
     accepted_count = 0
     for offset in range(0, len(pixels), chunk_size):
-        block = pixels[offset:offset + chunk_size]
+        block = pixels[offset:offset + chunk_size].astype(np.float64, copy=False)
         valid = np.all(np.isfinite(block), axis=1)
         if not np.any(valid):
             continue
-        block = np.clip(block[valid] / 255.0, 0.0, 1.0)
-        lab = color.rgb2lab(block.reshape(-1, 1, 3)).reshape(-1, 3)
+        lab = analysis_rgb_to_lab(block[valid])
         mask = np.ones(len(lab), dtype=bool)
         for field, channel, minimum in (
             ("L_min", 0, True), ("L_max", 0, False),
@@ -1750,7 +1826,9 @@ def prompt_file_selection(initial_subdir, parent=None):
         Full path to the selected file, or an empty string if cancelled.
     """
     base_path = get_base_path()
-    initial_directory = os.path.join(base_path, initial_subdir)
+    initial_directory = (get_color_space_initial_dir()
+                         if str(initial_subdir).rstrip("/\\") == "fuzzy_color_spaces"
+                         else os.path.join(base_path, initial_subdir))
 
     # The file dialog falls back to the application directory in frozen builds.
     if not os.path.isdir(initial_directory):

@@ -55,6 +55,11 @@ class FuzzyColorSpace(FuzzyColor):
         return self.disjoint and self.covering
 
     @property
+    def _uses_partition_normalization(self):
+        """Internal evaluation policy; independent of the file format."""
+        return self.is_partition
+
+    @property
     def typology_description(self):
         return ("DISJOINT" if self.disjoint else "NON-DISJOINT") + " and " + ("COVERING" if self.covering else "NON-COVERING")
 
@@ -135,7 +140,7 @@ class FuzzyColorSpace(FuzzyColor):
         coordinates = self._coordinates(new_color, input_space)
         if not self.reference_domain.contains_coordinates(coordinates, eps=1e-9):
             return {}
-        if self.is_partition:
+        if self._uses_partition_normalization:
             # Regression-compatibility: preserve historical partition behavior.
             return FuzzyColor.get_membership_degree(coordinates, self.prototypes, self._precomputed)
         return self.calculate_raw_memberships(coordinates, input_space="MODEL")
@@ -148,6 +153,9 @@ class FuzzyColorSpace(FuzzyColor):
         coordinates = self._coordinates(new_color, input_space)
         if not self.reference_domain.contains_coordinates(coordinates, eps=1e-9):
             return 0.0
+        if self._uses_partition_normalization:
+            return FuzzyColor._partition_membership_for_index(
+                coordinates, idx_proto, self.prototypes, self._precomputed)
         return FuzzyColor._raw_membership_for_index(
             coordinates, idx_proto, self._precomputed)
 
@@ -173,7 +181,11 @@ class FuzzyColorSpace(FuzzyColor):
         return self.get_root_categories()
 
     def calculate_membership_snapshot(self, value, input_space="LAB", tconorm=None):
-        degrees = self.calculate_raw_memberships(value, input_space=input_space, include_zeros=True)
+        if self._uses_partition_normalization:
+            positive = self.calculate_membership(value, input_space=input_space)
+            degrees = {p.label: float(positive.get(p.label, 0.0)) for p in self.prototypes}
+        else:
+            degrees = self.calculate_raw_memberships(value, input_space=input_space, include_zeros=True)
         return {"granules": dict(degrees), "categories": dict(degrees)}
 
     def calculate_category_membership(self, value, category, input_space="LAB", tconorm=None):
@@ -188,6 +200,13 @@ class FuzzyColorSpace(FuzzyColor):
         top = max((scores[label] for label in labels), default=0.0)
         if top <= 0.0:
             return None
+        if self._uses_partition_normalization:
+            # The historical flat rule is stable prototype order outside cores.
+            idx = self.best_prototype_index(value, input_space)
+            winner = self.prototypes[idx].label if idx >= 0 else None
+            if winner in labels:
+                return winner
+            return max(labels, key=scores.__getitem__)
         q = np.asarray(self._coordinates(value, input_space))
         return min((label for label in labels if abs(scores[label]-top) <= 1e-12),
                    key=lambda label: min(float(np.dot(p.positive-q, p.positive-q))

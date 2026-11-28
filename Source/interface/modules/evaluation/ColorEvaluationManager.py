@@ -1,4 +1,5 @@
 import os
+import math
 from collections import deque
 import numpy as np
 import pandas as pd
@@ -17,7 +18,8 @@ def rank_membership_frontier(space, lab, snapshot, level=0, *, input_value=None,
     ordered = sorted(((name, values[name]["degree"]) for name in labels),
                      key=lambda item: -item[1])
     winner = ordered[0][0] if ordered and ordered[0][1] > 0 else None
-    if winner is not None and getattr(space, "is_granular", False):
+    partition = getattr(space, "_uses_partition_normalization", False)
+    if winner is not None and getattr(space, "is_granular", False) and not partition:
         top = ordered[0][1]
         ties = [name for name, degree in ordered if abs(degree-top) <= 1e-12 and degree > 0]
         if len(ties) > 1:
@@ -26,32 +28,37 @@ def rank_membership_frontier(space, lab, snapshot, level=0, *, input_value=None,
                 float(np.dot(p.positive-q, p.positive-q))
                 for p in space.get_descendant_granules(name)))
         ordered.sort(key=lambda item: (-item[1], item[0] != winner))
+    if winner is not None and (partition or not getattr(space, "is_granular", False)):
+        top = ordered[0][1]
+        if sum(d == top for _, d in ordered) > 1:
+            idx = space.best_prototype_index(lab if input_value is None else input_value,
+                                             input_space=input_space)
+            if idx >= 0 and space.prototypes[idx].label in labels:
+                winner = space.prototypes[idx].label
+        ordered.sort(key=lambda item: (-item[1], item[0] != winner))
     return {"memberships": ordered, "winner_label": winner,
             "winner_mu": values[winner]["degree"] if winner is not None else 0.0}
 
 
 def membership_snapshot(space, lab, manager, level=0, *, input_value=None,
                                    input_space="LAB", descendants=None, frontier=None):
-    """One raw evaluation per geometry; union at every semantic node.
-
-    Atomic legacy spaces retain their existing normalized membership API.
-    Granular spaces use the common semantic snapshot (no normalization).
-    """
+    """Effective membership snapshot: partition policy or semantic aggregation."""
     if space is None:
         return {"memberships": [], "categories": {}, "granules": {},
                 "winner_label": None, "winner_mu": 0.0}
     if getattr(space, "is_granular", False):
-        raw = space.calculate_membership_snapshot(
+        effective = space.calculate_membership_snapshot(
             lab if input_value is None else input_value, input_space=input_space)
-        degrees = raw["granules"]
+        degrees = effective["granules"]
         values = {name: {"degree": float(degree),
                          "granules": {g: float(degrees[g]) for g in (
                              descendants[name] if descendants is not None else
                              (p.label for p in space.get_descendant_granules(name)))}}
-                  for name, degree in raw["categories"].items()}
+                  for name, degree in effective["categories"].items()}
     else:
-        result = dict(manager.calculate_memberships(space, lab))
-        degrees = {p.label: float(result.get(p.label, 0.0)) for p in space.prototypes}
+        effective = space.calculate_membership_snapshot(
+            lab if input_value is None else input_value, input_space=input_space)
+        degrees = effective["granules"]
         values = {name: {"degree": degree, "granules": {name: degree}}
                   for name, degree in degrees.items()}
     snapshot = {"categories": values, "granules": degrees}
@@ -126,7 +133,7 @@ class ColorEvaluationManager:
         # Use the runtime output directory even when the manager is instantiated separately.
         if output_dir is None:
             try:
-                import Source.interface.modules.UtilsTools as UtilsTools
+                import Source.interface.modules.common.UtilsTools as UtilsTools
                 output_dir = UtilsTools.get_runtime_temp_dir("threshold_results", create=False)
             except Exception:
                 output_dir = os.path.join(os.getcwd(), "threshold_results")
@@ -173,7 +180,7 @@ class ColorEvaluationManager:
 
     def filter_points_with_thresholds(
         self, selected_volume, step=0.25, metric="CIEDE2000",
-        color_space="LAB", pt_threshold=0.8, at_threshold=1.8,
+        color_space="LAB", pt_threshold=0.8, at_threshold=1.8, *, inclusive=False,
     ):
         """Explore PT and AT with *one* traversal per prototype.
 
@@ -189,6 +196,9 @@ class ColorEvaluationManager:
         grid points in a disconnected intersection of the fuzzy geometry and
         the perceptual threshold region. The caller must use a separate grid
         validation if exhaustive coverage is required for a publication.
+
+        ``inclusive=True`` uses <=, as in the interactive threshold cards.
+        The historical research API defaults to strict < for reproducibility.
 
         Returns three groups (PT, AT, AT_ONLY). Each group contains a 'points'
         dict keyed by Volume_0, Volume_1, ... and a 'limits' dict keyed by the
@@ -247,11 +257,11 @@ class ColorEvaluationManager:
                 distance = self.calculate_metric_value(
                     to_lab(xyz), reference_lab, metric
                 )
-                if not np.isfinite(distance) or not (0 <= distance < at_threshold):
+                if not np.isfinite(distance) or distance < 0 or distance > at_threshold or (not inclusive and distance == at_threshold):
                     continue
 
                 at_points.append(xyz)
-                if distance < pt_threshold:
+                if distance < pt_threshold or (inclusive and distance == pt_threshold):
                     pt_points.append(xyz)
                 else:
                     at_only_points.append(xyz)
@@ -380,10 +390,10 @@ class ColorEvaluationManager:
             "|ΔC*|": "Absolute chroma/saturation difference only.",
             "|Δh°|": "Absolute hue-angle difference in degrees.",
             "|ΔH*|": "Perceptual hue difference in LAB units.",
-            "RGB Euclidean": "Euclidean distance in RGB display space. Not perceptually uniform.",
-            "|ΔR|": "Absolute red-channel difference only.",
-            "|ΔG|": "Absolute green-channel difference only.",
-            "|ΔB|": "Absolute blue-channel difference only.",
+            "RGB Euclidean": "Euclidean distance between approximate 8-bit sRGB display colors derived from LAB. Not perceptually uniform.",
+            "|ΔR|": "Absolute red-channel difference of approximate 8-bit sRGB display colors derived from LAB.",
+            "|ΔG|": "Absolute green-channel difference of approximate 8-bit sRGB display colors derived from LAB.",
+            "|ΔB|": "Absolute blue-channel difference of approximate 8-bit sRGB display colors derived from LAB.",
         }
         return descriptions.get(metric, "Color difference metric.")
 
@@ -495,128 +505,56 @@ class ColorEvaluationManager:
     
 
     @staticmethod
-    def ciede2000_coordinate_contribution(sample_lab, prototype_lab, kL=1.0, kC=1.0, kH=1.0):
-        """
-        Computes the CIEDE2000 L/C/H percentage contribution following
-        the same tilted-coordinate idea used in dE00_Euclidea.m.
-
-        prototype_lab is treated as LABREF.
-        sample_lab is treated as LAB.
-
-        Returns positive percentage contributions:
-            L_percent, C_percent, H_percent
-        """
-
-        # The prototype is the reference; the sample is the measured color.
-        L, a, b = ColorEvaluationManager._safe_lab_array(prototype_lab)
-        Ls, a_s, b_s = ColorEvaluationManager._safe_lab_array(sample_lab)
-
-        C = float(np.sqrt(a ** 2 + b ** 2))
-        Cs = float(np.sqrt(a_s ** 2 + b_s ** 2))
-
-        Cm = (C + Cs) / 2.0
-        G = 0.5 * (1.0 - np.sqrt((Cm ** 7) / (Cm ** 7 + 25.0 ** 7)))
-
-        a_p = (1.0 + G) * a
-        a_sp = (1.0 + G) * a_s
-
-        C = float(np.sqrt(a_p ** 2 + b ** 2))
-        Cs = float(np.sqrt(a_sp ** 2 + b_s ** 2))
-
-        h = float(np.degrees(np.arctan2(b, a_p)) % 360.0)
-        hs = float(np.degrees(np.arctan2(b_s, a_sp)) % 360.0)
-
-        Cm = (C + Cs) / 2.0
-        hm = (h + hs) / 2.0
-
-        if abs(h - hs) > 180.0:
-            hm = hm - 180.0
-
-        dh_abs = abs(h - hs)
-        if dh_abs > 180.0:
-            dh_abs = 360.0 - dh_abs
-
-        DL = abs(L - Ls)
-        DC = abs(C - Cs)
-        DH = 2.0 * np.sqrt(max(C * Cs, 0.0)) * np.sin(np.radians(dh_abs / 2.0))
-
-        T = (
-            1.0
-            - 0.17 * np.cos(np.radians(hm - 30.0))
-            + 0.24 * np.cos(np.radians(2.0 * hm))
-            + 0.32 * np.cos(np.radians(3.0 * hm + 6.0))
-            - 0.20 * np.cos(np.radians(4.0 * hm - 63.0))
-        )
-
-        Lm = (L + Ls) / 2.0
-
-        SL = 1.0 + (0.015 * (Lm - 50.0) ** 2) / np.sqrt(20.0 + (Lm - 50.0) ** 2)
-        SC = 1.0 + 0.045 * Cm
-        SH = 1.0 + 0.015 * Cm * T
-
-        Dt = 30.0 * np.exp(-((hm - 275.0) / 25.0) ** 2)
-        RC = 2.0 * np.sqrt((Cm ** 7) / (Cm ** 7 + 25.0 ** 7))
-        RT = -np.sin(np.radians(2.0 * Dt)) * RC
-
-        denom = SH ** 2 - SC ** 2
-
-        if abs(denom) < 1e-12:
-            theta = 0.0
+    def _ciede2000_weighted_terms(lab1, lab2, kL=1.0, kC=1.0, kH=1.0):
+        """Signed normalized terms and C/H cross-term of the CIEDE2000 metric."""
+        L1, a1, b1 = ColorEvaluationManager._safe_lab_array(lab1).tolist()
+        L2, a2, b2 = ColorEvaluationManager._safe_lab_array(lab2).tolist()
+        if not all(math.isfinite(k) and k > 0 for k in (kL, kC, kH)):
+            raise ValueError("CIEDE2000 weights must be positive and finite.")
+        c = (math.hypot(a1, b1) + math.hypot(a2, b2)) / 2
+        g = .5 * (1 - math.sqrt(c**7 / (c**7 + 25.0**7)))
+        a1, a2 = (1 + g)*a1, (1 + g)*a2
+        c1, c2 = math.hypot(a1,b1), math.hypot(a2,b2)
+        h1, h2 = math.degrees(math.atan2(b1,a1)) % 360, math.degrees(math.atan2(b2,a2)) % 360
+        dh = h2 - h1
+        if c1*c2 == 0:
+            dh, hm = 0., h1+h2
         else:
-            theta = 0.5 * np.arctan(RT * ((SC * SH) / denom))
+            if dh > 180: dh -= 360
+            elif dh < -180: dh += 360
+            if abs(h1-h2) <= 180: hm = (h1+h2)/2
+            elif h1+h2 < 360: hm = (h1+h2+360)/2
+            else: hm = (h1+h2-360)/2
+        cm, lm = (c1+c2)/2, (L1+L2)/2
+        rad = math.radians
+        t = 1 - .17*math.cos(rad(hm-30)) + .24*math.cos(rad(2*hm)) + .32*math.cos(rad(3*hm+6)) - .20*math.cos(rad(4*hm-63))
+        sl = 1 + .015*(lm-50)**2/math.sqrt(20+(lm-50)**2)
+        sc, sh = 1+.045*cm, 1+.015*cm*t
+        rt = -2*math.sqrt(cm**7/(cm**7+25.0**7))*math.sin(rad(60*math.exp(-((hm-275)/25)**2)))
+        return ((L2-L1)/(sl*kL), (c2-c1)/(sc*kC),
+                2*math.sqrt(c1*c2)*math.sin(rad(dh/2))/(sh*kH), rt)
 
-        DCp = DC * np.cos(theta) + DH * np.sin(theta)
-        DHp = DH * np.cos(theta) + DC * np.sin(theta)
+    @staticmethod
+    def ciede2000_coordinate_contribution(sample_lab, prototype_lab, kL=1.0, kC=1.0, kH=1.0):
+        """Nonnegative squared contributions in symmetric transformed L/C/H axes.
 
-        tan_theta = np.tan(theta)
-
-        SCp_den = 2.0 * (SH * kH) + RT * (SC * kC) * tan_theta
-        SHp_den = 2.0 * (SC * kC) + RT * (SH * kH) * tan_theta
-
-        if abs(SCp_den) < 1e-12 or abs(SHp_den) < 1e-12:
-            return {
-                "L_percent": 0.0,
-                "C_percent": 0.0,
-                "H_percent": 0.0,
-                "L_value": 0.0,
-                "C_value": 0.0,
-                "H_value": 0.0,
-                "DE00_coordinate": 0.0,
-            }
-
-        SCp = (SC * kC) * np.sqrt((2.0 * (SH * kH)) / SCp_den)
-        SHp = (SH * kH) * np.sqrt((2.0 * (SC * kC)) / SHp_den)
-
-        DL00 = DL / (SL * kL)
-        DC00 = DCp / SCp
-        DH00 = DHp / SHp
-
-        DE00 = np.sqrt(DL00 ** 2 + DC00 ** 2 + DH00 ** 2)
-
-        if not np.isfinite(DE00) or DE00 <= 1e-12:
-            return {
-                "L_percent": 0.0,
-                "C_percent": 0.0,
-                "H_percent": 0.0,
-                "L_value": 0.0,
-                "C_value": 0.0,
-                "H_value": 0.0,
-                "DE00_coordinate": 0.0,
-            }
-
-        L_percent = 100.0 * (DL00 / DE00) ** 2
-        C_percent = 100.0 * (DC00 / DE00) ** 2
-        H_percent = 100.0 * (DH00 / DE00) ** 2
-
-        return {
-            "L_percent": float(L_percent),
-            "C_percent": float(C_percent),
-            "H_percent": float(H_percent),
-            "L_value": float((L_percent * DE00) / 100.0),
-            "C_value": float((C_percent * DE00) / 100.0),
-            "H_value": float((H_percent * DE00) / 100.0),
-            "DE00_coordinate": float(DE00),
-        }
+        The C/H cross-term prevents a unique allocation to pure chroma/hue.
+        Apply the positive symmetric square root of [[1, RT/2],[RT/2,1]]
+        to the signed normalized C/H pair. The resulting squared norm is
+        exactly Delta E00 squared. Percentages describe these transformed
+        axes, not independent perceptual causal contributions.
+        """
+        l, c, h, rt = ColorEvaluationManager._ciede2000_weighted_terms(
+            sample_lab, prototype_lab, kL, kC, kH)
+        plus, minus = math.sqrt(1+rt/2), math.sqrt(1-rt/2)
+        a, b = (plus+minus)/2, (plus-minus)/2
+        parts = (l*l, (a*c+b*h)**2, (b*c+a*h)**2)
+        total = sum(parts)
+        distance = math.sqrt(total)
+        pct = tuple(100*p/total if total else 0. for p in parts)
+        return dict(L_percent=pct[0], C_percent=pct[1], H_percent=pct[2],
+                    L_value=pct[0]*distance/100, C_value=pct[1]*distance/100,
+                    H_value=pct[2]*distance/100, DE00_coordinate=distance)
 
     @staticmethod
     def calculate_component_differences(sample_lab, prototype_lab):
@@ -673,34 +611,8 @@ class ColorEvaluationManager:
     # Metric Computation
     @staticmethod
     def delta_e_ciede2000(lab1, lab2):
-        L1, a1, b1 = lab1
-        L2, a2, b2 = lab2
-        C1, C2 = np.sqrt(a1 ** 2 + b1 ** 2), np.sqrt(a2 ** 2 + b2 ** 2)
-        C_avg = (C1 + C2) / 2
-        G = 0.5 * (1 - np.sqrt((C_avg ** 7) / (C_avg ** 7 + 25 ** 7)))
-        a1p, a2p = (1 + G) * a1, (1 + G) * a2
-        C1p, C2p = np.sqrt(a1p ** 2 + b1 ** 2), np.sqrt(a2p ** 2 + b2 ** 2)
-        h1p, h2p = np.degrees(np.arctan2(b1, a1p)) % 360, np.degrees(np.arctan2(b2, a2p)) % 360
-        dL, dC = L2 - L1, C2p - C1p
-        dh = h2p - h1p
-        if abs(dh) > 180:
-            dh -= 360 * np.sign(dh)
-        dH = 2 * np.sqrt(C1p * C2p) * np.sin(np.radians(dh / 2))
-        Lavg, Cavgp = (L1 + L2) / 2, (C1p + C2p) / 2
-        if C1p * C2p == 0:
-            Havg = h1p + h2p
-        elif abs(h1p - h2p) > 180:
-            Havg = (h1p + h2p + 360) / 2
-        else:
-            Havg = (h1p + h2p) / 2
-        T = 1 - 0.17 * np.cos(np.radians(Havg - 30)) + 0.24 * np.cos(np.radians(2 * Havg)) + 0.32 * np.cos(np.radians(3 * Havg + 6)) - 0.20 * np.cos(np.radians(4 * Havg - 63))
-        SL = 1 + ((0.015 * (Lavg - 50) ** 2) / np.sqrt(20 + (Lavg - 50) ** 2))
-        SC = 1 + 0.045 * Cavgp
-        SH = 1 + 0.015 * Cavgp * T
-        dtheta = 30 * np.exp(-((Havg - 275) / 25) ** 2)
-        RC = 2 * np.sqrt((Cavgp ** 7) / (Cavgp ** 7 + 25 ** 7))
-        RT = -RC * np.sin(np.radians(2 * dtheta))
-        return float(np.sqrt((dL / SL) ** 2 + (dC / SC) ** 2 + (dH / SH) ** 2 + RT * (dC / SC) * (dH / SH)))
+        l, c, h, rt = ColorEvaluationManager._ciede2000_weighted_terms(lab1, lab2)
+        return math.sqrt(max(0., l*l+c*c+h*h+rt*c*h))
 
     @staticmethod
     def delta_e_cie76(lab1, lab2):
@@ -787,7 +699,7 @@ class ColorEvaluationManager:
         )
 
         rgb_line = (
-            f"RGB Δ = ({c['ΔR']:+.0f}, {c['ΔG']:+.0f}, {c['ΔB']:+.0f})"
+            f"RGB display Δ = ({c['ΔR']:+.0f}, {c['ΔG']:+.0f}, {c['ΔB']:+.0f})"
         )
 
         lines = ["\nComponent breakdown:"]
@@ -804,7 +716,7 @@ class ColorEvaluationManager:
             lines.append(rgb_line)
 
             lines.append(
-                "\nApprox. ΔE00 L/C/H contribution (%) = "
+                "\nΔE00² transformed L/C/H contribution (%) = "
                 f"{de00_contribution['L_percent']:.1f} / "
                 f"{de00_contribution['C_percent']:.1f} / "
                 f"{de00_contribution['H_percent']:.1f}"
@@ -850,7 +762,7 @@ class ColorEvaluationManager:
     # Evaluation / Classification
     @classmethod
     def _classify_metric_value(cls, value, threshold_settings):
-        if value is None:
+        if value is None or not np.isfinite(value) or value < 0:
             return {"status": "unavailable", "label": "Unavailable", "order": 9}
         settings = cls.normalize_threshold_settings(threshold_settings)
         mode = settings.get("mode", "default")
@@ -985,32 +897,31 @@ class ColorEvaluationManager:
                 groups[label] = [(p.label, np.asarray(space.lab_from_model(p.positive), dtype=float))
                                  for p in space.get_descendant_granules(label)]
             color_rows = [(label, candidates[0][1]) for label, candidates in groups.items() if candidates]
+        settings["metric"] = metric
         ranking = []
+        distances = {}
         for label, proto_lab in color_rows:
             candidates = groups.get(label, [(label, proto_lab)])
             winner = None
             for granule_label, candidate in candidates:
                 try:
-                    evaluation = cls.evaluate_color_difference_threshold(
-                        sample_lab, candidate, metric, settings)
-                    metric_value = evaluation.get("metric_value", evaluation.get("delta_e"))
-                    if metric_value is None:
+                    key = tuple(float(v) for v in candidate)
+                    if key not in distances:
+                        distances[key] = float(cls.calculate_metric_value(sample_lab, candidate, metric))
+                    value = distances[key]
+                    if not np.isfinite(value) or value < 0:
                         continue
-                    if winner is None or float(metric_value) < winner["metric_value"]:
-                        winner = {
-                            "label": label,
-                            "granule_label": granule_label,
-                            "granule_lab": np.asarray(candidate, dtype=float),
-                            "delta_e": float(metric_value),
-                            "metric_value": float(metric_value),
-                            "class_label": evaluation.get("class_label", "Unavailable"),
-                            "class_order": evaluation.get("class_order", 9),
-                            "status": evaluation.get("status", "unavailable"),
-                            "detail": evaluation.get("detail", ""),
-                        }
-                except Exception:
+                    if winner is None or value < winner["metric_value"]:
+                        winner = {"label": label, "granule_label": granule_label,
+                                  "granule_lab": np.asarray(candidate, dtype=float),
+                                  "delta_e": value, "metric_value": value}
+                except (TypeError, ValueError, ArithmeticError):
                     continue
             if winner is not None:
+                classification = cls._classify_metric_value(winner["metric_value"], settings)
+                winner.update(class_label=classification["label"], class_order=classification["order"],
+                              status=classification["status"],
+                              detail=cls.format_metric_value(winner["metric_value"], metric))
                 ranking.append(winner)
         ranking.sort(key=lambda item: item["metric_value"])
         return ranking[:top_n]
@@ -1378,7 +1289,7 @@ class ColorEvaluationManager:
                 if not utils_tools.is_valid_rgb(sample_rgb):
                     return False, "RGB values must be between 0 and 255.", None, None, None
 
-                sample_lab = utils_tools.rgb_to_lab(sample_rgb)
+                sample_lab = utils_tools.analysis_rgb_to_lab(sample_rgb)
                 sample_lab = utils_tools.safe_lab_tuple(sample_lab)
                 sample_hex = utils_tools.rgb_to_hex(sample_rgb)
 
@@ -1428,7 +1339,7 @@ class ColorEvaluationManager:
                     return False, "HEX value must be #RRGGBB or RRGGBB.", None, None, None
 
                 sample_rgb = utils_tools.hex_to_rgb(hex_text)
-                sample_lab = utils_tools.hex_to_lab(hex_text)
+                sample_lab = utils_tools.analysis_rgb_to_lab(sample_rgb)
                 sample_lab = utils_tools.safe_lab_tuple(sample_lab)
                 sample_hex = utils_tools.rgb_to_hex(sample_rgb)
 

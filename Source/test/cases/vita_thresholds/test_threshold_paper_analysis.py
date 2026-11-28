@@ -24,7 +24,7 @@ sys.path.append(pyfcs_dir)
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.fuzzy.FuzzyColorSpaceBuilder import FuzzyColorSpaceBuilder
 from Source.geometry.Point import Point
-from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
+from Source.interface.modules.evaluation.ColorEvaluationManager import ColorEvaluationManager
 from Source.test.cases.vita_thresholds.generate_threshold_method_figures import (
     parse_args as method_parse_args, matching_cached_grids,
     axis_limits_from_at, make_figure,

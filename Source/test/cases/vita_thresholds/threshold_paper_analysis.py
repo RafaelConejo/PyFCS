@@ -64,7 +64,7 @@ from skimage.color import deltaE_ciede2000
 from Source.geometry.GeometryTools import GeometryTools
 from Source.geometry.Point import Point
 from Source.input_output.Input import Input
-from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
+from Source.interface.modules.evaluation.ColorEvaluationManager import ColorEvaluationManager
 
 PT = 0.8
 AT = 1.8

@@ -9,7 +9,7 @@ from Source.geometry.Voronoi import Voronoi
 from Source.fuzzy.FuzzyColorSpaceBuilder import FuzzyColorSpaceBuilder, lab_to_rgb_model_checked
 from Source.colorspace.ReferenceDomain import ReferenceDomain
 from Source.fuzzy.FuzzyColorSpace import FuzzyColorSpace
-from Source.interface.modules.UtilsTools import get_base_path, validate_color_space_name
+from Source.interface.modules.common.UtilsTools import get_base_path, get_color_space_dir, validate_color_space_name
 
 import numpy as np
 import tempfile
@@ -96,7 +96,7 @@ class InputFCS(Input):
         # already compatible with later multi-granule extensions.
         space.tconorm = tconorm
 
-        folder = os.path.join(get_base_path(), "fuzzy_color_spaces")
+        folder = get_color_space_dir(get_base_path())
         os.makedirs(folder, exist_ok=True)
         dest = os.path.join(folder, name + ".fcs")
         tmp = None

@@ -2,9 +2,9 @@ from .input_output.Input import Input
 from .input_output.InputCNS import InputCNS
 from .geometry.Prototype import Prototype
 from .fuzzy.FuzzyColorSpace import FuzzyColorSpace
-from .interface.modules.VisualManager import VisualManager
+from .interface.modules.visualization.VisualManager import VisualManager
 from .colorspace.ReferenceDomain import ReferenceDomain
 from .geometry.Point import Point
-from .interface.modules.ColorProcessingEngine import ColorProcessingEngine
-from .interface.modules.FuzzyColorSpaceManager import FuzzyColorSpaceManager
-from .interface.modules.ColorEvaluationManager import ColorEvaluationManager
+from .interface.modules.image.ColorProcessingEngine import ColorProcessingEngine
+from .interface.modules.creation.FuzzyColorSpaceManager import FuzzyColorSpaceManager
+from .interface.modules.evaluation.ColorEvaluationManager import ColorEvaluationManager

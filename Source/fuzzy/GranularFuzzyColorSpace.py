@@ -68,6 +68,11 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
         self.set_tconorm(tconorm)
         self._hierarchy = ColorHierarchy(self.categories, hierarchy)
 
+    @property
+    def _uses_partition_normalization(self):
+        return (self.is_partition and not self._hierarchy and
+                all(len(group) == 1 for group in self._category_flat_indices))
+
     def set_tconorm(self, tconorm):
         operator = str(tconorm).lower().replace("-", "_")
         if operator not in GranularFuzzyColor.OPERATORS:
@@ -171,15 +176,20 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
     def calculate_membership_snapshot(self, value, input_space="LAB", tconorm=None):
         """Evaluate each unique geometry once; aggregate every semantic node.
 
-        Raw degrees are intentional. The legacy flat membership API retains
-        historical singleton-partition normalization for existing callers.
+        Flat singleton partitions use the historical partition evaluation.
+        Multi-granule and hierarchical spaces retain raw geometric degrees.
         """
         coords = self._coordinates(value, input_space)
         if self.reference_domain.contains_coordinates(coords, eps=1e-9):
             if self._precomputed is None:
                 self.precompute_pack()
-            degrees = {p.label: float(FuzzyColor._raw_membership_for_index(
-                coords, i, self._precomputed)) for i, p in enumerate(self._flat_prototypes)}
+            if self._uses_partition_normalization:
+                positive = FuzzyColor.get_membership_degree(
+                    coords, self._flat_prototypes, self._precomputed)
+                degrees = {p.label: float(positive.get(p.label, 0.0)) for p in self._flat_prototypes}
+            else:
+                degrees = {p.label: float(FuzzyColor._raw_membership_for_index(
+                    coords, i, self._precomputed)) for i, p in enumerate(self._flat_prototypes)}
         else:
             degrees = {p.label: 0.0 for p in self._flat_prototypes}
         values = self._hierarchy.evaluate(degrees, self.tconorm if tconorm is None else tconorm)
@@ -198,6 +208,12 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
         top = max((scores[label] for label in labels), default=0.0)
         if top <= 0.0:
             return None
+        if self._uses_partition_normalization:
+            idx = self.best_prototype_index(value, input_space)
+            winner = self.categories[idx].label if idx >= 0 else None
+            if winner in labels:
+                return winner
+            return max(labels, key=scores.__getitem__)
         q = np.asarray(self._coordinates(value, input_space))
         return min((label for label in labels if abs(scores[label]-top) <= 1e-12),
                    key=lambda label: min(float(np.dot(p.positive-q, p.positive-q))
@@ -268,7 +284,7 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
         # If every category has exactly one granule, the same geometric
         # partition must evaluate identically regardless of which Python
         # wrapper was used to create it. There is no on-disk type marker.
-        if self.is_partition and all(len(cat.prototypes) == 1 for cat in self.categories):
+        if self._uses_partition_normalization:
             coords = self._coordinates(new_color, input_space)
             if not self.reference_domain.contains_coordinates(coords, eps=1e-9):
                 return {}
@@ -291,24 +307,32 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
             return 0.0
         if self._precomputed is None:
             self.precompute_pack()
+        if self._uses_partition_normalization:
+            return FuzzyColor._partition_membership_for_index(
+                coords, self._category_flat_indices[idx_proto][0],
+                self._flat_prototypes, self._precomputed)
         values = (FuzzyColor._raw_membership_for_index(coords, i, self._precomputed)
                   for i in self._category_flat_indices[idx_proto])
         return GranularFuzzyColor.aggregate(values, self.tconorm)
 
     def calculate_granule_memberships(self, value, input_space="LAB", include_zeros=False):
-        """Return {category: {granule_label: raw_degree}} for inspection."""
+        """Return effective singleton degrees or raw constituent granule degrees."""
         coords = self._coordinates(value, input_space)
         if not self.reference_domain.contains_coordinates(coords, eps=1e-9):
             return ({c.label: {p.label: 0.0 for p in c.prototypes}
                      for c in self.categories} if include_zeros else {})
         if self._precomputed is None:
             self.precompute_pack()
+        partition_values = (FuzzyColor.get_membership_degree(
+            coords, self._flat_prototypes, self._precomputed)
+            if self._uses_partition_normalization else None)
         output = {}
         for cat in self.categories:
             vals = {}
             for p in cat.prototypes:
-                degree = float(FuzzyColor._raw_membership_for_index(
-                    coords, self._granule_index[p.label], self._precomputed))
+                degree = (float(partition_values.get(p.label, 0.0)) if partition_values is not None
+                          else float(FuzzyColor._raw_membership_for_index(
+                              coords, self._granule_index[p.label], self._precomputed)))
                 if degree > 0.0 or include_zeros:
                     vals[p.label] = degree
             if vals or include_zeros:
@@ -320,6 +344,11 @@ class GranularFuzzyColorSpace(FuzzyColorSpace):
         coords = self._coordinates(value, input_space)
         if not self.reference_domain.contains_coordinates(coords, eps=1e-9):
             return -1
+        if self._uses_partition_normalization:
+            if self._precomputed is None:
+                self.precompute_pack()
+            return FuzzyColor.get_membership_degree_mapping_all(
+                coords, self._flat_prototypes, self._precomputed)
         scores = self._raw_by_category(coords)
         top = max(scores, default=0.0)
         if top <= 0.0:

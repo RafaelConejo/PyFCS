@@ -6,7 +6,7 @@ import plotly.express as px
 
 # Project modules
 from Source.geometry.Point import Point
-from Source.interface.modules import UtilsTools
+from Source.interface.modules.common import UtilsTools
 
 
 """

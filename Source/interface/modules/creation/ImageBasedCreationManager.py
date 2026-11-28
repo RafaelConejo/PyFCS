@@ -9,8 +9,8 @@ from tkinter import ttk, filedialog, messagebox, font as tkfont
 import numpy as np
 from PIL import Image, ImageTk, ImageOps
 
-import Source.interface.modules.UtilsTools as UtilsTools
-from Source.interface.modules.PaletteBasedCreationManager import PaletteBasedCreationManager
+import Source.interface.modules.common.UtilsTools as UtilsTools
+from Source.interface.modules.creation.PaletteBasedCreationManager import PaletteBasedCreationManager
 
 
 class ImageBasedCreationManager:
@@ -98,11 +98,12 @@ class ImageBasedCreationManager:
 
         # Automatic detection state.
         self._detection_running = False
+        self._detection_worker = None
         self._spinner_after_id = None
         self._spinner_angle = 0
 
         self._create_variables()
-        from Source.interface.modules.GranuleManager import InlineCreationTree
+        from Source.interface.modules.data.GranuleManager import InlineCreationTree
         self._inline_tree = InlineCreationTree(self)
         self._build_ui()
         self._load_workspace_sources(select_first=True)
@@ -146,8 +147,12 @@ class ImageBasedCreationManager:
             self.win.geometry(f"{width}x{height}+{x}+{y}")
 
     def close(self):
-        # A worker can finish after the window is closed; it only writes to a
-        # queue, and pending Tk polls are cancelled before destruction.
+        # DBSCAN cannot be interrupted safely inside sklearn. Retain the
+        # controller until its worker exits, without touching destroyed Tk.
+        worker = self._detection_worker
+        if worker is not None and worker.is_alive():
+            self.app._retiring_workspace_workers.append((worker, self))
+        self._detection_worker = None
         self._detection_running = False
         self._stop_detection_spinner()
         for callback_id in self._startup_after_ids:
@@ -426,9 +431,10 @@ class ImageBasedCreationManager:
         self.image_canvas.bind("<B1-Motion>", self._on_left_drag)
         self.image_canvas.bind("<ButtonRelease-1>", self._on_left_release)
 
-        self.image_canvas.bind("<Button-3>", self._start_pan)
-        self.image_canvas.bind("<B3-Motion>", self._pan_motion)
-        self.image_canvas.bind("<ButtonRelease-3>", self._end_pan)
+        for button in (2, 3):
+            self.image_canvas.bind(f"<Button-{button}>", self._start_pan)
+            self.image_canvas.bind(f"<B{button}-Motion>", self._pan_motion)
+            self.image_canvas.bind(f"<ButtonRelease-{button}>", self._end_pan)
         self.image_canvas.bind("<Button-2>", self._start_pan)
         self.image_canvas.bind("<B2-Motion>", self._pan_motion)
         self.image_canvas.bind("<ButtonRelease-2>", self._end_pan)
@@ -1983,6 +1989,9 @@ class ImageBasedCreationManager:
     def _run_auto_detection(self):
         if self._detection_running:
             return
+        if self.app._has_any_active_job():
+            self.app.custom_warning("Process Running", "Finish the current operation before detecting colors.", parent=self.win)
+            return
 
         pil = self._current_pil()
         if pil is None:
@@ -2019,13 +2028,22 @@ class ImageBasedCreationManager:
                 msg = str(exc)
                 self._detection_queue.put(('error', msg, source_name))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._detection_worker = threading.Thread(target=worker, daemon=True, name="PyFCS-ColorDetection")
+        try:
+            self._detection_worker.start()
+        except RuntimeError as exc:
+            self._detection_worker = None
+            self._finish_detection_error(str(exc))
+            return
         self._poll_detection_queue()
 
     def _poll_detection_queue(self):
         """Only Tk's main thread reads worker results and changes widgets."""
         self._detection_poll_id = None
         if not self._detection_running or not self.win.winfo_exists():
+            return
+        if self._detection_queue.empty():
+            self._detection_poll_id = self.win.after(90, self._poll_detection_queue)
             return
         try:
             result, payload, source_name = self._detection_queue.get_nowait()
@@ -2465,10 +2483,7 @@ class ImageBasedCreationManager:
         if self._detection_running or not self._commit_pending_color_names():
             return
 
-        base_path = UtilsTools.get_base_path()
-        initial_dir = os.path.join(base_path, "fuzzy_color_spaces")
-        if not os.path.isdir(initial_dir):
-            initial_dir = base_path
+        initial_dir = UtilsTools.get_color_space_initial_dir()
 
         path = filedialog.askopenfilename(
             title="Add Color Source",
@@ -2501,7 +2516,7 @@ class ImageBasedCreationManager:
             # Only color_data is used; imported volumes remain untouched.
             loaded = self.app.fuzzy_manager.load_color_file(path)
             source_name = os.path.basename(path)
-            from Source.interface.modules.GranuleManager import confirm_tree_import, remember_import_tree, source_colors_with_native_rgb
+            from Source.interface.modules.data.GranuleManager import confirm_tree_import, remember_import_tree, source_colors_with_native_rgb
             loaded_space = loaded.get("fuzzy_color_space")
             if not confirm_tree_import(self, loaded_space):
                 return

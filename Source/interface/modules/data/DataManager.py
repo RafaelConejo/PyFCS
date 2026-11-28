@@ -20,8 +20,8 @@ from Source.fuzzy.FuzzyColorSpaceBuilder import (
     FuzzyColorSpaceBuilder, lab_to_rgb_model_checked, rebuild_in_color_space,
 )
 from Source.fuzzy.GranularFuzzyColorSpace import GranularFuzzyColorSpace
-from Source.interface.modules import UtilsTools
-from Source.interface.modules.PaletteBasedCreationManager import PaletteBasedCreationManager
+from Source.interface.modules.common import UtilsTools
+from Source.interface.modules.creation.PaletteBasedCreationManager import PaletteBasedCreationManager
 
 
 # The list is a capability registry, not a hard-coded two-state LAB/RGB switch.

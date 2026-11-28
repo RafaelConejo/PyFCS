@@ -38,7 +38,7 @@ from Source.geometry.Prototype import Prototype
 from Source.geometry.Volume import Volume
 from Source.geometry.Voronoi import Voronoi
 from Source.input_output.Input import Input
-from Source.interface.modules.UtilsTools import get_base_path, validate_color_space_name
+from Source.interface.modules.common.UtilsTools import get_base_path, get_color_space_dir, validate_color_space_name
 
 
 class InputJSON(Input):
@@ -509,7 +509,7 @@ class InputJSON(Input):
                             for q in space.negative_prototypes.get(cat["label"], [])
                             if not any(np.linalg.norm(np.asarray(q)-a) <= Voronoi.DEFAULT_MERGE_EPS for a in auxiliary)]
         # Names are optional display metadata, not geometric construction inputs.
-        from Source.interface.modules.UtilsTools import filter_negative_names
+        from Source.interface.modules.common.UtilsTools import filter_negative_names
         named = filter_negative_names(getattr(space, 'negative_names', {}),
             {c['label']: c.get('negatives', []) for c in categories})
         if named:
@@ -821,7 +821,7 @@ class InputJSON(Input):
             protos = [records[0][1] for records in groups.values()]
             supports = [records[0][2] for records in groups.values()]
             space = FuzzyColorSpace(name, protos, cores, supports, **base)
-        from Source.interface.modules.UtilsTools import filter_negative_names
+        from Source.interface.modules.common.UtilsTools import filter_negative_names
         records = doc['metadata'].get('negative_names', [])
         if not isinstance(records, list): raise ValueError('Invalid negative_names metadata.')
         names = {}
@@ -869,7 +869,7 @@ class InputJSON(Input):
     @staticmethod
     def _write_document_atomic(name, document, progress_callback=None):
         encoded = InputJSON.format_document(document).encode("utf-8")
-        folder = os.path.join(get_base_path(), "fuzzy_color_spaces")
+        folder = get_color_space_dir(get_base_path())
         os.makedirs(folder, exist_ok=True)
         destination = os.path.join(folder, name + ".json")
         tmp = None

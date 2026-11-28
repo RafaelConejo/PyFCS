@@ -7,6 +7,7 @@ backed. No fuzzy geometry, category labels or JSON color-space files are edited.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import queue
@@ -21,7 +22,10 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageFilter
 
-from Source.interface.modules import UtilsTools
+from Source.interface.modules.common import UtilsTools
+from Source.interface.modules.image.ColorProcessingEngine import (
+    general_mapping_space, single_mapping_space, mapping_membership_summary,
+)
 
 
 BG = "#f6f8fb"
@@ -61,6 +65,8 @@ def _publish_export_directory(staged, target, cancelled=None):
     staged, target = Path(staged), Path(target)
     if cancelled and cancelled():
         return False
+    if target.is_symlink():
+        raise ValueError(f"Cannot replace a symbolic link with an analysis directory: {target}")
     if target.exists() and not target.is_dir():
         raise ValueError(f"Cannot replace a file with an analysis directory: {target}")
     backup = None
@@ -100,7 +106,8 @@ def _dispose_mapping_result(result, tempdir):
         for key in ("categories", "granules", "membership"):
             array = result.pop(key, None)
             if isinstance(array, np.memmap):
-                array.flush()
+                # Discarded results need not be flushed. Close the OS handle
+                # before unlinking, including on Windows or disk-full errors.
                 mapping = getattr(array, "_mmap", None)
                 if mapping is not None and not mapping.closed:
                     mapping.close()
@@ -145,66 +152,89 @@ def compute_full_resolution_mapping(image, manager, space, *, kind="all",
     width, height = x1 - x0, y1 - y0
     result = {"scope": (x0, y0, x1, y1), "kind": kind,
               "selected": selected, "covering": bool(space.covering)}
-    if kind == "all":
-        result["categories"] = _allocate_map((height, width), np.int32, directory, "categories.dat")
-        result["granules"] = _allocate_map((height, width), np.int32, directory, "granules.dat")
-    else:
-        result["membership"] = _allocate_map((height, width), np.uint8, directory, "membership.dat")
-    step = _tile_rows(width)
-    valid_pixels = 0
-    assigned_pixels = 0
-    membership_histogram = np.zeros(256, dtype=np.int64) if kind == "single" else None
-    operator = getattr(space, "tconorm", None)
-    for start_y in range(y0, y1, step):
+    completed = False
+    try:
         if cancelled and cancelled():
             return None
-        if getattr(space, "tconorm", None) != operator:
-            # Never publish a map generated with two different aggregators.
-            return None
-        end_y = min(y1, start_y + step)
-        tile = image.crop((x0, start_y, x1, end_y))
-        valid = np.asarray(tile.getchannel("A"), dtype=np.uint8) > 0 if "A" in tile.getbands() else np.ones((end_y - start_y, width), bool)
-        valid_pixels += int(np.count_nonzero(valid))
-        if not np.any(valid):
-            key_names = ("categories", "granules") if kind == "all" else ("membership",)
-            for key in key_names:
-                result[key][start_y-y0:end_y-y0] = -1 if kind == "all" else 0
+        if kind == "all":
+            result["categories"] = _allocate_map((height, width), np.int32, directory, "categories.dat")
+            result["granules"] = _allocate_map((height, width), np.int32, directory, "granules.dat")
+        else:
+            result["membership"] = _allocate_map((height, width), np.uint8, directory, "membership.dat")
+        step = _tile_rows(width)
+        valid_pixels = 0
+        assigned_pixels = 0
+        # Accumulate native-resolution class counts while each tile is in RAM.
+        # Never rescan a full map on the Tk thread to build a legend.
+        counts = None
+        if kind == "all":
+            categories = space.get_prototypes()
+            granules = space.get_all_prototypes() if getattr(space, "is_granular", False) else categories
+            counts = {"categories": np.zeros(len(categories), dtype=np.int64),
+                      "granules": np.zeros(len(granules), dtype=np.int64)}
+        operator = getattr(space, "tconorm", None)
+        for start_y in range(y0, y1, step):
+            if cancelled and cancelled():
+                return None
+            if getattr(space, "tconorm", None) != operator:
+                # Never publish a map generated with two different aggregators.
+                return None
+            end_y = min(y1, start_y + step)
+            tile = image.crop((x0, start_y, x1, end_y))
+            valid = UtilsTools._get_alpha_values_from_pil(tile) > 0
+            valid_pixels += int(np.count_nonzero(valid))
+            if not np.any(valid):
+                key_names = ("categories", "granules") if kind == "all" else ("membership",)
+                for key in key_names:
+                    result[key][start_y-y0:end_y-y0] = -1 if kind == "all" else 0
+                if progress:
+                    progress((end_y - y0) / height)
+                continue
+            if kind == "all":
+                pair = manager.get_category_granule_label_maps(
+                    tile, space, valid_mask=valid,
+                    cancel_callback=cancelled)
+                if pair is None:
+                    return None
+                result["categories"][start_y - y0:end_y - y0] = pair[0]
+                result["granules"][start_y - y0:end_y - y0] = pair[1]
+                for level, labels in zip(("categories", "granules"), pair):
+                    # Transparent and unassigned pixels do not contribute to
+                    # class counts; unassigned visible pixels stay in denominator.
+                    assigned = labels[(labels >= 0) & valid]
+                    counts[level] += np.bincount(assigned, minlength=len(counts[level]))
+            else:
+                single = manager.get_proto_percentage(
+                    space.get_prototypes(), tile, space, int(selected[0]),
+                    granule_index=selected[1], cancel_callback=cancelled,
+                    return_coverage=True, valid_mask=valid)
+                if single is None:
+                    return None
+                gray, covered, _ = single
+                assigned_pixels += covered
+                gray = np.asarray(gray, dtype=np.uint8)
+                gray[~valid] = 0
+                result["membership"][start_y - y0:end_y - y0] = gray
             if progress:
                 progress((end_y - y0) / height)
-            continue
-        if kind == "all":
-            pair = manager.get_category_granule_label_maps(
-                tile, space, valid_mask=valid,
-                cancel_callback=cancelled)
-            if pair is None:
-                return None
-            result["categories"][start_y - y0:end_y - y0] = pair[0]
-            result["granules"][start_y - y0:end_y - y0] = pair[1]
-            assigned_pixels += int(np.count_nonzero((pair[0] >= 0) & valid))
-        else:
-            gray = manager.get_proto_percentage(
-                space.get_prototypes(), tile, space, int(selected[0]),
-                granule_index=selected[1], cancel_callback=cancelled)
-            if gray is None:
-                return None
-            gray = np.asarray(gray, dtype=np.uint8)
-            membership_histogram += np.bincount(gray[valid], minlength=256)
-            gray[~valid] = 0
-            result["membership"][start_y - y0:end_y - y0] = gray
-        if progress:
-            progress((end_y - y0) / height)
-    if kind == "single":
-        present = np.flatnonzero(membership_histogram)
-        threshold = 255 if len(present) <= 3 and 255 in present else 128
-        assigned_pixels = int(membership_histogram[threshold:].sum())
-        result["coverage_threshold"] = threshold
-    result["valid_pixels"] = valid_pixels
-    result["assigned_pixels"] = assigned_pixels
-    result["coverage_percent"] = 100.0 * assigned_pixels / valid_pixels if valid_pixels else 0.0
-    for key in ("categories", "granules", "membership"):
-        if isinstance(result.get(key), np.memmap):
-            result[key].flush()
-    return result
+        if (cancelled and cancelled()) or getattr(space, "tconorm", None) != operator:
+            return None
+        if kind == "single":
+            result["coverage_threshold"] = 0.5
+        if counts is not None:
+            result["label_counts"] = {level: values.tolist() for level, values in counts.items()}
+            assigned_pixels = int(counts["categories"].sum())
+        result["valid_pixels"] = valid_pixels
+        result["assigned_pixels"] = assigned_pixels
+        result["coverage_percent"] = 100.0 * assigned_pixels / valid_pixels if valid_pixels else 0.0
+        for key in ("categories", "granules", "membership"):
+            if isinstance(result.get(key), np.memmap):
+                result[key].flush()
+        completed = True
+        return result
+    finally:
+        if not completed:
+            _dispose_mapping_result(result, None)
 
 
 def render_result_tile(source_rgba, result, box, *, level="categories",
@@ -247,6 +277,42 @@ def render_result_tile(source_rgba, result, box, *, level="categories",
     return Image.fromarray(base, "RGBA")
 
 
+def _nearest_preview_indices(start, stop, count):
+    """Use Pillow's own nearest-neighbour sampling, including its tie rules."""
+    positions = np.arange(start, stop, dtype=np.int32).reshape(1, -1)
+    return np.asarray(Image.fromarray(positions).resize(
+        (count, 1), Image.Resampling.NEAREST))[0]
+
+
+def render_workspace_preview(source, result, box, size, *, level="categories",
+                             palette="original", style="color"):
+    """Compose only displayed pixels; the full-resolution maps remain unchanged.
+
+    Mapping previews are equivalent to rendering the native crop and then
+    resizing it with NEAREST. No image colors or labels are interpolated.
+    """
+    if result is None:
+        return source.resize(size, Image.Resampling.LANCZOS, box=box,
+                             reducing_gap=3.0)
+    x0, y0, x1, y1 = box
+    xs = _nearest_preview_indices(x0, x1, size[0])
+    ys = _nearest_preview_indices(y0, y1, size[1])
+    preview = source.crop(box).resize(size, Image.Resampling.NEAREST)
+    rx0, ry0, rx1, ry1 = result["scope"]
+    ix = np.flatnonzero((xs >= rx0) & (xs < rx1))
+    iy = np.flatnonzero((ys >= ry0) & (ys < ry1))
+    if not ix.size or not iy.size:
+        return preview
+    key = "membership" if result["kind"] == "single" else level
+    sampled = {"kind": result["kind"], "covering": result.get("covering", False),
+               "scope": (int(ix[0]), int(iy[0]), int(ix[-1])+1, int(iy[-1])+1),
+               key: result[key][np.ix_(ys[iy]-ry0, xs[ix]-rx0)]}
+    if result["kind"] == "all":
+        sampled["palettes"] = result["palettes"]
+    return render_result_tile(preview, sampled, (0, 0, *size), level=level,
+                              palette=palette, style=style)
+
+
 def build_mapping_palettes(manager, space):
     proto = space.get_prototypes()
     flat = space.get_all_prototypes() if getattr(space, "is_granular", False) else proto
@@ -254,6 +320,13 @@ def build_mapping_palettes(manager, space):
     category_alt = manager.build_alt_palette_uint8(proto)
     granule_original = manager.build_original_palette_uint8(flat, space.color_space)
     granule_alt = manager.build_granule_alt_palette_uint8(space, category_alt)
+    if getattr(space, "is_granular", False):
+        offset = 0
+        for i, category in enumerate(space.categories):
+            count = len(category.prototypes)
+            if count == 1:
+                granule_alt[offset] = category_alt[i]
+            offset += count
     return {"categories": {"original": category_original, "alt": category_alt},
             "granules": {"original": granule_original, "alt": granule_alt}}
 
@@ -317,6 +390,11 @@ class ImageWorkspaceManager:
         self.sample = None
         self.pins = []
         self._preview = None
+        self._preview_signature = None
+        self._preview_item = None
+        self._sample_token = 0
+        self._sample_cancel = None
+        self._sample_messages = queue.Queue()
         self._mouse_start = None
         self._pan_start = None
         self._drag_rect = None
@@ -454,17 +532,8 @@ class ImageWorkspaceManager:
             # Load/validation/commit is performed by the normal mainInterface
             # workflow. Invalidation of mapping caches and active workspace is
             # already centralized there; only the presentation is refreshed here.
-            started = self.app.load_color_space(filename, on_success=self._on_color_space_loaded)
-            # The shared loading spinner belongs to mainInterface (root),
-            # but this fullscreen workspace is the active window. Parent and
-            # raise the existing spinner above it without creating a second one.
-            popup = getattr(self.app, "load_window", None)
-            if started and popup is not None and popup.winfo_exists():
-                try:
-                    popup.transient(self.win)
-                    popup.lift(self.win)
-                except tk.TclError:
-                    pass
+            self.app.load_color_space(filename, on_success=self._on_color_space_loaded,
+                                      parent=self.win)
         except (OSError, ValueError, tk.TclError) as exc:
             messagebox.showwarning("Load Color Space", str(exc), parent=self.win)
 
@@ -534,6 +603,12 @@ class ImageWorkspaceManager:
         self.save_button.pack(side="right", padx=4)
         self.original_button = self._button(top, "Show Original", self._show_original)
         self.original_button.pack(side="right", padx=(4, 9))
+        # Distinguish the comparison action from exporting the analysis.
+        self.save_button.configure(font=("Segoe UI", 9, "bold"),
+                                   activeforeground=UtilsTools.UI_ADD_CATEGORY_FG,
+                                   disabledforeground=MUTED)
+        self.original_button.configure(font=("Segoe UI", 9, "bold"),
+                                       activeforeground="#234D77", disabledforeground=MUTED)
 
         content = tk.PanedWindow(self.win, orient="horizontal", bd=0, sashwidth=7,
                                  bg=BG, sashrelief="flat")
@@ -563,6 +638,32 @@ class ImageWorkspaceManager:
             button.pack(side="right", padx=(2, 4), pady=3)
             self._zoom_buttons.append(button)
 
+        # Reserve a compact, independent legend below the image. Packing it
+        # before the expanding viewport also protects it at small window sizes.
+        legend = tk.Frame(left, bg="white", highlightbackground=BORDER,
+                          highlightthickness=1)
+        legend.pack(side="bottom", fill="x", padx=4, pady=(0, 4))
+        legend_header = tk.Frame(legend, bg="white")
+        legend_header.pack(fill="x", padx=8, pady=(5, 2))
+        tk.Label(legend_header, text="Mapping Legend", bg="white", fg=TEXT,
+                 font=("Segoe UI", 9, "bold")).pack(fill="x")
+        legend_body = tk.Frame(legend, bg="white")
+        legend_body.pack(fill="x", padx=6, pady=(0, 1))
+        self.legend_canvas = tk.Canvas(legend_body, bg="white", bd=0,
+                                      highlightthickness=0, height=86,
+                                      yscrollincrement=18)
+        self.legend_scroll = UtilsTools.styled_scrollbar(
+            legend_body, orient="vertical", command=self.legend_canvas.yview)
+        self.legend_canvas.configure(yscrollcommand=self.legend_scroll.set)
+        self.legend_canvas.pack(side="left", fill="x", expand=True)
+        self._legend_summary = tk.Label(legend, bg="white", fg=MUTED,
+                                       font=("Segoe UI", 8), anchor="center")
+        self._legend_summary.pack(fill="x", padx=8, pady=(0, 3))
+        self._legend_signature = None
+        self.legend_canvas.bind("<Configure>", lambda e: self._update_mapping_legend())
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.legend_canvas.bind(sequence, self._scroll_mapping_legend)
+
         self.canvas = tk.Canvas(left, bg="#e8ecf2", bd=0, highlightthickness=0,
                                 cursor="crosshair")
         self.canvas.pack(fill="both", expand=True, padx=4, pady=4)
@@ -573,9 +674,10 @@ class ImageWorkspaceManager:
         self.canvas.bind("<Button-1>", self._start_selection)
         self.canvas.bind("<B1-Motion>", self._move_selection)
         self.canvas.bind("<ButtonRelease-1>", self._end_selection)
-        self.canvas.bind("<ButtonPress-3>", self._pan_begin)
-        self.canvas.bind("<B3-Motion>", self._pan_motion)
-        self.canvas.bind("<ButtonRelease-3>", lambda e: setattr(self, "_pan_start", None))
+        for button in (2, 3):
+            self.canvas.bind(f"<ButtonPress-{button}>", self._pan_begin)
+            self.canvas.bind(f"<B{button}-Motion>", self._pan_motion)
+            self.canvas.bind(f"<ButtonRelease-{button}>", lambda e: setattr(self, "_pan_start", None))
 
         # A truly single-line FCS header, with its action always visible.
         fcs_bar = tk.Frame(right, bg="white", highlightbackground=BORDER, highlightthickness=1)
@@ -644,15 +746,15 @@ class ImageWorkspaceManager:
         sample_actions.grid(row=0, column=2, sticky="new", padx=(3, 8), pady=3)
         self._sample_action_button(sample_actions, "Pin Sample", self._pin_sample)
         self._sample_action_button(sample_actions, "Image Inspection", self._open_inspection)
+        self._configure_dropdown_style()
         # A true compact selector: choosing a destination does not create
         # two more buttons or change the height of Selected Sample.
         self.evaluation_var = tk.StringVar(value="Color Evaluation")
-        self.evaluation_combo = UtilsTools.styled_combobox(
-            sample_actions, state="readonly", justify="center",
+        self.evaluation_combo = self._outlined_combobox(
+            sample_actions, fill="x", state="readonly", justify="center",
             textvariable=self.evaluation_var,
             values=("Use as Selected", "Use as Reference"),
             style="ImageWorkspace.TCombobox", width=18)
-        self.evaluation_combo.pack(fill="x")
         self.evaluation_combo.bind("<<ComboboxSelected>>", self._on_evaluation_choice)
 
         self.member_text = tk.StringVar(value="")
@@ -704,14 +806,14 @@ class ImageWorkspaceManager:
 
         # Mapping controls follow the actual workflow: choose a technique,
         # choose the scope, then configure ONLY that technique.
-        process_card = self._section_card(controls, "Color Mapping")
+        process_card = self._section_card(controls, "Mapping Workspace")
         self.mapping_var = tk.StringVar(value="Single")
         method = tk.Frame(process_card, bg="white")
         method.pack(fill="x", padx=11, pady=(0, 8))
         method.columnconfigure(0, weight=1)
         method.columnconfigure(1, weight=1)
         self._method_buttons = {}
-        for col, (value, caption) in enumerate((("Single", "Color Mapping"), ("All", "Mapping All"))):
+        for col, (value, caption) in enumerate((("Single", "Color Mapping"), ("All", "Color Mapping All"))):
             button = tk.Radiobutton(
                 method, text=caption, value=value, variable=self.mapping_var,
                 command=self._on_mapping_mode_changed, indicatoron=False,
@@ -734,11 +836,11 @@ class ImageWorkspaceManager:
         self.clear_roi_button.pack(side="right", padx=(6, 0))
         self._mapping_options_widgets.append(self.clear_roi_button)
         self.scope_var = tk.StringVar(value="Full image")
-        self.scope_combo = UtilsTools.styled_combobox(
-            scope, state="readonly", values=("Full image", "Selected ROI"),
+        self.scope_combo = self._outlined_combobox(
+            scope, side="right", fill="x", expand=True, state="readonly", values=("Full image", "Selected ROI"),
             textvariable=self.scope_var, width=15, justify="center",
             style="ImageWorkspace.TCombobox")
-        self.scope_combo.pack(side="right", fill="x", expand=True)
+        self.scope_combo.bind("<<ComboboxSelected>>", self._on_scope_changed)
 
         tk.Frame(process_card, bg=BORDER, height=1).pack(fill="x", padx=11, pady=(1, 8))
         self.mode_options_holder = tk.Frame(process_card, bg="white")
@@ -748,17 +850,16 @@ class ImageWorkspaceManager:
 
         tk.Label(self.single_options, text="Category / Granule", bg="white", fg=MUTED,
                  font=("Segoe UI", 9, "bold"), anchor="center").pack(fill="x", pady=(0, 5))
-        self.category_combo = UtilsTools.styled_combobox(
-            self.single_options, state="readonly", width=32, justify="center",
+        self.category_combo = self._outlined_combobox(
+            self.single_options, anchor="center", state="readonly", width=25, justify="center",
             style="ImageWorkspace.TCombobox")
-        self.category_combo.pack(fill="x")
         self.category_combo.bind("<<ComboboxSelected>>", lambda e: self._render())
-        self.single_style = tk.StringVar(value="Color")
+        self.single_style = tk.StringVar(value="Grayscale")
         style = tk.Frame(self.single_options, bg="white")
         style.pack(anchor="center", pady=(7, 2))
         tk.Label(style, text="Display", bg="white", fg=MUTED,
                  font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 10))
-        for label in ("Color", "Grayscale"):
+        for label in ("Grayscale", "Color"):
             button = tk.Radiobutton(style, text=label, variable=self.single_style, value=label,
                                     command=self._render, bg="white", activebackground="white",
                                     selectcolor="#e5ebf2", fg=TEXT,
@@ -803,17 +904,14 @@ class ImageWorkspaceManager:
             btn.pack(side="left", padx=(0, 4))
             self.tconorm_buttons[val] = btn
 
+        tk.Frame(process_card, bg=BORDER, height=1).pack(fill="x", padx=11, pady=(3, 10))
         runrow = tk.Frame(process_card, bg="white")
-        runrow.pack(fill="x", padx=11, pady=(0, 7))
+        runrow.pack(fill="x", padx=11, pady=(0, 9))
         self.run_button = self._button(runrow, "Apply Mapping", self._start_processing, colored=True)
-        # Keep Apply Mapping white with dark-purple lettering, as in the
-        # manually adjusted v7; Load Color Space remains the filled action.
         self.run_button.configure(
-            bg="#FFFFFF",
-            fg=UtilsTools.UI_ACCENT_DARK,
-            activebackground="#F7F5FB",
-            activeforeground=UtilsTools.UI_ACCENT_DARK,
-            font=("Segoe UI", 9, "bold"))
+            bg=ACCENT, fg="white", activebackground=UtilsTools.UI_ACCENT_DARK,
+            activeforeground="white", disabledforeground="#c9c4d2",
+            pady=8, font=("Segoe UI", 9, "bold"))
         self.run_button.pack(side="left", fill="x", expand=True, padx=(0, 7))
         self.cancel_button = self._button(runrow, "Cancel", self.cancel)
         self.cancel_button.pack(side="left")
@@ -834,12 +932,24 @@ class ImageWorkspaceManager:
         status = tk.Frame(self.win, bg="white", highlightthickness=1,
                           highlightbackground=BORDER)
         status.pack(fill="x", padx=9, pady=(0, 8))
-        self.view_status = tk.StringVar(value="Wheel: zoom · Right-drag: pan · Click: pixel · Drag: ROI")
-        tk.Label(status, textvariable=self.view_status, bg="white", fg=MUTED,
-                 font=("Segoe UI", 9), anchor="center", justify="center").pack(
-                     fill="x", padx=10, pady=5)
+        self.view_status = tk.StringVar(value="Full-resolution analysis · Wheel: zoom · Right-drag: pan · Click: sample pixel · Drag: select ROI · F11: fullscreen")
+        status_label = tk.Label(status, textvariable=self.view_status, bg="white", fg=MUTED,
+                                font=("Segoe UI", 9), anchor="center", justify="center")
+        status_label.pack(fill="x", padx=10, pady=5)
+        status.bind("<Configure>", lambda event: status_label.configure(
+            wraplength=max(1, event.width - 22)))
         self._aside_wheel_bind(controls)
         self._update_view_controls()
+
+    def _outlined_combobox(self, parent, *, side="top", fill="none", expand=False,
+                           anchor="center", **options):
+        # A separate Tk border is independent of native ttk focus/pressed states.
+        outline = tk.Frame(parent, bg="#fafbfe", bd=0, highlightthickness=1,
+                           highlightbackground="#404040", highlightcolor="#404040")
+        outline.pack(side=side, fill=fill, expand=expand, anchor=anchor)
+        combo = ttk.Combobox(outline, **options)
+        combo.pack(fill="x", expand=True)
+        return combo
 
     def _configure_dropdown_style(self):
         """Give readonly selectors a light, modern appearance where supported."""
@@ -934,6 +1044,9 @@ class ImageWorkspaceManager:
             return None
         if getattr(self._space(), "tconorm", None) != self._operator:
             return None
+        scope = self.roi if self.scope_var.get() == "Selected ROI" else (0, 0, *self.original.size)
+        if scope is None or tuple(scope) != self.result["scope"]:
+            return None
         if self.mapping_var.get() == "All" and self.result["kind"] == "all":
             return self.result
         if self.mapping_var.get() == "Single" and self.result["kind"] == "single":
@@ -945,11 +1058,168 @@ class ImageWorkspaceManager:
     def _update_view_controls(self):
         """One comparison action, not a third mapping technique."""
         result_available = self._result_for_current_mode() is not None
+        can_compare = result_available and not self._mapping_busy
+        can_save = can_compare and not self._saving
         self.original_button.configure(
             text="Show Result" if self._show_original_view else "Show Original",
-            state="normal" if result_available and not self._mapping_busy else "disabled")
-        self.save_button.configure(state="normal" if result_available and
-                                   not self._mapping_busy and not self._saving else "disabled")
+            state="normal" if can_compare else "disabled",
+            bg="#E4EFF9" if can_compare else "#F4F5F7",
+            fg="#234D77" if can_compare else MUTED,
+            activebackground="#D4E5F5")
+        self.save_button.configure(
+            state="normal" if can_save else "disabled",
+            bg=UtilsTools.UI_ADD_CATEGORY_BG if can_save else "#F4F5F7",
+            fg=UtilsTools.UI_ADD_CATEGORY_FG if can_save else MUTED,
+            activebackground=UtilsTools.UI_ADD_CATEGORY_HOVER)
+        self._update_mapping_legend()
+
+    def _scroll_mapping_legend(self, event):
+        """Scroll the legend without changing image zoom or selection."""
+        if not self.legend_scroll.winfo_manager():
+            return "break"
+        num, delta = getattr(event, "num", 0), getattr(event, "delta", 0)
+        if num == 4 or delta > 0:
+            self.legend_canvas.yview_scroll(-2, "units")
+        elif num == 5 or delta < 0:
+            self.legend_canvas.yview_scroll(2, "units")
+        return "break"
+
+    @staticmethod
+    def _mapping_legend_entries(result, level, palette):
+        """Labels and swatches in the same index order as the rendered map."""
+        space = result["space"]
+        labels = [str(p.label) for p in space.get_prototypes()]
+        if level == "granules" and getattr(space, "is_granular", False):
+            labels = [f"{cat.label} / {p.label}" if len(cat.prototypes) > 1
+                      else str(cat.label)
+                      for cat in space.categories for p in cat.prototypes]
+        colors = result["palettes"][level][palette]
+        return [(label, "#%02x%02x%02x" % tuple(int(v) for v in rgb[:3]))
+                for label, rgb in zip(labels, colors)]
+
+    @staticmethod
+    def _legend_percent(count, total):
+        """Share of visible pixels in the processed scope; not fuzzy membership."""
+        return f"{100.0 * count / total:.2f}%" if total else "—"
+
+    def _update_mapping_legend(self):
+        """Describe the result actually visible, without recomputing memberships."""
+        canvas = getattr(self, "legend_canvas", None)
+        # The model/state setup may call this before the controls are complete.
+        if self._closed or canvas is None or not hasattr(self, "level_var"):
+            return
+        result = None if self._mapping_busy else self._visible_result()
+        # Only categorical legends need scrolling. The membership scale fits
+        # its text and stays centered across the full width of the image.
+        scroll = self.legend_scroll
+        show_scroll = result is not None and result["kind"] == "all"
+        if show_scroll and not scroll.winfo_manager():
+            scroll.pack(side="right", fill="y", before=canvas)
+        elif not show_scroll and scroll.winfo_manager():
+            scroll.pack_forget()
+        width = canvas.winfo_width()
+        if width < 8:
+            return
+        level = self.level_var.get().lower()
+        palette = "alt" if self.palette_var.get() == "Alt. Colors" else "original"
+        style = self.single_style.get()
+        signature = (id(result) if result is not None else None, self._job_id,
+                     level, palette, style, width, self._mapping_busy,
+                     self._show_original_view)
+        if signature == self._legend_signature:
+            return
+        self._legend_signature = signature
+        canvas.delete("all")
+        canvas.yview_moveto(0)
+        font = ("Segoe UI", 9)
+        if result is None:
+            self._legend_summary.configure(text="")
+            message = ("Processing mapping…" if self._mapping_busy else
+                       "Original image · result hidden" if self._show_original_view and
+                       self._result_for_current_mode() is not None else
+                       "Apply a mapping to display its legend.")
+            canvas.create_text(width / 2, 35, text=message, anchor="center",
+                               width=max(1, width - 18), fill=MUTED, font=font)
+            canvas.configure(height=86, scrollregion=(0, 0, width, 86))
+            return
+
+        if result["kind"] == "single":
+            ci, gi = result["selected"]
+            space = result["space"]
+            label = str(space.get_prototypes()[ci].label)
+            if gi is not None:
+                label += " / " + str(space.categories[ci].prototypes[gi].label)
+            total = result["valid_pixels"]
+            coverage = self._legend_percent(result["assigned_pixels"], total)
+            criterion = "μ ≥ 0.5"
+            self._legend_summary.configure(
+                text=f"Membership · 0–1   |   Coverage: {coverage} ({criterion})"
+                if total else "Membership · 0–1   |   No visible pixels")
+            name_item = canvas.create_text(width / 2, 3, text=label, anchor="n", fill=TEXT,
+                                           justify="center", width=max(1, width - 16),
+                                           font=("Segoe UI", 9, "bold"))
+            y = canvas.bbox(name_item)[3] + 5
+            # In Color mode each original RGB is multiplied by membership;
+            # there is no one fixed category hue. Use a neutral reference scale.
+            x0, x1 = 13, max(14, width - 13)
+            for i in range(32):
+                gray = round(i * 255 / 31)
+                canvas.create_rectangle(x0 + (x1-x0)*i/32, y,
+                                        x0 + (x1-x0)*(i+1)/32, y+15,
+                                        fill="#%02x%02x%02x" % (gray, gray, gray), width=0,
+                                        tags="membership_scale")
+            canvas.create_rectangle(x0, y, x1, y+15, outline=BORDER)
+            for fraction, label, anchor in ((0, "0", "nw"), (.5, "0.5", "n"), (1, "1", "ne")):
+                canvas.create_text(x0 + (x1-x0)*fraction, y+18, text=label,
+                                   anchor=anchor, fill=MUTED, font=font)
+            note = "Grayscale = membership" if style == "Grayscale" else "Color = original RGB × membership"
+            item = canvas.create_text(width / 2, y+36, text=note, width=max(1, width-16),
+                                      anchor="n", justify="center", fill=MUTED, font=("Segoe UI", 8))
+            bottom = canvas.bbox(item)[3] + 5
+        else:
+            entries = self._mapping_legend_entries(result, level, palette)
+            self._legend_summary.configure(text=("General" if level == "categories" else "Detailed") +
+                                           " · " + ("Alt. Colors" if palette == "alt" else "Prototype Colors") +
+                                           " · Share of visible pixels")
+            counts = result["label_counts"][level]
+            total = result["valid_pixels"]
+            columns = max(1, width // 195)
+            column_width = width / columns
+            y = 4
+            for start in range(0, len(entries), columns):
+                row_bottom = y + 22
+                for col, (label, rgb) in enumerate(entries[start:start + columns]):
+                    x = col * column_width + 7
+                    canvas.create_rectangle(x, y+2, x+15, y+17, fill=rgb,
+                                            outline=BORDER, tags="mapping_swatch")
+                    percentage = self._legend_percent(counts[start + col], total)
+                    percent_item = canvas.create_text(
+                        (col+1)*column_width-8, y+1, text=percentage, anchor="ne",
+                        fill=MUTED, font=("Segoe UI", 8, "bold"), tags="mapping_percentage")
+                    percent_width = canvas.bbox(percent_item)[2] - canvas.bbox(percent_item)[0]
+                    text_item = canvas.create_text(x+21, y, text=label, anchor="nw",
+                                                   width=max(1, column_width-44-percent_width),
+                                                   fill=TEXT, font=font, tags="mapping_label")
+                    row_bottom = max(row_bottom, canvas.bbox(text_item)[3]+5)
+                # Subtle dividers make the percentages easy to associate with labels.
+                canvas.create_line(5, row_bottom-2, width-5, row_bottom-2, fill="#eef1f5")
+                y = row_bottom
+            if not total:
+                item = canvas.create_text(width / 2, y+2, text="No visible pixels", anchor="n",
+                                          fill=MUTED, font=("Segoe UI", 8))
+                y = canvas.bbox(item)[3]+5
+            elif sum(counts) < total:
+                percentage = self._legend_percent(total - sum(counts), total)
+                note = (f"Unassigned: {percentage} · transparent" if result.get("covering", False)
+                        else f"Unassigned: {percentage} · original color")
+                item = canvas.create_text(width / 2, y+2, text=note, anchor="n", fill=MUTED,
+                                          justify="center", width=max(1, width-16), font=("Segoe UI", 8))
+                y = canvas.bbox(item)[3]+5
+            bottom = y
+        height = 86 if show_scroll else max(86, bottom)
+        if int(canvas.cget("height")) != height:
+            canvas.configure(height=height)
+        canvas.configure(scrollregion=(0, 0, width, max(bottom, height)))
 
     def _aside_wheel_bind(self, root):
         """Prefer the pinned-list wheel; use outer scrolling at list boundaries."""
@@ -985,7 +1255,7 @@ class ImageWorkspaceManager:
 
     def _sync_space_state(self):
         space = self._space()
-        entries = granule_and_category_entries(space)
+        entries = granule_and_category_entries(single_mapping_space(space) if space is not None else None)
         self._entries = entries
         self.category_combo.configure(values=[name for name, _ in entries],
                                      state="readonly" if entries else "disabled")
@@ -1039,6 +1309,10 @@ class ImageWorkspaceManager:
         # perform a fallback only if that notification has not happened.
         if not self._closed and space.tconorm == operator and self._operator != operator:
             self.invalidate_model()
+
+    def _on_scope_changed(self, _event=None):
+        self._show_original_view = False
+        self._render()
 
     def _on_mapping_mode_changed(self):
         self._show_original_view = False
@@ -1142,22 +1416,39 @@ class ImageWorkspaceManager:
         clip_box = (int(math.floor(left)), int(math.floor(top)),
                     min(self.original.width, int(math.ceil(right))),
                     min(self.original.height, int(math.ceil(bottom))))
-        view = render_result_tile(self.original,
-                                  None if self._mapping_busy else self._visible_result(), clip_box,
-                                  level=self.level_var.get().lower(),
-                                  palette="alt" if self.palette_var.get() == "Alt. Colors" else "original",
-                                  style="gray" if self.single_style.get() == "Grayscale" else "color")
-        view = view.resize(
-            (cw, ch), Image.Resampling.NEAREST if self._visible_result() and not self._mapping_busy
-            else Image.Resampling.LANCZOS)
-        if self._mapping_busy:
-            # Blur only the viewport preview; source pixels and computed
-            # membership maps remain unchanged at their native resolution.
-            view = view.filter(ImageFilter.GaussianBlur(radius=3.0))
-            view = Image.blend(view, Image.new("RGBA", view.size, "#eef2f7"), 0.14)
-        self._preview = ImageTk.PhotoImage(view)
-        self.canvas.delete("all")
-        self.canvas.create_image(dx, dy, image=self._preview, anchor="nw")
+        result = None if self._mapping_busy else self._visible_result()
+        level = self.level_var.get().lower()
+        palette = "alt" if self.palette_var.get() == "Alt. Colors" else "original"
+        style = "gray" if self.single_style.get() == "Grayscale" else "color"
+        signature = (self._job_id if result is not None else None, id(result),
+                     clip_box, cw, ch, level if result and result["kind"] == "all" else None,
+                     palette if result and result["kind"] == "all" else None,
+                     style if result and result["kind"] == "single" else None,
+                     self._mapping_busy)
+        if signature != self._preview_signature or self._preview_item is None:
+            view = render_workspace_preview(self.original, result, clip_box, (cw, ch),
+                                            level=level, palette=palette, style=style)
+            if self._mapping_busy:
+                view = view.filter(ImageFilter.GaussianBlur(radius=3.0))
+                view = Image.blend(view, Image.new("RGBA", view.size, "#eef2f7"), 0.14)
+            self._preview = ImageTk.PhotoImage(view, master=self.canvas)
+            if self._preview_item is None:
+                self._preview_item = self.canvas.create_image(dx, dy, image=self._preview, anchor="nw")
+            else:
+                self.canvas.itemconfigure(self._preview_item, image=self._preview)
+            self._preview_signature = signature
+        self.canvas.coords(self._preview_item, dx, dy)
+        self._draw_selection_overlay()
+        self._draw_processing_overlay()
+        text = (f"Full-resolution analysis · Zoom {(self._zoom or self._fit_scale())*100:.0f}% · "
+                "Wheel: zoom · Right-drag: pan · Click: sample pixel · Drag: select ROI · F11: fullscreen")
+        if self.view_status.get() != text:
+            self.view_status.set(text)
+        self._update_view_controls()
+
+    def _draw_selection_overlay(self):
+        """Selection marks do not invalidate or regenerate the photo image."""
+        self.canvas.delete("roi", "selection")
         if self.roi:
             x0, y0, x1, y1 = self.roi
             a = self._image_to_screen(x0, y0)
@@ -1166,13 +1457,6 @@ class ImageWorkspaceManager:
                 self.canvas.create_rectangle(*a, *b, outline="#d63d48", width=2, tags="roi")
         if self._mouse_start is not None and self._drag_rect:
             self.canvas.create_rectangle(*self._drag_rect, outline="#d63d48", width=2, dash=(3, 2), tags="selection")
-        if self._mapping_busy:
-            self._draw_processing_overlay()
-        text = (f"{self.original.width} × {self.original.height} original pixels · "
-                f"Zoom {(self._zoom or self._fit_scale())*100:.0f}% · "
-                "Wheel: zoom · Right-drag: pan · Click: pixel · Drag: ROI")
-        self.view_status.set(text)
-        self._update_view_controls()
 
     def _draw_processing_overlay(self):
         """Animate a small overlay without re-rendering the original image."""
@@ -1256,7 +1540,7 @@ class ImageWorkspaceManager:
             return
         x, y, _ = self._mouse_start
         self._drag_rect = (x, y, event.x, event.y)
-        self._schedule_render()
+        self._draw_selection_overlay()
 
     def _end_selection(self, event):
         if self._mapping_busy:
@@ -1264,6 +1548,7 @@ class ImageWorkspaceManager:
         state = self._mouse_start
         self._mouse_start = None
         self._drag_rect = None
+        self._draw_selection_overlay()
         if state is None:
             return
         sx, sy, pt = state
@@ -1271,20 +1556,40 @@ class ImageWorkspaceManager:
         if not end:
             end = pt
         if abs(event.x-sx) < 4 and abs(event.y-sy) < 4:
-            # Inspect a second pixel without accidentally losing a deliberate
-            # ROI chosen for a high-resolution mapping run.
+            # A temporary inspection ROI is replaced by a point sample.
+            # Preserve a processed region while inspecting pixels in its
+            # result (including when temporarily showing the original image).
+            if self.roi is not None and not self._has_processed_roi():
+                self._reset_roi_selection()
             self._sample_pixel(pt)
         else:
             self.roi = _roi_box(*pt, *end, self.original.size)
+            self._show_original_view = False
             self._sample_roi(self.roi)
         self._render()
+
+    def _has_processed_roi(self):
+        """Only a valid, completed regional mapping keeps its ROI on click."""
+        if self.roi is None or self.scope_var.get() != "Selected ROI":
+            return False
+        result = self._result_for_current_mode()
+        return result is not None and result.get("scope_mode") == "Selected ROI"
+
+    def _reset_roi_selection(self):
+        self._cancel_roi_sample()
+        self.roi = None
+        if self.scope_var.get() == "Selected ROI":
+            self.scope_var.set("Full image")
+        if self._result_for_current_mode() is None:
+            self._show_original_view = False
 
     def _clear_roi(self):
         if self._mapping_busy:
             return
-        self.roi = None
-        if self.scope_var.get() == "Selected ROI":
-            self.scope_var.set("Full image")
+        self._reset_roi_selection()
+        if self.sample is None:
+            self._update_sample_ui()
+        self._show_original_view = False
         self._render()
 
     def _pan_begin(self, event):
@@ -1303,25 +1608,81 @@ class ImageWorkspaceManager:
         self._schedule_render()
 
     def _sample_pixel(self, point):
+        self._cancel_roi_sample()
         rgb = self.original.getpixel(tuple(point))
         if rgb[3] == 0:
             self.sample = None
             self._update_sample_ui()
             self.progress_text.set("Transparent pixel · no color sample")
             return
-        lab = UtilsTools.safe_lab_tuple(UtilsTools.rgb_to_lab(rgb[:3]))
+        lab = UtilsTools.safe_lab_tuple(UtilsTools.analysis_rgb_to_lab(rgb[:3]))
         self.sample = {"coords": tuple(point), "roi": None, "rgb": tuple(rgb[:3]),
                        "lab": tuple(float(x) for x in lab), "name": "Image Pixel"}
         self._update_sample_ui()
 
+    def _cancel_roi_sample(self):
+        self._sample_token += 1
+        if self._sample_cancel is not None:
+            self._sample_cancel.set()
+            self._sample_cancel = None
+
     def _sample_roi(self, box):
-        # LAB-mean over visible pixels only, in bounded chunks, so an enormous
-        # ROI does not allocate another full-sized array on the UI thread.
-        mean_lab, count, visible = UtilsTools.mean_lab_of_pil_roi(self.original, box)
+        self._cancel_roi_sample()
+        if (box[2]-box[0]) * (box[3]-box[1]) <= 250_000:
+            mean_lab, count, _ = UtilsTools.mean_lab_of_pil_roi(self.original, box)
+            self._finish_roi_sample(box, mean_lab, count)
+            return
+        self.sample = None
+        self._update_sample_ui()
+        self.sample_text.set("Measuring ROI at original resolution…")
+        token = self._sample_token
+        cancel = self._sample_cancel = threading.Event()
+        image, messages = self.original, self._sample_messages
+
+        def work():
+            # No Tk objects or model references in this worker. Cancellation
+            # is checked between the same bounded source-row chunks as before.
+            try:
+                x0, y0, x1, y1 = box
+                rows = max(1, 100000 // max(1, x1-x0))
+                sums = np.zeros(3, dtype=np.float64)
+                count = 0
+                for y in range(y0, y1, rows):
+                    if cancel.is_set():
+                        return
+                    mean, n, _ = UtilsTools.mean_lab_of_pil_roi(
+                        image, (x0, y, x1, min(y1, y+rows)))
+                    if n:
+                        sums += mean*n
+                        count += n
+                if not cancel.is_set():
+                    messages.put((token, box, sums/count if count else None, count, None))
+            except Exception as exc:
+                if not cancel.is_set():
+                    messages.put((token, box, None, 0, str(exc)))
+
+        try:
+            threading.Thread(target=work, daemon=True, name="PyFCS-ROISample").start()
+        except RuntimeError as exc:
+            self._sample_cancel = None
+            self.sample_text.set(f"Could not measure ROI: {exc}")
+
+    def _poll_roi_samples(self):
+        while not self._sample_messages.empty():
+            token, box, lab, count, error = self._sample_messages.get_nowait()
+            if token != self._sample_token or box != self.roi:
+                continue
+            self._sample_cancel = None
+            if error is not None:
+                self.sample_text.set(f"Could not measure ROI: {error}")
+            else:
+                self._finish_roi_sample(box, lab, count)
+
+    def _finish_roi_sample(self, box, mean_lab, count):
         if not count:
             self.sample = None
             self._update_sample_ui()
-            self.progress_text.set("ROI has no visible pixels")
+            self.sample_text.set("ROI has no visible pixels")
             return
         lab = tuple(float(v) for v in mean_lab)
         rgb = tuple(int(v) for v in UtilsTools.lab_to_rgb(lab))
@@ -1349,12 +1710,12 @@ class ImageWorkspaceManager:
         if space is None:
             self.member_text.set("Load a color space to evaluate memberships.")
             return
-        memberships = space.calculate_membership(lab, input_space="LAB")
-        if memberships:
-            winner_index = space.best_prototype_index(lab, input_space="LAB")
-            labels = list(space.get_prototypes())
-            winner = labels[winner_index].label if winner_index is not None and winner_index >= 0 else "None"
-            self.member_text.set(f"Highest membership degree: {winner}  ·  μ = {memberships.get(winner, 0.0):.4f}")
+        # A sampled RGB pixel must not travel RGB -> LAB -> RGB.
+        use_rgb = sample["roi"] is None and space.color_space == "RGB"
+        value, mode = (rgb, "RGB") if use_rgb else (lab, "LAB")
+        memberships, winner, degree = mapping_membership_summary(space, value, mode)
+        if winner is not None:
+            self.member_text.set(f"Highest membership degree: {winner}  ·  μ = {degree:.4f}")
         else:
             self.member_text.set("Outside fuzzy support · no category assignment")
 
@@ -1371,6 +1732,7 @@ class ImageWorkspaceManager:
     def _restore_pin(self, _event=None):
         idx = self._selected_pin_index()
         if idx is not None:
+            self._cancel_roi_sample()
             self.sample = dict(self.pins[idx])
             # Restore the physical selection too, not only the numeric fields.
             # This makes "Selected ROI" operate on the restored pinned region.
@@ -1408,7 +1770,7 @@ class ImageWorkspaceManager:
         self.app._use_color_evaluation_external_sample(
             vars_dict, name=self.sample["name"], lab=lab, rgb=rgb,
             hex_color=f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}",
-            source="image workspace", target=target)
+            source="image pixel" if self.sample["roi"] is None else "image ROI LAB average", target=target)
 
     def _show_original(self):
         if self._result_for_current_mode() is not None:
@@ -1419,6 +1781,7 @@ class ImageWorkspaceManager:
         result, tempdir = self.result, self._result_temp
         self.result = None
         self._result_temp = None
+        self._preview_signature = None
         if tempdir is None:
             return
         if self._worker is not None and self._worker.is_alive() and self._saving:
@@ -1437,11 +1800,15 @@ class ImageWorkspaceManager:
         if space is None:
             messagebox.showwarning("No Color Space", "Load a color space before running Color Mapping.", parent=self.win)
             return
-        if self._saving or (self._worker is not None and self._worker.is_alive()):
+        if self._saving or self._mapping_busy or (self._worker is not None and self._worker.is_alive()):
             messagebox.showinfo("Process Running", "The current operation is still active.", parent=self.win)
             return
+        if self.app._has_any_active_job():
+            messagebox.showinfo("Process Running", "Finish or cancel the active PyFCS operation first.", parent=self.win)
+            return
         scope = (0, 0, *self.original.size)
-        if self.scope_var.get() == "Selected ROI":
+        scope_mode = self.scope_var.get()
+        if scope_mode == "Selected ROI":
             if self.roi is None:
                 messagebox.showwarning("Select ROI", "Drag a rectangular ROI over the image before processing.", parent=self.win)
                 return
@@ -1454,9 +1821,11 @@ class ImageWorkspaceManager:
                 messagebox.showwarning("Choose Color", "Select a category or granule.", parent=self.win)
                 return
             selection = self._entries[idx][1]
+        source_space = space
         try:
+            space = general_mapping_space(source_space) if kind == "all" else single_mapping_space(source_space)
             scratch = tempfile.TemporaryDirectory(prefix="pyfcs_workspace_")
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             messagebox.showwarning("Processing Error", f"Cannot create temporary workspace:\n{exc}",
                                    parent=self.win)
             return
@@ -1471,23 +1840,29 @@ class ImageWorkspaceManager:
         operator = getattr(space, "tconorm", None)
         cancel_event = self._cancel_event
         def work():
+            result = None
             try:
                 result = compute_full_resolution_mapping(
                     image, manager, space, kind=kind, selected=selection, scope=scope,
                     directory=scratch.name, cancelled=lambda: cancel_event.is_set() or self._closed,
                     progress=lambda fraction: self._messages.put((token, "progress", fraction)))
                 if result is None or cancel_event.is_set() or self._closed:
-                    scratch.cleanup()
+                    _dispose_mapping_result(result, scratch)
                     self._messages.put((token, "cancelled", None))
                     return
                 if kind == "all":
                     result["palettes"] = build_mapping_palettes(manager, space)
                 result["operator"] = operator
+                result["scope_mode"] = scope_mode
                 result["space"] = space
+                result["source_space"] = source_space
                 result["tempdir"] = scratch
                 self._messages.put((token, "done", result))
             except Exception as exc:
-                scratch.cleanup()
+                try:
+                    _dispose_mapping_result(result, scratch)
+                except OSError:
+                    logging.getLogger(__name__).exception("Could not remove temporary mapping files")
                 self._messages.put((token, "error", str(exc)))
         self._worker = threading.Thread(target=work, daemon=True, name="PyFCS-FullResolutionMapping")
         try:
@@ -1508,6 +1883,7 @@ class ImageWorkspaceManager:
         self._poll_after = None
         if self._closed:
             return
+        self._poll_roi_samples()
         try:
             # This window is the ONLY consumer of this queue. Test whether a
             # message exists before reading it: repeatedly calling get_nowait
@@ -1537,7 +1913,10 @@ class ImageWorkspaceManager:
                 elif kind in ("done", "cancelled", "error"):
                     self._set_mapping_busy(False)
                     if kind == "done":
-                        if data["space"] is not self._space() or data["operator"] != getattr(self._space(), "tconorm", None):
+                        if self._cancel_event is not None and self._cancel_event.is_set():
+                            _dispose_mapping_result(data, data["tempdir"])
+                            self.progress_text.set("Cancelled · previous view retained")
+                        elif data.get("source_space", data["space"]) is not self._space() or data["operator"] != getattr(self._space(), "tconorm", None):
                             _dispose_mapping_result(data, data["tempdir"])
                             self.progress_text.set("Color space changed; result discarded.")
                         else:
@@ -1545,13 +1924,14 @@ class ImageWorkspaceManager:
                             self.result = data
                             self._show_original_view = False
                             self._result_temp = data["tempdir"]
-                            self._model_reference = data["space"]
+                            self._model_reference = data.get("source_space", data["space"])
                             self._operator = data["operator"]
                             self.progress_var.set(100)
                             self.progress_text.set(
-                                f"Ready · {data['coverage_percent']:.2f}% "
-                                f"{'covered' if data['kind'] == 'single' else 'assigned'} "
-                                "· original resolution")
+                                (f"Ready · {data['coverage_percent']:.2f}% "
+                                 f"{'covered (μ ≥ 0.5)' if data['kind'] == 'single' else 'assigned'} "
+                                 "· original resolution") if data['valid_pixels'] else
+                                "Ready · No visible pixels · original resolution")
                             self._render()
                     elif kind == "cancelled":
                         self.progress_text.set("Cancelled · previous view retained")
@@ -1579,7 +1959,7 @@ class ImageWorkspaceManager:
         if self._result_for_current_mode() is None:
             messagebox.showinfo("Save Results", "Apply a mapping before exporting its results.", parent=self.win)
             return
-        if self._worker is not None and self._worker.is_alive():
+        if self._saving or self._mapping_busy or (self._worker is not None and self._worker.is_alive()) or self.app._has_any_active_job():
             messagebox.showinfo("Save Results", "Finish processing before exporting.", parent=self.win)
             return
         directory = filedialog.askdirectory(title="Choose an export folder", parent=self.win)
@@ -1603,6 +1983,10 @@ class ImageWorkspaceManager:
         operator = self._operator
         job_id = self._job_id
         cancel_event = self._cancel_event
+        # Freeze metadata at the moment the user requests export.
+        from copy import deepcopy
+        pins = deepcopy(self.pins)
+        space_name = getattr(self.app, "file_base_name", None)
         def work():
             try:
                 # Stage a whole folder NEXT TO its destination for an atomic
@@ -1610,7 +1994,8 @@ class ImageWorkspaceManager:
                 # a cancellation or exception must not mix new/old maps.
                 with tempfile.TemporaryDirectory(prefix=".pyfcs_export_", dir=directory) as stage:
                     staged = Path(stage)
-                    self._export_results(staged, result, operator, cancelled=cancel_event.is_set)
+                    self._export_results(staged, result, operator, cancelled=cancel_event.is_set,
+                                         pins=pins, space_name=space_name)
                     if not _publish_export_directory(
                             staged, target, cancelled=lambda: cancel_event.is_set() or self._closed):
                         self._messages.put((job_id, "export_cancelled", None))
@@ -1646,20 +2031,20 @@ class ImageWorkspaceManager:
             output.paste(tile, (0, y))
         output.save(path)
 
-    def _export_results(self, directory, result, operator, *, cancelled=None):
+    def _export_results(self, directory, result, operator, *, cancelled=None, pins=None, space_name=None):
         """Always exports at the original source dimensions, ROI in place."""
+        if cancelled and cancelled():
+            raise RuntimeError("Export cancelled")
         self.original.save(directory / "original.png")
         if result["kind"] == "all":
             for level in ("categories", "granules"):
                 self._save_composite(directory / f"mapping_{level}.png", result, level=level, cancelled=cancelled)
                 self._save_composite(directory / f"mapping_{level}_alt.png", result, level=level, palette="alt", cancelled=cancelled)
-            space = result["space"]
-            categories = [p.label for p in space.get_prototypes()]
-            if getattr(space, "is_granular", False):
-                granules = [f"{cat.label} / {p.label}" for cat in space.categories for p in cat.prototypes]
-            else:
-                granules = categories
-            for level, labels in (("categories", categories), ("granules", granules)):
+            for level in ("categories", "granules"):
+                entries = self._mapping_legend_entries(result, level, "original")
+                total = result["valid_pixels"]
+                labels = [f"{label}  ·  {self._legend_percent(count, total)}"
+                          for (label, _), count in zip(entries, result["label_counts"][level])]
                 create_legend_image(labels, result["palettes"][level]["original"]).save(
                     directory / f"legend_{level}.png")
         else:
@@ -1674,22 +2059,37 @@ class ImageWorkspaceManager:
                     "processing_pixels": (result["scope"][2]-result["scope"][0]) * (result["scope"][3]-result["scope"][1]),
                     "visible_pixels": result.get("valid_pixels"),
                     "covered_or_assigned_pixels": result.get("assigned_pixels"),
-                    "coverage_percent": result.get("coverage_percent"),
-                    "coverage_threshold_8bit": result.get("coverage_threshold"),
+                    "coverage_percent": result.get("coverage_percent") if result.get("valid_pixels") else None,
+                    "coverage_threshold_membership": result.get("coverage_threshold"),
                     "processing_roi_xyxy_exclusive": list(result["scope"]),
                     "mode": result["kind"], "selected": list(result["selected"]) if result["selected"] else None,
-                    "color_space_name": getattr(self.app, "file_base_name", None),
+                    "color_space_name": space_name if space_name is not None else getattr(self.app, "file_base_name", None),
+                    "category_labels": [p.label for p in result["space"].get_prototypes()],
+                    "mapping_categories": getattr(result["space"], "mapping_choice", "General" if result["kind"] == "all" else "Detailed"),
                     "model_space": result["space"].color_space,
                     "tconorm": operator,
                     "granular": bool(getattr(result["space"], "is_granular", False)),
                     "saved_samples": [{"coords": list(s["coords"]), "roi": list(s["roi"]) if s["roi"] else None,
-                                       "rgb": list(s["rgb"]), "lab": list(s["lab"])} for s in self.pins]}
+                                       "rgb": list(s["rgb"]), "lab": list(s["lab"])} for s in (self.pins if pins is None else pins)]}
+        if result["kind"] == "all":
+            total = result["valid_pixels"]
+            metadata["label_statistics"] = {}
+            for level in ("categories", "granules"):
+                entries = self._mapping_legend_entries(result, level, "original")
+                counts = result["label_counts"][level]
+                metadata["label_statistics"][level] = {
+                    "labels": [{"label": label, "pixels": count,
+                                "percent": 100.0 * count / total if total else None}
+                               for (label, _), count in zip(entries, counts)],
+                    "unassigned_pixels": total - sum(counts),
+                }
         (directory / "analysis_metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def close(self):
         if self._closed:
             return
         self._closed = True
+        self._cancel_roi_sample()
         if self._cancel_event:
             self._cancel_event.set()
         for job in (self._view_after, self._poll_after, self._initial_render_after,
@@ -1710,18 +2110,39 @@ class ImageWorkspaceManager:
         except tk.TclError:
             pass
         self._discard_result()
-        if self._worker is not None and self._worker.is_alive():
-            worker = self._worker
-            pending = list(self._pending_cleanup)
-            self._pending_cleanup.clear()
-            def cleanup_later():
+        # The worker may have queued a completed result just before Close.
+        # Drain only after it has exited, then dispose every unpublished map.
+        worker = self._worker
+        pending = list(self._pending_cleanup)
+        self._pending_cleanup.clear()
+
+        def cleanup_later():
+            if worker is not None and worker.is_alive():
                 worker.join()
-                for result, tempdir in pending:
+            for result, tempdir in pending:
+                try:
                     _dispose_mapping_result(result, tempdir)
-                # In-flight mapping results check `self._closed` and clean
-                # their scratch directory themselves before publishing.
-            threading.Thread(target=cleanup_later, daemon=True).start()
+                except OSError:
+                    logging.getLogger(__name__).exception("Could not remove retired mapping files")
+            while not self._messages.empty():
+                _, kind, data = self._messages.get_nowait()
+                if kind == "done":
+                    try:
+                        _dispose_mapping_result(data, data["tempdir"])
+                    except OSError:
+                        logging.getLogger(__name__).exception("Could not remove unpublished mapping files")
+
+        if worker is not None and worker.is_alive():
+            # Keep cancellation visible to the application even after this
+            # window is destroyed. No model/operator change or exit until
+            # all detached work and its disk cleanup have completed.
+            cleanup = threading.Thread(target=cleanup_later, daemon=True,
+                                       name="PyFCS-RetiredWorkspace")
+            # Retain this controller on the Tk thread as well; Tk variables
+            # must not be finalized when the cleanup worker releases its closure.
+            self.app._retiring_workspace_workers.append((cleanup, self))
+            cleanup.start()
         else:
-            self._clear_pending_temp()
+            cleanup_later()
         if getattr(self.app, "_full_resolution_workspace_controller", None) is self:
             self.app._full_resolution_workspace_controller = None

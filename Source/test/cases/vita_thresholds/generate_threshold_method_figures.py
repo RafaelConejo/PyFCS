@@ -37,7 +37,7 @@ from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 
-from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
+from Source.interface.modules.evaluation.ColorEvaluationManager import ColorEvaluationManager
 from Source.test.cases.vita_thresholds.threshold_paper_analysis import (
     AT, PT, DEFAULT_OUT, DEFAULT_SPACE, LAYERS, VITA_ORDER,
     canonical_label, load_space, mpl_paper_style, search_grid,

@@ -385,7 +385,7 @@ class FuzzyColor:
         return best_idx if best_val > 0.0 else -1
 
     @staticmethod
-    def get_membership_degree(new_color, prototypes, pack):
+    def get_membership_degree(new_color, prototypes, pack, *, _known_raw=None):
         xyz = Point(*new_color)
 
         v_cores = pack["v_cores"]
@@ -412,7 +412,8 @@ class FuzzyColor:
         total = 0.0
 
         for i in range(len(prototypes)):
-            v = FuzzyColor._raw_membership_for_index(new_color, i, pack)
+            v = (_known_raw[1] if _known_raw is not None and i == _known_raw[0]
+                 else FuzzyColor._raw_membership_for_index(new_color, i, pack))
             if v > 0.0:
                 raw[prototypes[i].label] = v
                 total += v
@@ -429,6 +430,17 @@ class FuzzyColor:
             return raw
 
         return {k: v / total for k, v in raw.items()}
+
+    @staticmethod
+    def _partition_membership_for_index(new_color, index, prototypes, pack):
+        # A zero cannot become positive through the partition policy. Reuse
+        # the selected raw degree for positive samples, preserving core priority.
+        raw = FuzzyColor._raw_membership_for_index(new_color, index, pack)
+        if raw <= 0.0:
+            return 0.0
+        return FuzzyColor.get_membership_degree(
+            new_color, prototypes, pack, _known_raw=(index, raw)
+        ).get(prototypes[index].label, 0.0)
 
     @staticmethod
     def get_membership_degree_for_prototype(new_color, prototype, core, support):

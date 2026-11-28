@@ -8,10 +8,10 @@ from tkinter import ttk, filedialog
 import numpy as np
 from PIL import Image, ImageTk, ImageOps
 
-import Source.interface.modules.UtilsTools as UtilsTools
+import Source.interface.modules.common.UtilsTools as UtilsTools
 
 
-from Source.interface.modules.ColorEvaluationManager import (
+from Source.interface.modules.evaluation.ColorEvaluationManager import (
     rank_membership_frontier as inspection_rank,
     membership_snapshot as inspection_membership_snapshot, nearest_granule)
 
@@ -433,9 +433,10 @@ class ImageInspectionManager:
         self.image_canvas.bind("<B1-Motion>", self._on_canvas_left_drag)
         self.image_canvas.bind("<ButtonRelease-1>", self._on_canvas_left_release)
         self.image_canvas.bind("<Motion>", self._on_canvas_motion)
-        self.image_canvas.bind("<Button-3>", self._start_pan)
-        self.image_canvas.bind("<B3-Motion>", self._pan_motion)
-        self.image_canvas.bind("<ButtonRelease-3>", self._end_pan)
+        for button in (2, 3):
+            self.image_canvas.bind(f"<Button-{button}>", self._start_pan)
+            self.image_canvas.bind(f"<B{button}-Motion>", self._pan_motion)
+            self.image_canvas.bind(f"<ButtonRelease-{button}>", self._end_pan)
         self.image_canvas.bind("<Button-2>", self._start_pan)
         self.image_canvas.bind("<B2-Motion>", self._pan_motion)
         self.image_canvas.bind("<ButtonRelease-2>", self._end_pan)
@@ -1198,7 +1199,7 @@ class ImageInspectionManager:
             if 0 <= x < pil.width and 0 <= y < pil.height:
                 r, g, b, alpha = self._read_pixel_rgba(pil, x, y)
                 exact = (r, g, b)
-                if alpha and np.allclose(UtilsTools.rgb_to_lab(exact), lab, rtol=0, atol=1e-4):
+                if alpha and np.allclose(UtilsTools.analysis_rgb_to_lab(exact), lab, rtol=0, atol=1e-4):
                     sample["native_rgb"] = exact
                     sample["rgb"] = exact
                     sample["hex"] = UtilsTools.rgb_to_hex(exact).upper()
@@ -1759,7 +1760,7 @@ class ImageInspectionManager:
             return
 
         rgb = (int(r), int(g), int(b))
-        lab = tuple(float(v) for v in UtilsTools.rgb_to_lab(rgb))
+        lab = tuple(float(v) for v in UtilsTools.analysis_rgb_to_lab(rgb))
         sample = self._build_sample(
             source_key=self.current_source_key,
             x=int(x),
@@ -1911,7 +1912,7 @@ class ImageInspectionManager:
     def _membership_snapshot(self, lab, *, rgb=None):
         self._reference_index()
         space = self.app.fuzzy_color_space
-        native = rgb is not None and getattr(space, "is_granular", False) and space.color_space == "RGB"
+        native = rgb is not None and space.color_space == "RGB"
         value, mode = (tuple(rgb), "RGB") if native else (tuple(lab), "LAB")
         key = (id(space), getattr(space, "tconorm", None), mode, value)
         if key != self._membership_last_key:

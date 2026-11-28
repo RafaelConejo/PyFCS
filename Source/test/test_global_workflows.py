@@ -23,9 +23,9 @@ from Source.fuzzy.FuzzyColorSpaceBuilder import (
 )
 from Source.input_output.InputFCS import InputFCS
 from Source.input_output.InputCNS import InputCNS
-from Source.interface.modules.ColorProcessingEngine import ColorProcessingEngine
-from Source.interface.modules.VisualManager import VisualManager
-from Source.interface.modules.ColorEvaluationManager import ColorEvaluationManager
+from Source.interface.modules.image.ColorProcessingEngine import ColorProcessingEngine
+from Source.interface.modules.visualization.VisualManager import VisualManager
+from Source.interface.modules.evaluation.ColorEvaluationManager import ColorEvaluationManager
 
 
 class GlobalWorkflowsTests(unittest.TestCase):

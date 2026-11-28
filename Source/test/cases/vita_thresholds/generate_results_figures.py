@@ -62,7 +62,7 @@ from scipy.spatial import ConvexHull
 register_projection(Axes3D)
 
 from Source.input_output.Input import Input
-from Source.interface.modules.VisualManager import VisualManager
+from Source.interface.modules.visualization.VisualManager import VisualManager
 
 PT, AT, DEFAULT_STEP = 0.8, 1.8, 0.05
 SHADE_ORDER = ("A1", "A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4",

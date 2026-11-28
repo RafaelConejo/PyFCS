@@ -5,7 +5,7 @@ import numpy as np
 
 # Project modules
 from Source.input_output.Input import Input
-import Source.interface.modules.UtilsTools as UtilsTools
+import Source.interface.modules.common.UtilsTools as UtilsTools
 
 """
 FuzzyColorSpaceManager module

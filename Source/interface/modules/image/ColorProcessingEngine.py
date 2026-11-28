@@ -12,7 +12,7 @@ import os
 import logging
 
 # Project modules
-from Source.interface.modules import UtilsTools  
+from Source.interface.modules.common import UtilsTools  
 
 
 """
@@ -30,7 +30,7 @@ It provides:
 class PreparedImage:
     """Immutable arrays derived from a single original image at one resolution.
 
-    Store the quantized bins and inverse indices, not the full floating-point
+    Store exact unique model-space colors and inverse indices, not the full floating-point
     LAB image. Alpha is kept separately from RGB to preserve partial opacity.
     """
     rgb: np.ndarray
@@ -249,6 +249,11 @@ class _BatchMappingEvaluator:
         if type(self.space) not in (FuzzyColorSpace, GranularFuzzyColorSpace):
             raise ValueError('Unsupported batch model')
         self.atomic = type(self.space) is FuzzyColorSpace
+        self.partition = self.space._uses_partition_normalization
+        if self.partition and self.semantic:
+            # Flat partitions normally have no semantic view. An explicit
+            # subset still uses the full source denominator in the scalar API.
+            raise ValueError('Partition subset uses scalar evaluation')
         self.kind = kind
         self.use_max = getattr(self.space, 'tconorm', 'max') == 'max'
         self.category = category
@@ -294,6 +299,8 @@ class _BatchMappingEvaluator:
                     {target for typ,target in self.output if typ == 'g'})
         if kind != 'single':
             selected.update(i for group in self.groups for i in group)
+        if self.partition:
+            selected.update(range(len(self.sites)))
         self.indices = sorted(selected)
         self.columns = {i:j for j,i in enumerate(self.indices)}
         self.pack = self._pack()
@@ -368,19 +375,43 @@ class _BatchMappingEvaluator:
                     raise ArithmeticError("batch raw membership mismatch")
         if self.kind == 'single':
             scores = self.scores(values)[:,0]
-            # Preserve the old float32 -> uint8 conversion even at thresholds.
-            lo = (np.clip(scores-self.GUARD,0,1).astype(np.float32)*255).astype(np.uint8)
-            hi = (np.clip(scores+self.GUARD,0,1).astype(np.float32)*255).astype(np.uint8)
-            for row in np.flatnonzero(lo != hi):
+            guard = self.GUARD
+            uncertain = np.zeros(len(points), dtype=bool)
+            stable_core = np.zeros(len(points), dtype=bool)
+            if self.partition:
+                # Match the historical sequential sum and 1e-9 tolerance.
+                # Core precedence is handled before normalizing the degrees.
+                total = np.zeros(len(points), dtype=np.float64)
+                for col in range(values.shape[1]):
+                    total += values[:, col]
+                hits = cores.sum(axis=1)
+                no_core = hits == 0
+                normalize = no_core & (total > 0) & (np.abs(total-1.0) > 1e-9)
+                scores[normalize] /= total[normalize]
+                selected_col = self.columns[self.groups[self.category][0]]
+                stable_core = hits == 1
+                scores[stable_core] = cores[stable_core, selected_col]
+                # Propagate the possible numerical error through division and
+                # guard the normalization branch as well as output boundaries.
+                error = self.GUARD * len(self.indices)
+                guard = np.full(len(points), self.GUARD, dtype=np.float64)
+                guard[normalize] = 2*error / np.maximum(total[normalize]-error, error)
+                uncertain = (hits > 1) | (no_core & ((total <= 2*error) |
+                              (np.abs(np.abs(total-1.0)-1e-9) <= error)))
+            # Preserve the rendered bytes and scientific 0.5-cut independently.
+            lo = (np.clip(scores-guard,0,1).astype(np.float32)*255).astype(np.uint8)
+            hi = (np.clip(scores+guard,0,1).astype(np.float32)*255).astype(np.uint8)
+            uncertain |= ~stable_core & ((lo != hi) | (np.abs(scores - 0.5) <= guard))
+            for row in np.flatnonzero(uncertain):
                 scores[row] = scalar(tuple(points[row].tolist()))
-            return np.clip(scores,0,1).astype(np.float32)
+            return np.clip(scores,0,1)
         scores = self.scores(values)
         best = np.argmax(scores,axis=1).astype(np.int32)
         top = scores[np.arange(len(points)),best]
         best[top <= 0.] = -1
         grain = np.full(len(points),-1,dtype=np.int32)
-        if self.atomic:
-            # Atomic mapping uses strict > outside cores, and nearest actual
+        if self.atomic or self.partition:
+            # Atomic and flat partition mapping use strict > outside cores, and nearest actual
             # representative for multiple core hits. Preserve these separately.
             hits = cores.sum(axis=1)
             one = hits == 1
@@ -438,6 +469,15 @@ class _BatchMappingEvaluator:
 
 
 class ColorProcessingEngine:
+    # Prefer the compiled backend from ten unique colors once it is warm.
+    # Tiny-job benchmarks are mixed, but the extra overhead is milliseconds
+    # and Windows feedback favors earlier dispatch. The cold budget is
+    # intentionally separate: a first JIT is expensive and should not be
+    # triggered by a tiny job. These are policy heuristics, not math limits.
+    _BATCH_WARM_MIN_COLORS = 10
+    _BATCH_COLD_WORK = 100_000
+    _BATCH_COLD_MIN_JOB_WORK = 8_192
+
     def __init__(self, root=None, custom_warning=None, center_popup=None,
                  preprocessing_cache_bytes=256 * 1024**2, batch_mode=None):
         """
@@ -455,6 +495,7 @@ class ColorProcessingEngine:
             raise ValueError("batch_mode must be auto, scalar or batch")
         self.batch_statistics = {"blocks": 0, "colors": 0, "fallbacks": 0}
         self._batch_failed = False
+        self._batch_deferred_work = 0
 
     # Simple utilities
 
@@ -479,13 +520,14 @@ class ColorProcessingEngine:
             img_np = img_np[..., :3]
         else:
             raise ValueError("Expected an RGB/RGBA or grayscale image array.")
+        if img_np.dtype == np.uint8:
+            return img_np
         return np.clip(img_np, 0, 255).astype(np.uint8, copy=False)
 
     def _pil_to_lab_image(self, image):
         """Convert a PIL image to LAB using skimage, returning an H x W x 3 float array."""
         img_rgb = self._pil_to_rgb_uint8(image)
-        img01 = img_rgb.astype(np.float32) / 255.0
-        return color.rgb2lab(img01)
+        return UtilsTools.analysis_rgb_to_lab(img_rgb)
 
     @staticmethod
     def _model_space_name(space):
@@ -507,8 +549,8 @@ class ColorProcessingEngine:
             processing = UtilsTools._pil_rgb_for_processing(source)
             rgb = self._pil_to_rgb_uint8(processing)
             valid = alpha > 0
-            # Use the same RGB uint8 -> float32 -> LAB conversion as before.
-            colors = self._unique_model_colors(processing, space)
+            # Reuse the decoded RGB bytes; convert only distinct colors.
+            colors = self._unique_model_colors(rgb, space)
             for array in (rgb, alpha, valid, colors[0], colors[1]):
                 array.setflags(write=False)
             return PreparedImage(rgb, alpha, valid, colors)
@@ -521,46 +563,83 @@ class ColorProcessingEngine:
             owner, original, target_size, self._model_space_name(space))
 
     def _unique_model_colors(self, image, fuzzy_color_space):
-        """Quantize image colors once and return unique model-space values.
+        """Deduplicate exact RGB bytes before converting to the model domain.
 
-        Shared by single-prototype mapping and Mapping All, preventing the two
-        paths from drifting in conversion or quantization behavior.
+        RGB models receive the original channel values. LAB models receive
+        the unrounded float64 CIELAB conversion of each distinct RGB triplet.
+        The inverse indices always refer to the RGB keys, not rounded LAB bins.
+        Keep the legacy tuple layout (scale=1) for PreparedImage consumers.
         """
-        rgb_model = self._model_space_name(fuzzy_color_space) == "RGB"
+        source_space = self._model_space_name(fuzzy_color_space)
         if isinstance(image, PreparedImage):
-            if image.colors[-1] != self._model_space_name(fuzzy_color_space):
+            if image.colors[-1] != source_space:
                 raise ValueError("Prepared image color space does not match the model.")
             return image.colors
-        model_image = self._pil_to_rgb_uint8(image) if rgb_model else self._pil_to_lab_image(image)
-        height, width = model_image.shape[:2]
-        scale = 1.0 if rgb_model else 100.0
-        source_space = "RGB" if rgb_model else "LAB"
-        # Pack RGB into 24 bits, LAB bins into three unsigned 16-bit fields.
-        # Integer ordering preserves the original lexicographic row order.
-        if rgb_model:
-            pixels = model_image.reshape(-1, 3)
-            keys = pixels[:, 0].astype(np.uint32) << 16
-            keys |= pixels[:, 1].astype(np.uint32) << 8
-            keys |= pixels[:, 2]
-            unique_keys, inverse = np.unique(keys, return_inverse=True)
-            uniq = np.column_stack((unique_keys >> 16,
-                                   (unique_keys >> 8) & 255,
-                                   unique_keys & 255)).astype(np.int32)
+        rgb = self._pil_to_rgb_uint8(image)
+        height, width = rgb.shape[:2]
+        pixels = rgb.reshape(-1, 3)
+        keys = pixels[:, 0].astype(np.uint32) << 16
+        keys |= pixels[:, 1].astype(np.uint32) << 8
+        keys |= pixels[:, 2]
+        unique_keys, inverse = np.unique(keys, return_inverse=True)
+        unique_rgb = np.column_stack((unique_keys >> 16,
+                                      (unique_keys >> 8) & 255,
+                                      unique_keys & 255)).astype(np.uint8)
+        if source_space == "RGB":
+            uniq = unique_rgb.astype(np.int32)
+        elif len(unique_rgb):
+            uniq = self._pil_to_lab_image(unique_rgb.reshape(-1, 1, 3)).reshape(-1, 3)
         else:
-            integer_colors = np.rint(model_image.reshape(-1, 3) * scale).astype(np.int32)
-            if integer_colors.size and (integer_colors.min() < -32768 or
-                                        integer_colors.max() > 32767):
-                # Preserve the generic path for unusual/custom conversions.
-                uniq, inverse = np.unique(integer_colors, axis=0, return_inverse=True)
-            else:
-                keys = (integer_colors[:, 0].astype(np.int64) + 32768) << 32
-                keys |= (integer_colors[:, 1].astype(np.int64) + 32768) << 16
-                keys |= integer_colors[:, 2].astype(np.int64) + 32768
-                unique_keys, inverse = np.unique(keys, return_inverse=True)
-                uniq = np.column_stack((unique_keys >> 32,
-                                       (unique_keys >> 16) & 65535,
-                                       unique_keys & 65535)).astype(np.int32) - 32768
-        return uniq, inverse, height, width, scale, source_space
+            uniq = np.empty((0, 3), dtype=np.float64)
+        return uniq, inverse, height, width, 1.0, source_space
+
+    @staticmethod
+    def _batch_relevant_granules(space, kind, category, granule):
+        """Estimate unique physical leaves without building a geometry pack."""
+        source = space.source if isinstance(space, SemanticMappingView) else space
+        if getattr(source, "_uses_partition_normalization", False):
+            return len(source.get_all_prototypes() if getattr(source, "is_granular", False)
+                       else source.get_prototypes())
+        if kind == "single":
+            if granule is not None or not getattr(space, "is_granular", False):
+                return 1
+            return len(space.categories[category].prototypes)
+        if isinstance(space, SemanticMappingView):
+            return len({p.label for cat in space.categories for p in cat.prototypes})
+        if getattr(space, "is_granular", False):
+            return len(space.get_all_prototypes())
+        return len(space.get_prototypes())
+
+    def _should_use_batch(self, space, count, kind, category=None, granule=None):
+        """Adaptive dispatch only; never changes the numerical evaluator.
+
+        Work counts potential leaf evaluations, not measured execution time:
+        early saturation, geometry and machine speed affect the actual cost.
+        A tiny job never triggers cold compilation, even after accumulated
+        work. An already compiled kernel can be used on much smaller jobs.
+        """
+        if self.batch_mode == "scalar" or self._batch_failed or count <= 0:
+            return False
+        if self.batch_mode == "batch":
+            return True
+        if _BATCH_UNAVAILABLE:
+            return False
+        try:
+            relevant = self._batch_relevant_granules(space, kind, category, granule)
+        except (ValueError, AttributeError, TypeError, IndexError):
+            return False
+        if relevant <= 0 or count < self._BATCH_WARM_MIN_COLORS:
+            return False
+        # A dispatcher object can exist before its first successful JIT.
+        # Only a compiled signature means that startup cost was paid.
+        if getattr(_BATCH_KERNEL, "signatures", ()):
+            self._batch_deferred_work = 0
+            return True
+        work = count * relevant
+        self._batch_deferred_work = min(self._BATCH_COLD_WORK,
+                                        self._batch_deferred_work + work)
+        return (work >= self._BATCH_COLD_MIN_JOB_WORK and
+                self._batch_deferred_work >= self._BATCH_COLD_WORK)
 
     def _batch_mapping(self, space, uniq, scale, source_space, kind, scalar,
                        progress_callback, cancel_callback, category=None, granule=None):
@@ -570,11 +649,12 @@ class ColorProcessingEngine:
         the original mapping path, rather than returning a partial image.
         """
         if (self.batch_mode == "scalar" or self._batch_failed or not len(uniq) or
-                source_space != getattr(space, "color_space", None) or
-                (self.batch_mode == "auto" and len(uniq) < 1024)):
+                source_space != getattr(space, "color_space", None)):
             return False, None
         if cancel_callback and cancel_callback():
             return True, None
+        if not self._should_use_batch(space, len(uniq), kind, category, granule):
+            return False, None
         try:
             evaluator = _BatchMappingEvaluator(space, kind, category, granule)
         except (ValueError, AttributeError, TypeError, IndexError):
@@ -584,14 +664,14 @@ class ColorProcessingEngine:
             if kernel is None:
                 return False, None
             single = kind == "single"
-            first = np.empty(len(uniq), dtype=np.float32 if single else np.int32)
+            first = np.empty(len(uniq), dtype=np.float64 if single else np.int32)
             second = None if single else np.empty(len(uniq), dtype=np.int32)
             for start in range(0,len(uniq),evaluator.block_size):
                 if cancel_callback and cancel_callback():
                     return True, None
                 end = min(start+evaluator.block_size,len(uniq))
-                # Critical: match the original float32 division BEFORE float64.
-                points = (uniq[start:end].astype(np.float32)/scale).astype(np.float64)
+                # Preserve native float64 model coordinates, without rounding.
+                points = uniq[start:end].astype(np.float64, copy=False) / scale
                 result = evaluator.evaluate(points,kernel,scalar)
                 if cancel_callback and cancel_callback():
                     return True, None
@@ -602,11 +682,11 @@ class ColorProcessingEngine:
                     expected = scalar(tuple(points[j].tolist()))
                     if single:
                         actual = result[j]
-                        expected = np.float32(np.clip(expected,0,1))
-                        if actual != expected:
-                            # Check the final grayscale byte, not only closeness.
-                            if np.uint8(actual* np.float32(255)) != np.uint8(expected*np.float32(255)):
-                                raise ArithmeticError("batch membership byte mismatch")
+                        expected = float(np.clip(expected,0,1))
+                        if (actual >= 0.5) != (expected >= 0.5):
+                            raise ArithmeticError("batch membership coverage mismatch")
+                        if np.uint8(np.float32(actual)*np.float32(255)) != np.uint8(np.float32(expected)*np.float32(255)):
+                            raise ArithmeticError("batch membership byte mismatch")
                     elif (int(result[0][j]),int(result[1][j])) != tuple(expected):
                         raise ArithmeticError("batch classification mismatch")
                 if single:
@@ -639,14 +719,23 @@ class ColorProcessingEngine:
         progress_callback=None,
         cancel_callback=None,
         granule_index=None,
+        *,
+        return_coverage=False,
+        valid_mask=None,
     ):
         """
         Generate a grayscale membership map for one selected prototype.
 
+        By default return the legacy uint8 visualization array. With
+        return_coverage=True, return (gray, covered_pixels, valid_pixels),
+        using the effective float64 membership >= 0.5 before visualization.
+        valid_mask selects the analyzed pixels; PreparedImage supplies its
+        own mask when none is provided. No second membership evaluation occurs.
+
         Optimized version:
-        - Converts RGB -> LAB once.
-        - Quantizes LAB to 0.01.
-        - Computes membership only for unique LAB values.
+        - Extracts exact unique RGB values.
+        - Converts unique colors to LAB in float64 only for LAB models.
+        - Computes membership once per distinct input color.
         - Reconstructs the full image using the inverse map.
         """
         if selected_option < 0 or selected_option >= len(prototypes):
@@ -663,12 +752,12 @@ class ColorProcessingEngine:
             return None
 
         # Construct/evaluate directly in the space used by the loaded FCS.
-        # RGB is encoded as 0..255 channel values; LAB is quantized to 0.01.
+        # RGB uses native channel values; LAB uses unrounded float64 coordinates.
         uniq, inv, height, width, scale, source_space = self._unique_model_colors(
             image, fuzzy_color_space
         )
 
-        values_for_uniq = np.empty((uniq.shape[0],), dtype=np.float32)
+        values_for_uniq = np.empty((uniq.shape[0],), dtype=np.float64)
         total_uniqs = int(uniq.shape[0])
 
         category_evaluator = None
@@ -677,7 +766,7 @@ class ColorProcessingEngine:
         def scalar(lab_tuple):
             if category_evaluator is not None:
                 value = category_evaluator(lab_tuple, source_space)
-            elif granule_index is None:
+            elif granule_index is None or getattr(fuzzy_color_space, "_uses_partition_normalization", False):
                 value = fuzzy_color_space.calculate_membership_for_prototype(
                     lab_tuple, selected_option, input_space=source_space
                 )
@@ -685,8 +774,8 @@ class ColorProcessingEngine:
                 value = fuzzy_color_space.granule_membership(
                     lab_tuple, selected_option, granule_index, input_space=source_space)
             else:
-                # The individual raw degree is independent of the T-conorm.
-                # Reuse the geometry pack and the same quantized model color.
+                # Outside flat partitions, the individual raw degree is independent of the T-conorm.
+                # Reuse the geometry pack and the same exact model color.
                 from Source.fuzzy.FuzzyColor import FuzzyColor
                 coords = fuzzy_color_space._coordinates(lab_tuple, source_space)
                 if not fuzzy_color_space.reference_domain.contains_coordinates(coords, eps=1e-9):
@@ -710,19 +799,47 @@ class ColorProcessingEngine:
             for i in range(total_uniqs):
                 if cancel_callback and cancel_callback():
                     return None
-                lab_tuple = tuple((uniq[i].astype(np.float32) / scale).tolist())
+                lab_tuple = tuple((uniq[i].astype(np.float64, copy=False) / scale).tolist())
                 values_for_uniq[i] = np.clip(scalar(lab_tuple), 0.0, 1.0)
                 if progress_callback and (i % 500 == 0 or i == total_uniqs - 1):
                     if cancel_callback and cancel_callback():
                         return None
                     progress_callback(i + 1, total_uniqs)
 
+        if cancel_callback and cancel_callback():
+            return None
+        if return_coverage:
+            if valid_mask is None and isinstance(image, PreparedImage):
+                valid_mask = image.valid_mask
+            elif valid_mask is None and isinstance(image, Image.Image):
+                valid_mask = UtilsTools._get_alpha_values_from_pil(image) > 0
+            elif valid_mask is None and np.asarray(image).ndim == 3 and np.asarray(image).shape[-1] == 4:
+                valid_mask = np.asarray(image)[..., 3] > 0
+            # Compare at unique-color precision; only reconstruct a boolean
+            # mask, not a second full-size floating-point membership image.
+            covered = (values_for_uniq >= 0.5)[inv].reshape(height, width)
+            if valid_mask is None:
+                valid_total = height * width
+            else:
+                valid_mask = np.asarray(valid_mask, dtype=bool)
+                if valid_mask.shape != (height, width):
+                    raise ValueError("Coverage mask must match the image dimensions.")
+                valid_total = int(np.count_nonzero(valid_mask))
+                covered &= valid_mask
+            covered_total = int(np.count_nonzero(covered))
+            del covered
+
+        # Keep the existing 8-bit rendering convention exactly; scientific
+        # coverage above does not depend on this float32-to-byte conversion.
         grayscale_image = (
-            values_for_uniq[inv]
+            values_for_uniq.astype(np.float32)[inv]
             .reshape(height, width)
             * 255.0
         ).astype(np.uint8)
-
+        if cancel_callback and cancel_callback():
+            return None
+        if return_coverage:
+            return grayscale_image, covered_total, valid_total
         return grayscale_image
 
     @staticmethod
@@ -746,35 +863,24 @@ class ColorProcessingEngine:
         ).astype(np.uint8)
 
     @staticmethod
-    def estimate_proto_coverage(grayscale_image_array, valid_mask):
+    def estimate_proto_coverage(membership_array, valid_mask):
+        """Return (percentage, 0.5) from unencoded floating-point memberships.
+
+        A visualization byte map cannot recover exact 0.5-cut coverage.
+        Use get_proto_percentage(return_coverage=True) for image mappings.
         """
-        Estimate the percentage of valid pixels covered by a prototype membership map.
-
-        Keeps your previous threshold behavior:
-        - binary-like maps with 255 use threshold 255
-        - continuous maps use threshold 128
-        """
-        if grayscale_image_array is None:
-            return 0.0, 128
-
-        valid_total = int(np.count_nonzero(valid_mask))
-        if valid_total == 0:
-            return 0.0, 128
-
-        if grayscale_image_array.ndim == 2:
-            unique_vals = np.unique(grayscale_image_array)
-            if unique_vals.size <= 3 and 255 in unique_vals:
-                threshold = 255
-            else:
-                threshold = 128
-
-            colored = int(np.count_nonzero((grayscale_image_array >= threshold) & valid_mask))
-        else:
-            threshold = 128
-            colored = int(np.count_nonzero(np.any(grayscale_image_array != 0, axis=-1) & valid_mask))
-
-        pct = 100.0 * (colored / valid_total)
-        return pct, threshold
+        if membership_array is None:
+            return 0.0, 0.5
+        degrees = np.asarray(membership_array)
+        valid = np.asarray(valid_mask, dtype=bool)
+        if (degrees.ndim != 2 or degrees.shape != valid.shape or
+                not np.issubdtype(degrees.dtype, np.floating) or
+                not np.all(np.isfinite(degrees)) or
+                np.any((degrees < 0) | (degrees > 1))):
+            raise ValueError("Coverage requires a matching 2D floating-point membership map in [0, 1], not an 8-bit visualization.")
+        total = int(np.count_nonzero(valid))
+        covered = int(np.count_nonzero((degrees >= 0.5) & valid))
+        return (100.0 * covered / total if total else 0.0), 0.5
 
     def get_best_prototype_label_map(
         self,
@@ -798,7 +904,7 @@ class ColorProcessingEngine:
             fuzzy_color_space.precompute_pack()
 
         # Construct/evaluate directly in the space used by the loaded FCS.
-        # RGB is encoded as 0..255 channel values; LAB is quantized to 0.01.
+        # RGB uses native channel values; LAB uses unrounded float64 coordinates.
         uniq, inv, height, width, scale, source_space = self._unique_model_colors(
             image, fuzzy_color_space
         )
@@ -822,7 +928,7 @@ class ColorProcessingEngine:
             for i in range(total_uniqs):
                 if cancel_callback and cancel_callback():
                     return None
-                lab_tuple = tuple((uniq[i].astype(np.float32) / scale).tolist())
+                lab_tuple = tuple((uniq[i].astype(np.float64, copy=False) / scale).tolist())
                 best_for_uniq[i] = scalar(lab_tuple)[0]
                 if progress_callback and (i % 500 == 0 or i == total_uniqs - 1):
                     if cancel_callback and cancel_callback():
@@ -848,7 +954,7 @@ class ColorProcessingEngine:
         category is ALWAYS chosen first, using the current T-conorm, and the
         winning granule is then chosen only from that category. Atomic spaces
         use one granule per category and therefore return identical maps.
-        This processes the quantized unique image colors just once.
+        This processes the exact unique image colors just once.
         """
         if cancel_callback and cancel_callback():
             return None
@@ -912,7 +1018,7 @@ class ColorProcessingEngine:
             for i, color_bin in enumerate(uniq):
                 if cancel_callback and cancel_callback():
                     return None
-                point = tuple((color_bin.astype(np.float32) / scale).tolist())
+                point = tuple((color_bin.astype(np.float64, copy=False) / scale).tolist())
                 categories[i], granules[i] = scalar(point)
                 if progress_callback and (i % 500 == 0 or i == len(uniq) - 1):
                     if cancel_callback and cancel_callback():
@@ -944,6 +1050,12 @@ class ColorProcessingEngine:
         groups = space._category_flat_indices
         sites = space.get_all_prototypes()
         raw = FuzzyColor._raw_membership_for_index
+
+        if space._uses_partition_normalization:
+            def partition_pair(point, input_space):
+                index = space.best_prototype_index(point, input_space)
+                return index, groups[index][0] if index >= 0 else -1
+            return partition_pair
 
         def pair(point, input_space):
             coords = space._coordinates(point, input_space)
@@ -1342,8 +1454,28 @@ def general_labels(space):
 def general_mapping_space(space):
     labels = general_labels(space)
     if labels == tuple(p.label for p in space.prototypes):
-        return space  # Preserve legacy normalization and exact flat tie-breaking.
+        return space  # Preserve exact flat mapping tie-breaking.
     return SemanticMappingView(space, labels, "General")
+
+
+def mapping_membership_summary(space, value, input_space="LAB"):
+    """Use effective General-category memberships, as in the maps."""
+    view = general_mapping_space(space)
+    if isinstance(view, SemanticMappingView):
+        degrees = view.calculate_membership(value, input_space=input_space)
+    else:
+        degrees = view.calculate_membership(value, input_space=input_space)
+    if not degrees:
+        return degrees, None, 0.0
+    winner = max(degrees, key=degrees.get)
+    top = degrees[winner]
+    tol = (1e-12 if getattr(view, "is_granular", False) and
+           not getattr(view, "_uses_partition_normalization", False) else 0.0)
+    if sum(abs(d-top) <= tol for d in degrees.values()) > 1:
+        idx = view.best_prototype_index(value, input_space=input_space)
+        if idx is not None and idx >= 0:
+            winner = view.get_prototypes()[idx].label
+    return degrees, winner, float(degrees[winner])
 
 
 def single_mapping_space(space):
@@ -1476,6 +1608,8 @@ class SemanticMappingView:
         from Source.fuzzy.FuzzyColor import FuzzyColor
         from Source.fuzzy.GranularFuzzyColor import GranularFuzzyColor
         label = self.labels[idx_proto]
+        if self.source._uses_partition_normalization:
+            return lambda value, input_space: self.source.calculate_category_membership(value, label, input_space)
         if label in self._legacy_base_indices:
             base_idx = self._legacy_base_indices[label]
             return lambda value, input_space: self.source.calculate_membership_for_prototype(
@@ -1529,6 +1663,8 @@ class SemanticMappingView:
         if self._precomputed is None:
             self.precompute_pack()
         label = self.categories[category].prototypes[granule].label
+        if self.source._uses_partition_normalization:
+            return self.source.calculate_membership_snapshot(value, input_space)["granules"][label]
         return FuzzyColor._raw_membership_for_index(coords, self.source._granule_index[label], self._precomputed)
 
     def winning_pair(self, value, input_space="LAB"):

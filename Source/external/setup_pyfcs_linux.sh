@@ -1,56 +1,64 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolve all paths from the location of this script.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 REQUIREMENTS="$SCRIPT_DIR/requirements.txt"
-VENV_DIR="$PROJECT_ROOT/venv_pyfcs"
+VENV_DIR="${PYFCS_VENV_DIR:-$PROJECT_ROOT/venv_pyfcs}"
+
+# Preserve the setup log where possible, but a read-only install must not
+# prevent setup with a writable external virtual environment.
 LOGFILE="$PROJECT_ROOT/setup_pyfcs.log"
-
-exec > >(tee "$LOGFILE") 2>&1
-
-echo "Starting PyFCS setup on Linux..."
-
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "Installing Python 3..."
-    sudo apt-get update
-    sudo apt-get install -y python3 python3-venv python3-pip
+if ( : >> "$LOGFILE" ) 2>/dev/null; then
+    exec > >(tee -a "$LOGFILE") 2>&1
+else
+    echo "Setup log is not writable; continuing with terminal output." >&2
 fi
+echo "Starting PyFCS setup..."
 
-PYTHON_PATH="$(command -v python3)"
-echo "Using Python: $($PYTHON_PATH --version)"
-
-# Tkinter must be available to the system Python used to create the venv.
+# Explicit interpreter selection is useful when several Python versions are installed.
+PYTHON_PATH="${PYFCS_PYTHON:-$(command -v python3 || true)}"
+if [[ -z "$PYTHON_PATH" ]]; then
+    echo "Python 3 is required. Install Python 3 with Tk support first." >&2
+    exit 1
+fi
+if ! "$PYTHON_PATH" -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+    echo "Use Python 3.10 or later (3.10–3.13 recommended)." >&2
+    exit 1
+fi
 if ! "$PYTHON_PATH" -c 'import tkinter' >/dev/null 2>&1; then
-    echo "Installing Tkinter..."
-    sudo apt-get update
-    sudo apt-get install -y python3-tk
-    "$PYTHON_PATH" -c 'import tkinter'
+    echo "The selected Python has no Tkinter support. Install the matching Tk package and retry." >&2
+    echo "Linux (Debian/Ubuntu): sudo apt install python3-tk python3-venv" >&2
+    echo "macOS: use python.org Python with Tk, or brew install python-tk@<major.minor>." >&2
+    exit 1
 fi
-
 if [[ ! -f "$REQUIREMENTS" ]]; then
     echo "Requirements file not found: $REQUIREMENTS" >&2
     exit 1
 fi
-
-# Reuse an existing environment; recreate it manually if needed.
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
-    echo "Creating virtual environment: $VENV_DIR"
-
     "$PYTHON_PATH" -m venv "$VENV_DIR" || {
-        echo "Python venv is unavailable. On Debian/Ubuntu, install python3-venv." >&2
+        echo "Could not create the virtual environment. Check the Python venv package and directory permissions." >&2
         exit 1
     }
 fi
-
 VENV_PYTHON="$VENV_DIR/bin/python"
-
+if ! "$VENV_PYTHON" -c 'import sys, tkinter; sys.exit(sys.version_info < (3,10))'; then
+    echo "Existing venv is incompatible. Move or remove $VENV_DIR, then rerun this script." >&2
+    exit 1
+fi
 "$VENV_PYTHON" -m pip install --upgrade pip
 "$VENV_PYTHON" -m pip install -r "$REQUIREMENTS"
-
-# Module execution keeps Source.* imports valid.
-echo "Launching PyFCS..."
+# Optional acceleration: failure to install it must not prevent use of PyFCS.
+if [[ "${PYFCS_SKIP_NUMBA:-0}" != 1 ]]; then
+    if ! "$VENV_PYTHON" -m pip install numba; then
+        echo "Numba installation failed; PyFCS will use the scalar backend." >&2
+    fi
+fi
+"$VENV_PYTHON" -m pip check
+"$VENV_PYTHON" -c 'import numpy, scipy, matplotlib, tkinter, skimage, PIL, sklearn, plotly, pandas, cv2; print("PyFCS dependencies imported successfully.")'
+if [[ "${PYFCS_SETUP_ONLY:-0}" == 1 ]]; then
+    exit 0
+fi
 cd "$PROJECT_ROOT"
-
-"$VENV_PYTHON" -m Source.interface.mainInterface
+exec "$VENV_PYTHON" -m Source.interface.mainInterface

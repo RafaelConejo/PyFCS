@@ -12,13 +12,14 @@ python -m Source.test.run_full_suite --gui
 The runner discovers `test_*.py` recursively, including the small automated
 regression tests inside the case packages. It does **not** run full research
 experiments, interactive tools or the 10-million-sample Java comparison.
-`--gui` requires a graphical display. Global logs and JSON reports are saved
+`--gui` requires a graphical display and also exercises the FCS creation dialog and the desktop Model 3D controller (RGB/LAB, hierarchy selection, camera, layers, threshold overlays, interactive HTML export and image/pixel-information lifecycle), plus Image Display (two independent cards, Grid/Focus/manual resizing, zoom/pan, pixel/ROI sampling, mapping, legend export, full-resolution workspace opening/closing and cleanup), including desktop mapping cancellation and verification that General/Detailed and palette switches do not recompute memberships. The Color Evaluation window smoke test also covers reopening, A/B samples, membership ranking, operator changes, sample history, custom color selection, sampling an image and plot construction (browser delivery is mocked). The first-image smoke test also opens images through the public Open Image action before any FCS is loaded, including cancelled dialogs, corrupt files, duplicate filenames, close-all and reopening. It traces delegated property getters to detect even caught `AttributeError` exceptions that could stop a debugger. Global logs and JSON reports are saved
 in `Source/test/reports/` by default.
 
 - `test_global_workflows.py`: integration tests for construction, FCS I/O,
   native RGB processing, color-space rebuilds, visualization and metrics.
 - `test_core_regressions.py`: general stability tests from the pre-Java audit
-  (hierarchies, JSON, 3D geometry, clipping and visualization).
+  (hierarchies, JSON, 3D geometry, clipping, visualization, accelerated mapping,
+  cache lifecycle and manager-state initialization/ownership).
 
 ## Specific cases
 
@@ -76,16 +77,34 @@ Their project-root import bootstrap was adjusted; their older data paths,
 algorithms and interactive workflows were otherwise preserved. They were not
 validated or migrated to the new hierarchical image-processing API.
 
-### `cases/manual_color/`
-
-`color_percentage.py`: interactive LAB input/pixel sampling and membership
-inspection, separate from automated tests. Legacy paths and algorithms retained.
+`color_percentage.py` in `cases/vita_images_legacy/`: interactive LAB input/pixel
+sampling and membership inspection, separate from automated tests. Its legacy
+paths and algorithms are retained, and this interactive script is not part of
+the automated regression suite.
 
 ## Migration
 
 Replace the previous `Source/test/` directory, rather than overlaying it:
 otherwise the moved modules may remain as stale duplicates. Back up any files
 added locally since the supplied archive before replacing. The archive only
-contains `test/`; application code and `fuzzy_color_spaces/` are not modified.
+contains `Source/test/`; install the matching application patch separately.
+The Model 3D and Image Display GUI checks require their corresponding controllers, including ColorMappingManager.
 The previous audit's corrected global workflow test and missing eight core
 regression tests were restored from the previously delivered patch.
+
+## Release hardening regressions (2.0)
+
+`ReleaseHardeningTests` covers failed atomic image writes, writable-path fallback
+and simulated macOS app bundles, cache limits, cancellation and allocation/worker
+failures involving memory maps, full-resolution/desktop hierarchy parity in RGB
+and LAB with both operators and transparency, export rollback, and stale ROI
+rejection. The Image Display GUI check also exercises actual full-resolution
+mapping/export, closing a running workspace and rejection of a conflicting model
+load, and recovery after a malformed JSON model. The real dental-model test is
+skipped when its external model is absent. Native macOS/Windows and frozen build
+validation remain separate release checks.
+The expanded GUI smoke additionally opens and closes Image Inspection, the Data
+editor, Palette-Based Creation and Image-Based Creation, samples a real image,
+runs automatic detection and checks that closing a detection worker blocks a
+conflicting creation until it finishes. To validate the non-JIT route, run
+`NUMBA_DISABLE_JIT=1 python -m Source.test.run_full_suite --gui` in a POSIX shell.

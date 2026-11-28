@@ -14,7 +14,7 @@ from tkinter import ttk, messagebox
 
 import numpy as np
 
-import Source.interface.modules.UtilsTools as UtilsTools
+import Source.interface.modules.common.UtilsTools as UtilsTools
 
 
 class GranuleManager:
@@ -317,7 +317,7 @@ def selected_hierarchy(owner, categories):
 
 def creation_request(categories, hierarchy, options):
     """Validate final draft, choose legacy atomic or granular writer options."""
-    from Source.interface.modules.DataManager import validate_draft, draft_graph
+    from Source.interface.modules.data.DataManager import validate_draft, draft_graph
     problem = validate_draft(categories)
     if problem:
         raise ValueError(problem)
@@ -388,7 +388,7 @@ class InlineCreationTree:
         return result
 
     def graph(self):
-        from Source.interface.modules.DataManager import draft_graph
+        from Source.interface.modules.data.DataManager import draft_graph
         return draft_graph(self.owner.colors, self.hierarchy)
 
     def ancestors(self, name):
@@ -426,13 +426,13 @@ class InlineCreationTree:
         for parent, refs in self.hierarchy.items():
             self.hierarchy[parent] = [r for r in refs if r['category'] in available]
         # Defensive recovery for an external change to the creator's records.
-        from Source.interface.modules.DataManager import prune_empty_groups
+        from Source.interface.modules.data.DataManager import prune_empty_groups
         prune_empty_groups(self.hierarchy)
 
     def rename_leaf(self, old, new):
         if old == new:
             return
-        from Source.interface.modules.DataManager import remap_references
+        from Source.interface.modules.data.DataManager import remap_references
         self.hierarchy = remap_references(self.hierarchy, {old: new})
 
     def add_import(self, space, mapping):
@@ -461,7 +461,7 @@ class InlineCreationTree:
             self.refresh()
 
     def _commit_draft(self, categories, nodes):
-        from Source.interface.modules.DataManager import draft_graph
+        from Source.interface.modules.data.DataManager import draft_graph
         draft_graph(categories, nodes)
         old = self.owner.colors
         old_checks = self.owner.color_checks
@@ -560,13 +560,13 @@ class InlineCreationTree:
         owner.colors_canvas.yview_moveto(top)
 
     def _choose_members(self, *args, **kwargs):
-        from Source.interface.modules.DataManager import ModifyFCSDialog
+        from Source.interface.modules.data.DataManager import ModifyFCSDialog
         return ModifyFCSDialog._choose_members(self, *args, **kwargs)
 
     def add_group(self, parent=None):
         if not self._ready():
             return
-        from Source.interface.modules.DataManager import group_tree_draft
+        from Source.interface.modules.data.DataManager import group_tree_draft
         self.categories = self._snapshot()
         graph = self.graph()
         if parent in self.categories:
@@ -593,14 +593,14 @@ class InlineCreationTree:
     def choose_subcategory(self, parent):
         if not self._ready():
             return
-        from Source.interface.modules.DataManager import ModifyFCSDialog
+        from Source.interface.modules.data.DataManager import ModifyFCSDialog
         self.categories = self._snapshot()
         ModifyFCSDialog._choose_subcategory_action(self, parent)
 
     def add_category(self, parent=None):
         if not self._ready():
             return
-        from Source.interface.modules.DataManager import _CategoryHost
+        from Source.interface.modules.data.DataManager import _CategoryHost
         self.categories = self._snapshot()
         host = _CategoryHost(self)
         host.parent_category = parent
@@ -611,7 +611,7 @@ class InlineCreationTree:
         self.add_category(parent)
 
     def _insert_category(self, name, granules, parent=None, *, original_child_name=None):
-        from Source.interface.modules.DataManager import prepare_parent_draft, draft_graph
+        from Source.interface.modules.data.DataManager import prepare_parent_draft, draft_graph
         try:
             candidate, nodes = self._snapshot(), copy.deepcopy(self.hierarchy)
             name, problem = UtilsTools.check_label_name(name, max_length=UtilsTools.MAX_CATEGORY_NAME_CHARS, kind='Category')
@@ -673,7 +673,7 @@ class InlineCreationTree:
                 nodes[current].remove({'category': name})
             if dest:
                 nodes[dest].append({'category': name})
-            from Source.interface.modules.DataManager import draft_graph
+            from Source.interface.modules.data.DataManager import draft_graph
             draft_graph(self.categories, nodes)
             self.hierarchy = nodes
             if dest:
@@ -712,7 +712,7 @@ class InlineCreationTree:
         if error or new in set(self.owner.colors) | set(self.hierarchy):
             self._warning(error or f"Category '{new}' already exists.")
             return False
-        from Source.interface.modules.DataManager import remap_references
+        from Source.interface.modules.data.DataManager import remap_references
         self.hierarchy = remap_references(self.hierarchy, {name: new})
         if name in self.expanded:
             self.expanded.remove(name)
@@ -760,7 +760,7 @@ class InlineCreationTree:
     def configure(self):
         if not self._ready():
             return
-        from Source.interface.modules.DataManager import validate_draft, draft_graph
+        from Source.interface.modules.data.DataManager import validate_draft, draft_graph
         categories = selected_draft(self.owner)
         problem = validate_draft(categories)
         if problem:
